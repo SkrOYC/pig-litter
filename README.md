@@ -14,3 +14,7 @@ The intended experience includes reusable agent definitions, foreground and
 background work, and an interactive view for inspecting and directing children.
 Detailed child histories stay separate from the parent conversation unless
 requested.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
