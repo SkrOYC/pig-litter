@@ -1,0 +1,5 @@
+name: pig-litter
+description: "Pig Litter bootstrap"
+extensions:
+  - name: pig-litter
+    origins: [local:./extensions/pig-litter]

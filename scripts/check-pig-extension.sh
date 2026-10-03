@@ -42,37 +42,33 @@ export PIG_CODING_AGENT_DIR="$PIG_HOME/agent"
 export PIG_CODING_AGENT_SESSION_DIR="$PIG_CODING_AGENT_DIR/sessions"
 export PIG_USE_PI_DIRS=0
 export PIG_OFFLINE=1
+export PI_OFFLINE=1
 export GOPROXY=off
 export GOENV=off
 export GOCACHE="$temp_dir/go-cache"
 export GOMODCACHE="$temp_dir/go-mod-cache"
 workspace="$temp_dir/workspace"
-mkdir -p "$PIG_HOME" "$PIG_CODING_AGENT_DIR" "$workspace/extensions/hello"
+mkdir -p "$PIG_HOME" "$PIG_CODING_AGENT_DIR" "$workspace/extensions"
+cp -R "$DEVENV_ROOT/extensions/pig-litter" "$workspace/extensions/pig-litter"
+cp "$DEVENV_ROOT/piglet.yaml" "$workspace/piglet.yaml"
 cd "$workspace"
 
-pig extension init "$workspace/extensions/hello" --name hello --lang go --json >/dev/null
-report="$(pig install --validate-only --json ./extensions/hello)"
-printf '%s\n' "$report" | jq --exit-status --arg name hello '
+report="$(pig install --validate-only --json ./extensions/pig-litter)"
+printf '%s\n' "$report" | jq --exit-status --arg name pig-litter '
   .valid == true
   and .registered == true
   and .name == $name
   and .definition.language == "go"
   and .definition.form == "factory"
-  and (.tools | index("hello_ping")) != null
+  and ((.tools // []) | length) == 0
+  and ((.commands // []) | map(if type == "string" then . else .name end) | index("pig-litter")) != null
 ' >/dev/null
 
-cat > ./piglet.yaml <<'PIGLET'
-name: hello-agent
-description: "Temporary Piglet validation"
-extensions:
-  - name: hello
-    origins: [local:./extensions/hello]
-PIGLET
 pig piglet validate ./piglet.yaml --json --no-input \
-  | jq --exit-status --arg name hello-agent '
+  | jq --exit-status --arg name pig-litter '
       .valid == true
       and .name == $name
-      and (.extensions | map(.name) | index("hello")) != null
+      and (.extensions | map(.name) | index("pig-litter")) != null
       and (.errors | length) == 0
     ' >/dev/null
 
@@ -83,4 +79,4 @@ for settings_file in "$PIG_CODING_AGENT_DIR/settings.json" "$workspace/.pig/sett
   fi
 done
 
-printf 'PiG %s loaded the Go extension, registered hello_ping, and validated hello-agent with %s\n' "$pig_version" "$go_version"
+printf 'PiG %s loaded the pig-litter Go extension without exposing tools to the model and validated its Piglet with %s\n' "$pig_version" "$go_version"
