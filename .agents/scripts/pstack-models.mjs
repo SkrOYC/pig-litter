@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { homedir } from "node:os";
+import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
   access,
@@ -178,6 +179,7 @@ export async function readActiveParent({
   });
   const databases = files.filter((name) => /^state_.*\.sqlite$/.test(name));
   let compatibleSchema = false;
+  const candidates = [];
   for (const name of databases) {
     const path = join(codexHome, name);
     let db;
@@ -200,46 +202,31 @@ export async function readActiveParent({
       )
         continue;
       compatibleSchema = true;
+      const timeFields = [
+        "updated_at_ms",
+        "updated_at",
+        "created_at_ms",
+        "created_at",
+      ].filter((field) => columns.includes(field));
       const row = db
         .query(
-          "SELECT model, reasoning_effort FROM threads WHERE id = ? LIMIT 1",
+          `SELECT model, reasoning_effort${timeFields.map((field) => `, ${field}`).join("")} FROM threads WHERE id = ? LIMIT 1`,
         )
         .get(threadId);
       if (!row) continue;
-      if (typeof row.model !== "string" || !row.model.trim()) {
-        throw new Error(
-          `Active parent thread ${threadId} has no model value in the Codex state database.`,
-        );
+      let timestamp = -Infinity;
+      for (const field of timeFields) {
+        if (row[field] == null) continue;
+        const numeric = Number(row[field]);
+        const value = Number.isFinite(numeric)
+          ? numeric * (field.endsWith("_ms") ? 1 : 1000)
+          : Date.parse(row[field]);
+        if (Number.isFinite(value)) {
+          timestamp = value;
+          break;
+        }
       }
-      if (
-        typeof row.reasoning_effort === "string" &&
-        row.reasoning_effort.trim()
-      ) {
-        return {
-          threadId,
-          model: row.model,
-          effort: row.reasoning_effort,
-          effortSource: "thread",
-        };
-      }
-      if (!catalog) catalog = await readModelCatalog({ codexHome });
-      const model = [...catalog.models, ...(catalog.metadataModels ?? [])].find(
-        (entry) => entry.model === row.model,
-      );
-      if (
-        !model?.defaultEffort ||
-        !model.efforts.includes(model.defaultEffort)
-      ) {
-        throw new Error(
-          `Active parent thread ${threadId} omits reasoning effort, and no verified catalog default exists for '${row.model}'.`,
-        );
-      }
-      return {
-        threadId,
-        model: row.model,
-        effort: model.defaultEffort,
-        effortSource: "verified-catalog-default",
-      };
+      candidates.push({ row, timestamp });
     } finally {
       db?.close();
     }
@@ -249,9 +236,53 @@ export async function readActiveParent({
       `Cannot resolve the active parent model: no state database under ${codexHome} exposes threads.id, threads.model, and threads.reasoning_effort.`,
     );
   }
-  throw new Error(
-    `Active parent thread ${threadId} was not found in a compatible Codex state database under ${codexHome}.`,
+  if (!candidates.length)
+    throw new Error(
+      `Active parent thread ${threadId} was not found in a compatible Codex state database under ${codexHome}.`,
+    );
+  candidates.sort((a, b) => b.timestamp - a.timestamp);
+  const { row, timestamp } = candidates[0];
+  const pair = JSON.stringify([row.model, row.reasoning_effort]);
+  if (
+    candidates.some(
+      (candidate) =>
+        (candidate.timestamp === timestamp ||
+          candidate.timestamp === -Infinity) &&
+        JSON.stringify([
+          candidate.row.model,
+          candidate.row.reasoning_effort,
+        ]) !== pair,
+    )
+  ) {
+    throw new Error(
+      `Active parent thread ${threadId} has ambiguous settings across Codex state databases.`,
+    );
+  }
+  if (typeof row.model !== "string" || !row.model.trim())
+    throw new Error(
+      `Active parent thread ${threadId} has no model value in the Codex state database.`,
+    );
+  if (typeof row.reasoning_effort === "string" && row.reasoning_effort.trim())
+    return {
+      threadId,
+      model: row.model,
+      effort: row.reasoning_effort,
+      effortSource: "thread",
+    };
+  if (!catalog) catalog = await readModelCatalog({ codexHome });
+  const model = [...catalog.models, ...(catalog.metadataModels ?? [])].find(
+    (entry) => entry.model === row.model,
   );
+  if (!model?.defaultEffort || !model.efforts.includes(model.defaultEffort))
+    throw new Error(
+      `Active parent thread ${threadId} omits reasoning effort, and no verified catalog default exists for '${row.model}'.`,
+    );
+  return {
+    threadId,
+    model: row.model,
+    effort: model.defaultEffort,
+    effortSource: "verified-catalog-default",
+  };
 }
 
 export function effortForBudget(model, effort, budget, catalog) {
@@ -574,7 +605,6 @@ export async function writeConfiguration({
   codexHome = getCodexHome(),
   catalog,
 } = {}) {
-  if (!catalog) catalog = await readModelCatalog({ codexHome });
   const parsed = typeof input === "string" ? parseWriteInput(input) : input;
   if (
     !parsed ||
@@ -586,6 +616,15 @@ export async function writeConfiguration({
   }
   if (parsed.budget !== undefined && !BUDGET_EFFORT.has(parsed.budget))
     throw new Error(`Unknown budget '${parsed.budget}'.`);
+  if (!catalog) {
+    const choices = Object.values(parsed.roles)
+      .flat()
+      .filter((value) => value !== null && !ALIASES.has(value));
+    catalog =
+      choices.length && existsSync(join(codexHome, "models_cache.json"))
+        ? await readModelCatalog({ codexHome })
+        : { models: [] };
+  }
   catalog = addVerifiedPairs(catalog, parsed.verifiedPairs);
   const directory = await pathsFor(scope, cwd, codexHome);
   if (parsed.retiredFiles !== undefined && !Array.isArray(parsed.retiredFiles))

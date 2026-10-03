@@ -129,6 +129,37 @@ async function fixture({
 }
 
 describe("pstack-history", () => {
+  it("uses the newest duplicate thread metadata across compatible state databases", async () => {
+    const f = await fixture();
+    try {
+      const old = new Database(join(f.root, "state_1.sqlite"));
+      old.exec(
+        "CREATE TABLE threads (id TEXT, cwd TEXT, history_mode TEXT, updated_at_ms INTEGER)",
+      );
+      old
+        .query("INSERT INTO threads VALUES (?, ?, ?, ?)")
+        .run(
+          "thread-new",
+          f.workspace,
+          "legacy",
+          Date.parse("2026-09-01T00:00:00Z"),
+        );
+      old.close();
+      const rows = JSON.parse(
+        await main(parseArgs(["list", "--cwd", f.workspace, "--limit", "10"])),
+      );
+      expect(rows.filter((row) => row.thread_id === "thread-new")).toHaveLength(
+        1,
+      );
+      expect(rows[0]).toMatchObject({
+        thread_id: "thread-new",
+        history_mode: "paginated",
+        updatedAt: "2026-10-02T12:00:00.000Z",
+      });
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
   it("parses required scoped commands and rejects unsafe limits", () => {
     expect(
       parseArgs([

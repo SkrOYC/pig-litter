@@ -29,7 +29,7 @@ Skip Phase A only when the work is genuinely greenfield with no surrounding syst
 
 Run the **arena** skill with the design-sketch task and the Phase A grounding artifacts. Pass `references/runner-prompt.md` as each runner's prompt. Each candidate produces a design package shaped per `references/rationale-template.md`.
 
-Resolve the runners from the `architect runners` role with `bun .agents/scripts/pstack-models.mjs resolve "architect runners"`, in place of the `arena runners` role. Preserve the source's three runner seats as distinct model familys. Read `.agents/pstack-runtime.md` for native model and effort overrides; use the default, parent-inheritance, and rejected-choice fallback rules in the **arena** skill's Phase A.
+Take the runners from the `architect runners` role with `bun .agents/scripts/pstack-models.mjs resolve "architect runners"`, in place of the `arena runners` role. If the role is missing, use `gpt-6-astra`/`max`, `gpt-6.1-sol`/`max`, and `gpt-6-luna`/`xhigh`. Alias and rejected entries follow the runner rules in the **arena** skill's Phase A.
 
 Design it twice. Require at least two structurally distinct candidates before synthesis, even when the first looks sufficient. This is the **exhaust-the-design-space** principle skill made concrete. Whole-shape alternatives, not point fixes inside one shape.
 
