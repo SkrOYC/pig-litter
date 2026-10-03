@@ -150,7 +150,8 @@ track_process_tree() {
 	process_tree_pids "$pane_pid" > "$evidence_dir/$case_name.process-tree-$stage.pids.txt"
 	while read -r pane_pid; do
 		[[ -n "$pane_pid" ]] || continue
-		ps -p "$pane_pid" -o pid= -o ppid= -o comm= -o args=
+		# A descendant may exit between the PID snapshot and its description.
+		ps -p "$pane_pid" -o pid= -o ppid= -o comm= -o args= || true
 	done < "$evidence_dir/$case_name.process-tree-$stage.pids.txt" > "$evidence_dir/$case_name.process-tree-$stage.txt"
 	cat "$evidence_dir/$case_name.process-tree-$stage.pids.txt" >> "$pids_file"
 	sort -nu "$pids_file" -o "$pids_file"
@@ -204,6 +205,18 @@ reap_tracked_processes() {
 				cleanup_killed_pids=$((cleanup_killed_pids + 1))
 			fi
 		done
+		deadline=$((SECONDS + 2))
+		while (( SECONDS < deadline )); do
+			live=0
+			for pid in "${pids[@]}"; do
+				if kill -0 "$pid" 2>/dev/null; then
+					live=1
+					break
+				fi
+			done
+			(( live == 0 )) && break
+			sleep 0.1
+		done
 	fi
 }
 
@@ -212,6 +225,7 @@ finish() {
 	local final_status=$original_status
 	local tree_still_alive=false
 	local case_name launch_pid launch_pid_file pids_file pid
+	local -a cleanup_failure_reasons=() remaining_pids=()
 	trap - EXIT INT TERM
 	if (( original_status == 0 )); then
 		outcome=passed
@@ -229,7 +243,8 @@ finish() {
 			process_tree_pids "$launch_pid" > "$evidence_dir/$case_name.process-tree-before-cleanup.pids.txt"
 			while read -r pid; do
 				[[ -n "$pid" ]] || continue
-				ps -p "$pid" -o pid= -o ppid= -o comm= -o args=
+				# Shutdown can reap a sampled PID before ps describes it.
+				ps -p "$pid" -o pid= -o ppid= -o comm= -o args= || true
 			done < "$evidence_dir/$case_name.process-tree-before-cleanup.pids.txt" \
 				> "$evidence_dir/$case_name.process-tree-before-cleanup.txt"
 			cat "$evidence_dir/$case_name.process-tree-before-cleanup.pids.txt" >> "$pids_file"
@@ -253,36 +268,41 @@ finish() {
 	done
 	if [[ "$tree_still_alive" == true ]]; then
 		reap_tracked_processes
-		failure_reason="one or more PiG or extension processes survived the exit check"
-		failure_phase=cleanup
-		outcome=failed
-		final_status=1
+		cleanup_failure_reasons+=("one or more PiG or extension processes survived the exit check")
+		for pid_file in "${tracked_pid_files[@]}"; do
+			[[ -f "$pid_file" ]] || continue
+			while read -r pid; do
+				[[ -n "$pid" ]] || continue
+				if kill -0 "$pid" 2>/dev/null; then remaining_pids+=("$pid"); fi
+			done < "$pid_file"
+		done
+		if (( ${#remaining_pids[@]} > 0 )); then
+			cleanup_failure_reasons+=("one or more owned PiG or extension processes remained after forced cleanup")
+		fi
 	fi
 	if [[ -n "$run_dir" && -d "$run_dir" ]]; then
 		if rm -rf "$run_dir"; then
 			scratch_removed=true
 		else
 			scratch_removed=false
-			failure_reason="could not remove the owned scratch directory"
-			failure_phase=cleanup
-			outcome=failed
-			final_status=1
 		fi
 	fi
 	if [[ "$scratch_removed" != true ]]; then
-		outcome=failed
-		final_status=1
+		cleanup_failure_reasons+=("could not remove the owned scratch directory")
 	fi
 	if [[ -e "$repo_root/.pig" ]]; then
 		project_state_untouched=false
-		if [[ "$outcome" == passed ]]; then
-			failure_phase=cleanup
-			failure_reason="PiG created project-local .pig state; it is preserved for inspection"
-			outcome=failed
-			final_status=1
-		fi
+		cleanup_failure_reasons+=("PiG created project-local .pig state; it is preserved for inspection")
 	else
 		project_state_untouched=true
+	fi
+	if (( ${#cleanup_failure_reasons[@]} > 0 )); then
+		if [[ -z "$failure_reason" ]]; then
+			failure_phase=cleanup
+			failure_reason="${cleanup_failure_reasons[0]}"
+		fi
+		outcome=failed
+		if (( final_status == 0 )); then final_status=1; fi
 	fi
 	jq -n \
 		--arg runId "$run_id" \
@@ -320,6 +340,8 @@ finish() {
 		--arg serverCleanup "$server_cleanup" \
 		--arg scratchRemoved "$scratch_removed" \
 		--arg cleanupKilledPids "$cleanup_killed_pids" \
+		--arg cleanupFailureReasons "$(printf '%s\n' "${cleanup_failure_reasons[@]}")" \
+		--arg remainingPids "$(printf '%s\n' "${remaining_pids[@]}")" \
 		--arg projectStateUntouched "$project_state_untouched" \
 		--arg evidenceDir "$evidence_dir" \
 		'{
@@ -346,7 +368,13 @@ finish() {
 			piglet: {result: $pigletResult, trustAction: $pigletTrust, paneDead: ($pigletDead == "1"), exitStatus: $pigletStatus, exitSignal: $pigletSignal, processTreeReaped: ($pigletReaped == "true"), trackedPids: ($pigletPids | tonumber)},
 			plain: {result: $plainResult, trustAction: $plainTrust, paneDead: ($plainDead == "1"), exitStatus: $plainStatus, exitSignal: $plainSignal, processTreeReaped: ($plainReaped == "true"), trackedPids: ($plainPids | tonumber)}
 		},
-		cleanup: {tmuxServer: $serverCleanup, scratchRemoved: ($scratchRemoved == "true"), ownedPidsTerminated: ($cleanupKilledPids | tonumber)},
+		cleanup: {
+			tmuxServer: $serverCleanup,
+			scratchRemoved: ($scratchRemoved == "true"),
+			ownedPidsTerminated: ($cleanupKilledPids | tonumber),
+			failureReasons: ($cleanupFailureReasons | split("\n") | map(select(length > 0))),
+			remainingPids: ($remainingPids | split("\n") | map(select(length > 0) | tonumber))
+		},
 		evidenceDir: $evidenceDir
 	}' \
 		> "$evidence_dir/run.json"
@@ -430,19 +458,39 @@ choose_session_only_trust() {
 		failure_reason="PiG's expected session-only trust option was not visible"
 		return 2
 	fi
-	tmux_do send-keys -t "$session_name" Down
-	tmux_do send-keys -t "$session_name" Down
-	screen="$(capture_pane "$session_name")"
-	printf '%s\n' "$screen" > "$evidence_dir/$case_name.trust-selected.txt"
-	if [[ "$screen" != *"→ Trust (this session only)"* ]]; then
+	if [[ "$screen" != *"→ Trust"$'\n'* ]]; then
 		failure_phase="$case_name trust"
-		failure_reason="keyboard navigation did not select the session-only trust option"
+		failure_reason="PiG's trust prompt did not start on the expected option"
 		return 2
 	fi
-	printf 'Down\nDown\nEnter on Trust (this session only)\n' > "$evidence_dir/$case_name.trust-action.txt"
-	tmux_do send-keys -t "$session_name" Enter
-	trust_action["$case_name"]=session_only
-	return 0
+	tmux_do send-keys -t "$session_name" Down
+	tmux_do send-keys -t "$session_name" Down
+	local deadline=$((SECONDS + 5))
+	# send-keys can finish before PiG handles the keys and repaints the selection.
+	while (( SECONDS < deadline )); do
+		if ! screen="$(capture_pane "$session_name")"; then break; fi
+		printf '%s\n' "$screen" > "$evidence_dir/$case_name.trust-selected.txt"
+		if [[ "$screen" != *"Trust project folder?"* || "$screen" != *"Trust parent folder"* || "$screen" != *"Trust (this session only)"* ]]; then
+			failure_phase="$case_name trust"
+			failure_reason="PiG's trust prompt changed before session-only selection"
+			return 2
+		fi
+		if [[ "$screen" == *"→ Trust (this session only)"$'\n'* ]]; then
+			printf 'Down\nDown\nEnter on Trust (this session only)\n' > "$evidence_dir/$case_name.trust-action.txt"
+			tmux_do send-keys -t "$session_name" Enter
+			trust_action["$case_name"]=session_only
+			return 0
+		fi
+		if [[ "$screen" != *"→ Trust"$'\n'* && "$screen" != *"→ Trust parent folder ("* ]]; then
+			failure_phase="$case_name trust"
+			failure_reason="PiG's trust prompt selected an unexpected option"
+			return 2
+		fi
+		sleep 0.1
+	done
+	failure_phase="$case_name trust"
+	failure_reason="keyboard navigation did not select the session-only trust option before the deadline"
+	return 2
 }
 
 wait_for_ready() {
@@ -450,16 +498,16 @@ wait_for_ready() {
 	local session_name="$2"
 	local ready_marker="$3"
 	local deadline=$((SECONDS + 40))
-	local screen="" pane_pid pane_dead trust_handled=0
+	local screen="" pane_pid pane_is_dead trust_handled=0
 	while (( SECONDS < deadline )); do
 		if ! tmux_do has-session -t "$session_name" 2>/dev/null; then
 			failure_phase="$case_name readiness"
 			failure_reason="tmux session ended before the ready screen appeared"
 			return 1
 		fi
-		pane_dead="$(tmux_do display-message -p -t "$session_name" '#{pane_dead}')"
+		pane_is_dead="$(tmux_do display-message -p -t "$session_name" '#{pane_dead}')"
 		pane_pid="$(tmux_do display-message -p -t "$session_name" '#{pane_pid}')"
-		if [[ "$pane_dead" == 1 ]] || [[ ! "$pane_pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pane_pid" 2>/dev/null; then
+		if [[ "$pane_is_dead" == 1 ]] || [[ ! "$pane_pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pane_pid" 2>/dev/null; then
 			printf '%s\n' "$(capture_pane "$session_name")" > "$evidence_dir/$case_name.startup-exit.txt"
 			printf '%s\n' "$(tmux_do display-message -p -t "$session_name" '#{pane_pid}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}|#{pane_current_command}')" \
 				> "$evidence_dir/$case_name.startup-process.txt"

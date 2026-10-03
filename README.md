@@ -26,6 +26,8 @@ Or select it through the local Piglet:
 pig --piglet ./piglet.yaml
 ```
 
+After either launch, type `/pig-litter` and press Enter. PiG shows `Pig Litter is loaded. This bootstrap has no child delegation.` as a separate notification alongside the startup status.
+
 The [Piglet definition](piglet.yaml) resolves its extension path relative to `piglet.yaml`. Run plain `pig` to start PiG without selecting Pig Litter.
 
 ## Verify the bootstrap

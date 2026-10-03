@@ -31,7 +31,7 @@ pig --offline --no-session
 
 The first two launches select Pig Litter. The last launch leaves it unselected. The helper strips inherited credentials, preserves the current `HOME`, uses temporary PiG directories and Go caches, and sets PiG and Go offline flags. PiG can show a “No models available” warning. That warning does not block the local extension command.
 
-When PiG asks to trust the repository, the helper records the prompt, selects **Trust (this session only)**, and verifies that option before it presses Enter. It never trusts the parent folder or stores persistent trust.
+When PiG asks to trust the repository, the helper records the prompt and navigates to **Trust (this session only)**. It waits up to five seconds for the selected option to appear before it presses Enter. An unexpected prompt or selection fails the run. It never trusts the parent folder or stores persistent trust.
 
 ## Doctor
 
@@ -56,6 +56,8 @@ After each case, the helper sends Ctrl+D and requires tmux to report a dead pane
 ## Evidence
 
 The helper saves evidence under `.pstack/evidence/pig-litter/<run-id>/`. Each selected case has a trust prompt capture when PiG requests trust, a trust-selection capture, a before capture, an action record, an after capture, process-tree captures, and an exit record. The unselected case has a ready capture and process-tree and exit records. `run.json` records tool versions, launch arguments, assertions, process cleanup, and scratch cleanup.
+
+The report preserves the first failure in `failure`. It records cleanup problems separately in `cleanup.failureReasons` and any owned PIDs still alive after forced cleanup in `cleanup.remainingPids`.
 
 The TUI proof drives PiG's actual slash command and checks the visible status and notification. The separate offline smoke checks that the extension exposes no tools to the model. Neither command makes a model request or network call.
 
