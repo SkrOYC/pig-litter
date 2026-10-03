@@ -1,0 +1,7 @@
+interface:
+  display_name: "Poteto Mode"
+  icon_small: "./assets/crown.svg"
+  icon_large: "./assets/crown.svg"
+  brand_color: "#FFFF00"
+policy:
+  allow_implicit_invocation: false

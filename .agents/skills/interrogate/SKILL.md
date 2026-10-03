@@ -1,7 +1,6 @@
 ---
 name: interrogate
-description: "Use for \"interrogate\", \"adversarial review\", \"multi-model review\", \"challenge this\", \"stress test this code\", \"find blind spots\", or \"tear this apart\". Multiple LLM reviewers challenge changes from independent angles."
-disable-model-invocation: true
+description: 'Use for "interrogate", "adversarial review", "multi-model review", "challenge this", "stress test this code", "find blind spots", or "tear this apart". Multiple LLM reviewers challenge changes from independent angles.'
 ---
 
 # Interrogate
@@ -33,22 +32,20 @@ Write one clear paragraph. If you're unsure about the intent, ask the user befor
 
 ## Step 3, Spawn Reviewers
 
-Launch all reviewers in a single message using the Task tool. Use the `interrogate reviewers` line in `~/.cursor/rules/pstack-models.mdc`, one reviewer per entry, extending or shrinking the Reviewer A/B/C labels below to the configured entry count. If the rule or that line is missing, use the table defaults.
+Use `bun .agents/scripts/pstack-models.mjs resolve "interrogate reviewers"` to read the configured model and reasoning effort for each seat, one reviewer per entry, extending or shrinking the Reviewer A/B/C labels below to the configured entry count. If the role or its line is missing, use the table defaults. Launch all reviewers in parallel. Use `collaboration.spawn_agent` when it can select a native reviewer role configured with `sandbox_mode = "read-only"`. Otherwise, run one `bun .agents/scripts/pstack-readonly.mjs` session per reviewer, with the same prompt file and separate output files. Pass `--cwd` for the reviewed workspace, the seat's `--model` and `--effort`. For an `auto` or `inherit-parent` entry, pass the active parent's effective model and effort explicitly. The adapter enforces read-only access and returns the final report; its event log is saved beside the output. If neither a configured read-only role nor the adapter is available, report that the required reviewer launch is unavailable.
 
-| Subagent | Default model |
-|----------|---------------|
-| Reviewer A | `claude-opus-5-5-max` |
-| Reviewer B | `gpt-5.6-sol-max` |
-| Reviewer C | `grok-4.7-xhigh-fast` |
+| Subagent   | Default model          |
+| ---------- | ---------------------- |
+| Reviewer A | `gpt-6-astra` / `max`  |
+| Reviewer B | `gpt-6.1-sol` / `max`  |
+| Reviewer C | `gpt-6-luna` / `xhigh` |
 
-For each reviewer:
-- `subagent_type`: `generalPurpose`
-- `model`: the configured `interrogate reviewers` entry, or the table default with no configured line. For an `auto` or `inherit-parent` entry, omit `model` so that reviewer runs on the parent model.
-- `readonly`: `true`
+For native launches, use `spawn_agent` with a distinct task name and the original reviewer prompt. Pass the seat's model and reasoning effort separately when specified; for an `auto` or `inherit-parent` entry, resolve the active parent pair with `bun .agents/scripts/pstack-models.mjs parent` and pass both settings explicitly. When passing overrides, use `fork_turns: "none"` and include the review prompt and necessary context in the task. For adapter launches, save the filled reviewer prompt to a file and start a separate managed shell session for each seat. Use distinct output paths and collect each session's returned final report before synthesis.
 
-If the Task tool rejects a configured entry, run that reviewer on the table default of its family and say so. Families go by prefix: `claude-*`, `gpt-*`, and `grok-*`. With no family match, use Reviewer A's default. If it rejects a table default, check the valid slugs in the Task tool's error message, pick the closest equivalent (prefer the highest-reasoning tier of the same family), spawn with it, and open a separate PR to update the default table. Do not block the review on the slug issue. Never treat an alias entry as a rejected slug or apply either fallback to it.
+If the native runtime rejects a configured model, run that reviewer on the table default from the same model family when available and say so. If that model is unavailable, check the valid models in the runtime's error message, pick the closest available model from that line (prefer the highest supported reasoning effort), spawn with it, and open a separate PR to update the default table. Do not block the review on the model issue. Never treat an `auto` or `inherit-parent` entry as a rejected model or apply either fallback to it. For these Codex defaults, compare `gpt-6-astra`, `gpt-6.1-sol`, and `gpt-6-luna` as distinct model lines; do not assume cross-provider availability.
 
 Read `references/reviewer-prompt.md` and fill in the template with:
+
 1. The stated intent
 2. The diff or file contents
 3. The review rubric from `references/rubric.md`
@@ -80,6 +77,7 @@ Categorize every finding using these buckets:
 - **Dismissed**. Wrong, nitpicky, or missing context. Brief explanation why.
 
 For each finding, include:
+
 - Which model(s) raised it
 - The category (act on / consider / noted / dismissed)
 - A one-line rationale for the categorization
@@ -89,22 +87,29 @@ For each finding, include:
 Present the verdict in this structure:
 
 ### Intent
+
 > [The stated intent paragraph from Step 2]
 
 ### Reviewers
+
 - Reviewer [label]: [model name], [N findings] (one bullet per reviewer)
 
 ### Act On
+
 [Findings that should be addressed. For each: description, which models raised it, why it matters.]
 
 ### Consider
+
 [Findings worth thinking about. For each: description, which models raised it, tradeoff involved.]
 
 ### Noted
+
 [Valid but low-priority. Brief list.]
 
 ### Dismissed
+
 [Rejected findings with brief rationale.]
 
 ### Agreement Map
+
 [Where did models agree, where did they diverge, and what does the pattern of agreement/disagreement tell us?]

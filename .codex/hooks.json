@@ -1,0 +1,26 @@
+{
+  "description": "Restore the pstack reminder only for sessions that explicitly activated Poteto Mode.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"$(git rev-parse --show-toplevel)/.agents/scripts/pstack-mode.mjs\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"$(git rev-parse --show-toplevel)/.agents/scripts/pstack-mode.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}

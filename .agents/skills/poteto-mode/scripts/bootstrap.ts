@@ -7,11 +7,11 @@ const nodeModulesDirectory = join(scriptsDirectory, "node_modules");
 const commanderPackagePath = join(
   nodeModulesDirectory,
   "commander",
-  "package.json"
+  "package.json",
 );
 const installKeyPath = join(
   nodeModulesDirectory,
-  ".poteto-mode-tools-install-key"
+  ".poteto-mode-tools-install-key",
 );
 
 function currentInstallKey(): string {
@@ -34,29 +34,32 @@ export function ensureDependenciesInstalled(): void {
 
   const result = Bun.spawnSync(
     [process.execPath, "install", "--frozen-lockfile"],
-    { cwd: scriptsDirectory }
+    { cwd: scriptsDirectory },
   );
   if (result.exitCode !== 0) {
     process.stdout.write(result.stdout);
     process.stderr.write(result.stderr);
     throw new Error(
-      `bun install --frozen-lockfile exited with status ${result.exitCode}`
+      `bun install --frozen-lockfile exited with status ${result.exitCode}`,
     );
   }
   if (!existsSync(commanderPackagePath)) {
     throw new Error(
-      "bun install --frozen-lockfile completed without installing commander"
+      "bun install --frozen-lockfile completed without installing commander",
     );
   }
 
   writeFileSync(installKeyPath, `${installKey}\n`);
 
-  const restarted = Bun.spawnSync([process.execPath, ...process.argv.slice(1)], {
-    cwd: process.cwd(),
-    env: process.env,
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-  });
+  const restarted = Bun.spawnSync(
+    [process.execPath, ...process.argv.slice(1)],
+    {
+      cwd: process.cwd(),
+      env: process.env,
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    },
+  );
   process.exit(restarted.exitCode ?? 1);
 }

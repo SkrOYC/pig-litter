@@ -161,7 +161,10 @@ function parseUser(data: unknown): User {
   if (typeof data !== "object" || data === null) {
     throw new Error("expected object");
   }
-  if (!("id" in data) || typeof (data as Record<string, unknown>).id !== "string") {
+  if (
+    !("id" in data) ||
+    typeof (data as Record<string, unknown>).id !== "string"
+  ) {
     throw new Error("expected id");
   }
   // ... validate all fields

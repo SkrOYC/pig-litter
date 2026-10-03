@@ -229,7 +229,7 @@ export class UsageError extends UserError {}
 export class NotFoundError extends UserError {
   public constructor(
     message: string,
-    public readonly output?: NotFoundOutput
+    public readonly output?: NotFoundOutput,
   ) {
     super(message);
   }
@@ -287,7 +287,7 @@ export function parseVerdict(value: string): Verdict {
   const verdict = verdictOrNull(value);
   if (verdict === null) {
     throw new UserError(
-      "verdict must be live-ui-verified, unit-test-verified, type-check-only, verifier-blocked, or verifier-failed"
+      "verdict must be live-ui-verified, unit-test-verified, type-check-only, verifier-blocked, or verifier-failed",
     );
   }
   return verdict;
@@ -336,7 +336,7 @@ async function exists(path: string): Promise<boolean> {
 async function atomicWrite(path: string, contents: string): Promise<void> {
   const temporary = join(
     dirname(path),
-    `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`
+    `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`,
   );
   try {
     await writeFile(temporary, contents, { flag: "wx" });
@@ -358,7 +358,7 @@ async function requiredFile(path: string): Promise<string> {
   } catch (error) {
     if (errorCode(error) === "ENOENT") {
       throw new UserError(
-        `store is not initialized at ${dirname(path)}; run orch init`
+        `store is not initialized at ${dirname(path)}; run orch init`,
       );
     }
     throw error;
@@ -380,7 +380,7 @@ function holderIsDead(holder: string): boolean {
 
 async function acquireLock(
   store: string,
-  options: OpenStoreOptions
+  options: OpenStoreOptions,
 ): Promise<() => Promise<void>> {
   const path = join(store, LOCK_FILE);
   const pid = String(process.pid);
@@ -396,8 +396,7 @@ async function acquireLock(
       await create();
     } catch (retryError) {
       if (errorCode(retryError) === "EEXIST") {
-        const retryHolder =
-          (await readFile(path, "utf8")).trim() || "unknown";
+        const retryHolder = (await readFile(path, "utf8")).trim() || "unknown";
         throw new UserError(`store lock held by pid ${retryHolder}`);
       }
       throw retryError;
@@ -443,7 +442,7 @@ async function acquireLock(
 async function readTsv(
   path: string,
   header: string,
-  width: number
+  width: number,
 ): Promise<readonly (readonly string[])[]> {
   const lines = (await requiredFile(path)).replace(/\r/g, "").split("\n");
   if (lines.shift() !== header) {
@@ -463,7 +462,7 @@ async function readTsv(
 async function writeTsv(
   path: string,
   header: string,
-  rows: readonly (readonly string[])[]
+  rows: readonly (readonly string[])[],
 ): Promise<void> {
   const body = rows.map((row) => row.map(cleanCell).join("\t")).join("\n");
   await atomicWrite(path, `${header}\n${body}${body.length > 0 ? "\n" : ""}`);
@@ -479,7 +478,7 @@ async function readUnits(store: string): Promise<readonly Unit[]> {
       pr: row[4] ?? "",
       sha: row[5] ?? "",
       brief: row[6] ?? "",
-    })
+    }),
   );
 }
 
@@ -496,11 +495,7 @@ function unitCells(unit: Unit): readonly string[] {
 }
 
 async function saveUnits(store: string, rows: readonly Unit[]): Promise<void> {
-  await writeTsv(
-    join(store, "units.tsv"),
-    UNIT_HEADER,
-    rows.map(unitCells)
-  );
+  await writeTsv(join(store, "units.tsv"), UNIT_HEADER, rows.map(unitCells));
 }
 
 async function readLedger(store: string): Promise<readonly LedgerEntry[]> {
@@ -519,29 +514,22 @@ async function readLedger(store: string): Promise<readonly LedgerEntry[]> {
         verifier: row[4] ?? "",
         ts: row[5] ?? "",
       };
-    }
+    },
   );
 }
 
 function ledgerCells(row: LedgerEntry): readonly string[] {
-  return [
-    row.pr,
-    row.sha,
-    row.verdict,
-    row.evidence,
-    row.verifier,
-    row.ts,
-  ];
+  return [row.pr, row.sha, row.verdict, row.evidence, row.verifier, row.ts];
 }
 
 async function saveLedger(
   store: string,
-  rows: readonly LedgerEntry[]
+  rows: readonly LedgerEntry[],
 ): Promise<void> {
   await writeTsv(
     join(store, "ledger.tsv"),
     LEDGER_HEADER,
-    rows.map(ledgerCells)
+    rows.map(ledgerCells),
   );
 }
 
@@ -556,7 +544,7 @@ function pointerCells(pointer: InboxPointer): readonly string[] {
 }
 
 async function readPointers(
-  directory: string
+  directory: string,
 ): Promise<readonly InboxPointer[]> {
   let entries: Dirent[];
   try {
@@ -564,7 +552,7 @@ async function readPointers(
   } catch (error) {
     if (errorCode(error) === "ENOENT") {
       throw new UserError(
-        `store is not initialized at ${dirname(directory)}; run orch init`
+        `store is not initialized at ${dirname(directory)}; run orch init`,
       );
     }
     throw error;
@@ -576,7 +564,7 @@ async function readPointers(
   for (const entry of files) {
     const raw = (await readFile(join(directory, entry.name), "utf8")).replace(
       /\r?\n$/,
-      ""
+      "",
     );
     const row = raw.split("\t");
     if (/[\r\n]/.test(raw) || row.length !== 5) {
@@ -598,8 +586,7 @@ function renderGates(rows: readonly Gate[]): string {
     return "";
   }
   const blocks = rows.map((gate) => {
-    const answer =
-      gate.kind === "resolved" ? `\n- Answer: ${gate.answer}` : "";
+    const answer = gate.kind === "resolved" ? `\n- Answer: ${gate.answer}` : "";
     return `## ${gate.id}
 
 - Status: ${gate.kind}
@@ -694,9 +681,7 @@ function parseFrontier(raw: string): Frontier {
   }
   const prs: FrontierPr[] = [];
   for (const row of value.prs) {
-    const state = isRecord(row)
-      ? frontierPrStateOrNull(row.state)
-      : null;
+    const state = isRecord(row) ? frontierPrStateOrNull(row.state) : null;
     if (
       !isRecord(row) ||
       typeof row.pr !== "number" ||
@@ -727,12 +712,10 @@ async function readFrontier(store: string): Promise<Frontier> {
   return parseFrontier(await requiredFile(join(store, "frontier.json")));
 }
 
-async function readStanding(
-  store: string
-): Promise<readonly StandingLine[]> {
+async function readStanding(store: string): Promise<readonly StandingLine[]> {
   const raw = (await requiredFile(join(store, "preferences.md"))).replace(
     /\r/g,
-    ""
+    "",
   );
   if (raw.trim().length === 0) {
     return [];
@@ -755,9 +738,7 @@ function countValues(values: readonly string[]): Counts {
     result[value] = (result[value] ?? 0) + 1;
   }
   return Object.fromEntries(
-    Object.entries(result).sort(([left], [right]) =>
-      left.localeCompare(right)
-    )
+    Object.entries(result).sort(([left], [right]) => left.localeCompare(right)),
   );
 }
 
@@ -765,7 +746,7 @@ function summarize(
   unitRows: readonly Unit[],
   ledgerRows: readonly LedgerEntry[],
   currentFrontier: Frontier,
-  gateRows: readonly Gate[]
+  gateRows: readonly Gate[],
 ): StatusSummary {
   return {
     unitStates: countValues(unitRows.map((unit) => unit.state)),
@@ -817,7 +798,7 @@ function previousSummary(raw: string): StatusSummary | null {
   const unitStates = countRecord(value.unitStates);
   const ledgerVerdicts = countRecord(value.ledgerVerdicts);
   const openGateIds = value.openGateIds.filter(
-    (item): item is string => typeof item === "string"
+    (item): item is string => typeof item === "string",
   );
   if (
     unitStates === null ||
@@ -869,12 +850,12 @@ function changed(before: StatusSummary | null, after: StatusSummary): string {
   }
   if (before.frontierGeneration !== after.frontierGeneration) {
     result.push(
-      `frontier generation ${before.frontierGeneration}->${after.frontierGeneration}`
+      `frontier generation ${before.frontierGeneration}->${after.frontierGeneration}`,
     );
   }
   if (before.openGateIds.join("\0") !== after.openGateIds.join("\0")) {
     result.push(
-      `open gates ${before.openGateIds.length}->${after.openGateIds.length}`
+      `open gates ${before.openGateIds.length}->${after.openGateIds.length}`,
     );
   }
   return result.length === 0 ? "no derived changes" : result.join("; ");
@@ -886,7 +867,7 @@ function markdown(value: string): string {
 
 function table(
   headers: readonly string[],
-  rows: readonly (readonly string[])[]
+  rows: readonly (readonly string[])[],
 ): string {
   if (rows.length === 0) {
     return "(none)";
@@ -903,7 +884,7 @@ function statusMarkdown(
   ledgerRows: readonly LedgerEntry[],
   currentFrontier: Frontier,
   gateRows: readonly Gate[],
-  currentSummary: StatusSummary
+  currentSummary: StatusSummary,
 ): string {
   return `# Orchestrate status
 
@@ -915,7 +896,7 @@ States: ${countLine(currentSummary.unitStates)}
 
 ${table(
   ["ID", "Track", "State", "Branch", "PR", "SHA", "Brief"],
-  unitRows.map(unitCells)
+  unitRows.map(unitCells),
 )}
 
 ## Verification ledger
@@ -924,7 +905,7 @@ Verdicts: ${countLine(currentSummary.ledgerVerdicts)}
 
 ${table(
   ["PR", "SHA", "Verdict", "Evidence", "Verifier", "Timestamp"],
-  ledgerRows.map(ledgerCells)
+  ledgerRows.map(ledgerCells),
 )}
 
 ## Frontier
@@ -939,7 +920,7 @@ ${table(
     String(row.pr),
     row.sha,
     row.state,
-  ])
+  ]),
 )}
 
 ## Gates
@@ -953,7 +934,7 @@ ${table(
     gate.options,
     gate.defaultAnswer,
     gate.kind === "resolved" ? gate.answer : "",
-  ])
+  ]),
 )}
 
 <!-- orch-summary ${JSON.stringify(currentSummary)} -->
@@ -1011,12 +992,12 @@ function parseGtPullRequest({
 }): GtPullRequest {
   const match =
     /^(?:\[origin\] )?PR #([1-9]\d*)(?: \(([^)\r\n]+)\))?(?: .+)?$/.exec(
-      detail
+      detail,
     );
   const pr = Number(match?.[1] ?? 0);
   if (match === null || !Number.isSafeInteger(pr)) {
     throw new UserError(
-      `gt info output has an invalid PR row for branch ${branch}: ${detail}`
+      `gt info output has an invalid PR row for branch ${branch}: ${detail}`,
     );
   }
   const status = match[2];
@@ -1030,7 +1011,7 @@ function parseGtPullRequest({
     return { pr, state: "OPEN" };
   }
   throw new UserError(
-    `gt info output has an unknown PR state for branch ${branch}: ${status}`
+    `gt info output has an unknown PR state for branch ${branch}: ${status}`,
   );
 }
 
@@ -1041,17 +1022,18 @@ function parseGtBranches(raw: string): readonly string[] {
     if (line.length === 0) {
       continue;
     }
-    const branchMatch =
-      /^(?:│ )*[◯◉] +([^\s]+)((?: \([^()\r\n]*\))*)$/.exec(line);
+    const branchMatch = /^(?:│ )*[◯◉] +([^\s]+)((?: \([^()\r\n]*\))*)$/.exec(
+      line,
+    );
     if (branchMatch === null) {
       throw new UserError(
-        `gt log short output has an unparseable line ${index + 1}: ${JSON.stringify(line)}`
+        `gt log short output has an unparseable line ${index + 1}: ${JSON.stringify(line)}`,
       );
     }
     const branch = branchMatch[1] ?? "";
     if (branches.includes(branch)) {
       throw new UserError(
-        `gt log short output contains duplicate branch ${branch}`
+        `gt log short output contains duplicate branch ${branch}`,
       );
     }
     branches.push(branch);
@@ -1079,25 +1061,22 @@ function graphitePullRequest({
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (error) {
-    throw new UserError(
-      `gt info ${branch} failed: ${errorMessage(error)}`
-    );
+    throw new UserError(`gt info ${branch} failed: ${errorMessage(error)}`);
   }
   const rows = raw
     .replace(/\r/g, "")
     .split("\n")
     .filter(
-      (line) =>
-        line.startsWith("PR #") || line.startsWith("[origin] PR #")
+      (line) => line.startsWith("PR #") || line.startsWith("[origin] PR #"),
     );
   if (rows.length === 0) {
     throw new UserError(
-      `gt info output branch ${branch} has no pull request; this clone's gt metadata may predate the submit, so resolve the frontier from the stacker's clone or after gt sync`
+      `gt info output branch ${branch} has no pull request; this clone's gt metadata may predate the submit, so resolve the frontier from the stacker's clone or after gt sync`,
     );
   }
   if (rows.length > 1) {
     throw new UserError(
-      `gt info output contains multiple PRs for branch ${branch}`
+      `gt info output contains multiple PRs for branch ${branch}`,
     );
   }
   return parseGtPullRequest({ branch, detail: rows[0] ?? "" });
@@ -1114,11 +1093,11 @@ function graphiteFrontier(repo: string): readonly GtFrontierEntry[] {
         encoding: "utf8",
         env: { ...process.env, NO_COLOR: "1" },
         stdio: ["ignore", "pipe", "pipe"],
-      }
+      },
     );
   } catch (error) {
     throw new UserError(
-      `gt log short --stack --reverse failed: ${errorMessage(error)}`
+      `gt log short --stack --reverse failed: ${errorMessage(error)}`,
     );
   }
   const result = parseGtBranches(raw).map((branch) => ({
@@ -1131,13 +1110,7 @@ function graphiteFrontier(repo: string): readonly GtFrontierEntry[] {
   return result;
 }
 
-function branchSha({
-  branch,
-  repo,
-}: {
-  branch: string;
-  repo: string;
-}): string {
+function branchSha({ branch, repo }: { branch: string; repo: string }): string {
   let raw: string;
   try {
     raw = execFileSync("git", ["rev-parse", branch], {
@@ -1148,7 +1121,7 @@ function branchSha({
     });
   } catch (error) {
     throw new UserError(
-      `git rev-parse ${branch} failed: ${errorMessage(error)}`
+      `git rev-parse ${branch} failed: ${errorMessage(error)}`,
     );
   }
   const sha = raw.trim();
@@ -1191,7 +1164,7 @@ function validateFrontierPin({
   }
   if (missing.length === 0 && extra.length === 0) {
     drift.push(
-      `order differs: expected ${expected.join(",")}; gt ${actual.join(",")}`
+      `order differs: expected ${expected.join(",")}; gt ${actual.join(",")}`,
     );
   }
   throw new UserError(`frontier pin mismatch: ${drift.join("; ")}`);
@@ -1199,7 +1172,7 @@ function validateFrontierPin({
 
 export function openStore(
   directory: string,
-  options: OpenStoreOptions = {}
+  options: OpenStoreOptions = {},
 ): Store {
   const store = resolve(directory);
   let closed = false;
@@ -1234,7 +1207,7 @@ export function openStore(
     ensureOpen();
     if (!(await exists(store))) {
       throw new UserError(
-        `store is not initialized at ${store}; run orch init`
+        `store is not initialized at ${store}; run orch init`,
       );
     }
     await ensureLock();
@@ -1298,7 +1271,7 @@ export function openStore(
         ensureOpen();
         const cleanId = requiredCell(id, "unit id");
         const row = (await readUnits(store)).find(
-          (unit) => unit.id === cleanId
+          (unit) => unit.id === cleanId,
         );
         if (row === undefined) {
           throw new NotFoundError(`unit ${cleanId} not found`);
@@ -1318,14 +1291,12 @@ export function openStore(
         return (await readUnits(store)).filter(
           (unit) =>
             (state === undefined || unit.state === state) &&
-            (track === undefined || unit.track === track)
+            (track === undefined || unit.track === track),
         );
       },
       counts: async () => {
         ensureOpen();
-        return countValues(
-          (await readUnits(store)).map((unit) => unit.state)
-        );
+        return countValues((await readUnits(store)).map((unit) => unit.state));
       },
     },
     ledger: {
@@ -1345,7 +1316,7 @@ export function openStore(
         };
         const rows = [...(await readLedger(store))];
         const index = rows.findIndex(
-          (old) => old.pr === row.pr && old.sha === row.sha
+          (old) => old.pr === row.pr && old.sha === row.sha,
         );
         if (index < 0) {
           rows.push(row);
@@ -1360,7 +1331,7 @@ export function openStore(
         const pr = String(positiveInteger(params.pr, "PR"));
         const sha = requiredCell(params.sha, "SHA");
         const row = (await readLedger(store)).find(
-          (value) => value.pr === pr && value.sha === sha
+          (value) => value.pr === pr && value.sha === sha,
         );
         if (row === undefined) {
           throw new NotFoundError("NOT-VERIFIED", {
@@ -1372,9 +1343,7 @@ export function openStore(
       },
       summary: async () => {
         ensureOpen();
-        return countValues(
-          (await readLedger(store)).map((row) => row.verdict)
-        );
+        return countValues((await readLedger(store)).map((row) => row.verdict));
       },
     },
     inbox: {
@@ -1393,7 +1362,7 @@ export function openStore(
         const inbox = join(store, "inbox");
         if (!(await exists(inbox))) {
           throw new UserError(
-            `store is not initialized at ${store}; run orch init`
+            `store is not initialized at ${store}; run orch init`,
           );
         }
         const timestamp = pointer.ts.replace(/[:.]/g, "-");
@@ -1408,7 +1377,7 @@ export function openStore(
         const rows = await readPointers(inbox);
         const drained = join(
           store,
-          `.inbox-drain-${process.pid}-${randomUUID()}`
+          `.inbox-drain-${process.pid}-${randomUUID()}`,
         );
         await rename(inbox, drained);
         try {
@@ -1437,10 +1406,7 @@ export function openStore(
           id: requiredLine(params.id, "gate id"),
           question: requiredLine(params.question, "question"),
           options: requiredLine(params.options, "options"),
-          defaultAnswer: requiredLine(
-            params.defaultAnswer,
-            "default"
-          ),
+          defaultAnswer: requiredLine(params.defaultAnswer, "default"),
         };
         const rows = [...(await readGates(store))];
         const index = rows.findIndex((old) => old.id === gate.id);
@@ -1455,7 +1421,7 @@ export function openStore(
       list: async () => {
         ensureOpen();
         return (await readGates(store)).filter(
-          (gate): gate is OpenGate => gate.kind === "open"
+          (gate): gate is OpenGate => gate.kind === "open",
         );
       },
       resolve: async (params) => {
@@ -1506,7 +1472,7 @@ export function openStore(
         };
         await atomicWrite(
           join(store, "frontier.json"),
-          `${JSON.stringify(value, null, 2)}\n`
+          `${JSON.stringify(value, null, 2)}\n`,
         );
         return value;
       },
@@ -1530,7 +1496,7 @@ export function openStore(
         rows.push(item);
         await atomicWrite(
           join(store, "preferences.md"),
-          `${rows.map((row) => `${row.number}. ${row.line}`).join("\n")}\n`
+          `${rows.map((row) => `${row.number}. ${row.line}`).join("\n")}\n`,
         );
         return item;
       },
@@ -1546,7 +1512,7 @@ export function openStore(
           unitRows,
           ledgerRows,
           currentFrontier,
-          gateRows
+          gateRows,
         );
         const path = join(store, "status.md");
         const before = (await exists(path))
@@ -1560,8 +1526,8 @@ export function openStore(
             ledgerRows,
             currentFrontier,
             gateRows,
-            currentSummary
-          )
+            currentSummary,
+          ),
         );
         return {
           units: unitRows,

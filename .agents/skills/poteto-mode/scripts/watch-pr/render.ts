@@ -47,7 +47,7 @@ export function renderStatusTable(rows: T.NonEmpty<T.PrSnapshot>): string {
   for (const row of rows) {
     const url = `https://github.com/${row.context.owner}/${row.context.repo}/pull/${row.context.number}`;
     lines.push(
-      `| [#${row.context.number}](${url}) | ${ciCell(row)} | ${reviewCell(row)} | ${mergeCell(row)} |`
+      `| [#${row.context.number}](${url}) | ${ciCell(row)} | ${reviewCell(row)} | ${mergeCell(row)} |`,
     );
   }
   return `${lines.join("\n")}\n`;
@@ -90,12 +90,12 @@ function renderBlocker(blocker: T.MergeBlocker | StatusQueryBlocker): string {
       const failed = blocker.ci.kind === "ci-failing" ? blocker.ci.failed : [];
       const details = failed.map(
         (check) =>
-          `${check.name} ${check.reportedState} ${check.description} ${check.link}`
+          `${check.name} ${check.reportedState} ${check.description} ${check.link}`,
       );
       if (blocker.ci.kind === "ci-github-rejected")
         details.push(
           `mergeStateStatus=${blocker.ci.github.mergeStateStatus}`,
-          `headRollupState=${blocker.ci.github.headRollupState}`
+          `headRollupState=${blocker.ci.github.headRollupState}`,
         );
       return [
         "BLOCKER: failing-checks",

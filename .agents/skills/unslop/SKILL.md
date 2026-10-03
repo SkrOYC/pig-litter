@@ -1,7 +1,6 @@
 ---
 name: unslop
 description: Cut AI tells from any writing. Must always apply.
-disable-model-invocation: true
 ---
 
 # Unslop
@@ -20,7 +19,7 @@ Rule numbers are stable ids that other skills cite. A removed rule leaves a gap.
 ### Content
 
 3. **Superficial -ing phrases.** "highlighting...", "ensuring...", "reflecting...", "showcasing...", "fostering...". Delete or expand with real sources.
-5. **Vague attributions.** "Experts believe", "Industry reports suggest", "Some critics argue". Name the source or delete.
+4. **Vague attributions.** "Experts believe", "Industry reports suggest", "Some critics argue". Name the source or delete.
 
 ### Language
 
@@ -44,7 +43,7 @@ Rule numbers are stable ids that other skills cite. A removed rule leaves a gap.
 ### Communication artifacts
 
 20. **Chatbot phrases.** "I hope this helps!", "Let me know if...", "Of course!", "Certainly!", "Found the smoking gun!" Remove.
-22. **Sycophantic tone.** "Great question! You're absolutely right!" Respond directly.
+21. **Sycophantic tone.** "Great question! You're absolutely right!" Respond directly.
 
 ### Filler
 
