@@ -83,6 +83,86 @@ afterEach(async () => {
 });
 
 describe("pstack model configuration", () => {
+  test("parent settings use the newest state row and reject conflicting unversioned records", async () => {
+    const { codexHome } = await fixture();
+    for (const [name, model, effort, timestamp] of [
+      [
+        "state_1.sqlite",
+        "gpt-6-luna",
+        "medium",
+        Date.parse("2026-09-01T00:00:00Z"),
+      ],
+      [
+        "state_99.sqlite",
+        "gpt-6-astra",
+        "max",
+        Date.parse("2026-10-03T00:00:00Z"),
+      ],
+    ]) {
+      const db = new Database(join(codexHome, name));
+      db.exec(
+        "CREATE TABLE threads (id TEXT, model TEXT, reasoning_effort TEXT, updated_at_ms INTEGER)",
+      );
+      db.query("INSERT INTO threads VALUES (?, ?, ?, ?)").run(
+        "active-thread",
+        model,
+        effort,
+        timestamp,
+      );
+      db.close();
+    }
+    expect(
+      await readActiveParent({ codexHome, threadId: "active-thread" }),
+    ).toMatchObject({ model: "gpt-6-astra", effort: "max" });
+    const old = new Database(join(codexHome, "state_1.sqlite"));
+    old.exec("UPDATE threads SET updated_at_ms = NULL");
+    old.close();
+    await expect(
+      readActiveParent({ codexHome, threadId: "active-thread" }),
+    ).rejects.toThrow("ambiguous settings");
+  });
+
+  test("aliases and runtime-verified choices work without a model cache", async () => {
+    const { cwd, codexHome } = await fixture();
+    await rm(join(codexHome, "models_cache.json"));
+    await writeConfiguration({
+      scope: "project",
+      cwd,
+      codexHome,
+      input: { roles: { "bug-fix": "inherit-parent" } },
+    });
+    expect(
+      (await resolveRole("bug-fix", { cwd, codexHome })).choices[0],
+    ).toMatchObject({ choice: "inherit-parent" });
+    await writeConfiguration({
+      scope: "project",
+      cwd,
+      codexHome,
+      input: {
+        roles: { "bug-fix": { model: "runtime-model", effort: "high" } },
+        verifiedPairs: [
+          {
+            model: "runtime-model",
+            effort: "high",
+            evidence: "Confirmed by the active runtime.",
+          },
+        ],
+      },
+    });
+    expect(
+      (await resolveRole("bug-fix", { cwd, codexHome })).choices[0],
+    ).toMatchObject({ model: "runtime-model", effort: "high" });
+    await expect(
+      writeConfiguration({
+        scope: "project",
+        cwd,
+        codexHome,
+        input: {
+          roles: { "bug-fix": { model: "unverified", effort: "high" } },
+        },
+      }),
+    ).rejects.toThrow("not in the verified");
+  });
   test("reads the installed cache schema and exposes only listed API models with their effort pairs", async () => {
     const { codexHome } = await fixture();
     const catalog = await readModelCatalog({ codexHome });

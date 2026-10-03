@@ -285,7 +285,11 @@ function allThreads(stateCandidates, { cwd, since, id, limit } = {}) {
         Date.parse(a.timestamp ?? "1970-01-01") ||
       String(a.thread_id).localeCompare(String(b.thread_id)),
   );
-  return [...new Map(found.map((item) => [item.thread_id, item])).values()];
+  const newest = new Map();
+  for (const item of found) {
+    if (!newest.has(item.thread_id)) newest.set(item.thread_id, item);
+  }
+  return [...newest.values()];
 }
 
 function historySchema(files, threadId) {

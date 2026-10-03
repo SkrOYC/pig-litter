@@ -25,7 +25,7 @@ const PROGRAM_H3 = [
 ];
 const PROGRAM_MARKERS = [
   "/goal",
-  "git show origin/main:",
+  /git show (?:origin\/main|"\$\(git symbolic-ref refs\/remotes\/origin\/HEAD\)"):/,
   /30[- ]minute/,
   "status message",
 ];
