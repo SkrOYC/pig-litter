@@ -14,17 +14,23 @@ cd "$repo" || exit 1
 # Main worktree is the first entry; everything else is a candidate.
 main_wt=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
 
-# origin/main drives the merge check. Best-effort; stale is fine for a first pass.
-git fetch origin main --quiet 2>/dev/null || echo "warn: could not fetch origin/main; merged column may be stale" >&2
+# The remote HEAD names the branch used for merge checks.
+default_branch=$(git ls-remote --symref origin HEAD 2>/dev/null | awk '$1 == "ref:" && $3 == "HEAD" {sub("refs/heads/", "", $2); print $2; exit}')
+default_ref=""
+if [ -n "$default_branch" ]; then
+	default_ref="origin/$default_branch"
+	git fetch origin "refs/heads/$default_branch:refs/remotes/origin/$default_branch" --quiet 2>/dev/null || { echo "warn: could not fetch origin/$default_branch; merged column may be stale" >&2; default_ref=""; }
+else
+	echo "warn: could not resolve origin's default branch; merged column may be stale" >&2
+fi
 
 # PR state by branch, fetched once. Empty if gh is unavailable.
 prs=$(mktemp)
 gh pr list --author "@me" --state all --limit 1000 \
 	--json number,state,headRefName 2>/dev/null > "$prs" || echo "[]" > "$prs"
 
-# Transcripts dir: ~/.cursor/projects/<slugified-repo-path>/agent-transcripts.
-slug=$(printf '%s' "$main_wt" | sed 's#^/##; s#/#-#g')
-transcripts="$HOME/.cursor/projects/$slug/agent-transcripts"
+# The history helper finds the latest Codex thread scoped to each worktree.
+history="$repo/.agents/scripts/pstack-history.mjs"
 now=$(date +%s)
 
 printf "SIZE\tAGE\tMERGED\tDIRTY\tREMOTE\tPR\tLAST_CHAT\tBUCKET\tWORKTREE\n"
@@ -39,7 +45,7 @@ git worktree list --porcelain | awk '/^worktree /{print $2}' | while read -r wt;
 
 	# Squash-merged branches are not ancestors of main, so PR state is the
 	# real signal; merge-base only catches fast-forward/rebase merges.
-	git merge-base --is-ancestor "$head" origin/main 2>/dev/null && merged=YES || merged=no
+	if [ -n "$default_ref" ] && git merge-base --is-ancestor "$head" "$default_ref" 2>/dev/null; then merged=YES; else merged=no; fi
 
 	# Distinguish real WIP (tracked edits) from disposable untracked scratch.
 	porcelain=$(git -C "$wt" status --porcelain 2>/dev/null)
@@ -60,20 +66,30 @@ git worktree list --porcelain | awk '/^worktree /{print $2}' | while read -r wt;
 		'.[] | select(.headRefName==$b) | "#\(.number)/\(.state)"' "$prs" 2>/dev/null | head -1)
 	[ -z "$pr" ] && pr="-"
 
-	# Most recent chat whose transcript operated in this worktree. Match path
-	# followed by "/" or a quote so glint-482 does not match glint-482-r37.
-	last="-"; last_ts=0
-	if [ -d "$transcripts" ]; then
-		f=$(rg -l -e "${wt}/" -e "${wt}\"" "$transcripts" 2>/dev/null \
-			| xargs stat -f '%m %N' 2>/dev/null | sort -rn | head -1)
-		if [ -n "$f" ]; then last_ts=$(echo "$f" | awk '{print $1}')
-			last=$(date -r "$last_ts" '+%Y-%m-%d' 2>/dev/null); fi
-	fi
+	# Most recent Codex thread whose recorded working directory is this worktree.
+	last="-"; last_ts=0; history_state=ok
+	if [ -f "$history" ]; then
+		thread=$(bun "$history" last --cwd "$wt" 2>/dev/null) || history_state=unknown
+		if [ "$history_state" = ok ]; then
+			if ! printf '%s' "$thread" | jq -e 'type == "object" or . == null' >/dev/null 2>&1; then history_state=unknown
+			else
+				timestamp=$(printf '%s' "$thread" | jq -r '.updatedAt // .timestamp // empty' 2>/dev/null)
+				if [ -n "$timestamp" ]; then
+					last=$(printf '%s' "$timestamp" | cut -c1-10)
+					iso=$(printf '%s' "$timestamp" | sed -E 's/\.[0-9]+Z$/Z/')
+					last_ts=$(date -d "$iso" +%s 2>/dev/null || date -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null || echo 0)
+					[ "$last_ts" -gt 0 ] || history_state=unknown
+				fi
+			fi
+		fi
+	else history_state=unknown; fi
 	recent=$([ "$last_ts" -gt 0 ] 2>/dev/null && [ $(( (now - last_ts) / 86400 )) -le 4 ] && echo yes || echo no)
+	[ "$history_state" = unknown ] && { last="?"; recent=unknown; }
 
 	case "$dirty" in wip:*) bucket=hold-wip ;; *)
 		case "$pr" in *OPEN*) bucket=hold-open-pr ;; *)
 			if [ "$recent" = yes ]; then bucket=verify-recent-chat
+			elif [ "$recent" = unknown ]; then bucket=review
 			elif [ "$merged" = YES ] || [ "$pr" != "-" ]; then bucket=safe
 			else bucket=review; fi ;;
 		esac ;;

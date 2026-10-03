@@ -1,7 +1,6 @@
 ---
 name: why
 description: "Use for 'why does X work this way', 'why we picked Y', design rationale, regressions, postmortems, or data-backed thresholds. Discovers available MCPs and queries each evidence category (source control, issue tracker, long-form docs, real-time chat, infrastructure observability, error tracking, product analytics warehouse) in parallel, then returns a cited read on decisions and tradeoffs. Use how for runtime behavior."
-disable-model-invocation: true
 ---
 
 # Why
@@ -10,7 +9,7 @@ Investigate the motivation and intent behind code.
 
 Companion to the `how` skill. `how` answers what the code does and how it works. `why` answers what forces led to its shape.
 
-Each spawn below names a role line in the `pstack-models.mdc` rule and a default. Set `model` to that line's value, or to the default if the rule or the line is missing. Leave `model` unset when the value is `auto` or `inherit-parent`. If the Task tool rejects a slug, use the default and say so. If it rejects the default, use the closest valid slug of the same family from its error message.
+Resolve each role with `bun .agents/scripts/pstack-models.mjs resolve "why investigators"` or `bun .agents/scripts/pstack-models.mjs resolve "why synthesizer"`. Use the resolved model and effort, or the helper's default when the role has no configured override. For `auto` or `inherit-parent`, resolve the active parent pair with `bun .agents/scripts/pstack-models.mjs parent` and pass both settings explicitly. If a launch rejects a configured model, use that role's helper default and say so. If it rejects the default, use the closest valid model and supported effort reported by the runtime that preserves the mapped model line, and say so. If no option from that model line is available, report the launch limitation instead of guessing a cross-line model.
 
 ## Operating Posture
 
@@ -61,7 +60,7 @@ Capture this as seed context (file paths, symbols, commits, PR numbers, linked t
 
 ### Discovery
 
-Before spawning investigators, list the available MCPs from the Cursor environment. Use the available-tools map when present. Otherwise inspect the `mcps/` directory Cursor exposes for enabled MCP servers.
+Before spawning investigators, inspect the tool names, descriptions, and server or resource metadata actually exposed in the current Codex session. Use that inventory to identify available MCP sources; do not infer connections from a local configuration file or from another session.
 
 Map each available MCP to one evidence category:
 
@@ -73,18 +72,21 @@ Map each available MCP to one evidence category:
 6. Error / exception tracking
 7. Product analytics warehouse
 
-Source control is always available through git and `gh`. For the other six, classify using the MCP name, server instructions, tool names, and resource descriptors. If an MCP could fit more than one category, choose the one matching its primary evidence. Record ambiguous cases in the coverage map.
+Source control is always available through git; use `gh` for PR evidence when it is installed, authenticated, and can access the repository. For the other six, classify using the MCP name, server instructions, tool names, and resource descriptors when exposed. If an MCP could fit more than one category, choose the one matching its primary evidence. Record ambiguous cases in the coverage map.
 
 Aim for a complete **coverage map**, not a minimal one. Document the null, don't skip the search.
 
-Launch all matching investigators in a single message so they run concurrently. Don't ask one agent to cover multiple MCPs.
+Launch all matching investigators with concurrent native `collaboration.spawn_agent` calls so they run concurrently. Don't ask one agent to cover multiple MCPs.
 
 Subagent config (each):
-- `subagent_type`: `generalPurpose`
-- `model`: the `why investigators` line, default `grok-4.7-xhigh-fast`
-- `readonly`: `false` (agent mode). **Do not use readonly/Ask mode.** It strips MCP access, which disables MCP-backed investigators entirely. Investigators still shouldn't write anything.
+
+- Use the native `default` role for generic investigators.
+- `model` and `reasoning_effort`: the resolved `why investigators` settings from the helper, with defaults `gpt-6-luna` and `xhigh`.
+- For explicit model or effort overrides, use `fork_turns: "none"` and include the full assigned task context in the prompt. For `auto` or `inherit-parent`, resolve the active parent pair with `bun .agents/scripts/pstack-models.mjs parent` and pass both settings explicitly.
+- Investigators still shouldn't write anything. Children inherit the active sandbox and approval settings; this instruction does not enforce a read-only sandbox. Preserve the MCP tools exposed to the child and report unavailable tools as gaps.
 
 Each investigator gets:
+
 1. The base prompt from `references/investigator-prompt.md`
 2. The category playbook `references/sources/<source>.md` for the selected MCP, adapted from the examples in `references/source-playbook.md`
 3. The cross-cutting `references/sources/incident-postmortem.md` **if the target code looks defensive** (null checks, retry logic, timeout handling, rate limiting, feature flags, egress guards, OOM handlers)
@@ -93,23 +95,23 @@ Each investigator gets:
 
 ### Investigator roster. One per available evidence category
 
-Spawn one investigator per category that has a matching MCP. Each owns exactly one tool or MCP.
+Spawn one investigator per category that has a matching MCP. Each owns exactly one tool or MCP. If native concurrent-agent capacity is lower than the roster, launch the same assignments in batches without combining sources.
 
 Each entry names the category and the kind of "why" it uniquely surfaces. Use it to know what to expect back, how to name a gap when a category returns empty, and (only in the rare provably-irrelevant case) to justify a skip.
 
-1. **Source control investigator**. Git history, `gh` for PRs, code comments, tests. Always spawn. The only guaranteed source. Best at surfacing *implementation-time rationale captured during review*.
+1. **Source control investigator**. Git history, `gh` for PRs, code comments, tests. Always spawn. The only guaranteed source. Best at surfacing _implementation-time rationale captured during review_.
 
-2. **Issue / ticket tracker investigator** (e.g. Linear, Jira, GitHub Issues, Plane, Shortcut MCP). Best at surfacing *the product or business forcing function*. Strongest when the why is external to engineering.
+2. **Issue / ticket tracker investigator** (e.g. Linear, Jira, GitHub Issues, Plane, Shortcut MCP). Best at surfacing _the product or business forcing function_. Strongest when the why is external to engineering.
 
-3. **Long-form documents investigator** (e.g. Notion, Confluence, Google Docs, Coda MCP). Best at surfacing *long-form design rationale*. Where the why is written out before it becomes code.
+3. **Long-form documents investigator** (e.g. Notion, Confluence, Google Docs, Coda MCP). Best at surfacing _long-form design rationale_. Where the why is written out before it becomes code.
 
-4. **Real-time team chat investigator** (e.g. Slack, Discord, Microsoft Teams, Mattermost MCP). Best at surfacing *real-time deliberation that never reached a doc*. Especially important when the source control, ticket, and doc paper trail is thin.
+4. **Real-time team chat investigator** (e.g. Slack, Discord, Microsoft Teams, Mattermost MCP). Best at surfacing _real-time deliberation that never reached a doc_. Especially important when the source control, ticket, and doc paper trail is thin.
 
-5. **Infrastructure observability investigator** (e.g. Datadog, New Relic, Honeycomb, Grafana, Splunk MCP). Infra/runtime view. Best at surfacing *infrastructure and runtime reality that motivated the code*. Strongest when the target reacts to an infra signal (timeouts, retries, rate limits, circuit breakers).
+5. **Infrastructure observability investigator** (e.g. Datadog, New Relic, Honeycomb, Grafana, Splunk MCP). Infra/runtime view. Best at surfacing _infrastructure and runtime reality that motivated the code_. Strongest when the target reacts to an infra signal (timeouts, retries, rate limits, circuit breakers).
 
-6. **Error / exception tracking investigator** (e.g. Sentry, Rollbar, Bugsnag, Airbrake MCP). Best at surfacing *the specific exceptions and error trajectories that motivated defensive or corrective code*. Strongest for catch blocks, null guards, type checks, retries, and other defenses.
+6. **Error / exception tracking investigator** (e.g. Sentry, Rollbar, Bugsnag, Airbrake MCP). Best at surfacing _the specific exceptions and error trajectories that motivated defensive or corrective code_. Strongest for catch blocks, null guards, type checks, retries, and other defenses.
 
-7. **Product analytics warehouse investigator** (e.g. Databricks, Snowflake, BigQuery, ClickHouse, dbt, Redshift MCP). Product/data view. Best at surfacing *product and data reality that shaped the code*. Strongest for flag-gated code, experiment-driven ships, data migrations, and "where did this number come from" questions.
+7. **Product analytics warehouse investigator** (e.g. Databricks, Snowflake, BigQuery, ClickHouse, dbt, Redshift MCP). Product/data view. Best at surfacing _product and data reality that shaped the code_. Strongest for flag-gated code, experiment-driven ships, data migrations, and "where did this number come from" questions.
 
 ### When to skip an investigator
 
@@ -122,13 +124,14 @@ If your scope assessment suggests a single-commit trivial target where the PR de
 
 ## Step 4. Synthesize
 
-Spawn one synthesizer subagent:
+Spawn one synthesizer subagent with the native `default` role:
 
-- `subagent_type`: `generalPurpose`
-- `model`: the `why synthesizer` line, default `claude-opus-5-5-max`
-- `readonly`: `false` (agent mode). The synthesizer's quality check spot-verifies citations, which can require MCP access. Readonly/Ask mode strips MCPs and defeats that.
+- `model` and `reasoning_effort`: the resolved `why synthesizer` settings from the helper, with defaults `gpt-6-astra` and `max`.
+- For explicit model or effort overrides, use `fork_turns: "none"` and include the full synthesis task context in the prompt. For `auto` or `inherit-parent`, resolve the active parent pair with `bun .agents/scripts/pstack-models.mjs parent` and pass both settings explicitly.
+- The synthesizer's quality check spot-verifies citations, which can require MCP access. Preserve the MCP tools exposed to the child. Children inherit the active sandbox and approval settings; do not claim this prompt enforces a read-only sandbox.
 
 The synthesizer gets:
+
 1. The investigator findings, including any null results and any categories skipped with justification
 2. The code anchor from Step 2 (file paths, symbols, commit hashes, PR numbers, ticket IDs)
 3. The user's original question

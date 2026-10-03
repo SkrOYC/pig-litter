@@ -36,10 +36,7 @@ async function makeDirectory(): Promise<string> {
   return directory;
 }
 
-function useStore(
-  directory: string,
-  options?: OpenStoreOptions
-): Store {
+function useStore(directory: string, options?: OpenStoreOptions): Store {
   const store = openStore(directory, options);
   handles.push(store);
   return store;
@@ -65,7 +62,7 @@ function git({
   const result = Bun.spawnSync(["git", "-C", repo, ...args]);
   if (result.exitCode !== 0) {
     throw new Error(
-      `git ${args.join(" ")} failed: ${result.stderr.toString()}`
+      `git ${args.join(" ")} failed: ${result.stderr.toString()}`,
     );
   }
   return result.stdout.toString().trim();
@@ -142,7 +139,7 @@ case "$*" in
     exit 2
     ;;
 esac
-`
+`,
   );
   await chmod(gt, 0o755);
 
@@ -161,7 +158,7 @@ esac
 
 function runCli(
   args: readonly string[],
-  env: Readonly<Record<string, string | undefined>> = process.env
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): RunResult {
   const result = Bun.spawnSync([process.execPath, SCRIPT, ...args], { env });
   return {
@@ -187,17 +184,14 @@ describe("Store", () => {
 
     expect(await store.init()).toEqual({ store: directory });
     const firstUnits = await readFile(join(directory, "units.tsv"), "utf8");
-    const firstLedger = await readFile(
-      join(directory, "ledger.tsv"),
-      "utf8"
-    );
+    const firstLedger = await readFile(join(directory, "ledger.tsv"), "utf8");
 
     expect(await store.init()).toEqual({ store: directory });
     expect(await readFile(join(directory, "units.tsv"), "utf8")).toBe(
-      firstUnits
+      firstUnits,
     );
     expect(await readFile(join(directory, "ledger.tsv"), "utf8")).toBe(
-      firstLedger
+      firstLedger,
     );
     expect((await readdir(directory)).sort()).toEqual([
       ".orch.lock",
@@ -221,10 +215,10 @@ describe("Store", () => {
         id: "u1",
         track: "build",
         brief: "briefs/u1.md",
-      })
+      }),
     ).toMatchObject({ id: "u1", state: "pending" });
     expect(
-      await store.units.add({ id: "=SUM(A1)", track: "+build" })
+      await store.units.add({ id: "=SUM(A1)", track: "+build" }),
     ).toMatchObject({ id: "'=SUM(A1)", track: "'+build" });
 
     const updated = await store.units.set({
@@ -244,15 +238,15 @@ describe("Store", () => {
       brief: "briefs/u1.md",
     });
     expect(await store.units.get("u1")).toEqual(updated);
-    expect(
-      await store.units.list({ state: "done", track: "build" })
-    ).toEqual([updated]);
+    expect(await store.units.list({ state: "done", track: "build" })).toEqual([
+      updated,
+    ]);
     expect(await store.units.counts()).toEqual({ done: 1, pending: 1 });
+    await expect(store.units.add({ id: "u1", track: "build" })).rejects.toThrow(
+      "unit u1 already exists",
+    );
     await expect(
-      store.units.add({ id: "u1", track: "build" })
-    ).rejects.toThrow("unit u1 already exists");
-    await expect(
-      store.units.set({ id: "missing", state: "done" })
+      store.units.set({ id: "missing", state: "done" }),
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 
@@ -285,7 +279,7 @@ describe("Store", () => {
       verifier: "sol",
     });
     expect(await store.ledger.check({ pr: 184530, sha: "abc123" })).toEqual(
-      recorded
+      recorded,
     );
     expect(await store.ledger.summary()).toEqual({
       "unit-test-verified": 1,
@@ -327,8 +321,8 @@ describe("Store", () => {
     expect(await readdir(join(directory, "inbox"))).toEqual([]);
     expect(
       (await readdir(directory)).filter((name) =>
-        name.startsWith(".inbox-drain-")
-      )
+        name.startsWith(".inbox-drain-"),
+      ),
     ).toEqual([]);
   });
 
@@ -343,7 +337,7 @@ describe("Store", () => {
       onStaleLock: (holder) => stale.push(holder),
     });
     expect(
-      await recovered.units.add({ id: "u1", track: "build" })
+      await recovered.units.add({ id: "u1", track: "build" }),
     ).toMatchObject({ id: "u1" });
     expect(stale).toEqual([String(exited.pid)]);
     await recovered.close();
@@ -357,7 +351,7 @@ describe("Store", () => {
 
     const blocked = useStore(directory);
     await expect(
-      blocked.units.add({ id: "u1", track: "build" })
+      blocked.units.add({ id: "u1", track: "build" }),
     ).rejects.toThrow(`store lock held by pid ${process.pid}`);
 
     const stolen: string[] = [];
@@ -365,9 +359,9 @@ describe("Store", () => {
       force: true,
       onLockStolen: (holder) => stolen.push(holder),
     });
-    expect(
-      await forced.units.add({ id: "u1", track: "build" })
-    ).toMatchObject({ id: "u1" });
+    expect(await forced.units.add({ id: "u1", track: "build" })).toMatchObject({
+      id: "u1",
+    });
     expect(stolen).toEqual([String(process.pid)]);
     await forced.close();
     expect(await readdir(directory)).not.toContain(".orch.lock");
@@ -382,22 +376,23 @@ describe("Store", () => {
         question: "Ship now?",
         options: "ship,wait",
         defaultAnswer: "wait",
-      })
+      }),
     ).toMatchObject({ kind: "open", id: "release" });
-    expect(
-      await store.standing.add({ line: "Never force push." })
-    ).toEqual({ number: 1, line: "Never force push." });
+    expect(await store.standing.add({ line: "Never force push." })).toEqual({
+      number: 1,
+      line: "Never force push.",
+    });
 
     const first = await store.status.render();
     expect(first.changed).toBe("first render");
     expect(first.summary.openGateIds).toEqual(["release"]);
     expect(await readFile(join(directory, "status.md"), "utf8")).toContain(
-      "| release | open | Ship now? |"
+      "| release | open | Ship now? |",
     );
     expect((await store.status.render()).changed).toBe("no derived changes");
 
     expect(
-      await store.gates.resolve({ id: "release", answer: "ship" })
+      await store.gates.resolve({ id: "release", answer: "ship" }),
     ).toMatchObject({ kind: "resolved", answer: "ship" });
     expect((await store.status.render()).changed).toBe("open gates 1->0");
     expect(await store.gates.list()).toEqual([]);
@@ -449,30 +444,30 @@ describe("Store", () => {
               repo: stack.repo,
               prs: [10, 13, 11],
             })
-          ).generation
+          ).generation,
         ).toBe(2);
         expect((await store.frontier.show()).generation).toBe(2);
         await expect(
           store.frontier.set({
             repo: stack.repo,
             prs: [10, 11, 12],
-          })
+          }),
         ).rejects.toThrow(
-          "frontier pin mismatch: missing from gt: 12; extra in gt: 13"
+          "frontier pin mismatch: missing from gt: 12; extra in gt: 13",
         );
         await expect(
           store.frontier.set({
             repo: stack.repo,
             prs: [13, 10, 11],
-          })
+          }),
         ).rejects.toThrow(
-          "frontier pin mismatch: order differs: expected 13,10,11; gt 10,13,11"
+          "frontier pin mismatch: order differs: expected 13,10,11; gt 10,13,11",
         );
         await expect(
           store.frontier.set({
             repo: stack.repo,
             prs: [10, 10],
-          })
+          }),
         ).rejects.toThrow("--prs must not contain duplicates");
       },
     });
@@ -486,10 +481,8 @@ describe("Store", () => {
       directory,
       output: "◯ main\nthis line is not Graphite output\n",
       operation: async () => {
-        await expect(
-          store.frontier.set({ repo: stack.repo })
-        ).rejects.toThrow(
-          'gt log short output has an unparseable line 2: "this line is not Graphite output"'
+        await expect(store.frontier.set({ repo: stack.repo })).rejects.toThrow(
+          'gt log short output has an unparseable line 2: "this line is not Graphite output"',
         );
       },
     });
@@ -500,32 +493,32 @@ describe("Store", () => {
 
     await writeFile(join(directory, "units.tsv"), "wrong\n");
     await expect(store.units.list()).rejects.toThrow(
-      "units.tsv has an invalid header"
+      "units.tsv has an invalid header",
     );
     await writeFile(
       join(directory, "units.tsv"),
-      "id\ttrack\tstate\tbranch\tpr\tsha\tbrief\nshort\trow\n"
+      "id\ttrack\tstate\tbranch\tpr\tsha\tbrief\nshort\trow\n",
     );
     await expect(store.units.list()).rejects.toThrow(
-      "units.tsv has a malformed row"
+      "units.tsv has a malformed row",
     );
 
     await writeFile(
       join(directory, "ledger.tsv"),
-      "pr\tsha\tverdict\tevidence\tverifier\tts\n1\tsha\tinvalid\treport\tme\tnow\n"
+      "pr\tsha\tverdict\tevidence\tverifier\tts\n1\tsha\tinvalid\treport\tme\tnow\n",
     );
     await expect(store.ledger.summary()).rejects.toThrow(
-      "ledger.tsv has invalid verdict invalid"
+      "ledger.tsv has invalid verdict invalid",
     );
 
     await writeFile(join(directory, "frontier.json"), '{"generation":"1"}\n');
     await expect(store.frontier.show()).rejects.toThrow(
-      "frontier.json has an invalid shape"
+      "frontier.json has an invalid shape",
     );
 
     await writeFile(join(directory, "inbox", "bad.tsv"), "too\tshort\n");
     await expect(store.inbox.peek()).rejects.toThrow(
-      "inbox pointer bad.tsv is malformed"
+      "inbox pointer bad.tsv is malformed",
     );
   });
 
@@ -563,7 +556,7 @@ describe("orch CLI", () => {
 
     const added = runCli(
       ["unit", "add", "u1", "--track", "build", "--json"],
-      env
+      env,
     );
     expect(added.code).toBe(0);
     expect(JSON.parse(added.stdout)).toEqual({
@@ -581,16 +574,9 @@ describe("orch CLI", () => {
     const directory = await makeDirectory();
     expect(runCli(["--store", directory, "init"]).code).toBe(0);
 
-    const missingRepo = runCli([
-      "--store",
-      directory,
-      "frontier",
-      "set",
-    ]);
+    const missingRepo = runCli(["--store", directory, "frontier", "set"]);
     expect(missingRepo.code).toBe(1);
-    expect(missingRepo.stderr).toContain(
-      "set --repo <dir> or ORCH_REPO"
-    );
+    expect(missingRepo.stderr).toContain("set --repo <dir> or ORCH_REPO");
 
     const userError = runCli([
       "--store",

@@ -9,7 +9,7 @@
 - Post-merge discussions that explain why something was revisited
 - DMs (usually not searchable, scope accordingly)
 
-Slack is frequently where the *real* decisions got made, especially for smaller changes that didn't warrant a doc. It's also the most ephemeral source. Threads get deleted, channels get archived, and search quality degrades over time.
+Slack is frequently where the _real_ decisions got made, especially for smaller changes that didn't warrant a doc. It's also the most ephemeral source. Threads get deleted, channels get archived, and search quality degrades over time.
 
 ## How to search it
 
@@ -46,6 +46,7 @@ Slack MCP tools vary. Check which Slack MCP is available and inspect its tool sc
 ## What to return
 
 For each relevant thread:
+
 - Channel name
 - Permalink or thread ID
 - Participants

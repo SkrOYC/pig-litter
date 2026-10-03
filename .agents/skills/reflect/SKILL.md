@@ -1,7 +1,6 @@
 ---
 name: reflect
 description: Spawn three parallel review subagents over the active transcript, surface learnings, and route each to a concrete edit on an existing skill. Use when the user says reflect.
-disable-model-invocation: true
 ---
 
 # Reflect
@@ -10,43 +9,41 @@ Mine the current conversation for durable learnings, then route them into skill 
 
 ## When to invoke
 
-Invoke when the user says "reflect" or "/reflect". Skip when the conversation is trivial, off-topic, or already covered by an existing skill the parent followed correctly. One-offs are not learnings.
+Invoke when the user says "reflect" or "$reflect". Skip when the conversation is trivial, off-topic, or already covered by an existing skill the parent followed correctly. One-offs are not learnings.
 
 ## Process
 
 ### 1. Locate the active transcript
 
-The parent finds its own transcript file before fanning out. The system prompt names the active workspace's `agent-transcripts/` directory. Use that path. Do not glob across `~/.cursor/projects/*/`. That crosses workspace boundaries and reads private chats from unrelated projects.
+The parent finds its own active-session history before fanning out. Use the read-only pstack history helper, scoped to the active workspace:
 
 ```bash
-ls -t <agent-transcripts>/*.jsonl <agent-transcripts>/*/*.jsonl <agent-transcripts>/*/subagents/*.jsonl 2>/dev/null | head -10
+bun .agents/scripts/pstack-history.mjs list --cwd <active-workspace> --limit 10
 ```
 
-Three transcript layouts: legacy flat (`<id>.jsonl`), current nested (`<id>/<id>.jsonl`), and subagent (`<parent>/subagents/<child>.jsonl`).
-
-For each candidate, read the first JSONL line and check that `message.content[0].text` contains the conversation's opening user prompt. Take the matching path. If no path resolves, write a tight digest of the session and pass that instead.
+For each candidate, use `bun .agents/scripts/pstack-history.mjs read --id <thread-id> --limit <items>` and verify that it is the active conversation by checking its opening user prompt. Keep the history lookup within the active workspace and session. If no candidate resolves, write a tight digest of the session and pass that instead.
 
 ### 2. Spawn three reviewers in parallel
 
-One message, three `Task` calls, `subagent_type: generalPurpose`, with `model` set as below, agent mode (`readonly: false`). Reviewers need MCP access for context lookups (tickets, chat threads, observability traces referenced in the transcript). Readonly strips MCPs.
+Launch three reviewers in parallel with `collaboration.spawn_agent`, one per lens. Resolve the model and reasoning effort for each role using `bun .agents/scripts/pstack-models.mjs resolve "ROLE LABEL"`; pass those as separate `model` and `reasoning_effort` settings with `fork_turns: "none"`, and include the complete reviewer prompt and transcript context in the message. If the role setting is `auto` or `inherit-parent`, resolve the active parent pair with `bun .agents/scripts/pstack-models.mjs parent` and pass both settings explicitly. Load the matching `.codex/agents/pstack-*.toml` `developer_instructions` into the prompt when the runtime cannot select the registered role directly. Reviewer prompts prohibit repository edits while allowing MCP context lookups. Native children inherit the host sandbox and approval settings.
 
-Each reviewer and the synthesizer name a role line in the `pstack-models.mdc` rule and a default. Set `model` to that line's value, or to the default if the rule or the line is missing. Leave `model` unset when the value is `auto` or `inherit-parent`. If the Task tool rejects a slug, use the default and say so. If it rejects the default, use the closest valid slug of the same family from its error message.
+The helper resolves configured role values and fallback defaults from native pstack agent settings. If a configured model or effort cannot be used, preserve the source fallback sequence: use the role's default and report the fallback; if that also fails, use the closest valid model/effort offered by the runtime and report it. Never infer a provider alias or claim MCP access that the child does not have.
 
-| Lens | Role line | Default `model` | Prompt template |
-|---|---|---|---|
-| Judgment | `reflect judgment, divergent, synthesizer` | `claude-opus-5-5-max` | `references/judgment-reviewer.md` |
-| Tooling | `reflect tooling` | `gpt-5.6-sol-max` | `references/tooling-reviewer.md` |
-| Divergent | `reflect judgment, divergent, synthesizer` | `claude-opus-5-5-max` | `references/divergent-reviewer.md` |
+| Lens | Role label | Default model and effort | Prompt template |
+| --- | --- | --- | --- |
+| Judgment | `reflect judgment, divergent, synthesizer` | `gpt-6-astra` / `max` | `references/judgment-reviewer.md` |
+| Tooling | `reflect tooling` | `gpt-6.1-sol` / `max` | `references/tooling-reviewer.md` |
+| Divergent | `reflect judgment, divergent, synthesizer` | `gpt-6-astra` / `max` | `references/divergent-reviewer.md` |
 
-Pass each template verbatim, substituting the transcript path or digest where marked. Reviewers return findings in the `Task` response body.
+Pass each template verbatim, substituting the transcript context or digest where marked. Preserve the original reviewer count and lenses. Collect each child's returned findings before synthesis.
 
 ### 3. Synthesize
 
-One `Task` call, `subagent_type: generalPurpose`, with `model` from the `reflect judgment, divergent, synthesizer` line (default `claude-opus-5-5-max`), agent mode (`readonly: false`). The synthesizer's quality check includes spot-verifying citations, which can require MCP access. Readonly strips MCPs. Use `references/synthesizer.md` verbatim, with each reviewer's full output inlined where marked. The synthesizer returns a structured Accepted / Rejected / Backlog list.
+Launch one synthesizer with `collaboration.spawn_agent`, resolving the `reflect judgment, divergent, synthesizer` model and effort through `bun .agents/scripts/pstack-models.mjs resolve "reflect judgment, divergent, synthesizer"`. Pass separate `model` and `reasoning_effort` settings with `fork_turns: "none"`, and include the synthesizer prompt with each reviewer's full output inlined. For `auto` or `inherit-parent`, resolve the active parent pair with `bun .agents/scripts/pstack-models.mjs parent` and pass both settings explicitly. Load the matching `.codex/agents/pstack-*.toml` `developer_instructions` into the prompt when the runtime cannot select the registered role directly. The synthesizer prompt prohibits repository edits while allowing citation spot-checks through available tools and transcript-referenced context. Native children inherit the host sandbox and approval settings. The synthesizer returns a structured Accepted / Rejected / Backlog list.
 
 ### 4. Structural enforcement check
 
-Sanity-check the synthesizer's Accepted list. For any item that would be enforced more reliably by a lint rule, script, metadata flag, or runtime check, move it from Accepted to Backlog. See the **encode-lessons-in-structure** principle skill.
+Sanity-check the synthesizer's Accepted list. For any item that would be enforced more reliably by a lint rule, script, metadata flag, or runtime check, move it from Accepted to Backlog. See `.agents/skills/principle-encode-lessons-in-structure/SKILL.md`.
 
 ### 5. Apply
 
@@ -57,9 +54,9 @@ Backlog items file to whatever devex / backlog tracker your team uses automatica
 For each approved Accepted item, follow the Routing field exactly:
 
 - Trivial existing-skill edit (a one-line bullet, a tightened sentence, a stale fact corrected): parent does directly.
-- Substantive existing-skill edit (a new section, a new pattern table, more than ~10 lines): hand to Cursor's built-in `create-skill` skill and run its draft / test / iterate loop.
-- `tune description: <skill path>` (the skill exists but didn't trigger when it should have): hand to `create-skill` and run its description-optimization loop.
-- `new skill via create-skill: <kebab-name>`: hand creation to `create-skill`. Do not invent the shape ad hoc.
+- Substantive existing-skill edit (a new section, a new pattern table, more than ~10 lines): hand to Codex's `$skill-creator` skill and run its draft / test / iterate loop.
+- `tune description: <skill path>` (the skill exists but didn't trigger when it should have): hand to `$skill-creator` and run its description-optimization loop.
+- `new skill via create-skill: <kebab-name>`: hand creation to `$skill-creator`. Do not invent the shape ad hoc.
 
 If your environment ships a SKILL.md validator, run it on every touched skill before declaring done. Skip this step if it doesn't.
 

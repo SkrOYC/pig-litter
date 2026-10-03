@@ -1,14 +1,13 @@
 ---
 name: how
-description: "Use for \"how does X work\", code walkthroughs before changing something, and placement / ownership / layering questions (\"where should this live\", \"which package owns this\", \"is this the right layer\"). Explains subsystem architecture, runtime flow, onboarding mental models. Use why for motivation."
-disable-model-invocation: true
+description: 'Use for "how does X work", code walkthroughs before changing something, and placement / ownership / layering questions ("where should this live", "which package owns this", "is this the right layer"). Explains subsystem architecture, runtime flow, onboarding mental models. Use why for motivation.'
 ---
 
 # How
 
 Explore the codebase to answer "how does X work?" questions. Produce architectural explanations at the level of a senior engineer onboarding onto a subsystem, enough to build a working mental model, not so much that it reads like annotated source code.
 
-Each spawn below names a role line in the `pstack-models.mdc` rule and a default. Set `model` to that line's value, or to the default if the rule or the line is missing. Leave `model` unset when the value is `auto` or `inherit-parent`. If the Task tool rejects a slug, use the default and say so. If it rejects the default, use the closest valid slug of the same family from its error message.
+Each run below names a role line in the native pstack agent settings and a default. Resolve it with `bun .agents/scripts/pstack-models.mjs resolve "ROLE LABEL"`. Use that line's model and effort, or the role's default pair if the setting or line is missing. When the value is `auto` or `inherit-parent`, pass the active parent's effective model and effort because a standalone CLI session does not inherit UI overrides. If the selected model is rejected, retry with the default pair and say so. If the default model is rejected, use the closest valid model from its error message and retain the effort when supported. Run each read-only phase with `bun .agents/scripts/pstack-readonly.mjs --cwd WORKSPACE --prompt PROMPT_FILE --output REPORT_FILE --model MODEL --effort EFFORT`. Use one managed shell session per run, retain each session handle for collection or cancellation, and read its unchanged final report from `REPORT_FILE`; detailed events are written beside it. Do not add `--ephemeral`. See `.agents/pstack-runtime.md` for adapter behavior.
 
 ## Step 1. Assess Complexity
 
@@ -21,33 +20,30 @@ When in doubt, take the simple path.
 
 ## Step 2a. Explore (complex questions only)
 
-Decompose the question into 2 to 4 exploration angles, each a distinct slice of the subsystem. Spawn all explorers in a single message:
+Decompose the question into 2 to 4 exploration angles, each a distinct slice of the subsystem. Launch all explorers before waiting for any of them:
 
-- `subagent_type`: `generalPurpose`
-- `model`: the `how explorer` line, default `grok-4.7-xhigh-fast`
-- `readonly`: `true`
+- Build a separate prompt file from `references/explorer-prompt.md` for each angle. Start a separate managed shell session running the read-only adapter for each explorer.
+- Resolve the `how explorer` role; its default is `gpt-6-luna` with `xhigh` reasoning effort.
 
-Each explorer gets the prompt in `references/explorer-prompt.md` with its angle filled in. Then go to Step 3.
+Retain each shell session handle and wait for all explorers to finish. Read their final reports and use every explorer's findings in Step 3.
 
 ## Step 2b. Direct Explain (simple questions)
 
-Spawn one Task subagent that explores and explains in one pass:
+Run one read-only adapter session that explores and explains in one pass:
 
-- `subagent_type`: `generalPurpose`
-- `model`: the `how explainer` line, default `claude-opus-5-5-max`
-- `readonly`: `true`
+- Build its prompt from `references/explainer-prompt.md` without the explorer-findings section, then launch it in a managed shell session.
+- Resolve the `how explainer` role; its default is `gpt-6-astra` with `max` reasoning effort.
 
-Build its prompt from `references/explainer-prompt.md` without the explorer-findings section. Go to Step 4.
+Wait for the session to finish and collect its final report. Go to Step 4.
 
 ## Step 3. Synthesize (complex questions only)
 
-Once all explorers have returned, spawn one Task subagent to synthesize their findings into one explanation:
+Once all explorers have returned, run one read-only adapter session to synthesize their findings into one explanation:
 
-- `subagent_type`: `generalPurpose`
-- `model`: the `how explainer` line, default `claude-opus-5-5-max`
-- `readonly`: `true`
+- Build its prompt from `references/explainer-prompt.md` with every explorer's findings filled in, then launch it in a managed shell session.
+- Resolve the `how explainer` role; its default is `gpt-6-astra` with `max` reasoning effort.
 
-Build its prompt from `references/explainer-prompt.md` with every explorer's findings filled in.
+Wait for the session to finish and collect its final report.
 
 ## Step 4. Present
 
