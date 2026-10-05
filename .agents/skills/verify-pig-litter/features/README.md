@@ -1,8 +1,8 @@
 # Verification features
 
-This map covers the shipped foreground delegation and selection behavior.
+This map covers foreground delegation and selection. Distinguish installed named-Piglet and real-provider evidence from pinned offline and fixture evidence.
 
-- [Foreground child delegation](foreground-delegation.md) proves real scout and worker children, bounded handback, failures, timeout, and cancellation.
-- [Direct extension selection](direct-extension.md) proves `pig -e ./extensions/pig-litter` loads the status and diagnostic command.
-- [Piglet selection](piglet-selection.md) proves `pig --piglet ./piglet.yaml` loads the same behavior through the local Piglet.
-- [Unselected startup](unselected-startup.md) proves plain `pig` does not load Pig Litter.
+- [Foreground child delegation](foreground-delegation.md) covers real scout and worker effects, inherited models, bounded handback, and the deterministic outcome controls.
+- [Direct extension selection](direct-extension.md) covers startup status and the diagnostic command through explicit repository extension selection.
+- [Piglet selection](piglet-selection.md) covers named user source resolution and the repository-local Piglet.
+- [Unselected startup](unselected-startup.md) covers plain configured startup and the isolated pinned control.
