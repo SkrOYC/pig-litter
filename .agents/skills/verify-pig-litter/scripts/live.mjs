@@ -90,6 +90,72 @@ export function cancellationAcknowledged(evidence, callId) {
 function ensure(condition, message) { if (!condition) throw new Error(message); }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+export async function runCommand(args, { cwd, env, timeoutMs, signal, input, onStdout, onStart, maxOutputBytes = 2 * 1024 * 1024 } = {}) {
+ ensure(process.platform !== 'win32', 'The live driver requires POSIX process groups.');
+ const child = Bun.spawn(args, { cwd, env, detached: true, stdin: input ? 'pipe' : 'ignore', stdout: 'pipe', stderr: 'pipe' });
+ onStart?.(child);
+ const readers = [child.stdout.getReader(), child.stderr.getReader()];
+ let bytes = 0;
+ let deadlineTimer;
+ let rejectDeadline;
+ const deadline = new Promise((_, reject) => { rejectDeadline = reject; deadlineTimer = setTimeout(() => reject(new Error(`Command timed out after ${timeoutMs} ms.`)), timeoutMs); });
+ const abort = () => rejectDeadline(new Error('Command interrupted.'));
+ signal?.addEventListener('abort', abort, { once: true });
+ async function consume(reader, stdout) {
+  const decoder = new TextDecoder();
+  let text = '';
+  while (true) {
+   const chunk = await reader.read();
+   if (chunk.done) return text + decoder.decode();
+   bytes += chunk.value.length;
+   ensure(bytes <= maxOutputBytes, 'Command output exceeds its byte limit.');
+   const decoded = decoder.decode(chunk.value, { stream: true });
+   text += decoded;
+   if (stdout) onStdout?.(decoded, child);
+  }
+ }
+ function members() {
+  const snapshot = Bun.spawnSync(['ps', '-eo', 'pid=,ppid=,pgid=,stat='], { timeout: 100, maxBuffer: 2 * 1024 * 1024 });
+  ensure(snapshot.exitCode === 0, 'Could not inspect the owned command process group.');
+  return snapshot.stdout.toString().trim().split('\n').flatMap(line => {
+   const [pid, parent, group, state] = line.trim().split(/\s+/);
+   return Number(group) === child.pid ? [{ pid: Number(pid), parent: Number(parent), state }] : [];
+  });
+ }
+ function kill(pid, signal) { try { process.kill(pid, signal); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
+ async function teardown() {
+  try {
+  for (let round = 0; round < 3; round++) {
+   const tree = members();
+   if (!tree.length) break;
+   const leaves = tree.filter(row => row.pid !== child.pid && !tree.some(other => other.parent === row.pid));
+   if (!leaves.length) break;
+   for (const row of leaves) kill(row.pid, round === 0 ? 'SIGTERM' : 'SIGKILL');
+   await sleep(75);
+  }
+  if (members().length) { kill(-child.pid, 'SIGTERM'); await sleep(75); }
+  } finally {
+   kill(-child.pid, 'SIGKILL');
+   await Promise.race([Promise.allSettled([child.exited, ...readers.map(reader => reader.cancel())]), sleep(500)]);
+  }
+  const remaining = members();
+  ensure(!remaining.length, `Owned command group still has processes: ${remaining.map(row => row.pid).join(', ')}.`);
+ }
+ const operation = Promise.all([consume(readers[0], true), consume(readers[1], false), child.exited]);
+ try {
+  if (input) child.stdin.write(input);
+  if (signal?.aborted) abort();
+  const [stdout, , code] = await Promise.race([operation, deadline]);
+  ensure(code === 0, `${args[0]} ${args[1] ?? ''} failed with exit ${code}. Check the selected PiG configuration root and installed source.`);
+  return stdout;
+ } finally {
+  clearTimeout(deadlineTimer);
+  signal?.removeEventListener('abort', abort);
+  try { child.stdin?.end(); } catch {}
+  await teardown();
+ }
+}
+
 export async function drive(config) {
  config = { ...config, pigBinary: Bun.which(config.pigBinary) ?? resolve(config.pigBinary), evidencePath: resolve(config.evidencePath) };
  const scratch = await mkdtemp(join(tmpdir(), 'pig-litter-live-'));
@@ -107,22 +173,18 @@ export async function drive(config) {
  let active;
  let interrupted;
  const pendingCommands = new Set();
- const interrupt = signal => { interrupted = signal; for (const child of pendingCommands) child.kill(); };
+ const interrupt = signal => { interrupted = signal; for (const controller of pendingCommands) controller.abort(); };
  const interruptHandler = () => interrupt('SIGINT');
  const terminateHandler = () => interrupt('SIGTERM');
  process.on('SIGINT', interruptHandler);
  process.on('SIGTERM', terminateHandler);
 
  async function command(args, cwd = scratch) {
-  const child = Bun.spawn(args, { cwd, env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
-  pendingCommands.add(child);
-  const timer = setTimeout(() => child.kill(), config.commandTimeoutMs);
+  const controller = new AbortController();
+  pendingCommands.add(controller);
   try {
-   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-   ensure(stdout.length + stderr.length <= 2 * 1024 * 1024, 'Metadata command output exceeds 2 MiB.');
-   ensure(code === 0, `${args[0]} ${args[1] ?? ''} failed with exit ${code}. Check the selected PiG configuration root and installed source.`);
-   return stdout;
-  } finally { clearTimeout(timer); pendingCommands.delete(child); }
+   return await runCommand(args, { cwd, env, timeoutMs: config.commandTimeoutMs, signal: controller.signal });
+  } finally { pendingCommands.delete(controller); }
  }
  const tmux = (...args) => command(['tmux', '-S', socket, '-f', '/dev/null', ...args]);
  async function processes(root) {
@@ -157,35 +219,28 @@ export async function drive(config) {
   throw new Error(`Timed out waiting for ${label}.`);
  }
  async function rpcProbe(args, cwd) {
-  const child = Bun.spawn([config.pigBinary, ...args], { cwd, env, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
-  pendingCommands.add(child);
+  const controller = new AbortController();
+  pendingCommands.add(controller);
   const responses = new Map();
   let pending = '';
-  let bytes = 0;
-  const stderr = new Response(child.stderr).text();
-  const pump = (async () => {
-   for await (const chunk of child.stdout) {
-    bytes += chunk.length;
-    ensure(bytes <= 2 * 1024 * 1024, 'Doctor RPC output exceeds 2 MiB.');
-    pending += new TextDecoder().decode(chunk);
+  try {
+   await runCommand([config.pigBinary, ...args], { cwd, env, timeoutMs: config.commandTimeoutMs, signal: controller.signal,
+    input: ['get_state', 'get_available_models', 'get_commands'].map(type => JSON.stringify({ id: type, type }) + '\n').join(''),
+    onStdout(chunk, child) {
+    pending += chunk;
     const lines = pending.split('\n'); pending = lines.pop();
     for (const line of lines) {
      let record; try { record = JSON.parse(line); } catch { continue; }
      if (record.type === 'response') responses.set(record.id, record);
     }
+    if (responses.size === 3) child.stdin.end();
    }
-  })();
-  for (const type of ['get_state', 'get_available_models', 'get_commands']) child.stdin.write(`${JSON.stringify({ id: type, type })}\n`);
-  try {
-   await wait(async () => { await processes(child.pid); return responses.size === 3; }, 'selected runtime doctor responses', config.commandTimeoutMs);
+   });
+   ensure(responses.size === 3, 'Doctor RPC ended without its metadata responses.');
    for (const response of responses.values()) ensure(response.success, `Doctor RPC ${response.command} failed.`);
    return Object.fromEntries([...responses].map(([id, response]) => [id, response.data]));
   } finally {
-   child.stdin.end();
-   const timer = setTimeout(() => child.kill(), 3000);
-   await child.exited; clearTimeout(timer);
-   pendingCommands.delete(child);
-   await pump; await stderr;
+   pendingCommands.delete(controller);
   }
  }
  async function cleanup() {

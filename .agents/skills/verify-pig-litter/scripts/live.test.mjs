@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { configuration, environment, launchArgs, sessionEvidence, completedDelegation, cancellationAcknowledged } from './live.mjs';
+import { configuration, environment, launchArgs, sessionEvidence, completedDelegation, cancellationAcknowledged, runCommand } from './live.mjs';
 
 const model = 'sample/model';
 function session(state = 'completed', childModel = model) {
@@ -66,4 +66,40 @@ test('a real aborted tool result survives evidence parsing and cannot pass compl
  expect(cancellationAcknowledged(evidence, 'another-call')).toBe(false);
  expect(cancellationAcknowledged(sessionEvidence(session()), 'child-call')).toBe(false);
  expect(() => completedDelegation(evidence, 'scout', model, 'hidden-token')).toThrow();
+});
+
+async function expectBoundedProcessFailure(options, script, message) {
+ let leader;
+ let descendant;
+ const started = performance.now();
+ await expect(runCommand(['sh', '-c', script], {
+  timeoutMs: 100,
+  ...options,
+  onStart(child) { leader = child.pid; },
+  onStdout(text, child) {
+   const pid = Number(text.trim().split('\n')[0]);
+   if (Number.isInteger(pid) && pid > 0) descendant = pid;
+   if (options.input) child.stdin.end();
+  },
+ })).rejects.toThrow(message);
+ expect(performance.now() - started).toBeLessThan(1200);
+ expect(Number.isInteger(descendant)).toBe(true);
+ expect(() => process.kill(leader, 0)).toThrow();
+ expect(() => process.kill(descendant, 0)).toThrow();
+}
+
+test('command deadline covers descendant-held pipes and reaps the owned group', async () => {
+ await expectBoundedProcessFailure({}, 'sleep 30 & echo $!; wait', 'Command timed out after 100 ms.');
+});
+
+test('RPC stdin closure cannot bypass the output and exit deadline', async () => {
+ await expectBoundedProcessFailure({ input: 'metadata request\n' }, 'read request; sleep 30 & echo $!; wait', 'Command timed out after 100 ms.');
+});
+
+test('stream output overflow tears down descendants without waiting for EOF', async () => {
+ await expectBoundedProcessFailure({ timeoutMs: 1000, maxOutputBytes: 128 }, 'sleep 30 & echo $!; sleep 0.03; while true; do printf "oversized metadata chunk\\n"; done', 'Command output exceeds its byte limit.');
+});
+
+test('ordinary command output remains available after bounded teardown', async () => {
+ expect(await runCommand(['sh', '-c', 'printf "metadata ready"'], { timeoutMs: 1000 })).toBe('metadata ready');
 });
