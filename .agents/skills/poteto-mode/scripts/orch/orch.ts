@@ -82,6 +82,7 @@ interface GateResolveOptions {
 interface FrontierSetOptions {
   readonly repo?: string;
   readonly prs?: readonly number[];
+  readonly forge: "github" | "graphite";
 }
 
 function message(error: unknown): string {
@@ -463,15 +464,24 @@ function createProgram(io: Io): Command {
 
   const frontier = program
     .command("frontier")
-    .description("manage the Graphite stack frontier")
+    .description("manage the pull request frontier")
     .action(() => requireSubcommand(program));
-  leaf(frontier, "set", "discover the Graphite stack and set the frontier")
+  leaf(frontier, "set", "discover a pull request chain and set the frontier")
     .addOption(
       new Option("--repo <dir>", "repository directory (or ORCH_REPO)").env(
         "ORCH_REPO",
       ),
     )
-    .option("--prs <n,...>", "optional expected pull request order pin", prList)
+    .addOption(
+      new Option("--forge <forge>", "frontier source")
+        .choices(["github", "graphite"])
+        .default("github"),
+    )
+    .option(
+      "--prs <n,...>",
+      "exact ordered GitHub PR selection, or Graphite order pin",
+      prList,
+    )
     .action((options: FrontierSetOptions) =>
       runStore(
         program,
@@ -480,6 +490,7 @@ function createProgram(io: Io): Command {
           store.frontier.set({
             repo: frontierRepo(options),
             prs: options.prs,
+            forge: options.forge,
           }),
         frontierLine,
       ),
