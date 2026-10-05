@@ -60,7 +60,7 @@ printf '%s\n' "$report" | jq --exit-status --arg name pig-litter '
   and .name == $name
   and .definition.language == "go"
   and .definition.form == "factory"
-  and ((.tools // []) | length) == 0
+  and (.tools == ["pig_litter_agent"])
   and ((.commands // []) | map(if type == "string" then . else .name end) | index("pig-litter")) != null
 ' >/dev/null
 
@@ -79,4 +79,4 @@ for settings_file in "$PIG_CODING_AGENT_DIR/settings.json" "$workspace/.pig/sett
   fi
 done
 
-printf 'PiG %s loaded the pig-litter Go extension without exposing tools to the model and validated its Piglet with %s\n' "$pig_version" "$go_version"
+printf 'PiG %s loaded the pig-litter Go extension with exactly the pig_litter_agent tool and validated its Piglet with %s\n' "$pig_version" "$go_version"
