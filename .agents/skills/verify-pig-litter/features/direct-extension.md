@@ -1,18 +1,15 @@
 # Direct extension selection
 
-## Sub-features
+## Behavior
 
-- The extension sets a compact status when its session starts.
-- The `/pig-litter` command shows a separate diagnostic notification.
+Explicit `pig -e ./extensions/pig-litter` loads the extension, sets status `foreground scout and worker`, and registers `/pig-litter`. The command shows a separate notification. Selection and the notification make no model request.
 
-## How to get to it (user POV)
+## Drive
 
-From the repository root, run `devenv shell -- pig -e ./extensions/pig-litter`. The extension loads only because this command selects it.
+Run `.agents/skills/verify-pig-litter/scripts/live.mjs --case direct` with the installed PiG and inherited configuration. The helper starts from owned scratch, selects the repository extension by absolute path, verifies status and the diagnostic, and requires clean process exit. It performs a runtime doctor before the drive.
 
-## Driving it with tmux
+Run `devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh` for the pinned offline control. It records the visible session-only trust prompt, startup status, action, and notification.
 
-Run `devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh`. The helper captures the startup status, records `/pig-litter` as the action, then captures the notification and retained status.
+## Evidence limits
 
-## Gotchas
-
-The verifier selects **Trust (this session only)** only after it captures and checks PiG's visible project-trust prompt. It does not use `--approve`. A missing-provider warning is expected in the isolated offline session.
+Direct repository selection proves that entry point and diagnostic. It does not establish named user Piglet discovery, Git origin resolution, or a real provider completion. Use the selected named-Piglet live case for those claims.

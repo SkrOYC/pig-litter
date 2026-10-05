@@ -1,18 +1,17 @@
 # Unselected startup
 
-## Sub-features
+## Behavior
 
-- Plain PiG starts without loading the project extension.
-- The startup status and diagnostic notification remain absent.
+Registering a named Piglet makes it available for explicit selection. Plain PiG still follows ordinary user resource discovery. Absence of a command-triggered notification alone does not prove that an extension was not loaded.
 
-## How to get to it (user POV)
+## Drive configured startup
 
-From the repository root, run `devenv shell -- pig`. This does not select the direct extension or the local Piglet.
+Run `.agents/skills/verify-pig-litter/scripts/live.mjs --case plain` with the installed runtime and inherited configuration. The helper removes ambient Piglet selector variables, supplies no extension or Piglet flag, and preserves ordinary resource discovery and built-in tools.
 
-## Driving it with tmux
+Wait for a live configured TUI, capture it, and require absence of the Pig Litter status and notification. Use the selected named-Piglet case as the positive control. If ordinary user configuration loads Pig Litter, report that observed configuration rather than marking the unselected control passed.
 
-Run `devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh`. The helper waits for the isolated plain PiG pane, saves its ready screen, and checks for the absence of both Pig Litter literals.
+## Drive isolated startup
 
-## Gotchas
+Run `devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh` for the pinned offline control. It uses an empty temporary PiG home without credentials, waits for `No models available.`, and checks that the Pig Litter literals are absent. That warning is expected only for this isolated control.
 
-The isolated process has no provider credentials and runs offline, so PiG can display “No models available.” The helper treats that warning as a ready PiG screen only while the pane is live.
+Both paths require a live pane before assertions, normal exit, and termination of observed owned processes.
