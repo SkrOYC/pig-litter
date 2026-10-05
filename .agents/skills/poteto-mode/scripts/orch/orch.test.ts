@@ -16,6 +16,7 @@ import {
   UserError,
   openStore,
   parseVerdict,
+  type Frontier,
   type OpenStoreOptions,
   type Store,
 } from "./store.ts";
@@ -165,6 +166,68 @@ function runCli(
     code: result.exitCode,
     stdout: result.stdout.toString(),
     stderr: result.stderr.toString(),
+  };
+}
+
+async function withFakeGh<T>(
+  directory: string,
+  responses: Readonly<Record<string, string>>,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const bin = join(directory, "gh-bin");
+  await mkdir(bin, { recursive: true });
+  const fixture = join(bin, "responses.json");
+  await writeFile(fixture, JSON.stringify(responses));
+  const gh = join(bin, "gh");
+  await writeFile(
+    gh,
+    `#!${process.execPath}
+const responses = await Bun.file(${JSON.stringify(fixture)}).json();
+const command = process.argv.slice(2).join(" ");
+const response = responses[command];
+if (process.env.GH_REPO) {
+  process.stderr.write("inherited GH_REPO overrode repository directory");
+  process.exit(1);
+}
+if (typeof response !== "string") {
+  process.stderr.write("unexpected gh command: " + command);
+  process.exit(1);
+}
+process.stdout.write(response);
+`,
+  );
+  await chmod(gh, 0o755);
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${bin}:${originalPath ?? ""}`;
+  try {
+    return await operation();
+  } finally {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+  }
+}
+
+const GH_FIELDS =
+  "number,headRefName,headRefOid,baseRefName,state,isCrossRepository";
+const GH_LIST = `pr list --state open --limit 1000 --json ${GH_FIELDS}`;
+const GH_REPO = "repo view --json defaultBranchRef";
+
+function githubPr(
+  number: number,
+  branch: string,
+  base: string,
+  state = "OPEN",
+) {
+  return {
+    number,
+    headRefName: branch,
+    baseRefName: base,
+    headRefOid: String(number).padStart(40, "a"),
+    state,
+    isCrossRepository: false,
   };
 }
 
@@ -414,7 +477,9 @@ describe("Store", () => {
       directory,
       output,
       operation: async () => {
-        expect(await store.frontier.set({ repo: stack.repo })).toEqual({
+        expect(
+          await store.frontier.set({ repo: stack.repo, forge: "graphite" }),
+        ).toEqual({
           generation: 1,
           prs: [
             {
@@ -442,6 +507,7 @@ describe("Store", () => {
           (
             await store.frontier.set({
               repo: stack.repo,
+              forge: "graphite",
               prs: [10, 13, 11],
             })
           ).generation,
@@ -450,6 +516,7 @@ describe("Store", () => {
         await expect(
           store.frontier.set({
             repo: stack.repo,
+            forge: "graphite",
             prs: [10, 11, 12],
           }),
         ).rejects.toThrow(
@@ -458,6 +525,7 @@ describe("Store", () => {
         await expect(
           store.frontier.set({
             repo: stack.repo,
+            forge: "graphite",
             prs: [13, 10, 11],
           }),
         ).rejects.toThrow(
@@ -466,6 +534,7 @@ describe("Store", () => {
         await expect(
           store.frontier.set({
             repo: stack.repo,
+            forge: "graphite",
             prs: [10, 10],
           }),
         ).rejects.toThrow("--prs must not contain duplicates");
@@ -481,11 +550,265 @@ describe("Store", () => {
       directory,
       output: "◯ main\nthis line is not Graphite output\n",
       operation: async () => {
-        await expect(store.frontier.set({ repo: stack.repo })).rejects.toThrow(
+        await expect(
+          store.frontier.set({ repo: stack.repo, forge: "graphite" }),
+        ).rejects.toThrow(
           'gt log short output has an unparseable line 2: "this line is not Graphite output"',
         );
       },
     });
+  });
+
+  it("seeds an empty GitHub frontier through the default CLI forge", async () => {
+    const directory = await makeDirectory();
+    expect(runCli(["--store", directory, "init"]).code).toBe(0);
+    await withFakeGh(
+      directory,
+      {
+        [GH_REPO]: '{"defaultBranchRef":{"name":"master"}}',
+        [GH_LIST]: "[]",
+      },
+      async () => {
+        const result = runCli(
+          [
+            "--store",
+            directory,
+            "--json",
+            "frontier",
+            "set",
+            "--repo",
+            directory,
+          ],
+          { ...process.env, GH_REPO: "unrelated/repository" },
+        );
+        expect(result).toEqual({
+          code: 0,
+          stdout:
+            '{\n  "generation": 1,\n  "prs": [],\n  "lowestUnmerged": null\n}\n',
+          stderr: "",
+        });
+        expect(
+          JSON.parse(await readFile(join(directory, "frontier.json"), "utf8")),
+        ).toEqual({ generation: 1, prs: [], lowestUnmerged: null });
+      },
+    );
+  });
+
+  it("seeds a repository with no default branch only when it has no PRs", async () => {
+    const { directory, store } = await initializedStore();
+    await withFakeGh(
+      directory,
+      {
+        [GH_REPO]: '{"defaultBranchRef":null}',
+        [GH_LIST]: "[]",
+      },
+      async () => {
+        expect(await store.frontier.set({ repo: directory })).toEqual({
+          generation: 1,
+          prs: [],
+          lowestUnmerged: null,
+        });
+      },
+    );
+    await withFakeGh(
+      directory,
+      {
+        [GH_REPO]: '{"defaultBranchRef":null}',
+        [GH_LIST]: JSON.stringify([githubPr(10, "one", "main")]),
+      },
+      async () => {
+        await expect(store.frontier.set({ repo: directory })).rejects.toThrow(
+          "no default branch",
+        );
+        expect(await store.frontier.show()).toEqual({
+          generation: 1,
+          prs: [],
+          lowestUnmerged: null,
+        });
+      },
+    );
+  });
+
+  it("orders GitHub PRs by base branches and keeps exact remote heads", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+    const root = githubPr(10, "stack/merged", "main");
+    const child = githubPr(11, "stack/open", "stack/merged");
+    await withFakeGh(
+      directory,
+      {
+        [GH_REPO]: '{"defaultBranchRef":{"name":"main"}}',
+        [GH_LIST]: JSON.stringify([child, root]),
+      },
+      async () => {
+        expect(await store.frontier.set({ repo: stack.repo })).toEqual({
+          generation: 1,
+          prs: [
+            {
+              pr: 10,
+              branches: "stack/merged",
+              sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa10",
+              state: "OPEN",
+            },
+            {
+              pr: 11,
+              branches: "stack/open",
+              sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa11",
+              state: "OPEN",
+            },
+          ],
+          lowestUnmerged: 10,
+        });
+        expect(root.headRefOid).not.toBe(stack.mergedSha);
+      },
+    );
+  });
+
+  it("selects only pinned GitHub PRs and refreshes their current heads", async () => {
+    const { directory, store } = await initializedStore();
+    const root = githubPr(10, "root", "main", "MERGED");
+    const child = githubPr(11, "child", "root");
+    const responses = {
+      [`pr view 10 --json ${GH_FIELDS}`]: JSON.stringify(root),
+      [`pr view 11 --json ${GH_FIELDS}`]: JSON.stringify(child),
+    };
+    await withFakeGh(directory, responses, async () => {
+      expect(
+        await store.frontier.set({ repo: directory, prs: [10, 11] }),
+      ).toEqual({
+        generation: 1,
+        prs: [
+          {
+            pr: 10,
+            branches: "root",
+            sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa10",
+            state: "MERGED",
+          },
+          {
+            pr: 11,
+            branches: "child",
+            sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa11",
+            state: "OPEN",
+          },
+        ],
+        lowestUnmerged: 11,
+      });
+      await expect(
+        store.frontier.set({ repo: directory, prs: [11, 10] }),
+      ).rejects.toThrow("root-first order");
+      await expect(
+        store.frontier.set({ repo: directory, prs: [10, 10] }),
+      ).rejects.toThrow("duplicates");
+    });
+    child.headRefOid = "b".repeat(40);
+    await withFakeGh(
+      directory,
+      {
+        [`pr view 11 --json ${GH_FIELDS}`]: JSON.stringify(child),
+      },
+      async () => {
+        expect(
+          await store.frontier.set({ repo: directory, prs: [11] }),
+        ).toEqual({
+          generation: 2,
+          prs: [
+            {
+              pr: 11,
+              branches: "child",
+              sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              state: "OPEN",
+            },
+          ],
+          lowestUnmerged: 11,
+        });
+      },
+    );
+  });
+
+  it("fails closed on ambiguous, disconnected, cyclic, and duplicate GitHub chains", async () => {
+    const { directory, store } = await initializedStore();
+    const invalid = [
+      [githubPr(10, "one", "main"), githubPr(11, "two", "main")],
+      [githubPr(10, "one", "missing")],
+      [githubPr(10, "one", "two"), githubPr(11, "two", "one")],
+      [githubPr(10, "one", "main"), githubPr(11, "main", "one")],
+      [githubPr(10, "one", "main"), githubPr(11, "one", "main")],
+    ];
+    for (const rows of invalid) {
+      await withFakeGh(
+        directory,
+        {
+          [GH_REPO]: '{"defaultBranchRef":{"name":"main"}}',
+          [GH_LIST]: JSON.stringify(rows),
+        },
+        async () => {
+          await expect(store.frontier.set({ repo: directory })).rejects.toThrow(
+            "frontier",
+          );
+          expect(await store.frontier.show()).toEqual({
+            generation: 0,
+            prs: [],
+            lowestUnmerged: null,
+          });
+        },
+      );
+      await rm(join(directory, "gh-bin"), { recursive: true });
+    }
+  });
+
+  it("preserves the frontier after GitHub API or boundary failures", async () => {
+    const { directory, store } = await initializedStore();
+    const initial: Frontier = {
+      generation: 8,
+      prs: [{ pr: 7, branches: "kept", sha: "c".repeat(40), state: "OPEN" }],
+      lowestUnmerged: 7,
+    };
+    await writeFile(join(directory, "frontier.json"), JSON.stringify(initial));
+    const invalid = [
+      "not JSON",
+      "{}",
+      JSON.stringify([{ ...githubPr(10, "one", "main"), headRefOid: "short" }]),
+      JSON.stringify([{ ...githubPr(10, "one", "main"), state: "UNKNOWN" }]),
+      JSON.stringify([githubPr(10, "one", "main", "CLOSED")]),
+      ...[
+        "bad\nbranch",
+        "bad branch",
+        "bad..branch",
+        "bad@{branch",
+        "bad/",
+        ".bad",
+        "bad.lock",
+        "bad//branch",
+        "bad?branch",
+        "bad\\branch",
+        "-bad",
+        "bad.",
+      ].map((branch) => JSON.stringify([githubPr(10, branch, "main")])),
+      JSON.stringify([githubPr(10, "one", "bad\tbase")]),
+      JSON.stringify([
+        { ...githubPr(10, "one", "main"), isCrossRepository: true },
+      ]),
+      JSON.stringify(
+        Array.from({ length: 1000 }, () => githubPr(10, "one", "main")),
+      ),
+      undefined,
+    ];
+    for (const raw of invalid) {
+      await withFakeGh(
+        directory,
+        {
+          [GH_REPO]: '{"defaultBranchRef":{"name":"main"}}',
+          ...(raw === undefined ? {} : { [GH_LIST]: raw }),
+        },
+        async () => {
+          await expect(
+            store.frontier.set({ repo: directory }),
+          ).rejects.toThrow();
+          expect(await store.frontier.show()).toEqual(initial);
+        },
+      );
+      await rm(join(directory, "gh-bin"), { recursive: true });
+    }
   });
 
   it("rejects malformed TSV, verdict, frontier, and inbox data", async () => {

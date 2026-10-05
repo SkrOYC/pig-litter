@@ -168,6 +168,7 @@ export interface ResolveGateParams {
 export interface SetFrontierParams {
   readonly repo: string;
   readonly prs?: readonly number[];
+  readonly forge?: "github" | "graphite";
 }
 
 export interface AddStandingParams {
@@ -1131,11 +1132,211 @@ function branchSha({ branch, repo }: { branch: string; repo: string }): string {
   return sha;
 }
 
-function resolveFrontier(repo: string): readonly FrontierPr[] {
+function resolveGraphiteFrontier(repo: string): readonly FrontierPr[] {
   return graphiteFrontier(repo).map((row) => ({
     ...row,
     sha: branchSha({ branch: row.branches, repo }),
   }));
+}
+
+interface GitHubFrontierEntry extends FrontierPr {
+  readonly base: string;
+}
+
+const GITHUB_PR_FIELDS =
+  "number,headRefName,headRefOid,baseRefName,state,isCrossRepository";
+const GITHUB_PR_LIMIT = 1000;
+
+function githubJson(repo: string, args: readonly string[]): unknown {
+  const env = { ...process.env };
+  delete env.GH_REPO;
+  let raw: string;
+  try {
+    raw = execFileSync("gh", args, {
+      cwd: repo,
+      encoding: "utf8",
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    throw new UserError(`gh ${args.join(" ")} failed: ${errorMessage(error)}`);
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new UserError(`gh ${args.join(" ")} returned invalid JSON`);
+  }
+}
+
+function isBranchName(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    !value.startsWith("-") &&
+    !value.endsWith(".") &&
+    !value.includes("..") &&
+    !value.includes("@{") &&
+    !/[\x00-\x20\x7f~^:?*\[\\]/.test(value) &&
+    value
+      .split("/")
+      .every(
+        (part) =>
+          part.length > 0 && !part.startsWith(".") && !part.endsWith(".lock"),
+      )
+  );
+}
+
+function parseGitHubPr(value: unknown): GitHubFrontierEntry {
+  const state = isRecord(value) ? frontierPrStateOrNull(value.state) : null;
+  if (
+    !isRecord(value) ||
+    typeof value.number !== "number" ||
+    !Number.isSafeInteger(value.number) ||
+    value.number < 1 ||
+    !isBranchName(value.headRefName) ||
+    !isBranchName(value.baseRefName) ||
+    typeof value.headRefOid !== "string" ||
+    !/^[0-9a-f]{40}$/i.test(value.headRefOid) ||
+    typeof value.isCrossRepository !== "boolean" ||
+    state === null
+  ) {
+    throw new UserError("gh returned an invalid frontier PR row");
+  }
+  if (value.isCrossRepository) {
+    throw new UserError(
+      `PR #${value.number} is from a fork; frontier requires repository branches`,
+    );
+  }
+  if (value.headRefName === value.baseRefName) {
+    throw new UserError(
+      `GitHub frontier PR #${value.number} targets its own branch`,
+    );
+  }
+  return {
+    pr: value.number,
+    branches: value.headRefName,
+    sha: value.headRefOid,
+    base: value.baseRefName,
+    state,
+  };
+}
+
+function orderGitHubPrs(
+  rows: readonly GitHubFrontierEntry[],
+  trunk: string | null,
+): readonly FrontierPr[] {
+  const branches = new Set(rows.map((row) => row.branches));
+  if (
+    branches.size !== rows.length ||
+    new Set(rows.map((row) => row.pr)).size !== rows.length
+  ) {
+    throw new UserError("GitHub frontier contains duplicate PRs or branches");
+  }
+  if (trunk !== null && branches.has(trunk)) {
+    throw new UserError(
+      "GitHub frontier contains a base-branch cycle through the default branch",
+    );
+  }
+  const ordered: GitHubFrontierEntry[] = [];
+  if (trunk === null) {
+    for (const row of rows) {
+      const previous = ordered.at(-1);
+      if (
+        (previous === undefined && branches.has(row.base)) ||
+        (previous !== undefined && row.base !== previous.branches)
+      ) {
+        throw new UserError(
+          "--prs must follow a single base-branch chain in root-first order",
+        );
+      }
+      ordered.push(row);
+    }
+  } else {
+    let base = trunk;
+    while (ordered.length < rows.length) {
+      const children = rows.filter((row) => row.base === base);
+      if (children.length !== 1) {
+        throw new UserError(
+          "GitHub frontier is ambiguous or disconnected; select one chain with --prs",
+        );
+      }
+      const child = children[0];
+      if (child === undefined || ordered.some((row) => row.pr === child.pr)) {
+        throw new UserError("GitHub frontier contains a base-branch cycle");
+      }
+      ordered.push(child);
+      base = child.branches;
+    }
+  }
+  return ordered.map(({ base: _base, ...row }) => row);
+}
+
+function resolveGitHubFrontier(
+  repo: string,
+  pin: readonly number[] | undefined,
+): readonly FrontierPr[] {
+  if (pin !== undefined) {
+    const rows = pin.map((pr) => {
+      const row = parseGitHubPr(
+        githubJson(repo, [
+          "pr",
+          "view",
+          String(pr),
+          "--json",
+          GITHUB_PR_FIELDS,
+        ]),
+      );
+      if (row.pr !== pr) {
+        throw new UserError(`gh pr view ${pr} returned PR #${row.pr}`);
+      }
+      return row;
+    });
+    return orderGitHubPrs(rows, null);
+  }
+  const repository = githubJson(repo, [
+    "repo",
+    "view",
+    "--json",
+    "defaultBranchRef",
+  ]);
+  const raw = githubJson(repo, [
+    "pr",
+    "list",
+    "--state",
+    "open",
+    "--limit",
+    String(GITHUB_PR_LIMIT),
+    "--json",
+    GITHUB_PR_FIELDS,
+  ]);
+  if (!isUnknownArray(raw)) {
+    throw new UserError("gh pr list returned an invalid frontier list");
+  }
+  if (raw.length >= GITHUB_PR_LIMIT) {
+    throw new UserError(
+      "GitHub frontier discovery reached its PR limit; select one chain with --prs",
+    );
+  }
+  if (
+    isRecord(repository) &&
+    repository.defaultBranchRef === null &&
+    raw.length === 0
+  ) {
+    return [];
+  }
+  if (
+    !isRecord(repository) ||
+    !isRecord(repository.defaultBranchRef) ||
+    !isBranchName(repository.defaultBranchRef.name)
+  ) {
+    throw new UserError("gh repo view returned no default branch");
+  }
+  const rows = raw.map(parseGitHubPr);
+  if (rows.some((row) => row.state !== "OPEN")) {
+    throw new UserError(
+      "gh pr list --state open returned a non-open frontier PR",
+    );
+  }
+  return orderGitHubPrs(rows, repository.defaultBranchRef.name);
 }
 
 function validateFrontierPin({
@@ -1458,8 +1659,15 @@ export function openStore(
           throw new UserError("--prs must not contain duplicates");
         }
         const old = await readFrontier(store);
-        const prs = resolveFrontier(repo);
-        if (pin !== undefined) {
+        const forge = params.forge ?? "github";
+        if (forge !== "github" && forge !== "graphite") {
+          throw new UserError("forge must be github or graphite");
+        }
+        const prs =
+          forge === "github"
+            ? resolveGitHubFrontier(repo, pin)
+            : resolveGraphiteFrontier(repo);
+        if (forge === "graphite" && pin !== undefined) {
           validateFrontierPin({
             actual: prs.map((row) => row.pr),
             expected: pin,
