@@ -1168,6 +1168,23 @@ function githubJson(repo: string, args: readonly string[]): unknown {
   }
 }
 
+function isBranchName(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    !value.startsWith("-") &&
+    !value.endsWith(".") &&
+    !value.includes("..") &&
+    !value.includes("@{") &&
+    !/[\x00-\x20\x7f~^:?*\[\\]/.test(value) &&
+    value
+      .split("/")
+      .every(
+        (part) =>
+          part.length > 0 && !part.startsWith(".") && !part.endsWith(".lock"),
+      )
+  );
+}
+
 function parseGitHubPr(value: unknown): GitHubFrontierEntry {
   const state = isRecord(value) ? frontierPrStateOrNull(value.state) : null;
   if (
@@ -1175,10 +1192,8 @@ function parseGitHubPr(value: unknown): GitHubFrontierEntry {
     typeof value.number !== "number" ||
     !Number.isSafeInteger(value.number) ||
     value.number < 1 ||
-    typeof value.headRefName !== "string" ||
-    value.headRefName.trim().length === 0 ||
-    typeof value.baseRefName !== "string" ||
-    value.baseRefName.trim().length === 0 ||
+    !isBranchName(value.headRefName) ||
+    !isBranchName(value.baseRefName) ||
     typeof value.headRefOid !== "string" ||
     !/^[0-9a-f]{40}$/i.test(value.headRefOid) ||
     typeof value.isCrossRepository !== "boolean" ||
@@ -1311,8 +1326,7 @@ function resolveGitHubFrontier(
   if (
     !isRecord(repository) ||
     !isRecord(repository.defaultBranchRef) ||
-    typeof repository.defaultBranchRef.name !== "string" ||
-    repository.defaultBranchRef.name.trim().length === 0
+    !isBranchName(repository.defaultBranchRef.name)
   ) {
     throw new UserError("gh repo view returned no default branch");
   }
