@@ -105,7 +105,7 @@ func parseRequest(params map[string]any) (LaunchRequest, error) {
 
 func childArgs(request LaunchRequest, model string) []string {
 	definition := agents[request.AgentType]
-	return []string{"--mode", "json", "--print", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--tools", strings.Join(definition.Tools, ","), "--model", model, "--system-prompt", definition.Prompt, "--", "Task:\n" + request.Task}
+	return []string{"--offline", "--mode", "json", "--print", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--tools", strings.Join(definition.Tools, ","), "--model", model, "--system-prompt", definition.Prompt, "--", "Task:\n" + request.Task}
 }
 
 func bounded(text string, limit int) (string, bool) {

@@ -37,6 +37,8 @@ The optional model must name an exact available `provider/model`. Without it, th
 
 Only one child can run per extension instance. A second call returns `rejected`. Tasks are limited to 16 KiB. The default timeout is two minutes, with a maximum of five minutes. Child extensions, skills, prompt templates, and themes are disabled. The bundled agents omit `grep` and `find` because those PiG tools can spawn search processes that direct-process Exec cancellation does not own. The explicit tool list controls which tools PiG offers the child.
 
+Children use `--offline` to suppress startup package installs and resource networking. Normal model requests still reach the selected provider.
+
 The result contains `state`, `type`, `model`, `report`, `reportTruncated`, and aggregate `usage`. Reports are limited to 8 KiB of UTF-8 text. `reportTruncated` describes the handback size independently of the child's outcome.
 
 | State | Meaning |

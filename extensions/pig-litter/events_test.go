@@ -2,6 +2,7 @@ package pig_litter
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -61,6 +62,9 @@ func TestRequestAndLiteralTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := childArgs(request, "fixture/scout")
+	if !slices.Contains(args, "--offline") {
+		t.Fatal("child startup must suppress package networking")
+	}
 	if args[len(args)-1] != "Task:\n@secret" || strings.Contains(strings.Join(args, " "), "--approve") {
 		t.Fatalf("unsafe task construction %q", args)
 	}
