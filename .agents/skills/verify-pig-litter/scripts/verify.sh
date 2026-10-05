@@ -550,7 +550,7 @@ wait_for_notification() {
 			return 1
 		fi
 		screen="$(capture_pane "$session_name")"
-		if [[ "$screen" == *"Pig Litter is loaded. This bootstrap has no child delegation."* ]]; then
+		if [[ "$screen" == *"Pig Litter ready. Use pig_litter_agent with scout or worker. Foreground only."* ]]; then
 			printf '%s\n' "$screen" > "$evidence_dir/$case_name.after.txt"
 			return 0
 		fi
@@ -613,8 +613,8 @@ run_case() {
 	local case_name="$1"
 	local ready_marker="$2"
 	local session_name="pig-litter-$run_id-$case_name"
-	local status_text="bootstrap only, no child delegation"
-	local diagnostic_text="Pig Litter is loaded. This bootstrap has no child delegation."
+	local status_text="foreground scout and worker"
+	local diagnostic_text="Pig Litter ready. Use pig_litter_agent with scout or worker. Foreground only."
 	shift 2
 	start_case "$case_name" "$session_name" "$@"
 	wait_for_ready "$case_name" "$session_name" "$ready_marker"
@@ -629,7 +629,7 @@ run_case() {
 		track_process_tree "$case_name" ready "$session_name"
 	else
 		if [[ "$before_screen" != *"$status_text"* || "$before_screen" == *"$diagnostic_text"* ]]; then
-			fail_run "$case_name assertion" "selected startup did not show only the bootstrap status before the command"
+			fail_run "$case_name assertion" "selected startup did not show only the delegation status before the command"
 		fi
 		printf '/pig-litter\n' > "$evidence_dir/$case_name.action.txt"
 		tmux_do send-keys -t "$session_name" -l "/pig-litter"
@@ -652,8 +652,8 @@ run_case() {
 	case_result["$case_name"]=passed
 }
 
-run_case direct 'bootstrap only, no child delegation' -e ./extensions/pig-litter
-run_case piglet 'bootstrap only, no child delegation' --piglet ./piglet.yaml
+run_case direct 'foreground scout and worker' -e ./extensions/pig-litter
+run_case piglet 'foreground scout and worker' --piglet ./piglet.yaml
 run_case plain 'No models available.'
 if [[ -e "$repo_root/.pig" ]]; then
 	fail_run cleanup "PiG created project-local .pig state; it is preserved for inspection"
