@@ -1,5 +1,5 @@
 name: pig-litter
-description: "Pig Litter foreground delegation"
+description: "Pig Litter background child Sessions"
 extensions:
   - name: pig-litter
-    origins: [local:./extensions/pig-litter]
+    origins: [local:./extensions/pig-litter/dist/pig-litter.mjs]
