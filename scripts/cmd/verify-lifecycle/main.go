@@ -485,6 +485,10 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 		text, calls, err = f.parentMessages(request.Context(), body)
 	case "parent_lifecycle":
 		text, calls, err = f.parentLifecycle(request.Context(), body)
+	case "parent_completion":
+		text, calls, err = f.parentCompletion(request.Context(), w, body)
+	case "completion_child":
+		text, calls, err = f.completionChild(request.Context(), body)
 	case "lifecycle_child":
 		text, calls, err = f.lifecycleChild(request.Context(), body)
 	case "denied", "missing_file", "roles", "history", "message_child":
@@ -591,7 +595,7 @@ func run(directory, pig, extension, scenario string) error {
 		_ = writeJSON(filepath.Join(directory, "requests.json"), f.requests)
 	}()
 	models := []map[string]any{}
-	for _, id := range []string{"parent", "held", "worker", "parent_nested", "nester", "grandchild", "parent_checks", "denied", "provider_error", "missing_file", "roles", "history", "parent_messages", "message_child", "parent_lifecycle", "lifecycle_child"} {
+	for _, id := range []string{"parent", "held", "worker", "parent_nested", "nester", "grandchild", "parent_checks", "denied", "provider_error", "missing_file", "roles", "history", "parent_messages", "message_child", "parent_lifecycle", "lifecycle_child", "parent_completion", "completion_child"} {
 		models = append(models, map[string]any{"id": id, "name": id, "contextWindow": 100000, "maxTokens": 20000})
 	}
 	if err := writeJSON(filepath.Join(agentDir, "models.json"), map[string]any{"providers": map[string]any{"fixture": map[string]any{"api": "openai-completions", "baseUrl": "http://" + listener.Addr().String() + "/v1", "apiKey": "local-fixture-only", "models": models}}}); err != nil {
@@ -618,7 +622,7 @@ func run(directory, pig, extension, scenario string) error {
 	defer stderr.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	if scenario == "lifecycle" {
+	if scenario == "lifecycle" || scenario == "completion" {
 		return f.runLifecycle(ctx, directory, workspace, agentDir, pig, extension, stdout, stderr)
 	}
 	model := "fixture/parent"
@@ -692,6 +696,13 @@ func run(directory, pig, extension, scenario string) error {
 }
 
 func main() {
+	if target := os.Getenv("LITTER_FIXTURE_PROXY_TARGET"); target != "" {
+		if err := proxyCompletionExtension(target, os.Getenv("LITTER_FIXTURE_EVIDENCE")); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	self, err := os.Executable()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -699,7 +710,7 @@ func main() {
 	}
 	pig := flag.String("pig-bin", "", "Released PiG binary")
 	extension := flag.String("extension", filepath.Join(filepath.Dir(self), "pig-litter"), "Built pig-litter standalone")
-	scenario := flag.String("scenario", "core", "core, nested, checks, messages, lifecycle, or shadow")
+	scenario := flag.String("scenario", "core", "core, nested, checks, messages, lifecycle, completion, or shadow")
 	evidenceRoot := flag.String("evidence-root", filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(self)))), ".pstack", "evidence", "go-lifecycle"), "Evidence directory")
 	flag.Parse()
 	if *pig == "" {

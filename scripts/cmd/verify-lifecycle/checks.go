@@ -21,7 +21,7 @@ var childChecks = []childCheck{
 
 func validScenario(name string) bool {
 	switch name {
-	case "core", "nested", "checks", "messages", "lifecycle", "shadow":
+	case "core", "nested", "checks", "messages", "lifecycle", "completion", "shadow":
 		return true
 	}
 	return false

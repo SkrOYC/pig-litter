@@ -130,8 +130,16 @@ func (o *owner) sendCompletion(r *record, outcome Outcome) {
 	}
 	details := completionDetails{outcome.Run.ID, outcome.Run.Generation}
 	if r.parent == "" {
-		trigger := false
-		_ = o.context.SendCustomMessage(sdk.CustomMessage{CustomType: "litter_completion", Content: string(content), Display: false, Details: details}, sdk.SendMessageOptions{TriggerTurn: &trigger})
+		idle, err := o.context.IsIdle()
+		if err != nil {
+			return
+		}
+		options := sdk.SendMessageOptions{DeliverAs: "followUp"}
+		if idle {
+			trigger := false
+			options = sdk.SendMessageOptions{TriggerTurn: &trigger}
+		}
+		_ = o.context.SendCustomMessage(sdk.CustomMessage{CustomType: "litter_completion", Content: string(content), Display: false, Details: details}, options)
 		return
 	}
 	parentRun := r.parentRun

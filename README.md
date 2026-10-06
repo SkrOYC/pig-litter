@@ -48,7 +48,7 @@ Child file tools call the original parent's `Context.ExecuteTool` with their own
 
 Root inference starts after the matching spawn tool-result `message_end`. That event freezes the parent handback. It does not acknowledge disk persistence. Admission can be cancelled before that event. An ordinary caller turn ending leaves acknowledged children running. Explicit stop, owner replacement, reload, and exit retire the tree.
 
-Every generation owns a separate Go Runtime, Session, subscription, and cancellation context. Terminal assistant events and usage deltas describe that generation. Failed tools produce truthful partial or failed outcomes. Report clipping has a separate flag. Completion reservations remain held until their custom message is appended. A disposed parent Session uses retained history as the fallback. Stock sends provide no durable acknowledgement. A provider or trusted tool that ignores cancellation can delay stop and shutdown.
+Every generation owns a separate Go Runtime, Session, subscription, and cancellation context. Terminal assistant events and usage deltas describe that generation. Failed tools produce truthful partial or failed outcomes. Report clipping has a separate flag. Completion reservations remain held until their custom message is appended. A busy root processes completions as follow-up messages; an idle root retains them without inference. A disposed parent Session uses retained history as the fallback. Stock sends provide no durable acknowledgement. A provider or trusted tool that ignores cancellation can delay stop and shutdown.
 
 ## Verify
 
@@ -69,10 +69,11 @@ devenv shell -- scripts/verify-stock-lifecycle.sh --scenario nested
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario checks
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario messages
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario lifecycle
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario completion
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario shadow
 ```
 
-The fixtures record provider requests, stdout, stderr, and result receipts under `.pstack/evidence/go-lifecycle`. They verify parent-mediated file operations and permission denials, concurrency and depth limits, privacy, bounded reports and usage, retained resume, stale generations, and subtree stop. Additional cases check provider and tool failures, readonly delegation, exact model restrictions, history retirement, message ordering, replacement, and live-child exit.
+The fixtures record provider requests, stdout, stderr, and result receipts under `.pstack/evidence/go-lifecycle`. They verify parent-mediated file operations and permission denials, concurrency and depth limits, privacy, bounded reports and usage, retained resume, stale generations, and subtree stop. Additional cases check provider and tool failures, readonly delegation, exact model restrictions, history retirement, message ordering, replacement, and live-child exit. The completion case forwards extension protocol frames unchanged to observe delivery acknowledgements. It verifies that a busy parent processes a hidden child completion without another user prompt, and that an idle parent appends it without inference.
 
 Run the terminal driver with `tmux` available. Each case uses a private socket and isolated provider fixture.
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -91,9 +92,39 @@ func fixtureEnvironment(pig, directory, agentDir string) []string {
 }
 
 func (f *fixture) runLifecycle(ctx context.Context, directory, workspace, agentDir, pig, extension string, stdout, stderr *os.File) error {
-	command := exec.CommandContext(ctx, pig, "--no-extensions", "-e", extension, "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--approve", "--offline", "--model", "fixture/parent_lifecycle", "--mode", "rpc")
+	model := "fixture/parent_lifecycle"
+	selectedExtension := extension
+	if f.scenario == "completion" {
+		model = "fixture/parent_completion"
+		self, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		source, err := os.Open(self)
+		if err != nil {
+			return err
+		}
+		defer source.Close()
+		proxyDir := filepath.Join(directory, "proxy")
+		if err := os.MkdirAll(proxyDir, 0o700); err != nil {
+			return err
+		}
+		selectedExtension = filepath.Join(proxyDir, "pig-litter")
+		copy, err := os.OpenFile(selectedExtension, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o700)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(copy, source)
+		if err := errors.Join(copyErr, copy.Close()); err != nil {
+			return err
+		}
+	}
+	command := exec.CommandContext(ctx, pig, "--no-extensions", "-e", selectedExtension, "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--approve", "--offline", "--model", model, "--mode", "rpc")
 	prepareProcess(command)
 	command.Dir, command.Env, command.Stderr = workspace, fixtureEnvironment(pig, directory, agentDir), stderr
+	if f.scenario == "completion" {
+		command.Env = append(command.Env, "LITTER_FIXTURE_PROXY_TARGET="+extension)
+	}
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		return err
@@ -165,35 +196,41 @@ func (f *fixture) runLifecycle(ctx context.Context, directory, workspace, agentD
 			}
 		}
 	}
-	if err := send(map[string]any{"id": "spawn", "type": "prompt", "message": "SPAWN_REPLACEMENT. PARENT_PRIVATE_MARKER"}); err != nil {
-		return err
-	}
-	if err := wait("REPLACEMENT_READY", ""); err != nil {
-		return err
-	}
-	if err := send(map[string]any{"id": "replace", "type": "new_session"}); err != nil {
-		return err
-	}
-	if err := wait("", "replace"); err != nil {
-		return err
-	}
-	if err := f.wait(ctx, func() bool { return f.aborted["replace-A"] && f.aborted["replace-B"] }); err != nil {
-		return fmt.Errorf("replacement did not cancel both actual provider streams: %w", err)
-	}
-	f.mu.Lock()
-	f.checks["replacementCancelledStreams"] = true
-	f.mu.Unlock()
-	if err := send(map[string]any{"id": "after", "type": "prompt", "message": "AFTER_REPLACEMENT"}); err != nil {
-		return err
-	}
-	if err := wait("REPLACEMENT_CLEARED", ""); err != nil {
-		return err
-	}
-	if err := send(map[string]any{"id": "exit", "type": "prompt", "message": "SPAWN_EXIT"}); err != nil {
-		return err
-	}
-	if err := wait("EXIT_READY", ""); err != nil {
-		return err
+	if f.scenario == "completion" {
+		if err := f.runCompletion(ctx, directory, send, wait, events); err != nil {
+			return err
+		}
+	} else {
+		if err := send(map[string]any{"id": "spawn", "type": "prompt", "message": "SPAWN_REPLACEMENT. PARENT_PRIVATE_MARKER"}); err != nil {
+			return err
+		}
+		if err := wait("REPLACEMENT_READY", ""); err != nil {
+			return err
+		}
+		if err := send(map[string]any{"id": "replace", "type": "new_session"}); err != nil {
+			return err
+		}
+		if err := wait("", "replace"); err != nil {
+			return err
+		}
+		if err := f.wait(ctx, func() bool { return f.aborted["replace-A"] && f.aborted["replace-B"] }); err != nil {
+			return fmt.Errorf("replacement did not cancel both actual provider streams: %w", err)
+		}
+		f.mu.Lock()
+		f.checks["replacementCancelledStreams"] = true
+		f.mu.Unlock()
+		if err := send(map[string]any{"id": "after", "type": "prompt", "message": "AFTER_REPLACEMENT"}); err != nil {
+			return err
+		}
+		if err := wait("REPLACEMENT_CLEARED", ""); err != nil {
+			return err
+		}
+		if err := send(map[string]any{"id": "exit", "type": "prompt", "message": "SPAWN_EXIT"}); err != nil {
+			return err
+		}
+		if err := wait("EXIT_READY", ""); err != nil {
+			return err
+		}
 	}
 	if err := stdin.Close(); err != nil {
 		return err
@@ -209,16 +246,20 @@ func (f *fixture) runLifecycle(ctx context.Context, directory, workspace, agentD
 	if err := command.Wait(); err != nil {
 		return err
 	}
-	if err := f.wait(ctx, func() bool { return f.aborted["exit-held"] && len(f.held) == 0 }); err != nil {
-		return fmt.Errorf("owner exit did not drain its live native child: %w", err)
+	if f.scenario == "lifecycle" {
+		if err := f.wait(ctx, func() bool { return f.aborted["exit-held"] && len(f.held) == 0 }); err != nil {
+			return fmt.Errorf("owner exit did not drain its live native child: %w", err)
+		}
+		f.mu.Lock()
+		f.checks["ownerExitCancelledStream"] = true
+		f.mu.Unlock()
 	}
 	f.mu.Lock()
-	f.checks["ownerExitCancelledStream"] = true
 	checks := f.checks
 	failure := f.failure
 	f.mu.Unlock()
 	if failure != nil {
 		return failure
 	}
-	return writeJSON(filepath.Join(directory, "result.json"), map[string]any{"passed": true, "scenario": "lifecycle", "checks": checks, "retiredRuns": f.runs, "exitCode": command.ProcessState.ExitCode(), "isolatedEnvironment": true})
+	return writeJSON(filepath.Join(directory, "result.json"), map[string]any{"passed": true, "scenario": f.scenario, "checks": checks, "retiredRuns": f.runs, "exitCode": command.ProcessState.ExitCode(), "isolatedEnvironment": true})
 }
