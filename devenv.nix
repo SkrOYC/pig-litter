@@ -2,33 +2,33 @@
 let
   pigRelease = {
     "x86_64-linux" = {
-      archive = "pig-0.3.1-linux-amd64.tar.gz";
-      root = "pig-0.3.1-linux-amd64";
-      hash = "sha256-HKuVtN4SI7qqKBJdBm1MyA/vIfnr6+Fq2AFPxCFXCXw=";
+      archive = "pig-0.4.1-linux-amd64.tar.gz";
+      root = "pig-0.4.1-linux-amd64";
+      hash = "sha256-O03jWHy/thfe9IPsYt3c81gnrMNDaxRUzFaUwi3Nrz8=";
     };
     "aarch64-linux" = {
-      archive = "pig-0.3.1-linux-arm64.tar.gz";
-      root = "pig-0.3.1-linux-arm64";
-      hash = "sha256-aD8wY3ocuU5uXYMENHwmEYuaMO/nQekOr++qDOCeUoE=";
+      archive = "pig-0.4.1-linux-arm64.tar.gz";
+      root = "pig-0.4.1-linux-arm64";
+      hash = "sha256-4XaLv84pt4TXYAHrR+vZifBe0EL76BrYYpgW4YH6Wsg=";
     };
     "x86_64-darwin" = {
-      archive = "pig-0.3.1-darwin-amd64.tar.gz";
-      root = "pig-0.3.1-darwin-amd64";
-      hash = "sha256-5/As6YpaT8KOE4jSfxsIAm+XejlTEip0a4yShlXMc8E=";
+      archive = "pig-0.4.1-darwin-amd64.tar.gz";
+      root = "pig-0.4.1-darwin-amd64";
+      hash = "sha256-nynvASzTQHSsAq1KSub3uT1CtP69NaoIrfR3ApRNOoc=";
     };
     "aarch64-darwin" = {
-      archive = "pig-0.3.1-darwin-arm64.tar.gz";
-      root = "pig-0.3.1-darwin-arm64";
-      hash = "sha256-82ywiM/qkhh8LXIqiPnMEuc14SpizU6LpUFnWnni3MA=";
+      archive = "pig-0.4.1-darwin-arm64.tar.gz";
+      root = "pig-0.4.1-darwin-arm64";
+      hash = "sha256-JaHiveaF8oaE5JWyUNzK17KWCoQEVNgMiMNdXHqMWWY=";
     };
   };
   system = pkgs.stdenv.hostPlatform.system;
-  release = pigRelease.${system} or (throw "PiG 0.3.1 has no release archive for ${system}");
+  release = pigRelease.${system} or (throw "PiG 0.4.1 has no release archive for ${system}");
   pig = pkgs.stdenvNoCC.mkDerivation {
     pname = "pig";
-    version = "0.3.1";
+    version = "0.4.1";
     src = pkgs.fetchurl {
-      url = "https://github.com/MichaelKinsy/PiG/releases/download/v0.3.1/${release.archive}";
+      url = "https://github.com/MichaelKinsy/PiG/releases/download/v0.4.1/${release.archive}";
       hash = release.hash;
     };
     sourceRoot = release.root;

@@ -4,7 +4,7 @@ Pig Litter adds foreground child delegation to interactive PiG through its publi
 
 ## Develop with devenv
 
-Install Nix and devenv 2.4 or newer with the [official devenv install guide](https://devenv.sh/getting-started/). The lockfile pins PiG 0.3.1, Go 1.27.1, Bun, and tmux.
+Install Nix and devenv 2.4 or newer with the [official devenv install guide](https://devenv.sh/getting-started/). The environment pins PiG 0.4.1, Go 1.27.1, Bun, and tmux.
 
 ```sh
 devenv shell
@@ -52,7 +52,7 @@ The result contains `state`, `type`, `model`, `report`, `reportTruncated`, and a
 
 Launches require a successful host project-trust check. Pig Litter does not pass `--approve` to the child. A parent trust grant does not bypass the child's own trust policy. Child trust or startup errors remain failures.
 
-PiG 0.3.1 forwards SDK Exec cancellation in its terminal UI. Its headless host uses a detached context, so Pig Litter rejects delegation in print, JSON, and RPC parent modes. Press Escape in interactive PiG to cancel the active tool. The child always has a finite timeout.
+Pig Litter enables delegation only in the interactive PiG terminal UI until cancellation has been verified in other modes. Press Escape in the terminal UI to cancel the active tool. Each child has a finite timeout.
 
 The tool list is not an operating-system sandbox. File tools can access paths outside the working directory, and a worker can overwrite files. Worktrees do not provide a security boundary. The SDK Exec call buffers process output in the host. Pig Litter bounds parsed output and the parent report, but does not bound total host memory.
 
