@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
-root="${DEVENV_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-cd "$root/extensions/pig-litter"
-bun install --frozen-lockfile
-bun run test
-bun run build
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+factory="$root/extensions/pig-litter"
+tools="$root/scripts"
+for module in "$factory" "$tools"; do
+  go -C "$module" test -mod=readonly ./...
+  go -C "$module" test -mod=readonly -race ./...
+  go -C "$module" vet ./...
+done
+for command in pig-litter verify-lifecycle verify-tui litter-fixture-guard; do
+  go -C "$tools" build -mod=readonly -o "$factory/dist/$command" "./cmd/$command"
+done
