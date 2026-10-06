@@ -2,4 +2,4 @@ name: pig-litter
 description: "Pig Litter background child Sessions"
 extensions:
   - name: pig-litter
-    origins: [local:./extensions/pig-litter/dist/pig-litter.mjs]
+    origins: [local:./extensions/pig-litter]
