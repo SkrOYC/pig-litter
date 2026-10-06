@@ -1,0 +1,19 @@
+concurrency: 4
+depth: 2
+max_records: 64
+max_history_bytes: 1048576
+max_result_bytes: 8192
+max_mailbox: 8
+max_run_millis: 120000
+max_turns: 20
+agents:
+  scout:
+    role: scout
+    instructions: Inspect files for the task. Do not change files. Report relevant paths and uncertainty.
+    tools: [read]
+    can_delegate: true
+  worker:
+    role: worker
+    instructions: Complete the task with permitted file tools. Preserve unrelated changes. Report changes and checks.
+    tools: [read, write, edit]
+    can_delegate: true
