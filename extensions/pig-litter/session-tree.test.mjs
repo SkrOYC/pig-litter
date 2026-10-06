@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseConfig } from './config.mjs';
+import { queueCompletion, retireCompletions } from './completion-receipt.mjs';
+import { outcomeFrom } from './run-outcome.mjs';
 import { SessionTree, TreeError } from './session-tree.mjs';
 
 const scout = { role: 'scout', instructions: 'Read.', canDelegate: true };
@@ -82,6 +84,7 @@ test('an unacknowledged root spawn retains a stopped ID without launching', () =
   assert.equal(tree.live, 0);
   assert.equal(tree.list()[0].state, 'stopped');
   assert.equal(tree.inspect(pending.id).outcome.state, 'stopped');
+  assert.equal(tree.record(pending.id).run.history, undefined);
   assert.throws(() => tree.activate(pending, async () => { throw new Error('must not run'); }), /activation is no longer pending/);
   assert.throws(() => tree.admit(request(scout, { name: 'retry' })), /name already belongs/);
   assert.equal(tree.admit(request(scout, { name: 'next' })).name, 'next');
@@ -203,7 +206,9 @@ test('a full pending parent mailbox rejects resume before another completion can
 test('oversized retained history is dropped after cleanup and cannot be resumed', async () => {
   let entries = [{ type: 'message', text: 'short' }];
   const tree = new SessionTree(parseConfig('max_history_bytes: 1024\nmax_result_bytes: 512\n'));
-  const child = tree.admit(request(scout, { history: { getEntries: () => entries } }));
+  const manager = { getEntries: () => entries };
+  const child = tree.admit(request(scout, { history: manager }));
+  assert.equal(tree.record(child.id).run.history, manager);
   const running = tree.activate(child, async () => ({
     session: { abort: async () => {}, dispose() {} },
     completion: Promise.resolve({ state: 'completed', text: 'response' }),
@@ -212,8 +217,88 @@ test('oversized retained history is dropped after cleanup and cannot be resumed'
   const outcome = await running;
   assert.equal(outcome.state, 'partial');
   assert.equal(tree.inspect(child.id).historyAvailable, false);
+  assert.equal(tree.record(child.id).history, undefined);
+  assert.equal(tree.record(child.id).run.history, undefined);
+  assert.equal(Object.values(tree.record(child.id)).includes(manager), false);
+  assert.equal(Object.values(tree.record(child.id).run).includes(manager), false);
   assert.deepEqual(tree.inspect(child.id, { transcript: true }).entries, []);
   await assert.rejects(tree.message(child, { mode: 'resume', text: 'continue' }), /history is unavailable/);
+});
+
+test('streaming parent keeps completion capacity until the matching custom message is appended', async () => {
+  const listeners = new Set();
+  const queued = [];
+  const retained = [];
+  const session = {
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    async sendCustomMessage(message) { queued.push(message); },
+  };
+  let tree;
+  tree = new SessionTree(parseConfig('max_mailbox: 1\n'), { onCompletion: (outcome, parentId) => {
+    const message = { customType: 'litter_completion', details: { childId: outcome.run.id, generation: outcome.run.generation } };
+    return queueCompletion(tree.record(parentId).run, message, () => retained.push(message));
+  } });
+  const parent = tree.admit(request());
+  tree.record(parent.id).run.session = session;
+  tree.record(parent.id).run.state = 'running';
+  const child = tree.admit(request(scout, { parentId: parent.id }));
+  tree.finish(tree.record(child.id), tree.record(child.id).run, { state: 'completed', text: 'first' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(queued.length, 1);
+  assert.equal(tree.record(parent.id).pendingCompletions.size, 1);
+  await assert.rejects(tree.message(child, { mode: 'resume', text: 'again' }), /mailbox capacity/);
+  for (const listener of listeners) listener({ type: 'message_end', message: { role: 'custom', ...queued[0], details: { ...queued[0].details, generation: 99 } } });
+  await Promise.resolve();
+  assert.equal(tree.record(parent.id).pendingCompletions.size, 1);
+  for (const listener of listeners) listener({ type: 'message_end', message: { role: 'custom', ...queued[0] } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(tree.record(parent.id).pendingCompletions.size, 0);
+  const resumed = await tree.message(child, { mode: 'resume', text: 'again' });
+  tree.finish(tree.record(child.id), tree.record(child.id).run, { state: 'completed', text: 'second' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(queued.length, 2);
+  assert.equal(tree.record(parent.id).pendingCompletions.size, 1);
+  retireCompletions(tree.record(parent.id).run);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(tree.record(parent.id).pendingCompletions.size, 0);
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0].details.generation, resumed.generation);
+  assert.equal(listeners.size, 0);
+  for (const listener of listeners) listener({ type: 'message_end', message: { role: 'custom', ...queued[1] } });
+  assert.equal(retained.length, 1);
+});
+
+test('resumed outcome uses its terminal assistant event after compaction replaces the message array', () => {
+  const baseline = { tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, total: 150 }, cost: 1 };
+  const session = { messages: Array(60), getSessionStats: () => ({ tokens: { input: 110, output: 55, cacheRead: 0, cacheWrite: 0, total: 165 }, cost: 1.2 }) };
+  const assistant = { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'resume succeeded' }] };
+  session.messages = Array(7);
+  const outcome = outcomeFrom(session, assistant, baseline, '', false, false);
+  assert.equal(outcome.state, 'completed');
+  assert.equal(outcome.text, 'resume succeeded');
+  assert.equal(outcome.usage.totalTokens, 15);
+  assert.ok(Math.abs(outcome.usage.cost - 0.2) < 1e-9);
+});
+
+test('failed live completion enqueue keeps its reservation until retired history accepts it', async () => {
+  const listeners = new Set();
+  const run = {
+    completionReceipts: new Set(),
+    session: {
+      subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+      async sendCustomMessage() { throw new Error('enqueue failed'); },
+    },
+  };
+  const message = { customType: 'litter_completion', details: { childId: 'child', generation: 1 } };
+  let appended = 0;
+  const delivered = queueCompletion(run, message, () => { appended++; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(run.completionSendError, 'enqueue failed');
+  assert.equal(run.completionReceipts.size, 1);
+  retireCompletions(run);
+  await delivered;
+  assert.equal(appended, 1);
+  assert.equal(listeners.size, 0);
 });
 
 test('SDK queued steering counts against the mailbox after enqueue resolves', async () => {
@@ -295,7 +380,9 @@ test('retiring history before resume activation revokes the pending generation',
   const first = tree.admit(request());
   tree.finish(tree.record(first.id), tree.record(first.id).run, { state: 'completed', text: 'first' });
   const resumed = await tree.message(first, { mode: 'resume', text: 'second' });
+  const pendingRun = tree.record(first.id).run;
   tree.retireHistory(tree.record(first.id));
+  assert.equal(pendingRun.history, undefined);
   assert.equal(tree.record(first.id).history, undefined);
   assert.equal(tree.record(first.id).historyLost, true);
   assert.equal(tree.list()[0].generation, first.generation);

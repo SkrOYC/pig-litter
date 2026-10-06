@@ -2,6 +2,8 @@ import { join } from 'node:path';
 import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { stripTerminalSequences, truncateToWidth } from '@earendil-works/pi-tui';
 import { loadConfig } from './config.mjs';
+import { queueCompletion, retireCompletions } from './completion-receipt.mjs';
+import { outcomeFrom } from './run-outcome.mjs';
 import { SessionTree, TreeError } from './session-tree.mjs';
 
 const fileNames = ['read', 'ls', 'write', 'edit'];
@@ -65,24 +67,6 @@ function safeLabel(value) {
   const label = stripTerminalSequences(value).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
   if (!label) throw new TreeError('rejected', 'child name must contain visible text');
   return label;
-}
-
-function assistantText(message) {
-  return (message?.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('');
-}
-
-function outcomeFrom(session, firstMessage, firstStats, failure, stopped, limitHit) {
-  const recent = session.messages.slice(firstMessage);
-  const assistant = recent.filter(message => message.role === 'assistant').at(-1);
-  const stats = session.getSessionStats();
-  let state = stopped ? 'stopped' : assistant?.stopReason === 'stop' ? 'completed' : assistant?.stopReason === 'length' ? 'partial' : 'failed';
-  if (failure && state === 'completed') state = 'partial';
-  if (limitHit && state !== 'stopped') state = assistant ? 'partial' : 'failed';
-  const delta = key => Math.max(0, stats.tokens[key] - firstStats.tokens[key]);
-  return {
-    state, text: assistantText(assistant), error: failure || assistant?.errorMessage,
-    usage: { input: delta('input'), output: delta('output'), cacheRead: delta('cacheRead'), cacheWrite: delta('cacheWrite'), totalTokens: delta('total'), cost: Math.max(0, stats.cost - firstStats.cost) },
-  };
 }
 
 export default function pigLitter(pi) {
@@ -181,16 +165,17 @@ export default function pigLitter(pi) {
         if (parentId) {
           const parent = root.tree.records.get(parentId);
           if (!parent) throw new TreeError('unavailable', 'the rightful parent history is unavailable');
-          if (parent.run.session && ['starting', 'running', 'stopping'].includes(parent.run.state)) {
-            await parent.run.session.sendCustomMessage(message, { triggerTurn: false });
-          } else {
+          const appendRetained = () => {
             if (!parent.history) throw new TreeError('unavailable', 'parent retained history is unavailable');
             parent.history.appendCustomMessageEntry(message.customType, content, false, details);
             if (Buffer.byteLength(JSON.stringify(parent.history.getEntries())) > root.config.max_history_bytes) {
               root.tree.retireHistory(parent);
               throw new TreeError('unavailable', 'parent retained history cannot fit the child completion');
             }
-          }
+          };
+          if (parent.run.session && !parent.run.disposing && ['starting', 'running', 'stopping'].includes(parent.run.state)) {
+            await queueCompletion(parent.run, message, appendRetained);
+          } else appendRetained();
           return;
         }
         pi.sendMessage(message, root.context.isIdle() ? { triggerTurn: false } : { deliverAs: 'followUp' });
@@ -274,29 +259,45 @@ export default function pigLitter(pi) {
       let failure = '';
       let limitHit = false;
       let turns = 0;
+      let latestAssistant;
       unsubscribe = session.subscribe(event => {
         if (event.type === 'turn_start' && ++turns > root.config.max_turns) { failure = 'child turn limit reached'; limitHit = true; void session.abort(); }
         if (event.type === 'tool_execution_end' && event.isError) failure ||= `tool ${event.toolName} failed`;
         if (event.type === 'message_end') {
+          if (event.message?.role === 'assistant') latestAssistant = event.message;
           if (record.history !== manager || record.historyLost) { failure = 'retained child history was retired'; limitHit = true; void session.abort(); }
           else if (Buffer.byteLength(JSON.stringify(manager.getEntries())) > root.config.max_history_bytes) { failure = 'child history limit reached'; limitHit = true; void session.abort(); }
           if (event.message?.role === 'toolResult') settleAck(acks, event.message.toolCallId, event.message.isError);
         }
       });
-      const firstMessage = session.messages.length;
       const firstStats = session.getSessionStats();
       const completion = (async () => {
         try { await session.prompt(record.resumeText ?? `Task:\n${record.task}`); }
         catch (error) { failure ||= error instanceof Error ? error.message : String(error); }
+        if (run.completionSendError) failure ||= `child completion enqueue failed: ${run.completionSendError}`;
         if (record.history !== manager || record.historyLost) { failure ||= 'retained child history was retired'; limitHit = true; }
         else if (Buffer.byteLength(JSON.stringify(manager.getEntries())) > root.config.max_history_bytes) { failure ||= 'child history limit reached'; limitHit = true; }
-        return outcomeFrom(session, firstMessage, firstStats, failure, signal.aborted, limitHit);
+        return outcomeFrom(session, latestAssistant, firstStats, failure, signal.aborted, limitHit);
       })();
-      return { session, completion, dispose: () => { signal.removeEventListener('abort', onAbort); for (const pending of acks.values()) pending.cancel(); unsubscribe?.(); session.dispose(); } };
+      return { session, completion, dispose: () => {
+        run.disposing = true;
+        signal.removeEventListener('abort', onAbort);
+        for (const pending of acks.values()) pending.cancel();
+        unsubscribe?.();
+        try { session.dispose(); }
+        finally { retireCompletions(run); }
+      } };
     } catch (error) {
       signal.removeEventListener('abort', onAbort);
       unsubscribe?.();
-      if (session) { try { await session.abort(); } finally { session.dispose(); } }
+      if (session) {
+        try { await session.abort(); }
+        finally {
+          run.disposing = true;
+          try { session.dispose(); }
+          finally { retireCompletions(run); }
+        }
+      }
       throw error;
     }
   }

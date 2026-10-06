@@ -46,7 +46,7 @@ function previewOutcome(outcome, maximum) {
 
 function newRun(generation) {
   const finished = deferred();
-  return { generation, state: 'starting', controller: new AbortController(), finished, started: false, session: undefined, task: undefined, outcome: undefined, messages: [], pendingCount: 0, operation: Promise.resolve() };
+  return { generation, state: 'starting', controller: new AbortController(), finished, started: false, session: undefined, task: undefined, outcome: undefined, messages: [], pendingCount: 0, completionReceipts: new Set(), operation: Promise.resolve() };
 }
 
 export class SessionTree {
@@ -153,6 +153,7 @@ export class SessionTree {
     const record = this.current(ref);
     if (record.run.started || record.run.state !== 'starting') return false;
     record.run.controller.abort();
+    record.run.history = undefined;
     record.run.outcome = Object.freeze({ run: ref, state: 'stopped', model: record.model, text: '', error: 'spawn admission ended before the tool result was acknowledged', truncated: false, usage: usageOf() });
     record.run.state = 'stopped';
     record.run.finished.resolve(record.run.outcome);
@@ -225,6 +226,7 @@ export class SessionTree {
     const report = bounded(raw.text, this.config.max_result_bytes);
     const error = bounded(raw.error, 1024);
     run.outcome = Object.freeze({ run: { id: record.id, generation: run.generation }, state: run.deadline ? (report.text ? 'partial' : 'failed') : run.controller.signal.aborted ? 'stopped' : state, model: record.model, text: report.text, truncated: report.truncated, error: run.deadline ? 'child run time bound reached' : error.text || undefined, usage: usageOf(raw.usage) });
+    run.history = undefined;
     run.state = run.outcome.state;
     this.onStateChange?.();
     clearTimeout(run.timer);
