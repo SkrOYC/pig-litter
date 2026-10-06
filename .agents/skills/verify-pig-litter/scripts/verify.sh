@@ -16,12 +16,12 @@ doctor() {
 
 	pig_path="$(command -v pig)"
 	case "$pig_path" in
-		*-pig-0.3.1/bin/pig) ;;
-		*) printf 'expected pinned PiG 0.3.1, got %s\n' "$pig_path" >&2; return 1 ;;
+		*-pig-0.4.1/bin/pig) ;;
+		*) printf 'expected pinned PiG 0.4.1, got %s\n' "$pig_path" >&2; return 1 ;;
 	esac
 	pig_version="$(pig --version)"
-	if [[ "$pig_version" != "0.3.1+0.87.1" ]]; then
-		printf 'expected PiG 0.3.1+0.87.1, got %s\n' "$pig_version" >&2
+	if [[ "$pig_version" != "0.4.1+1.0.3" ]]; then
+		printf 'expected PiG 0.4.1+1.0.3, got %s\n' "$pig_version" >&2
 		return 1
 	fi
 

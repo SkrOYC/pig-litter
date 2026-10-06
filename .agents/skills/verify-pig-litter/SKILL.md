@@ -72,7 +72,7 @@ devenv shell -- check-pig-extension
 devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh
 ```
 
-The unchanged `verify.sh` checks pinned PiG 0.3.1, Go 1.27.1, and tmux 3.7c. Its read-only doctor is `verify.sh doctor`. It strips inherited credentials, uses temporary PiG state and Go caches, and runs direct `-e ./extensions/pig-litter`, local `--piglet ./piglet.yaml`, and unselected PiG launches offline.
+The pinned offline controls in `verify.sh` check PiG 0.4.1, Go 1.27.1, and tmux 3.7c. Its read-only doctor is `verify.sh doctor`. It strips inherited credentials, uses temporary PiG state and Go caches, and runs direct `-e ./extensions/pig-litter`, local `--piglet ./piglet.yaml`, and unselected PiG launches offline.
 
 The selected controls require status `foreground scout and worker`, then notification `Pig Litter ready. Use pig_litter_agent with scout or worker. Foreground only.` They capture and select **Trust (this session only)** when prompted. The unselected isolated control requires the pinned runtime's no-model warning and absence of the Pig Litter literals.
 
