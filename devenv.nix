@@ -56,7 +56,7 @@ in
   };
 
   env.GOTOOLCHAIN = "local";
-  packages = [ pkgs.git pkgs.bun pkgs.tmux pig pkgs.jq ];
+  packages = [ pkgs.git pkgs.bun pkgs.nodejs_24 pkgs.tmux pig pkgs.jq ];
 
   scripts.check-pig-extension.exec = ''
     bash "$DEVENV_ROOT/scripts/check-pig-extension.sh"

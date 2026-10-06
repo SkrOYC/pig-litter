@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-for command in pig go jq bun; do
+for command in pig jq bun node; do
   if ! command -v "$command" >/dev/null 2>&1; then
     printf 'required command is missing: %s\n' "$command" >&2
     exit 1
@@ -26,14 +26,14 @@ case "$pig_version" in
     ;;
 esac
 
-go_version="$(go env GOVERSION)"
-case "$go_version" in
-  go1.27.1) ;;
-  *)
-    printf 'expected Go 1.27.1, got %s\n' "$go_version" >&2
-    exit 1
-    ;;
+node_version="$(node --version)"
+case "$node_version" in
+  v24.*) ;;
+  *) printf 'expected Node 24, got %s\n' "$node_version" >&2; exit 1 ;;
 esac
+
+root="${DEVENV_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+bash "$root/scripts/test-pig-litter.sh"
 
 temp_dir="$(mktemp -d)"
 trap 'rm -rf "$temp_dir"' EXIT
@@ -45,22 +45,22 @@ export PIG_OFFLINE=1
 export PI_OFFLINE=1
 export GOPROXY=off
 export GOENV=off
-export GOCACHE="$temp_dir/go-cache"
-export GOMODCACHE="$temp_dir/go-mod-cache"
 workspace="$temp_dir/workspace"
 mkdir -p "$PIG_HOME" "$PIG_CODING_AGENT_DIR" "$workspace/extensions"
-cp -R "$DEVENV_ROOT/extensions/pig-litter" "$workspace/extensions/pig-litter"
-cp "$DEVENV_ROOT/piglet.yaml" "$workspace/piglet.yaml"
+mkdir -p "$workspace/extensions/pig-litter/dist"
+cp "$root/extensions/pig-litter/dist/pig-litter.mjs" "$workspace/extensions/pig-litter/dist/pig-litter.mjs"
+cp "$root/piglet.yaml" "$workspace/piglet.yaml"
+cp "$root/litter.yaml" "$workspace/litter.yaml"
 cd "$workspace"
 
-report="$(pig install --validate-only --json ./extensions/pig-litter)"
+report="$(pig install --validate-only --json ./extensions/pig-litter/dist/pig-litter.mjs)"
 printf '%s\n' "$report" | jq --exit-status --arg name pig-litter '
   .valid == true
   and .registered == true
   and .name == $name
-  and .definition.language == "go"
+  and .definition.language == "node"
   and .definition.form == "factory"
-  and (.tools == ["pig_litter_agent"])
+  and (.tools == ["litter_inspect", "litter_list", "litter_message", "litter_spawn", "litter_stop", "litter_wait"])
   and ((.commands // []) | map(if type == "string" then . else .name end) | index("pig-litter")) != null
 ' >/dev/null
 
@@ -79,4 +79,4 @@ for settings_file in "$PIG_CODING_AGENT_DIR/settings.json" "$workspace/.pig/sett
   fi
 done
 
-printf 'PiG %s loaded the pig-litter Go extension with exactly the pig_litter_agent tool and validated its Piglet with %s\n' "$pig_version" "$go_version"
+printf 'PiG %s loaded the Node extension with six background child tools and validated its Piglet with %s\n' "$pig_version" "$node_version"

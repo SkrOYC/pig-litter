@@ -1,0 +1,11 @@
+{
+  "name": "pig-litter",
+  "private": true,
+  "scripts": {
+    "build": "bun build ./index.mjs --target=node --external @earendil-works/pi-coding-agent --external @earendil-works/pi-tui --outfile ./dist/pig-litter.mjs",
+    "test": "bun test ./config.test.mjs ./session-tree.test.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
+  }
+}
