@@ -4,7 +4,7 @@ Pig Litter is a selected Go Resource for released PiG 0.4.1. It starts independe
 
 ## Build and select the Resource
 
-The developer environment pins PiG 0.4.1 and Go 1.27.1 with CGO enabled. Build inside the devenv shell so Go can use its C compiler.
+The developer environment pins PiG 0.4.1 and Go 1.27.1 with CGO enabled. Build inside the devenv shell so Go can use its C compiler. With [direnv](https://direnv.net) installed, run `direnv allow` once and [.envrc](.envrc) loads that shell on entry.
 
 ```sh
 devenv shell
