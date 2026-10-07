@@ -14,7 +14,6 @@ import (
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding"
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
-	"github.com/MichaelKinsy/PiG/tui/widthx"
 )
 
 type authority struct {
@@ -23,8 +22,9 @@ type authority struct {
 	epoch     uint64
 }
 type canonicalTool struct {
-	source     sdk.SourceInfo
-	parameters map[string]any
+	source      sdk.SourceInfo
+	parameters  map[string]any
+	description string
 }
 type ackKey struct {
 	caller Ref
@@ -54,6 +54,7 @@ type owner struct {
 	canonical                map[string]canonicalTool
 	ackMu                    sync.Mutex
 	acks                     map[ackKey]*acknowledgement
+	outcomeAcks              map[ackKey]*outcomeAcknowledgement
 }
 
 func memorySettings() (*coding.SettingsManager, error) {
@@ -139,7 +140,7 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		services.Close()
 		return nil, err
 	}
-	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, canonical: map[string]canonicalTool{}, acks: map[ackKey]*acknowledgement{}}
+	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, canonical: map[string]canonicalTool{}, acks: map[ackKey]*acknowledgement{}, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}}
 	tools, err := ctx.GetAllTools()
 	if err != nil {
 		tree.close()
@@ -156,7 +157,7 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 			services.Close()
 			return nil, err
 		}
-		o.canonical[tool.Name] = canonicalTool{source: tool.SourceInfo, parameters: parameters}
+		o.canonical[tool.Name] = canonicalTool{source: tool.SourceInfo, parameters: parameters, description: tool.Description}
 	}
 	tree.execute, tree.completion, tree.changed = o.executeGeneration, o.sendCompletion, o.widget
 	s.mu.Lock()
@@ -187,9 +188,14 @@ func (s *extensionState) retire() {
 	previous.ackMu.Lock()
 	acks := previous.acks
 	previous.acks = map[ackKey]*acknowledgement{}
+	outcomeAcks := previous.outcomeAcks
+	previous.outcomeAcks = map[ackKey]*outcomeAcknowledgement{}
 	previous.ackMu.Unlock()
 	for _, ack := range acks {
 		ack.once.Do(func() { close(ack.done); previous.tree.cancelPending(ack.ref) })
+	}
+	for _, ack := range outcomeAcks {
+		ack.once.Do(func() { close(ack.done) })
 	}
 	previous.tree.close()
 	previous.services.Close()
@@ -352,15 +358,20 @@ func (o *owner) settleAck(key ackKey, failed bool) {
 }
 
 type nativeTool struct {
-	name    string
-	schema  map[string]any
-	execute func(context.Context, string, json.RawMessage) (agent.AgentToolResult, error)
+	name        string
+	schema      map[string]any
+	description string
+	execute     func(context.Context, string, json.RawMessage) (agent.AgentToolResult, error)
 }
 
 func (t *nativeTool) Name() string  { return t.name }
 func (t *nativeTool) Label() string { return t.name }
 func (t *nativeTool) Schema() ai.ToolSchema {
-	return ai.ToolSchema{Name: t.name, Description: descriptions[t.name], Parameters: t.schema}
+	description := t.description
+	if description == "" {
+		description = descriptions[t.name]
+	}
+	return ai.ToolSchema{Name: t.name, Description: description, Parameters: t.schema, PromptGuidelines: promptGuidelines[t.name]}
 }
 func (t *nativeTool) ExecutionMode() agent.ToolExecutionMode { return agent.ToolModeParallel }
 func (t *nativeTool) Execute(ctx context.Context, id string, params json.RawMessage, _ agent.ToolUpdateCallback) (agent.AgentToolResult, error) {
@@ -380,7 +391,7 @@ func (o *owner) fileTool(r *record, name string) (agent.AgentTool, error) {
 	if err := json.Unmarshal(encoded, &parameters); err != nil {
 		return nil, err
 	}
-	return &nativeTool{name: name, schema: parameters, execute: func(ctx context.Context, _ string, raw json.RawMessage) (agent.AgentToolResult, error) {
+	return &nativeTool{name: name, schema: parameters, description: metadata.description + " Base reports on the returned tool result. Quote exact content from that result and label paraphrases as summaries. Report failed calls even when later calls succeed.", execute: func(ctx context.Context, _ string, raw json.RawMessage) (agent.AgentToolResult, error) {
 		if r.authority.sessionID != o.sessionID || r.authority.epoch != o.epoch {
 			return agent.AgentToolResult{}, reject("unavailable", "child authority retired")
 		}
@@ -459,6 +470,12 @@ func (o *owner) executeGeneration(r *record, run *run) (outcome Outcome) {
 	if manager == nil || lost {
 		outcome.State = Unavailable
 		outcome.Error = "retained child history was retired before construction"
+		return
+	}
+	if err := appendGeneration(manager, run.ref, o.config.MaxHistoryBytes); err != nil {
+		o.tree.retireHistory(r)
+		outcome.State = Unavailable
+		outcome.Error = err.Error()
 		return
 	}
 	settings, err := memorySettings()
@@ -547,10 +564,10 @@ func (o *owner) executeGeneration(r *record, run *run) (outcome Outcome) {
 				session.RequestAbort()
 			}
 		case agent.ToolExecutionEndEvent:
-			if event.IsError {
+			if event.IsError || event.Result.IsError {
 				observedMu.Lock()
 				if failure == "" {
-					failure = "tool " + event.ToolName + " failed"
+					failure = toolFailure(event.ToolName, event.Result)
 				}
 				observedMu.Unlock()
 			}
@@ -563,6 +580,7 @@ func (o *owner) executeGeneration(r *record, run *run) (outcome Outcome) {
 			if event.Message.ToolResult != nil {
 				result := event.Message.ToolResult
 				o.settleAck(ackKey{run.ref, result.ToolCallID}, result.IsError)
+				o.observeOutcome(run.ref, result.ToolName, result.ToolCallID, result.Text(), result.IsError)
 			}
 			if event.Message.Custom != nil {
 				o.observeCompletion(run.ref, event.Message.Custom)
@@ -644,6 +662,8 @@ func (o *owner) executeGeneration(r *record, run *run) (outcome Outcome) {
 	}
 	outcome = outcomeFrom(terminal, baseline, session.GetSessionStats(), failure, run.ctx.Err() != nil, limitHit)
 	observedMu.Unlock()
+	evidence := projectEvidence(run.ref, historyEntries(manager))
+	outcome.Evidence = &evidence
 	if size := historyBytes(manager); size > o.config.MaxHistoryBytes {
 		o.tree.retireHistory(r)
 		outcome.State = Partial
@@ -716,18 +736,7 @@ func (o *owner) widget() {
 	if err != nil {
 		return
 	}
-	live := 0
-	for _, child := range children {
-		if !child.State.terminal() {
-			live++
-		}
-	}
-	width := min(29, max(1, o.context.Width()))
-	lines := []string{widthx.TruncateToWidth(fmt.Sprintf("Litter %d live %d kept", live, len(children)-live), width, "", false)}
-	for _, child := range children[max(0, len(children)-2):] {
-		lines = append(lines, widthx.TruncateToWidth(child.Name+" "+string(child.State), width, "", false))
-	}
-	_ = o.context.SetWidget("pig-litter", lines)
+	_ = o.context.SetWidget("pig-litter", widgetLines(children, o.context.Width()))
 }
 
 func Extension() *sdk.Extension {
@@ -743,7 +752,7 @@ func Run() error {
 func newExtension(state *extensionState) *sdk.Extension {
 	ext := sdk.New("pig-litter")
 	for _, name := range controlNames {
-		ext.RegisterTool(sdk.ToolDefinition{Name: name, Label: name, Description: descriptions[name], Parameters: schemas[name], ExecutionMode: "parallel", Execute: func(ctx sdk.Context, params map[string]any) (any, error) {
+		ext.RegisterTool(sdk.ToolDefinition{Name: name, Label: name, Description: descriptions[name], PromptSnippet: descriptions[name], PromptGuidelines: promptGuidelines[name], Parameters: schemas[name], ExecutionMode: "parallel", Execute: func(ctx sdk.Context, params map[string]any) (any, error) {
 			o, err := state.ensure(ctx)
 			if err != nil {
 				return sdkResult(name, nil, err), nil
@@ -772,6 +781,17 @@ func newExtension(state *extensionState) *sdk.Extension {
 			id, _ := message["toolCallId"].(string)
 			failed, _ := message["isError"].(bool)
 			o.settleAck(ackKey{Ref{}, id}, failed)
+			raw, err := json.Marshal(message)
+			var result agent.AgentMessage
+			if err == nil {
+				err = json.Unmarshal(raw, &result)
+			}
+			if err == nil && result.ToolResult != nil {
+				tool := result.ToolResult
+				o.observeOutcome(Ref{}, tool.ToolName, tool.ToolCallID, tool.Text(), tool.IsError)
+			} else {
+				o.settleOutcomeAck(ackKey{Ref{}, id}, false)
+			}
 		}
 		if message["role"] == "custom" {
 			o.observeCompletion(Ref{}, message)
