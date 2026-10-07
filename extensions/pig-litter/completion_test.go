@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -307,5 +308,135 @@ func TestUncorrelatedWaitCannotHoldCompletionDelivery(t *testing.T) {
 	o.observeOutcome(Ref{}, "litter_wait", key.callID, content, false)
 	if !o.awaitOutcomeAck(child.Ref) {
 		t.Fatal("the correlated terminal outcome was not observed")
+	}
+}
+
+func TestCompletionAuditAfterSettlementBetweenObservationAndAckRead(t *testing.T) {
+	host, extension := net.Pipe()
+	defer host.Close()
+	defer extension.Close()
+	if err := host.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	ref := Ref{"child:1", 2}
+	tree := &Tree{ctx: context.Background(), pending: map[Ref]*reservation{ref: {}}}
+	snapshot, release := make(chan struct{}), make(chan struct{})
+	var gate sync.Once
+	var o *owner
+	ext := sdk.New("interleaving-test")
+	ext.OnEvent("session_start", func(ctx sdk.Context, _ map[string]any) (any, error) {
+		state := &extensionState{}
+		o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}, afterOutcomeSnapshot: func() {
+			gate.Do(func() { close(snapshot); <-release })
+		}}
+		state.owner = o
+		key := ackKey{callID: "wait-result"}
+		o.beginOutcomeAck(key, ref, "litter_wait", &ctx)
+		o.readyOutcomeAck(key, true)
+		o.sendCompletion(&record{}, Outcome{Run: ref, State: Completed, Model: "fixture/child", Text: "verified child report"})
+		return nil, nil
+	})
+	ext.OnEvent("message_end", func(_ sdk.Context, data map[string]any) (any, error) {
+		message := data["message"].(map[string]any)
+		o.observeOutcome(Ref{}, message["toolName"].(string), message["toolCallId"].(string), message["content"].(string), message["isError"].(bool))
+		return nil, nil
+	})
+	done := make(chan error, 1)
+	go func() { done <- ext.RunWithConn(extension) }()
+	if envelope := readCompletionEnvelope(t, host); envelope.Type != subprocess.MsgRegister {
+		t.Fatalf("SDK registration %#v", envelope)
+	}
+	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgReady, Ready: &subprocess.ReadyPayload{Cwd: t.TempDir(), Width: 80}})
+	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgRequest, ID: "complete", Request: &subprocess.RequestPayload{Method: "event", Event: "session_start", HandlerID: 1, Args: json.RawMessage(`{}`)}})
+	first := readCompletionEnvelope(t, host)
+	for first.Type != subprocess.MsgCall {
+		first = readCompletionEnvelope(t, host)
+	}
+	if first.Type != subprocess.MsgCall || first.Call.Method != "sessionRead" {
+		t.Fatalf("completion startup %#v", first)
+	}
+	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgCallResult, ID: first.ID, CallResult: &subprocess.CallResultPayload{Result: json.RawMessage(`"fixture"`)}})
+	if envelope := readCompletionEnvelope(t, host); envelope.Type != subprocess.MsgRequestState {
+		t.Fatalf("SDK call state %#v", envelope)
+	}
+	select {
+	case <-snapshot:
+	case <-time.After(time.Second):
+		t.Fatal("completion did not reach the observation gate")
+	}
+	content, _ := resultContent("litter_wait", map[string]any{"outcome": &Outcome{Run: ref, State: Completed}}, nil)
+	message, err := json.Marshal(map[string]any{"message": map[string]any{"role": "toolResult", "toolName": "litter_wait", "toolCallId": "wait-result", "content": content, "isError": false}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgRequest, ID: "observe", Request: &subprocess.RequestPayload{Method: "event", Event: "message_end", HandlerID: 2, Args: message}})
+	for {
+		envelope := readCompletionEnvelope(t, host)
+		if envelope.Type == subprocess.MsgResponse && envelope.ID == "observe" {
+			break
+		}
+		if envelope.Type == subprocess.MsgCall {
+			t.Fatalf("SDK call before settlement %#v", envelope)
+		}
+	}
+	o.ackMu.Lock()
+	remaining := len(o.outcomeAcks)
+	o.ackMu.Unlock()
+	tree.mu.Lock()
+	observed := tree.pending[ref].outcomeObserved
+	tree.mu.Unlock()
+	if !observed || remaining != 0 {
+		t.Fatalf("handoff did not settle before releasing gate: observed=%t remaining=%d", observed, remaining)
+	}
+	close(release)
+	audits, sends := 0, 0
+	for {
+		envelope := readCompletionEnvelope(t, host)
+		if envelope.Type == subprocess.MsgResponse && envelope.ID == "complete" {
+			break
+		}
+		if envelope.Type != subprocess.MsgCall {
+			continue
+		}
+		response := &subprocess.CallResultPayload{Result: json.RawMessage(`{}`)}
+		switch envelope.Call.Method {
+		case "sessionRead":
+			response.Result = json.RawMessage(`"fixture"`)
+		case "isIdle":
+			response.Result = json.RawMessage(`{"idle":false}`)
+		case "sendMessage":
+			sends++
+		case "appendEntry":
+			audits++
+			var args struct {
+				CustomType string
+				Data       completionNotice
+			}
+			if err := json.Unmarshal(envelope.Call.Args, &args); err != nil {
+				t.Fatal(err)
+			}
+			if args.CustomType != "litter_completion" || args.Data.ID != "child:1" || args.Data.Generation != 2 || args.Data.State != Completed || args.Data.Report != "verified child report" {
+				t.Fatalf("audit payload %#v", args)
+			}
+			tree.mu.Lock()
+			pending := tree.pending[ref]
+			tree.mu.Unlock()
+			if pending == nil || !pending.sent {
+				t.Fatal("reservation released before successful audit append")
+			}
+		default:
+			t.Fatalf("unexpected SDK call %q", envelope.Call.Method)
+		}
+		writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgCallResult, ID: envelope.ID, CallResult: response})
+	}
+	tree.mu.Lock()
+	pending := tree.pending[ref]
+	tree.mu.Unlock()
+	if audits != 1 || sends != 0 || pending != nil {
+		t.Fatalf("interleaved completion audits=%d sends=%d reservation=%#v", audits, sends, pending)
+	}
+	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgShutdown, Shutdown: &subprocess.ShutdownPayload{Reason: "test complete"}})
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

@@ -55,6 +55,7 @@ type owner struct {
 	ackMu                    sync.Mutex
 	acks                     map[ackKey]*acknowledgement
 	outcomeAcks              map[ackKey]*outcomeAcknowledgement
+	afterOutcomeSnapshot     func()
 }
 
 func memorySettings() (*coding.SettingsManager, error) {

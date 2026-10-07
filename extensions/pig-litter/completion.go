@@ -145,6 +145,9 @@ func (o *owner) awaitOutcomeAck(ref Ref) bool {
 		observed := pending != nil && pending.outcomeObserved
 		closed := o.tree.closed
 		o.tree.mu.Unlock()
+		if o.afterOutcomeSnapshot != nil {
+			o.afterOutcomeSnapshot()
+		}
 		if observed || closed {
 			return observed
 		}
@@ -158,7 +161,11 @@ func (o *owner) awaitOutcomeAck(ref Ref) bool {
 		}
 		o.ackMu.Unlock()
 		if done == nil {
-			return false
+			o.tree.mu.Lock()
+			pending := o.tree.pending[ref]
+			observed := pending != nil && pending.outcomeObserved
+			o.tree.mu.Unlock()
+			return observed
 		}
 		select {
 		case <-done:
