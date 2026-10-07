@@ -1,98 +1,111 @@
 ---
 name: verify-pig-litter
-description: "Verify Pig Litter's direct extension selection, named or local Piglet selection, status, diagnostic command, and foreground child delegation through the terminal UI. Use for installed user Piglets and real models, or for pinned offline and deterministic fixture checks."
+description: "Verify Pig Litter's direct and Piglet selection, background child sessions, retained generations, diagnostic command, and unselected startup through the terminal UI. Use real providers or isolated deterministic fixtures."
 ---
 
 # Verify Pig Litter
 
-Choose the check that matches the claim. Use the live helper for an installed named Piglet and a real provider. Use the pinned offline helper for repository selection controls. Keep deterministic provider failures and cancellation checks in the existing fixture.
+Use the live helper for installed Piglets and real providers. Use the pinned terminal fixture for isolated selection and UI controls. Keep real-provider observations separate from deterministic lifecycle checks. The coordinator owns every PiG drive, including doctors.
 
-Run from the repository root. When maintaining this skill, the coordinator owns every PiG drive, including doctor probes. Code owners can run syntax checks and pure helper tests.
+Run the commands from the repository root.
 
 ## Configure the live run
 
-Use the PiG executable and configuration root that already contain the selected Piglet and model credentials. The live helper inherits `HOME`, `PIG_HOME`, PiG agent-directory overrides, and provider environment variables. It never reads, copies, or writes `auth.json` or `models.json`.
+Use the PiG executable and configuration root that contain the selected Piglet and credentials. The helper inherits `HOME`, `PIG_HOME`, agent-directory overrides, and provider environment variables. It doesn't read, copy, or write `auth.json` or `models.json`.
 
-Pass `--piglet NAME_OR_PATH` to select another Piglet. The default is the named `pig-litter` Piglet. Pass `--model PROVIDER/MODEL` for an exact model, or omit it to use normal PiG and Piglet defaults. `PIG_LITTER_MODEL` in the commands below is a caller-supplied shell variable containing that exact model.
+Pass `--piglet NAME_OR_PATH` for a named or local Piglet; the default is `pig-litter`. Pass `--model PROVIDER/MODEL` for an exact model, or omit it to inherit configured defaults. `PIG_LITTER_MODEL` in the examples is a caller-supplied variable containing that exact identifier. Use `pig --offline --list-models SEARCH` to resolve the identifier before the drive.
 
-Set `PIG_HOME` to the configuration root you already use, or supply `--pig-home PATH`. Do not substitute an empty temporary root for a live credential check. An inherited PiG agent-directory override remains in effect even when `--pig-home` is supplied. A readiness mismatch must identify the checked root and agent directory before anyone changes authentication.
+Set `PIG_HOME` or pass `--pig-home PATH` to choose an existing configuration root. An inherited agent-directory override remains active. A readiness mismatch must identify the checked home and agent directory before authentication changes.
 
-Use `--pig-bin PATH` to select another PiG executable. An owned temporary `pig` symlink on `PATH` makes the extension's child command use that same executable, even when its original filename differs. The live doctor uses PiG's actual selected runtime and extension build. It does not require the devenv Go executable or a fixed tmux version.
+Use `--pig-bin PATH` to choose another executable. The live doctor uses the selected runtime and extension build; it doesn't require the pinned devenv toolchain.
 
-The helper clears only `PIG_PIGLET_NAME` and `PIG_PIGLET_PATH` to prevent an ambient selector from overriding the explicit Piglet or plain control. It preserves credential environment variables without recording their values. No run input persists a model preference.
+The helper clears ambient `PIG_PIGLET_NAME` and `PIG_PIGLET_PATH`. It preserves credential variables without recording their values. It doesn't persist a model preference.
 
 ## Launch the live proof
 
-Check the selected configuration, source resolution, model availability, and authentication metadata first.
+Check source resolution, exact model availability, and safe authentication metadata:
 
 ```sh
 .agents/skills/verify-pig-litter/scripts/live.mjs doctor \
-  --piglet pig-litter --model "$PIG_LITTER_MODEL"
+    --piglet pig-litter --model "$PIG_LITTER_MODEL"
 ```
 
-The doctor starts a bounded RPC metadata probe to build and inspect the selected runtime. It requests no model completion. It retains only selected model identifiers, command names, source origins, and configuration paths. The authentication check uses `--no-refresh` and never uses `--credentials` or `--diagnose`.
+The doctor requests RPC state, available models, and commands without requesting a completion. It records configuration paths, the declared origin, the resolved command source, and its Git revision when available. Authentication uses `--no-refresh`, without `--credentials` or `--diagnose`.
 
-Drive the named Piglet with the real provider.
+Drive the named Piglet with a real provider:
 
 ```sh
 .agents/skills/verify-pig-litter/scripts/live.mjs \
-  --piglet pig-litter --model "$PIG_LITTER_MODEL" --case selected
+    --piglet pig-litter --model "$PIG_LITTER_MODEL" --case selected
 ```
 
-Use `--case all` for the named positive proof followed by direct repository selection and plain startup controls. Direct and plain cases make no model request. The positive proof always uses `--piglet`; it never substitutes `-e` for named selection.
+Use `--case all` for selected delegation, direct repository selection, and plain startup, in that order. Direct and plain cases make no completion request. The selected case always uses `--piglet`.
 
-Use `--case cancel` for an optional real-provider cancellation drive. It sends Escape after it observes a live child and parent tool call. It requires that child's exit, a parent cancellation acknowledgement, and a new diagnostic notification after a fresh slash action. Keep this observational result separate from the controlled timeout, provider-error, and cancellation outcomes in the deterministic fixture.
+The helper starts each case in fresh scratch with a private tmux socket and parent session directory. It runs a doctor before each session. `--approve` trusts only that disposable workspace for the process.
 
-The command and polling deadlines are configurable through `--command-timeout-ms` and `--timeout-ms`. Both accept 1000 to 600000 milliseconds. Use `--evidence-dir PATH` to choose the retained evidence root. Run `live.mjs --help` to list all inputs.
+## Assess child sessions
 
-## Drive and assess the live proof
+Selected startup requires an editor displaying the exact model and scratch path. `/pig-litter` must explain the six background controls. There is no foreground startup status.
 
-The helper creates one private tmux socket, disposable workspace, and private parent session directory. It starts fresh sessions serially and runs the doctor before each session. `--approve` applies only to that owned scratch workspace for the current process. It never creates persistent trust for the actual project.
+The selected proof discovers agents, spawns a scout to read a private token, and spawns a worker to write and read another token. The scout token exists only in its input file. The parent has canonical file tools available because children call them through the parent host. The parent prompt restricts its own calls to `litter_*` controls; recorded calls enforce that restriction.
 
-The selected session verifies startup status and `/pig-litter`, then requests scout inspection and worker write/readback through `pig_litter_agent`. Parent built-in file tools are disabled with `--no-builtin-tools`. The scout input token exists only in the scratch file, not in the parent request. The worker writes another disposable token and reports it after readback.
+A passing run requires matching spawn admissions and completed exact-generation outcomes, inherited exact models, successful child file calls in retained transcripts, and expected file effects. It also requires a live `Litter N live M kept` widget. Parent prose alone cannot pass.
 
-A passing run requires actual parent session `toolCall` and `toolResult` records, completed child outcomes, inherited exact model identifiers, bounded reports, live scout and worker child process receipts, and the expected file effects. Parent prose or a visible success message alone is insufficient. The production children remain ephemeral with `--no-session`.
+The proof resumes the scout through `litter_message` and checks generation 2 and recall of the private token. The resume message must omit that token. The complete appended transcript must contain no tool calls. Child histories stay in memory inside the extension's Go SDK sessions. Child OS processes and persisted child sessions aren't expected.
 
-Plain startup preserves ordinary user discovery and uses normal configured TUI readiness. If ambient user resources load Pig Litter without explicit selection, record that observed configuration instead of declaring the control passed.
+## Check cancellation and stopping
 
-After a failure, retain the screen and available session evidence, clean the failed instance, and run a fresh doctor when possible. Never continue a wedged instance. After each normal drive, require status zero, no terminating signal, and termination of the observed parent and extension processes.
-
-## Retain live evidence and clean up
-
-Live evidence is saved under `.pstack/evidence/pig-litter-live/<run-id>/` by default. `run.json` records run inputs, doctor results, actions, selected source origins, session projections, file markers, process identities, exit status, failure, and cleanup. Screen captures and parent session JSONL remain beside it. Aborted tool results can be plain error text rather than a structured completed handback. Retain that text and error state without treating it as completion. Do not record the inherited environment or credential contents.
-
-The helper handles interruption, stops only its private tmux server and observed owned processes, and removes only its scratch directory. Evidence survives failure and forced cleanup. If any owned process remains, the run fails and preserves scratch for investigation.
-
-## Run the pinned offline controls
-
-Use the existing devenv lane to verify repository-local selection without model requests.
+Run the optional real-provider cancellation case:
 
 ```sh
-devenv shell -- check-pig-extension
+.agents/skills/verify-pig-litter/scripts/live.mjs \
+    --piglet pig-litter --model "$PIG_LITTER_MODEL" --case cancel
+```
+
+The helper waits for a live child and pending `litter_wait`, then sends **Escape**. It requires a recorded cancellation acknowledgement and a fresh diagnostic notification. Inspection must show that cancelling the wait leaves the child running. An explicit `litter_stop` must then return a stopped outcome. A cancelled wait can return plain tool error text; retain that text without treating it as completion.
+
+A wait timeout also leaves the child running. Provider errors, run deadlines, permission checks, nested delegation, stale generations, and controlled races belong to deterministic fixtures.
+
+## Retain evidence and clean up
+
+Evidence stays under `.pstack/evidence/pig-litter-live/RUN_ID/` unless `--evidence-dir PATH` overrides the root. `run.json` records doctors, source provenance, actions, parent session projections, child transcripts, file markers, observed process identities, and cleanup. Screens and parent session JSONL stay beside it. Don't record credentials or the inherited environment.
+
+After a failed drive, preserve available evidence, clean the instance, and run a fresh doctor when possible. Don't continue a wedged instance. Normal drives must exit with status zero, no signal, and no observed owned parent or extension process remaining. Cleanup removes only owned scratch and private tmux resources. If cleanup fails, preserve scratch and report failure.
+
+Both `--command-timeout-ms` and `--timeout-ms` accept 1000 to 600000 milliseconds. Run `live.mjs --help` for every input.
+
+Plain startup preserves ordinary resource discovery. Its doctor must show no `/pig-litter` registration, and its screen must show no child widget or diagnostic. If user configuration loads Pig Litter, report that observed selection rather than passing the unselected control.
+
+## Run pinned terminal controls
+
+Use the repository's deterministic terminal driver through the skill wrapper:
+
+```sh
+devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh doctor
 devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh
 ```
 
-The pinned offline controls in `verify.sh` check PiG 0.4.1, Go 1.27.1, and tmux 3.7c. Its read-only doctor is `verify.sh doctor`. It strips inherited credentials, uses temporary PiG state and Go caches, and runs direct `-e ./extensions/pig-litter`, local `--piglet ./piglet.yaml`, and unselected PiG launches offline.
+The wrapper checks PiG 0.4.1, Go 1.27.1, and tmux 3.7c. It runs direct, local Piglet, and unselected cases using the maintained product terminal fixture. The fixture uses isolated credentials and a loopback provider, prebuilt Go code, private scratch, and its own tmux server. It exercises tool registration, children, widget, resize, editor, help, stopping, scrollback, and clean exit. Evidence stays under `.pstack/evidence/go-tui/`. These checks don't prove real provider readiness.
 
-The selected controls require status `foreground scout and worker`, then notification `Pig Litter ready. Use pig_litter_agent with scout or worker. Foreground only.` They capture and select **Trust (this session only)** when prompted. The unselected isolated control requires the pinned runtime's no-model warning and absence of the Pig Litter literals.
+## Run deterministic lifecycle checks
 
-The helper saves trust, screen, action, process, and clean-exit evidence under `.pstack/evidence/pig-litter/`. It refuses existing project `.pig` state and never removes user project state. Its exit trap stops only its private tmux server and owned scratch resources.
-
-## Run deterministic delegation checks
-
-Keep the fixture's claims separate from a real-provider run.
+Use the pinned Go SDK and loopback lifecycle fixtures:
 
 ```sh
 devenv shell -- scripts/test-pig-litter.sh
-devenv shell -- bun scripts/verify-child-delegation.mjs
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario core
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario nested
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario checks
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario messages
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario lifecycle
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario completion
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario shadow
 ```
 
-The Go tests use the SDK embedded in the pinned PiG binary. They cover malformed JSON, absent terminal evidence, incomplete outcomes, ordering, usage, literal tasks, and bounds. The loopback fixture uses temporary model configuration and direct repository extension selection. It proves controlled missing-model, provider-error, timeout, busy, headless, and cancellation behavior. Timeout and cancellation both map to `stopped` in the public result.
-
-Check the live helper without starting PiG.
+The scenarios cover file authority, concurrency, depth, privacy, resume, stale generations, subtree stopping, history limits, completion delivery, and provider/tool failures. Keep these claims separate from the live proof. Check helper evidence parsing and bounded command teardown without launching PiG:
 
 ```sh
 bun test ./.agents/skills/verify-pig-litter/scripts/live.test.mjs
 ```
 
-Keep the [feature map](features/README.md) aligned with the source and observed drive results.
+Keep the [verification feature map](features/README.md) aligned with source and observed drives.

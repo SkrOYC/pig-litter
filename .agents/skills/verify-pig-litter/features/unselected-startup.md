@@ -1,17 +1,22 @@
 # Unselected startup
 
-## Behavior
+Plain PiG supplies no extension or Piglet flag. The helper clears ambient Piglet selectors and preserves ordinary resource discovery and configured readiness. Its plain argument and environment construction live in the live helper.
 
-Registering a named Piglet makes it available for explicit selection. Plain PiG still follows ordinary user resource discovery. Absence of a command-triggered notification alone does not prove that an extension was not loaded.
+## Drive configured discovery
 
-## Drive configured startup
+Supply an exact model in `PIG_LITTER_MODEL` and run:
 
-Run `.agents/skills/verify-pig-litter/scripts/live.mjs --case plain` with the installed runtime and inherited configuration. The helper removes ambient Piglet selector variables, supplies no extension or Piglet flag, and preserves ordinary resource discovery and built-in tools.
+```sh
+.agents/skills/verify-pig-litter/scripts/live.mjs \
+    --model "$PIG_LITTER_MODEL" --case plain
+```
 
-Wait for a live configured TUI, capture it, and require absence of the Pig Litter status and notification. Use the selected named-Piglet case as the positive control. If ordinary user configuration loads Pig Litter, report that observed configuration rather than marking the unselected control passed.
+The doctor records the runtime command inventory. Require no `/pig-litter` registration and no child widget or diagnostic on the live screen. Pig Litter has no startup status, so absence of a foreground literal doesn't establish unselected startup.
+
+If ordinary user discovery loads Pig Litter, the helper fails the unselected assertion and records `ambientSelection:true`. Report that observed configuration instead of claiming an isolated control passed. The selected case provides the positive comparison.
 
 ## Drive isolated startup
 
-Run `devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh` for the pinned offline control. It uses an empty temporary PiG home without credentials, waits for `No models available.`, and checks that the Pig Litter literals are absent. That warning is expected only for this isolated control.
+Run the pinned wrapper. Its unselected case uses private configuration and a loopback model, verifies actual provider tool inventory, and requires no `litter_*` tools or child widget. It uses configured fixture readiness rather than an empty-model warning. Evidence stays under `.pstack/evidence/go-tui/`.
 
-Both paths require a live pane before assertions, normal exit, and termination of observed owned processes.
+Both paths require a live pane, status-zero exit without a signal, and termination of observed owned processes.

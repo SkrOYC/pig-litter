@@ -1,28 +1,26 @@
 # Piglet selection
 
-## Behavior
+A named Piglet selects its registered source and declared extension origins under the active PiG configuration root. A path selects a declaration directly. Repository `piglet.yaml` resolves `local:./extensions/pig-litter` relative to that file.
 
-A named user Piglet selects its registered source and declared extension origins. `pig --piglet pig-litter` uses the active PiG configuration root. A path argument such as `./piglet.yaml` selects that source directly. The repository-local Piglet resolves `local:./extensions/pig-litter` relative to its file.
+The selected Resource registers background controls and `/pig-litter`, without a foreground startup status. The implementation lives in `extensions/pig-litter/adapter.go` and `operations.go`. Repository source alone doesn't prove what an installed Git origin resolves.
 
-The selected extension shows startup status and handles `/pig-litter`. Source resolution and extension build must be observed through the selected runtime. A repository-local fixture does not establish named user resolution or Git Resource provenance.
+## Drive named selection
 
-## Drive named user selection
-
-Use the live helper's doctor with the active config root and exact model supplied externally.
+Supply an exact provider/model in `PIG_LITTER_MODEL` and run the doctor:
 
 ```sh
 .agents/skills/verify-pig-litter/scripts/live.mjs doctor \
-  --piglet pig-litter --model "$PIG_LITTER_MODEL"
+    --piglet pig-litter --model "$PIG_LITTER_MODEL"
 ```
 
-The doctor records the resolved Piglet source, declared extension origins, selected model, availability, and safe authentication metadata. It does not substitute a temporary PiG home or require a separate Go executable on `PATH`.
+The doctor records the declaration path, declared origins, resolved command source, Git revision when available, model availability, and safe authentication metadata. It inherits the existing configuration root and agent-directory override.
 
-Run the same helper without `doctor` for startup, diagnostic, and real scout/worker proof. The actual launch contains `--piglet pig-litter`, not a direct extension replacement. Capture the source origin and revision that the named user declaration resolves for that run.
+Run the same helper without `doctor` for diagnostic, scout, worker, retained resume, widget, and clean-exit proof. The launch must contain `--piglet pig-litter`. A direct extension launch cannot establish named selection.
 
-## Drive repository selection
+## Drive local selection
 
-Run `devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh`. Its local Piglet case captures status, `/pig-litter`, notification, and clean exit with pinned offline PiG.
+Pass `--piglet /ABSOLUTE_PATH/piglet.yaml --case selected` to drive the repository declaration with real credentials. For isolated selection and UI controls, run the pinned wrapper's local Piglet fixture. Preserve the distinction between local source and installed Git provenance.
 
 ## Configuration
 
-The live helper inherits `PIG_HOME` and agent-directory overrides. Supply `--pig-home` if the selected runtime should use another existing root. A default root mismatch is a configuration mismatch, not evidence that the user must authenticate again. Ambient Piglet selectors are cleared so the explicit name or path controls the drive. Live trust applies only to the owned disposable workspace.
+The helper preserves credentials and clears only ambient Piglet selectors. Supply `--pig-home PATH` to choose another existing root. An inherited agent-directory override remains active. Identify both checked paths before changing authentication. Trust applies only to owned scratch for the process.

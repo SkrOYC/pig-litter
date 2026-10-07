@@ -1,8 +1,8 @@
 # Verification features
 
-This map covers foreground delegation and selection. Distinguish installed named-Piglet and real-provider evidence from pinned offline and fixture evidence.
+Each feature has a source-backed behavior description and a live recipe. Keep installed Piglet and real-provider evidence separate from isolated terminal and lifecycle fixtures.
 
-- [Foreground child delegation](foreground-delegation.md) covers real scout and worker effects, inherited models, bounded handback, and the deterministic outcome controls.
-- [Direct extension selection](direct-extension.md) covers startup status and the diagnostic command through explicit repository extension selection.
-- [Piglet selection](piglet-selection.md) covers named user source resolution and the repository-local Piglet.
-- [Unselected startup](unselected-startup.md) covers plain configured startup and the isolated pinned control.
+- [Child sessions](child-sessions.md) covers background admission, file effects, exact models, retained transcripts, resume, waiting, stopping, and the widget.
+- [Direct extension selection](direct-extension.md) covers the repository Go Resource and diagnostic through explicit selection.
+- [Piglet selection](piglet-selection.md) covers named user provenance and repository-local declarations.
+- [Unselected startup](unselected-startup.md) covers ordinary configured discovery and the isolated plain control.

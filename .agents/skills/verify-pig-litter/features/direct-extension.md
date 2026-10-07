@@ -1,15 +1,18 @@
 # Direct extension selection
 
-## Behavior
+Explicit `pig -e /ABSOLUTE_PATH/extensions/pig-litter` selects the Go Resource through its `Extension()` factory. It registers the six background controls and `/pig-litter`. The factory and command live in `extensions/pig-litter/adapter.go`.
 
-Explicit `pig -e ./extensions/pig-litter` loads the extension, sets status `foreground scout and worker`, and registers `/pig-litter`. The command shows a separate notification. Selection and the notification make no model request.
+Startup displays the selected extension and normal editor. `/pig-litter` explains discovery, spawn, inspect, message, stop, and wait. Selection and help make no completion request. The child widget appears after a child operation initializes ownership.
 
-## Drive
+## Drive the repository source
 
-Run `.agents/skills/verify-pig-litter/scripts/live.mjs --case direct` with the installed PiG and inherited configuration. The helper starts from owned scratch, selects the repository extension by absolute path, verifies status and the diagnostic, and requires clean process exit. It performs a runtime doctor before the drive.
+Supply an exact model in `PIG_LITTER_MODEL` and run:
 
-Run `devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh` for the pinned offline control. It records the visible session-only trust prompt, startup status, action, and notification.
+```sh
+.agents/skills/verify-pig-litter/scripts/live.mjs \
+    --model "$PIG_LITTER_MODEL" --case direct
+```
 
-## Evidence limits
+The doctor records the resolved command source and Git revision when available. The helper selects the repository extension by absolute path from owned scratch, captures readiness and the diagnostic, and requires clean exit. It doesn't replace a named Piglet proof.
 
-Direct repository selection proves that entry point and diagnostic. It does not establish named user Piglet discovery, Git origin resolution, or a real provider completion. Use the selected named-Piglet live case for those claims.
+For isolated terminal behavior, run the pinned wrapper. Its direct case uses the prebuilt repository Go extension and a deterministic loopback provider. It also checks child widget, resize, editor, help, stopping, and scrollback. Evidence stays under `.pstack/evidence/go-tui/`.
