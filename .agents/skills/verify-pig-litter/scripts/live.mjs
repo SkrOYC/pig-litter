@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
-import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 const repository = resolve(import.meta.dir, '../../../..');
-const statusText = 'foreground scout and worker';
-const diagnosticText = 'Pig Litter ready. Use pig_litter_agent with scout or worker. Foreground only.';
+const diagnosticText = 'Use litter_list to discover named agents and children. Use litter_spawn to start a background child, then inspect, message, stop, or wait by ID and generation.';
+const controlTools = ['litter_spawn', 'litter_list', 'litter_inspect', 'litter_message', 'litter_stop', 'litter_wait'];
 
 export function configuration(args, env = process.env) {
  const config = { pigBinary: 'pig', piglet: 'pig-litter', model: undefined, pigHome: env.PIG_HOME, case: 'selected', evidencePath: join(repository, '.pstack/evidence/pig-litter-live'), timeoutMs: 180000, commandTimeoutMs: 120000, doctorOnly: false };
@@ -39,7 +39,8 @@ export function launchArgs(config, kind, sessionDir, rpc = false) {
  if (kind !== 'plain') args.push('--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files');
  if (config.model) args.push('--model', config.model);
  if (kind === 'direct') args.push('-e', join(repository, 'extensions/pig-litter'));
- else if (kind !== 'plain') args.push('--piglet', config.piglet, '--no-builtin-tools');
+ else if (kind !== 'plain') args.push('--piglet', config.piglet);
+ if (kind !== 'plain') args.push('--tools', ['read', 'write', 'edit', ...controlTools].join(','));
  if (rpc) args.push('--mode', 'rpc', '--no-session');
  return args;
 }
@@ -49,6 +50,7 @@ export function sessionEvidence(text) {
  const calls = [];
  const results = [];
  const assistants = [];
+ const completions = [];
  for (const entry of records) {
   const message = entry.type === 'message' ? entry.message : undefined;
   if (message?.role === 'assistant') {
@@ -59,32 +61,81 @@ export function sessionEvidence(text) {
    const content = typeof message.content === 'string' ? message.content : (message.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('\n');
    let value;
    let parseError;
-   if (message.toolName === 'pig_litter_agent') {
-    try { value = JSON.parse(content); } catch { parseError = 'Delegation tool result is not JSON.'; }
+   if (controlTools.includes(message.toolName)) {
+    try { value = JSON.parse(content); } catch { parseError = 'Child control result is not JSON.'; }
    }
    results.push({ id: message.toolCallId, name: message.toolName, isError: message.isError, value, parseError, errorText: parseError && content.slice(0, 8192), entryId: entry.id });
   }
+  if (entry.type === 'custom_message' && entry.customType === 'litter_completion') completions.push(entry);
  }
- return { header: records.find(entry => entry.type === 'session'), modelChanges: records.filter(entry => entry.type === 'model_change').map(entry => ({ provider: entry.provider, model: entry.modelId })), calls, results, assistants };
+ return { header: records.find(entry => entry.type === 'session'), modelChanges: records.filter(entry => entry.type === 'model_change').map(entry => ({ provider: entry.provider, model: entry.modelId })), calls, results, assistants, completions };
 }
 
-export function completedDelegation(evidence, type, model, token) {
- const call = evidence.calls.findLast(call => call.name === 'pig_litter_agent' && call.arguments?.type === type);
- const result = evidence.results.find(result => result.id === call?.id);
- if (!call || !result) return undefined;
- if (evidence.calls.some(call => call.name !== 'pig_litter_agent')) throw new Error('Parent called another tool; this does not prove child delegation.');
+export function completedDelegation(evidence, type, model, token, generation = 1) {
+ const call = evidence.calls.findLast(call => call.name === 'litter_spawn' && call.arguments?.type === type);
+ const admission = evidence.results.find(result => result.id === call?.id);
+ if (!call || !admission) return undefined;
+ if (evidence.calls.some(call => !controlTools.includes(call.name))) throw new Error('Parent called another tool; this does not prove child delegation.');
  if (call.arguments.model) throw new Error('The child call set a model instead of testing parent model inheritance.');
- if (result.isError || result.value?.state !== 'completed') throw new Error(`Child ${type} returned ${result.value?.state ?? 'an invalid result'}.`);
- if (result.value.type !== type || result.value.model !== model) throw new Error('Child type or effective model does not match the selected run.');
- if (Buffer.byteLength(result.value.report ?? '') > 8192 || !result.value.report?.includes(token)) throw new Error('Child handback lacks the expected file token or exceeds the report limit.');
+ if (admission.isError || !admission.value?.child?.id) throw new Error(`Child ${type} admission returned ${admission.value?.state ?? 'an invalid result'}.`);
+ const child = admission.value.child;
+ if (child.type !== type || child.model !== model) throw new Error('Child type or effective model does not match the selected run.');
+ const result = evidence.results.findLast(result => {
+  const matchingCall = evidence.calls.find(call => call.id === result.id && ['litter_wait', 'litter_inspect'].includes(call.name) && call.arguments?.id === child.id && (call.name !== 'litter_wait' || call.arguments.generation === generation));
+  return matchingCall && result.name === matchingCall.name && result.value?.outcome?.run?.id === child.id && result.value.outcome.run.generation === generation;
+ });
+ if (!result) return undefined;
+ const outcome = result.value.outcome;
+ if (result.isError || outcome.state !== 'completed') throw new Error(`Child ${type} returned ${outcome.state ?? 'an invalid result'}.`);
+ if (outcome.model !== model) throw new Error('Child outcome model does not match the selected run.');
+ if (Buffer.byteLength(outcome.text ?? '') > 8192 || !outcome.text?.includes(token)) throw new Error('Child handback lacks the expected file token or exceeds the report limit.');
  if (evidence.assistants.some(message => `${message.provider}/${message.model}` !== model)) throw new Error('Parent assistant used a different model than the doctor observed.');
  if (evidence.assistants.at(-1)?.stopReason !== 'stop') return undefined;
- return { call, result };
+ return { call, admission, result, child, outcome };
 }
 
 export function cancellationAcknowledged(evidence, callId) {
- return evidence.results.some(result => result.id === callId && (result.value?.state === 'stopped' || result.isError && /abort|cancel/i.test(result.errorText ?? result.value?.report ?? '')))
-  || evidence.assistants.at(-1)?.stopReason === 'aborted';
+ return evidence.results.some(result => result.id === callId && (result.value?.state === 'cancelled' || result.isError && /abort|cancel/i.test(result.errorText ?? result.value?.report ?? '')));
+}
+
+export function childTranscript(evidence, child, model, token, tools) {
+ const inspection = evidence.results.findLast(result => {
+  const call = evidence.calls.find(call => call.id === result.id && call.name === 'litter_inspect' && call.arguments?.id === child.id && call.arguments.transcript === true && (call.arguments.offset ?? 0) === 0);
+  return call && result.name === call.name && result.value?.child?.id === child.id && result.value.child.generation === child.generation && result.value.more === false && !result.isError;
+ });
+ const entries = inspection?.value.entries;
+ if (!entries?.length) return undefined;
+ const transcript = sessionEvidence(entries.map(entry => JSON.stringify(entry)).join('\n'));
+ for (const name of tools) {
+  const call = transcript.calls.find(call => call.name === name);
+  const result = transcript.results.find(result => result.id === call?.id && !result.isError);
+  ensure(call && result, `Child transcript lacks a successful ${name} call.`);
+ }
+ ensure(JSON.stringify(entries).includes(token), 'Child transcript lacks the file token.');
+ ensure(transcript.assistants.length && transcript.assistants.every(message => `${message.provider}/${message.model}` === model), 'Child transcript used a different model.');
+ return { entries, calls: transcript.calls, results: transcript.results, assistants: transcript.assistants };
+}
+
+export function resumedRecall(evidence, scout, model, token) {
+ const message = evidence.results.find(result => {
+  const call = evidence.calls.find(call => call.id === result.id && call.name === 'litter_message' && call.arguments?.id === scout.child.id && call.arguments.generation === 1 && call.arguments.resume === true);
+  if (!call || result.isError || result.value?.delivery !== 'resumed') return false;
+  ensure(typeof call.arguments.text === 'string' && !call.arguments.text.includes(token), 'Resume message supplied the private token instead of testing retained recall.');
+  return result.value.child?.id === scout.child.id;
+ });
+ if (!message) return undefined;
+ ensure(message.value.child.generation === 2, 'Resume did not advance the child generation.');
+ const completed = completedDelegation(evidence, 'scout', model, token, 2);
+ if (!completed) return undefined;
+ const inspection = evidence.results.find(result => {
+  const call = evidence.calls.find(call => call.id === result.id && call.name === 'litter_inspect' && call.arguments?.id === scout.child.id && call.arguments.transcript === true && call.arguments.offset === scout.transcript.entries.length);
+  return call && result.name === call.name && !result.isError && result.value?.child?.id === scout.child.id && result.value.child.generation === 2 && result.value.more === false && result.value.entries?.length;
+ });
+ if (!inspection) return undefined;
+ const transcript = sessionEvidence(inspection.value.entries.map(entry => JSON.stringify(entry)).join('\n'));
+ ensure(!transcript.calls.length, 'Resumed scout called tools instead of recalling retained history.');
+ ensure(transcript.assistants.length && transcript.assistants.every(message => `${message.provider}/${message.model}` === model), 'Resumed transcript used another model.');
+ return { message, inspection, ...completed };
 }
 
 function ensure(condition, message) { if (!condition) throw new Error(message); }
@@ -159,13 +210,9 @@ export async function runCommand(args, { cwd, env, timeoutMs, signal, input, onS
 export async function drive(config) {
  config = { ...config, pigBinary: Bun.which(config.pigBinary) ?? resolve(config.pigBinary), evidencePath: resolve(config.evidencePath) };
  const scratch = await mkdtemp(join(tmpdir(), 'pig-litter-live-'));
- const childBinDirectory = join(scratch, 'bin');
- await mkdir(childBinDirectory);
- await symlink(config.pigBinary, join(childBinDirectory, 'pig'));
  const evidencePath = join(config.evidencePath, `${new Date().toISOString().replaceAll(':', '-')}-${randomUUID().slice(0, 8)}`);
  await mkdir(evidencePath, { recursive: true });
  const env = environment(config, process.env);
- env.PATH = `${childBinDirectory}:${env.PATH}`;
  const socket = join(scratch, 'tmux.sock');
  const owned = new Map();
  const panes = [];
@@ -270,7 +317,13 @@ export async function drive(config) {
   ensure(auth.status === 'ready', `Model readiness is ${auth.status} under ${status.paths?.home}. Check the active configuration root and agent directory.`);
   const commands = (runtime.get_commands?.commands ?? []).map(command => command.name);
   ensure(kind === 'plain' || commands.includes('pig-litter'), 'Selected runtime did not register /pig-litter.');
-  return { version, paths: status.paths, model: selected, commands, source: source && { name: source.name, path: source.source, extensions: source.piglet?.extensions?.map(extension => ({ name: extension.name, origins: extension.origins })) }, auth: { status: auth.status, provider: auth.provider } };
+  const resolvedSources = [];
+  for (const entry of runtime.get_commands?.commands ?? []) if (entry.name === 'pig-litter') {
+   const path = entry.sourceInfo?.path;
+   const revision = path && await command(['git', '-C', path, 'rev-parse', 'HEAD']).catch(() => undefined);
+   resolvedSources.push({ path, revision: revision?.trim(), sourceInfo: entry.sourceInfo });
+  }
+  return { version, paths: status.paths, model: selected, commands, resolvedSources, source: source && { name: source.name, path: source.source, extensions: source.piglet?.extensions?.map(extension => ({ name: extension.name, origins: extension.origins })) }, auth: { status: auth.status, provider: auth.provider } };
  }
  async function sessionProjection(sessionDir) {
   const files = (await readdir(sessionDir, { recursive: true }).catch(() => [])).filter(path => path.endsWith('.jsonl'));
@@ -308,11 +361,12 @@ export async function drive(config) {
   await wait(async () => {
    ensure((await tmux('display-message', '-pt', kind, '#{pane_dead}')).trim() === '0', 'PiG exited during startup.');
    const text = await screen(kind, 'startup');
-   return kind === 'plain' ? text.includes(receipt.doctor.model.split('/').at(-1)) : text.includes(statusText);
+   return text.includes(receipt.doctor.model.split('/').at(-1)) && text.includes(workspace);
   }, 'healthy TUI startup', config.commandTimeoutMs);
   if (kind === 'plain') {
    const text = await screen(kind, 'plain');
-   ensure(!text.includes(statusText) && !text.includes(diagnosticText), 'Plain PiG unexpectedly selected Pig Litter through ordinary discovery.');
+   receipt.ambientSelection = receipt.doctor.commands.includes('pig-litter');
+   ensure(!receipt.ambientSelection && !text.includes(diagnosticText) && !/Litter \d+ live/.test(text), 'Plain PiG selected Pig Litter through ordinary discovery; inspect the recorded configuration and command inventory.');
   } else {
    await send(kind, '/pig-litter');
    await wait(async () => (await screen(kind, 'diagnostic')).includes(diagnosticText), '/pig-litter notification', 10000);
@@ -320,34 +374,73 @@ export async function drive(config) {
   if (kind === 'selected' || kind === 'cancel') {
    const inputToken = `scout-${randomUUID()}`;
    await writeFile(join(workspace, 'input.txt'), `${inputToken}\n`);
-   const type = kind === 'cancel' ? 'worker' : 'scout';
-   const task = kind === 'cancel' ? 'Read input.txt repeatedly and report its token. Do not write files.' : 'Read input.txt and report its complete token. Do not change files.';
-   await send(kind, `Call pig_litter_agent exactly once with type ${type} and task ${JSON.stringify(task)}. Omit model so the child inherits your model. Do not use another tool.`);
-  if (kind === 'cancel') {
-    const children = await wait(async () => { const tree = await processes(receipt.pid); return tree.filter(row => row.command.includes('--mode json') && row.command.includes('--no-session')).length ? tree.filter(row => row.command.includes('--mode json') && row.command.includes('--no-session')) : undefined; }, 'live child before Escape');
-    receipt.cancelledChildren = children;
-    const before = await sessionProjection(sessions);
-    receipt.cancelledCall = before?.evidence.calls.findLast(call => call.name === 'pig_litter_agent');
-    ensure(receipt.cancelledCall, 'Live child lacks an actual parent delegation toolCall record.');
+   async function progress(label, check) {
+    return await wait(async () => {
+     const text = await screen(kind, label);
+     if (/Litter [1-9]\d* live/.test(text)) {
+      receipt.liveWidgetObserved = true;
+      await writeFile(join(evidencePath, `${kind}.live-widget.txt`), text);
+     }
+     const session = await sessionProjection(sessions);
+     if (!session) return undefined;
+     ensure(session.evidence.calls.every(call => controlTools.includes(call.name)), 'Parent called a tool outside the child controls.');
+     ensure(session.evidence.assistants.every(message => `${message.provider}/${message.model}` === receipt.doctor.model), 'Parent used a different model.');
+     return check(session.evidence);
+    }, label);
+   }
+   const onlyControls = 'Use only litter_* controls yourself. Do not call file tools yourself. Omit model in spawn so children inherit your model.';
+   if (kind === 'cancel') {
+    await send(kind, `Spawn one scout named cancel-proof with task ${JSON.stringify('Read input.txt in 1000 separate read tool calls. Do not delegate or write. Report the token only after all reads.')} and then call litter_wait with its returned ID and generation, timeoutMs 300000. ${onlyControls}`);
+    const before = await progress('before-cancel', evidence => {
+     const admission = evidence.results.find(result => result.name === 'litter_spawn' && result.value?.child?.name === 'cancel-proof');
+     const call = evidence.calls.find(call => call.name === 'litter_wait' && call.arguments?.id === admission?.value?.child?.id);
+     return admission && call && !evidence.results.some(result => result.id === call.id) && receipt.liveWidgetObserved ? { admission, call } : undefined;
+    });
+    receipt.cancelledCall = before.call;
+    receipt.cancelledChild = before.admission.value.child;
+    const spawn = (await sessionProjection(sessions)).evidence.calls.find(call => call.id === before.admission.id);
+    ensure(!spawn.arguments.model && receipt.cancelledChild.model === receipt.doctor.model, 'Cancellation child did not inherit the parent model.');
     receipt.actions.push({ key: 'Escape', at: new Date().toISOString() });
     await tmux('send-keys', '-t', kind, 'Escape');
-    await wait(async () => !(await Promise.all(children.map(alive))).some(Boolean), 'cancelled child process exit', 10000);
+    await progress('cancel-acknowledgement', evidence => cancellationAcknowledged(evidence, before.call.id));
     const beforeDiagnostic = await screen(kind, 'before-responsiveness');
     const notificationCount = beforeDiagnostic.split(diagnosticText).length - 1;
     await send(kind, '/pig-litter');
     await wait(async () => (await screen(kind, 'after-cancel')).split(diagnosticText).length - 1 > notificationCount, 'new notification after cancellation', 10000);
-    const after = await wait(async () => { const session = await sessionProjection(sessions); return session && cancellationAcknowledged(session.evidence, receipt.cancelledCall.id) ? session : undefined; }, 'recorded parent cancellation acknowledgement', 10000);
-    receipt.cancellation = { callId: receipt.cancelledCall.id, childExitObserved: true, newNotificationObserved: true, results: after?.evidence.results.filter(result => result.id === receipt.cancelledCall.id), assistantStopReasons: after?.evidence.assistants.map(message => message.stopReason), files: await readdir(workspace) };
+    const child = receipt.cancelledChild;
+    await send(kind, `Inspect child ${child.id} without transcript, then explicitly stop it with litter_stop id ${child.id} generation ${child.generation}. Do not spawn. ${onlyControls}`);
+    receipt.cancellation = await progress('explicit-stop', evidence => {
+     const inspection = evidence.results.find(result => result.name === 'litter_inspect' && result.value?.child?.id === child.id);
+     const stopped = evidence.results.find(result => result.name === 'litter_stop' && result.value?.outcome?.run?.id === child.id);
+     if (!inspection || !stopped || evidence.assistants.at(-1)?.stopReason !== 'stop') return undefined;
+     ensure(inspection.value.child.state === 'running', 'Cancelled wait did not leave the child running.');
+     ensure(stopped.value.outcome.state === 'stopped' && !stopped.isError, 'Explicit stop did not stop the child.');
+     return { callId: before.call.id, waitCancelled: true, childContinued: true, newNotificationObserved: true, inspection, stopped };
+    });
+    receipt.cancellation.files = await readdir(workspace);
     ensure(receipt.cancellation.files.length === 1 && receipt.cancellation.files[0] === 'input.txt', 'Cancellation task unexpectedly wrote workspace files.');
    } else {
-    const scout = await wait(async () => { const session = await sessionProjection(sessions); return session && completedDelegation(session.evidence, 'scout', receipt.doctor.model, inputToken); }, 'completed scout handback');
+    await send(kind, `Call litter_list once to discover agents. Spawn exactly one scout named scout-proof with task ${JSON.stringify('Read input.txt and report its complete token. Do not change files or delegate.')} and wait for its returned ID and generation with litter_wait timeoutMs 120000. Then inspect that child with transcript true, offset 0, limit 20. ${onlyControls}`);
+    const scout = await progress('scout-progress', evidence => {
+     const completed = completedDelegation(evidence, 'scout', receipt.doctor.model, inputToken);
+     if (!completed) return undefined;
+     const transcript = childTranscript(evidence, completed.child, receipt.doctor.model, inputToken, ['read']);
+     return transcript ? { ...completed, transcript } : undefined;
+    });
     receipt.scout = scout;
     const outputToken = `worker-${randomUUID()}`;
-    await send(kind, `Call pig_litter_agent exactly once with type worker and task ${JSON.stringify(`Write output.txt containing exactly ${outputToken} followed by a newline, then read it back and report that token.`)}. Omit model so the child inherits your model. Do not use another tool.`);
-    receipt.worker = await wait(async () => { const session = await sessionProjection(sessions); return session && completedDelegation(session.evidence, 'worker', receipt.doctor.model, outputToken); }, 'completed worker handback');
+    await writeFile(join(workspace, 'output.txt'), 'Disposable output fixture: replace this content.\n');
+    await send(kind, `Spawn exactly one worker named worker-proof with task ${JSON.stringify(`Replace the existing disposable output.txt with exactly ${outputToken} followed by a newline, then read it back and report that token. Do not delegate.`)} and wait for its returned ID and generation with litter_wait timeoutMs 120000. Then inspect that child with transcript true, offset 0, limit 20. ${onlyControls}`);
+    receipt.worker = await progress('worker-progress', evidence => {
+     const completed = completedDelegation(evidence, 'worker', receipt.doctor.model, outputToken);
+     if (!completed) return undefined;
+     const transcript = childTranscript(evidence, completed.child, receipt.doctor.model, outputToken, ['write', 'read']);
+     return transcript ? { ...completed, transcript } : undefined;
+    });
     ensure(await readFile(join(workspace, 'output.txt'), 'utf8') === `${outputToken}\n`, 'Actual worker file content differs from the requested marker.');
-    ensure(receipt.processes.some(row => row.command.includes('--mode json') && row.command.includes('--tools read,ls')), 'No live scout child process was observed.');
-    ensure(receipt.processes.some(row => row.command.includes('--mode json') && row.command.includes('--tools read,write,edit,ls')), 'No live worker child process was observed.');
+    await send(kind, `Resume the completed scout using litter_message id ${scout.child.id} generation 1 resume true with text ${JSON.stringify('Report the input.txt token from your retained conversation. Do not read files or delegate again.')} and wait for the returned generation with litter_wait timeoutMs 120000. Then inspect that child with transcript true, offset ${scout.transcript.entries.length}, limit 20. ${onlyControls}`);
+    receipt.resume = await progress('resume-progress', evidence => resumedRecall(evidence, scout, receipt.doctor.model, inputToken));
+    ensure(receipt.liveWidgetObserved, 'No live child widget was observed.');
     receipt.fileEffects = { input: inputToken, output: outputToken };
    }
   }
