@@ -110,7 +110,7 @@ func TestExplicitResumeKeepsHistoryAndIDAndRejectsStaleGeneration(t *testing.T) 
 	if _, err := tree.wait(context.Background(), child.Ref, 1); err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("stale generation %v", err)
 	}
-	inspection, err := tree.inspect(child.ID, true, 0, 10)
+	inspection, err := tree.inspect(InspectTarget{ID: child.ID}, true, 0, 10)
 	if err != nil || !inspection.HistoryAvailable || len(inspection.Entries) != 1 || !strings.Contains(string(inspection.Entries[0]), "retained marker") {
 		t.Fatalf("retained transcript %#v %v", inspection, err)
 	}
@@ -321,14 +321,14 @@ func TestInspectionClipsReportWithoutChangingRetainedOutcome(t *testing.T) {
 	child := testAdmission(t, tree, Ref{}, "scout", "child")
 	report := strings.Repeat("é", 3000)
 	tree.finish(tree.records[child.ID], tree.records[child.ID].run, Outcome{State: Completed, Text: report})
-	inspection, err := tree.inspect(child.ID, false, 0, 10)
+	inspection, err := tree.inspect(InspectTarget{ID: child.ID}, false, 0, 10)
 	if err != nil || len(inspection.Outcome.Text) != 2048 || !inspection.Outcome.HandbackTruncated || tree.records[child.ID].run.outcome.Text != report {
 		t.Fatalf("inspection %#v %v", inspection, err)
 	}
 	if _, err := tree.records[child.ID].history.AppendCustomMessage("large", strings.Repeat("x", 33000), false, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tree.inspect(child.ID, true, 1, 1); err == nil {
+	if _, err := tree.inspect(InspectTarget{ID: child.ID}, true, 1, 1); err == nil {
 		t.Fatal("allowed unbounded transcript page")
 	}
 }
