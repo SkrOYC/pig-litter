@@ -7,6 +7,7 @@ toolchain go1.27.1
 require (
 	github.com/MichaelKinsy/PiG v0.4.1
 	github.com/MichaelKinsy/PiG/extensions/sdk v0.4.1
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	go.yaml.in/yaml/v3 v3.0.5
 )
 
@@ -43,7 +44,6 @@ require (
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/yuin/goldmark v1.8.5 // indirect
 	golang.org/x/image v0.45.0 // indirect
 	golang.org/x/mod v0.40.0 // indirect

@@ -28,7 +28,9 @@ Configuration parsing rejects duplicate and unknown keys, aliases, invalid numer
 
 The Resource registers exactly `litter_spawn`, `litter_list`, `litter_inspect`, `litter_message`, `litter_stop`, and `litter_wait`.
 
-Call `litter_list` to discover named agent types and children. It pages agent definitions and retained children independently. Call `litter_spawn` with a self-contained task. Spawn returns admission immediately. Use `litter_wait` separately for an exact ID and generation. A timeout or cancelled wait leaves the child running. `litter_inspect` returns bounded summaries and optional transcript pages. `litter_message` steers a live child or resumes a settled child with `resume:true`. Resume keeps the in-memory history and child ID, then increments the generation. `litter_stop` aborts the selected subtree and waits for cleanup.
+Call `litter_list` to discover named agent types and children. It pages agent definitions and retained children independently. Call `litter_spawn` with a self-contained task. Spawn returns admission immediately. Use `litter_wait` separately for an exact ID and generation. A timeout or cancelled wait leaves the child running. `litter_inspect` accepts an ID to discover the current run. Its optional `generation` must match that run, or the call returns a stale-generation error. `transcript` defaults to `false`, and `transcriptRequested` echoes the choice. `offset` and `limit` page the whole retained log when `transcript:true`; `entries` stays empty otherwise. Transcript pages include all retained generations. `litter_message` steers a live child or resumes a settled child with `resume:true`. Resume keeps the in-memory history and child ID, then increments the generation. `litter_stop` aborts the selected subtree and waits for cleanup.
+
+Wait, inspection, and completion results include bounded `evidence` from actual retained tool results. It separates current results from earlier failures and counts all observed results. Each receipt gives its generation, tool, path when available, error flag, text preview, and raw transcript `entryOffset` and `entryId`. Use the offset with `transcript:true` to retrieve the original result. `textFormat` is `concatenated_text_blocks`, matching the SDK's text projection. Receipts count text and non-text blocks. `more` marks omitted receipts, and `truncated` marks clipped previews. Evidence fits 4096 serialized bytes. The child assistant's report carries `reportProvenance:"child_assistant"`. Tool receipts support verification of that report. They describe the returned observation at the time of the call.
 
 ```json
 {"type":"scout","task":"Read the requested file and report its main functions.","name":"survey"}
@@ -38,7 +40,11 @@ Call `litter_list` to discover named agent types and children. It pages agent de
 {"id":"CHILD_ID","generation":1,"text":"Continue from retained history.","resume":true}
 ```
 
-Histories last while their owning main Session and extension connection live. Replacement, reload, exit, and crashes lose them. An SDK turn can temporarily exceed `max_history_bytes`. Pig Litter then drops the retained manager after cleanup and rejects resume. A compact terminal widget shows recent children. `/pig-litter` explains the controls. A focused transcript inspector, durable history, workflow runner, and product worktrees are outside this increment.
+```json
+{"id":"CHILD_ID","generation":2,"transcript":true,"offset":0,"limit":50}
+```
+
+Histories last while their owning main Session and extension connection live. Replacement, reload, exit, and crashes lose them. An SDK turn can temporarily exceed `max_history_bytes`. Pig Litter then drops the retained manager after cleanup and rejects resume. A compact terminal widget shows recent children. Each snapshot's `displayLabel` is the stable name at the start of its widget row. Named children keep their logical name. Unnamed children use `#` followed by the ID sequence suffix. `/pig-litter` explains the controls. A focused transcript inspector, durable history, workflow runner, and product worktrees are outside this increment.
 
 ## Authority and limits
 
@@ -48,7 +54,9 @@ Child file tools call the original parent's `Context.ExecuteTool` with their own
 
 Root inference starts after the matching spawn tool-result `message_end`. That event freezes the parent handback. It does not acknowledge disk persistence. Admission can be cancelled before that event. An ordinary caller turn ending leaves acknowledged children running. Explicit stop, owner replacement, reload, and exit retire the tree.
 
-Every generation owns a separate Go Runtime, Session, subscription, and cancellation context. Terminal assistant events and usage deltas describe that generation. Failed tools produce truthful partial or failed outcomes. Report clipping has a separate flag. Completion reservations remain held until their custom message is appended. A busy root processes completions as follow-up messages; an idle root retains them without inference. A disposed parent Session uses retained history as the fallback. Stock sends provide no durable acknowledgement. A provider or trusted tool that ignores cancellation can delay stop and shutdown.
+Every generation owns a separate Go Runtime, Session, subscription, and cancellation context. Terminal assistant events and usage deltas describe that generation. Failed tools produce truthful partial or failed outcomes with canonical error context. A successful resume keeps earlier failed results in history. Generation metadata stays outside model context. Report clipping has a separate flag. If history is retired, `historyAvailable:false` identifies the loss of raw transcript access, and inspection keeps frozen evidence when available.
+
+Completion JSON identifies `origin:"pig-litter"` and labels the report as child assistant prose. Wait and stop handoffs register before they block. After a successful terminal tool-result `message_end`, the matching completion appends as an audit custom entry outside model context. Its reservation releases after that append succeeds. Other completion reservations remain held until their custom message is appended. A busy root receives asynchronous completions as follow-up messages. An idle root retains them without inference. A disposed parent Session uses retained history as the fallback. Stock sends provide no durable acknowledgement. A provider or trusted tool that ignores cancellation can delay stop and shutdown.
 
 ## Verify
 

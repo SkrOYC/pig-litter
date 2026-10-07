@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,9 +16,10 @@ import (
 )
 
 type reservation struct {
-	parent     ChildID
-	generation int
-	sent       bool
+	parent          ChildID
+	generation      int
+	sent            bool
+	outcomeObserved bool
 }
 
 type Tree struct {
@@ -66,7 +68,7 @@ func (t *Tree) currentLocked(ref Ref) (*record, error) {
 		return nil, reject("rejected", "unknown child ID")
 	}
 	if r.run.ref.Generation != ref.Generation {
-		return nil, reject("rejected", "stale child generation")
+		return nil, reject("rejected", fmt.Sprintf("stale child generation %d; current generation is %d; use litter_inspect with id only to refresh", ref.Generation, r.run.ref.Generation))
 	}
 	return r, nil
 }
@@ -110,7 +112,18 @@ func (t *Tree) snapshotLocked(r *record) Snapshot {
 		value := r.parent
 		parent = &value
 	}
-	return Snapshot{Ref: r.run.ref, Parent: parent, Depth: r.depth, Name: r.name, Type: r.kind, Model: r.model, State: r.run.state}
+	return Snapshot{Ref: r.run.ref, Parent: parent, Depth: r.depth, Name: r.name, DisplayLabel: displayLabel(r.name, r.id), Type: r.kind, Model: r.model, State: r.run.state}
+}
+
+func displayLabel(name string, id ChildID) string {
+	if name != string(id) {
+		return name
+	}
+	sequence := string(id)
+	if colon := strings.LastIndexByte(sequence, ':'); colon >= 0 {
+		sequence = sequence[colon+1:]
+	}
+	return "#" + sequence
 }
 
 func (t *Tree) roomLocked(parent ChildID, writer bool, cwd string, except ChildID) error {
@@ -266,6 +279,9 @@ func (t *Tree) finish(r *record, run *run, raw Outcome) {
 		return
 	}
 	raw.Run, raw.Model = run.ref, r.model
+	if raw.Text != "" {
+		raw.ReportProvenance = "child_assistant"
+	}
 	if !raw.State.terminal() {
 		raw.State = Failed
 	}
@@ -326,21 +342,39 @@ func (t *Tree) list(caller ChildID) ([]Snapshot, error) {
 	return list, nil
 }
 
-func (t *Tree) inspect(id ChildID, transcript bool, offset, limit int) (Inspection, error) {
+func (t *Tree) inspect(target InspectTarget, transcript bool, offset, limit int) (Inspection, error) {
 	if offset < 0 || offset > 1000000 || limit < 1 || limit > 50 {
 		return Inspection{}, reject("rejected", "invalid transcript page")
 	}
 	t.mu.Lock()
-	r := t.records[id]
+	r := t.records[target.ID]
 	if r == nil || t.closed {
 		t.mu.Unlock()
 		return Inspection{}, reject("unavailable", "child history is unavailable")
 	}
-	result := Inspection{Child: t.snapshotLocked(r), Outcome: previewOutcome(r.run.outcome, 2048), HistoryAvailable: !r.historyLost, Entries: []json.RawMessage{}, Mailbox: []Outcome{}}
+	if target.Generation != nil && *target.Generation < 1 {
+		t.mu.Unlock()
+		return Inspection{}, reject("rejected", "inspection generation must be a positive integer")
+	}
+	if target.Generation != nil {
+		if _, err := t.currentLocked(Ref{target.ID, *target.Generation}); err != nil {
+			t.mu.Unlock()
+			return Inspection{}, err
+		}
+	}
+	result := Inspection{Child: t.snapshotLocked(r), Outcome: previewOutcome(r.run.outcome, 2048), HistoryAvailable: r.history != nil && !r.historyLost, TranscriptRequested: transcript, Entries: []json.RawMessage{}, Mailbox: []Outcome{}}
+	var frozenEvidence *ToolEvidence
+	if r.run.outcome != nil {
+		frozenEvidence = r.run.outcome.Evidence
+	}
 	manager := r.history
+	var entries []json.RawMessage
+	if manager != nil {
+		entries = historyEntries(manager)
+	}
 	for _, childID := range t.order {
 		child := t.records[childID]
-		if child.parent == id && child.run.outcome != nil {
+		if child.parent == target.ID && child.run.outcome != nil {
 			result.MailboxTotal++
 			result.Mailbox = append(result.Mailbox, *previewOutcome(child.run.outcome, 512))
 		}
@@ -350,17 +384,17 @@ func (t *Tree) inspect(id ChildID, transcript bool, offset, limit int) (Inspecti
 	}
 	result.MailboxMore = result.MailboxTotal > 8
 	t.mu.Unlock()
+	if manager != nil {
+		result.Evidence = projectEvidence(result.Child.Ref, entries)
+	} else if frozenEvidence != nil {
+		result.Evidence = *frozenEvidence
+	} else {
+		result.Evidence = ToolEvidence{Source: "retained_tool_results", TextFormat: "concatenated_text_blocks", Unavailable: "retained history and frozen evidence are unavailable"}
+	}
 	if transcript && manager != nil {
-		entries := manager.Entries()
 		start := min(offset, len(entries))
 		end := min(start+limit, len(entries))
-		for _, entry := range entries[start:end] {
-			raw, err := json.Marshal(entry)
-			if err != nil {
-				return Inspection{}, err
-			}
-			result.Entries = append(result.Entries, raw)
-		}
+		result.Entries = append(result.Entries, entries[start:end]...)
 		data, err := json.Marshal(result.Entries)
 		if err != nil {
 			return Inspection{}, err

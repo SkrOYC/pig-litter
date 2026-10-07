@@ -52,24 +52,27 @@ type Usage struct {
 }
 
 type Outcome struct {
-	Run               Ref    `json:"run"`
-	State             State  `json:"state"`
-	Model             string `json:"model"`
-	Text              string `json:"text"`
-	Error             string `json:"error,omitempty"`
-	Truncated         bool   `json:"truncated"`
-	HandbackTruncated bool   `json:"handbackTruncated,omitempty"`
-	Usage             Usage  `json:"usage"`
+	Run               Ref           `json:"run"`
+	State             State         `json:"state"`
+	Model             string        `json:"model"`
+	Text              string        `json:"text"`
+	Error             string        `json:"error,omitempty"`
+	Truncated         bool          `json:"truncated"`
+	HandbackTruncated bool          `json:"handbackTruncated,omitempty"`
+	Usage             Usage         `json:"usage"`
+	ReportProvenance  string        `json:"reportProvenance,omitempty"`
+	Evidence          *ToolEvidence `json:"evidence,omitempty"`
 }
 
 type Snapshot struct {
 	Ref
-	Parent *ChildID `json:"parent"`
-	Depth  int      `json:"depth"`
-	Name   string   `json:"name"`
-	Type   string   `json:"type"`
-	Model  string   `json:"model"`
-	State  State    `json:"state"`
+	Parent       *ChildID `json:"parent"`
+	Depth        int      `json:"depth"`
+	Name         string   `json:"name"`
+	DisplayLabel string   `json:"displayLabel"`
+	Type         string   `json:"type"`
+	Model        string   `json:"model"`
+	State        State    `json:"state"`
 }
 
 type record struct {
@@ -115,15 +118,22 @@ type run struct {
 }
 
 type Inspection struct {
-	Child            Snapshot          `json:"child"`
-	Outcome          *Outcome          `json:"outcome,omitempty"`
-	HistoryAvailable bool              `json:"historyAvailable"`
-	Mailbox          []Outcome         `json:"mailbox"`
-	MailboxTotal     int               `json:"mailboxTotal"`
-	MailboxMore      bool              `json:"mailboxMore"`
-	Entries          []json.RawMessage `json:"entries"`
-	NextOffset       int               `json:"nextOffset"`
-	More             bool              `json:"more"`
+	Child               Snapshot          `json:"child"`
+	Outcome             *Outcome          `json:"outcome,omitempty"`
+	HistoryAvailable    bool              `json:"historyAvailable"`
+	TranscriptRequested bool              `json:"transcriptRequested"`
+	Mailbox             []Outcome         `json:"mailbox"`
+	MailboxTotal        int               `json:"mailboxTotal"`
+	MailboxMore         bool              `json:"mailboxMore"`
+	Entries             []json.RawMessage `json:"entries"`
+	NextOffset          int               `json:"nextOffset"`
+	More                bool              `json:"more"`
+	Evidence            ToolEvidence      `json:"evidence"`
+}
+
+type InspectTarget struct {
+	ID         ChildID
+	Generation *int
 }
 
 func bounded(text string, maximum int) (string, bool) {
@@ -153,6 +163,7 @@ func previewOutcome(outcome *Outcome, maximum int) *Outcome {
 		return nil
 	}
 	copy := *outcome
+	copy.Evidence = nil
 	var clipped bool
 	copy.Text, clipped = bounded(copy.Text, maximum)
 	copy.HandbackTruncated = clipped
