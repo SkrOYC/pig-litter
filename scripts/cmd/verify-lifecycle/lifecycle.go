@@ -87,8 +87,13 @@ func (f *fixture) lifecycleChild(ctx context.Context, body modelRequest) (string
 	return "", nil, errors.New("unexpected lifecycle child task")
 }
 
-func fixtureEnvironment(pig, directory, agentDir string) []string {
-	return []string{"PATH=" + filepath.Dir(pig), "HOME=" + filepath.Join(directory, "home"), "PIG_HOME=" + directory, "PIG_CODING_AGENT_DIR=" + agentDir, "PIG_USE_PI_DIRS=0", "PIG_OFFLINE=1", "PI_OFFLINE=1", "PI_SKIP_VERSION_CHECK=1", "GOPROXY=off", "GOENV=off", "TERM=xterm-256color", "LANG=C.UTF-8", "LITTER_FIXTURE_EVIDENCE=" + directory}
+func fixtureEnvironment(pig, bash, directory, agentDir string) []string {
+	searchPath := filepath.Dir(pig)
+	bashDir := filepath.Dir(bash)
+	if bashDir != filepath.Dir(pig) {
+		searchPath += string(os.PathListSeparator) + bashDir
+	}
+	return []string{"PATH=" + searchPath, "HOME=" + filepath.Join(directory, "home"), "PIG_HOME=" + directory, "PIG_CODING_AGENT_DIR=" + agentDir, "PIG_USE_PI_DIRS=0", "PIG_OFFLINE=1", "PI_OFFLINE=1", "PI_SKIP_VERSION_CHECK=1", "GOPROXY=off", "GOENV=off", "TERM=xterm-256color", "LANG=C.UTF-8", "LITTER_FIXTURE_EVIDENCE=" + directory}
 }
 
 func (f *fixture) runLifecycle(ctx context.Context, directory, workspace, agentDir, pig, extension string, stdout, stderr *os.File) error {
@@ -121,7 +126,7 @@ func (f *fixture) runLifecycle(ctx context.Context, directory, workspace, agentD
 	}
 	command := exec.CommandContext(ctx, pig, "--no-extensions", "-e", selectedExtension, "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--approve", "--offline", "--model", model, "--mode", "rpc")
 	prepareProcess(command)
-	command.Dir, command.Env, command.Stderr = workspace, fixtureEnvironment(pig, directory, agentDir), stderr
+	command.Dir, command.Env, command.Stderr = workspace, fixtureEnvironment(pig, f.bashPath, directory, agentDir), stderr
 	if f.scenario == "completion" {
 		command.Env = append(command.Env, "LITTER_FIXTURE_PROXY_TARGET="+extension)
 	}

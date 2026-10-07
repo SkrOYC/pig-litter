@@ -30,22 +30,41 @@ type Config struct {
 	MaxHistoryBytes int
 	MaxResultBytes  int
 	MaxMailbox      int
-	MaxRunMillis    int
 	MaxTurns        int
 	Agents          map[string]AgentDefinition
 }
 
-var roleTools = map[string][]string{"scout": {"read", "ls"}, "worker": {"read", "ls", "write", "edit"}}
+var roleDefaults = map[string]AgentDefinition{
+	"scout":  {Role: "scout", Instructions: "Inspect files for the task. Do not change files. Report relevant paths and uncertainty.", Tools: []string{"read"}},
+	"worker": {Role: "worker", Instructions: "Complete the task with permitted tools. Preserve unrelated changes. Report changes and checks.", Tools: []string{"read", "write", "edit", "bash"}, CanDelegate: true},
+}
+
+var roleTools = map[string][]string{"scout": {"read", "ls"}, "worker": {"read", "ls", "write", "edit", "bash"}}
 var agentName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 var exactModel = regexp.MustCompile(`^[^/\s]+/[^\s]+$`)
 
+func agentDefaults(role string) (AgentDefinition, bool) {
+	definition, ok := roleDefaults[role]
+	definition.Tools = slices.Clone(definition.Tools)
+	return definition, ok
+}
+
 func defaultConfig() Config {
-	return Config{Concurrency: 4, Depth: 2, MaxRecords: 64, MaxHistoryBytes: 1024 * 1024, MaxResultBytes: 8192, MaxMailbox: 8, MaxRunMillis: 120000, MaxTurns: 20,
-		Agents: map[string]AgentDefinition{
-			"scout":  {Role: "scout", Instructions: "Inspect files for the task. Do not change files. Report relevant paths and uncertainty.", Tools: []string{"read"}, CanDelegate: true},
-			"worker": {Role: "worker", Instructions: "Complete the task with permitted file tools. Preserve unrelated changes. Report changes and checks.", Tools: []string{"read", "write", "edit"}, CanDelegate: true},
-		},
+	scout, _ := agentDefaults("scout")
+	worker, _ := agentDefaults("worker")
+	return Config{Concurrency: 4, Depth: 2, MaxRecords: 64, MaxHistoryBytes: 1024 * 1024, MaxResultBytes: 8192, MaxMailbox: 8, MaxTurns: 20,
+		Agents: map[string]AgentDefinition{"scout": scout, "worker": worker},
 	}
+}
+
+func cloneConfig(config Config) Config {
+	clone := config
+	clone.Agents = make(map[string]AgentDefinition, len(config.Agents))
+	for name, definition := range config.Agents {
+		definition.Tools = slices.Clone(definition.Tools)
+		clone.Agents[name] = definition
+	}
+	return clone
 }
 
 func mapping(node *yaml.Node, label string) (map[string]*yaml.Node, error) {
@@ -84,7 +103,11 @@ func validateYAML(node *yaml.Node) error {
 }
 
 func ParseConfig(source []byte) (Config, error) {
-	config := defaultConfig()
+	return parseConfig(defaultConfig(), source)
+}
+
+func parseConfig(base Config, source []byte) (Config, error) {
+	config := cloneConfig(base)
 	if len(source) > configBytes {
 		return Config{}, fmt.Errorf("litter.yaml exceeds 32768 bytes")
 	}
@@ -114,7 +137,7 @@ func ParseConfig(source []byte) (Config, error) {
 		"concurrency": {&config.Concurrency, 1, 16}, "depth": {&config.Depth, 0, 8},
 		"max_records": {&config.MaxRecords, 1, 4096}, "max_history_bytes": {&config.MaxHistoryBytes, 1024, 64 * 1024 * 1024},
 		"max_result_bytes": {&config.MaxResultBytes, 1, 1024 * 1024}, "max_mailbox": {&config.MaxMailbox, 1, 1024},
-		"max_run_millis": {&config.MaxRunMillis, 1000, 60 * 60 * 1000}, "max_turns": {&config.MaxTurns, 1, 128},
+		"max_turns": {&config.MaxTurns, 1, 128},
 	}
 	for name, node := range raw {
 		if name == "agents" {
@@ -149,19 +172,38 @@ func ParseConfig(source []byte) (Config, error) {
 			if err != nil {
 				return Config{}, err
 			}
-			definition, bundled := config.Agents[name]
 			for field := range fields {
 				if !slices.Contains([]string{"role", "instructions", "tools", "can_delegate", "model"}, field) {
 					return Config{}, fmt.Errorf("agents.%s has unknown setting %s", name, field)
 				}
 			}
-			if !bundled {
-				for _, field := range []string{"role", "instructions", "tools", "can_delegate"} {
-					if fields[field] == nil {
-						return Config{}, fmt.Errorf("agents.%s needs %s", name, field)
-					}
-				}
+
+			definition, exists := config.Agents[name]
+			role := definition.Role
+			if !exists {
+				role = ""
 			}
+			if roleNode := fields["role"]; roleNode != nil {
+				if roleNode.Kind != yaml.ScalarNode || roleNode.Tag != "!!str" {
+					return Config{}, fmt.Errorf("agents.%s role must be a string", name)
+				}
+				role = roleNode.Value
+			}
+			if role == "" {
+				return Config{}, fmt.Errorf("agents.%s needs role", name)
+			}
+			roleDefinition, validRole := agentDefaults(role)
+			if !validRole {
+				return Config{}, fmt.Errorf("agents.%s has invalid role", name)
+			}
+			if !exists || definition.Role != role {
+				model := definition.Model
+				definition = roleDefinition
+				definition.Model = model
+			} else {
+				definition.Role = role
+			}
+
 			readString := func(key string, target *string) error {
 				if node := fields[key]; node != nil {
 					if node.Tag != "!!str" || node.Kind != yaml.ScalarNode {
@@ -171,17 +213,13 @@ func ParseConfig(source []byte) (Config, error) {
 				}
 				return nil
 			}
-			originalRole := definition.Role
 			for _, field := range []struct {
 				key   string
 				value *string
-			}{{"role", &definition.Role}, {"instructions", &definition.Instructions}, {"model", &definition.Model}} {
+			}{{"instructions", &definition.Instructions}, {"model", &definition.Model}} {
 				if err := readString(field.key, field.value); err != nil {
 					return Config{}, err
 				}
-			}
-			if _, exists := roleTools[definition.Role]; !exists || bundled && originalRole != definition.Role {
-				return Config{}, fmt.Errorf("agents.%s has invalid role", name)
 			}
 			if strings.TrimSpace(definition.Instructions) == "" || len(definition.Instructions) > 4096 {
 				return Config{}, fmt.Errorf("agents.%s needs 1 to 4096 bytes of instructions", name)
@@ -190,6 +228,9 @@ func ParseConfig(source []byte) (Config, error) {
 				if node.Tag != "!!bool" || node.Decode(&definition.CanDelegate) != nil {
 					return Config{}, fmt.Errorf("agents.%s can_delegate must be a boolean", name)
 				}
+			}
+			if definition.Role == "scout" && definition.CanDelegate {
+				return Config{}, fmt.Errorf("agents.%s scout role cannot delegate", name)
 			}
 			if node := fields["tools"]; node != nil {
 				if node.Kind != yaml.SequenceNode {
@@ -212,36 +253,54 @@ func ParseConfig(source []byte) (Config, error) {
 	return config, nil
 }
 
-func LoadConfig(cwd string) (Config, error) {
-	path := filepath.Join(cwd, "litter.yaml")
+func loadConfigLayer(config Config, path string) (Config, error) {
+	loadError := func(err error) (Config, error) {
+		return Config{}, fmt.Errorf("%s: %w", path, err)
+	}
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
-		return defaultConfig(), nil
+		return config, nil
 	}
 	if err != nil {
-		return Config{}, err
+		return loadError(err)
 	}
 	if !info.Mode().IsRegular() {
-		return Config{}, fmt.Errorf("litter.yaml must be a regular file without symlinks")
+		return loadError(fmt.Errorf("litter.yaml must be a regular file without symlinks"))
 	}
 	if info.Size() > configBytes {
-		return Config{}, fmt.Errorf("litter.yaml exceeds 32768 bytes")
+		return loadError(fmt.Errorf("litter.yaml exceeds 32768 bytes"))
 	}
 	file, err := openConfig(path)
 	if err != nil {
-		return Config{}, err
+		return loadError(err)
 	}
 	defer file.Close()
 	opened, err := file.Stat()
 	if err != nil {
-		return Config{}, err
+		return loadError(err)
 	}
 	if !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
-		return Config{}, fmt.Errorf("litter.yaml must remain the same regular file")
+		return loadError(fmt.Errorf("litter.yaml must remain the same regular file"))
 	}
 	data, err := io.ReadAll(io.LimitReader(file, configBytes+1))
 	if err != nil {
-		return Config{}, err
+		return loadError(err)
 	}
-	return ParseConfig(data)
+	config, err = parseConfig(config, data)
+	if err != nil {
+		return loadError(err)
+	}
+	return config, nil
+}
+
+func LoadConfig(cwd string) (Config, error) {
+	config := defaultConfig()
+	if agentDir := configuredAgentDir(); agentDir != "" {
+		var err error
+		config, err = loadConfigLayer(config, filepath.Join(agentDir, "litter.yaml"))
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	return loadConfigLayer(config, filepath.Join(cwd, "litter.yaml"))
 }

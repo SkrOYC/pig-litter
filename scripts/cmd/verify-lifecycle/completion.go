@@ -31,10 +31,15 @@ func completionInRequest(body modelRequest, run ref, task string) bool {
 			continue
 		}
 		var completion struct {
-			ref
-			State, Model, Report string
+			Origin           string `json:"origin"`
+			Kind             string `json:"kind"`
+			ReportProvenance string `json:"reportProvenance"`
+			ID               string `json:"id"`
+			State            string `json:"state"`
+			Model            string `json:"model"`
+			Report           string `json:"report"`
 		}
-		if json.Unmarshal([]byte(content(message.Content)), &completion) == nil && completion.ref == run && completion.State == "completed" && completion.Model == "fixture/completion_child" && strings.HasPrefix(completion.Report, "completed "+task+" ") {
+		if json.Unmarshal([]byte(content(message.Content)), &completion) == nil && completion.Origin == "pig-litter" && completion.Kind == "litter_completion" && completion.ID == run.ID && completion.State == "completed" && completion.Model == "fixture/completion_child" && completion.ReportProvenance == "child_assistant" && strings.HasPrefix(completion.Report, "completed "+task+" ") {
 			return true
 		}
 	}
@@ -131,8 +136,8 @@ func waitCompletionDelivery(ctx context.Context, directory string, run ref) (com
 			if len(delivery.Error) != 0 {
 				return delivery, fmt.Errorf("host rejected completion delivery: %s", delivery.Error)
 			}
-			if delivery.Message.CustomType != "litter_completion" || delivery.Message.Display || delivery.Message.Details.ChildID != run.ID || delivery.Message.Details.Generation != run.Generation {
-				return delivery, errors.New("completion lost its hidden display or child generation details")
+			if delivery.Message.CustomType != "litter_completion" || delivery.Message.Display || delivery.Message.Details.ChildID != run.ID {
+				return delivery, errors.New("completion lost its hidden display or child ID details")
 			}
 			return delivery, nil
 		}
@@ -156,7 +161,7 @@ func completionEvent(event map[string]any, run ref) bool {
 	if json.Unmarshal(raw, &delivery.Message) != nil {
 		return false
 	}
-	return delivery.Message.CustomType == "litter_completion" && !delivery.Message.Display && delivery.Message.Details.ChildID == run.ID && delivery.Message.Details.Generation == run.Generation
+	return delivery.Message.CustomType == "litter_completion" && !delivery.Message.Display && delivery.Message.Details.ChildID == run.ID
 }
 
 func (f *fixture) runCompletion(ctx context.Context, directory string, send func(any) error, wait func(string, string) error, events <-chan map[string]any) error {

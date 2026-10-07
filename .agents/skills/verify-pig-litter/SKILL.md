@@ -1,6 +1,6 @@
 ---
 name: verify-pig-litter
-description: "Verify Pig Litter's direct and Piglet selection, background child sessions, retained generations, diagnostic command, and unselected startup through the terminal UI. Use real providers or isolated deterministic fixtures."
+description: "Verify Pig Litter's direct and Piglet selection, background children, retained resume, child working directories, terminal tools, diagnostic command, and unselected startup through the terminal UI. Use real providers or isolated deterministic fixtures."
 ---
 
 # Verify Pig Litter
@@ -41,17 +41,19 @@ Drive the named Piglet with a real provider:
 
 Use `--case all` for selected delegation, direct repository selection, and plain startup, in that order. Direct and plain cases make no completion request. The selected case always uses `--piglet`.
 
+To verify uncommitted repository changes, pass `--piglet /ABSOLUTE_PATH/piglet.yaml`. Check the doctor's resolved command source before making model requests. An installed Git origin can resolve a different revision. Record installed selection separately from the changed-build proof.
+
 The helper starts each case in fresh scratch with a private tmux socket and parent session directory. It runs a doctor before each session. `--approve` trusts only that disposable workspace for the process.
 
 ## Assess child sessions
 
 Selected startup requires an editor displaying the exact model and scratch path. `/pig-litter` must explain the six background controls. There is no foreground startup status.
 
-The selected proof discovers agents, spawns a scout to read a private token, and spawns a worker to write and read another token. The scout token exists only in its input file. The parent has canonical file tools available because children call them through the parent host. The parent prompt restricts its own calls to `litter_*` controls; recorded calls enforce that restriction.
+The selected proof discovers agents and spawns a scout to read a private token. The scout token exists only in its input file. It also spawns a worker with an explicit `cwd` and requires terminal commands to produce independently checked file effects there. The parent has canonical tools available because children call them through the parent host. The parent prompt restricts its own calls to `litter_*` controls; recorded calls enforce that restriction.
 
-A passing run requires matching spawn admissions and completed exact-generation outcomes, inherited exact models, successful child file calls in retained transcripts, and expected file effects. It also requires a live `Litter N live M kept` widget. Parent prose alone cannot pass.
+A passing run requires matching spawn admissions and completed outcomes by child ID, inherited exact models, the private scout token, and expected worker file effects. It also requires a live `Litter N live M kept` widget. Parent prose alone cannot pass. `litter_inspect` returns status and the latest result. It exposes no transcript or tool receipts.
 
-The proof resumes the scout through `litter_message` and checks generation 2 and recall of the private token. The resume message must omit that token. The complete appended transcript must contain no tool calls. Child histories stay in memory inside the extension's Go SDK sessions. Child OS processes and persisted child sessions aren't expected.
+The proof removes the scout's input before resuming it through `litter_message`. The resume message must omit the private token. Require recall in a completed result for the same ID, after the resume acknowledgement. Child conversations stay in memory inside the extension's Go SDK sessions. Child OS processes and persisted child sessions aren't expected. Real-provider observations cannot establish every internal tool call. Use deterministic provider requests to verify forbidden tools and exact child configuration.
 
 ## Check cancellation and stopping
 
@@ -64,15 +66,15 @@ Run the optional real-provider cancellation case:
 
 The helper waits for a live child and pending `litter_wait`, then sends **Escape**. It requires a recorded cancellation acknowledgement and a fresh diagnostic notification. Inspection must show that cancelling the wait leaves the child running. An explicit `litter_stop` must then return a stopped outcome. A cancelled wait can return plain tool error text; retain that text without treating it as completion.
 
-A wait timeout also leaves the child running. Provider errors, run deadlines, permission checks, nested delegation, stale generations, and controlled races belong to deterministic fixtures.
+A wait timeout also leaves the child running. Child runs have no wall-clock deadline. Provider errors, permission checks, scout leaf enforcement, nested workers, resume races, and controlled outcomes belong to deterministic fixtures.
 
 ## Retain evidence and clean up
 
-Evidence stays under `.pstack/evidence/pig-litter-live/RUN_ID/` unless `--evidence-dir PATH` overrides the root. `run.json` records doctors, source provenance, actions, parent session projections, child transcripts, file markers, observed process identities, and cleanup. Screens and parent session JSONL stay beside it. Don't record credentials or the inherited environment.
+Evidence stays under `.pstack/evidence/pig-litter-live/RUN_ID/` unless `--evidence-dir PATH` overrides the root. `run.json` records doctors, source provenance, actions, parent session projections, child results, file markers, observed process identities, and cleanup. Screens and parent session JSONL stay beside it. Don't record credentials or the inherited environment.
 
 After a failed drive, preserve available evidence, clean the instance, and run a fresh doctor when possible. Don't continue a wedged instance. Normal drives must exit with status zero, no signal, and no observed owned parent or extension process remaining. Cleanup removes only owned scratch and private tmux resources. If cleanup fails, preserve scratch and report failure.
 
-Both `--command-timeout-ms` and `--timeout-ms` accept 1000 to 600000 milliseconds. Run `live.mjs --help` for every input.
+Both `--command-timeout-ms` and `--timeout-ms` accept 1000 to 600000 milliseconds. These bound the verification drive, not the product's child runs. Run `live.mjs --help` for every input.
 
 Plain startup preserves ordinary resource discovery. Its doctor must show no `/pig-litter` registration, and its screen must show no child widget or diagnostic. If user configuration loads Pig Litter, report that observed selection rather than passing the unselected control.
 
@@ -100,12 +102,16 @@ devenv shell -- scripts/verify-stock-lifecycle.sh --scenario messages
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario lifecycle
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario completion
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario shadow
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario cwd
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario unbounded
 ```
 
-The scenarios cover file authority, concurrency, depth, privacy, resume, stale generations, subtree stopping, history limits, completion delivery, and provider/tool failures. Keep these claims separate from the live proof. Check helper evidence parsing and bounded command teardown without launching PiG:
+The scenarios cover configuration layering, agent overrides, file and terminal authority, child working directories, concurrency, depth, privacy, resume, subtree stopping, history limits, completion delivery, and provider/tool failures. Keep these claims separate from the live proof. Check helper evidence parsing and bounded command teardown without launching PiG:
 
 ```sh
 bun test ./.agents/skills/verify-pig-litter/scripts/live.test.mjs
 ```
+
+The `cwd` scenario checks relative file operations and terminal effects in the selected directory, including nested children. The `unbounded` scenario keeps a child active beyond the preceding two-minute deadline and requires its completed result. Its outer fixture deadline bounds verification teardown. It does not impose a product run deadline.
 
 Keep the [verification feature map](features/README.md) aligned with source and observed drives.

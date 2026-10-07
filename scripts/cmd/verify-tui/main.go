@@ -36,6 +36,7 @@ const (
 )
 
 var (
+	fileTools    = []string{"read", "write", "edit", "bash"}
 	controlTools = []string{
 		"litter_spawn",
 		"litter_list",
@@ -64,9 +65,8 @@ type options struct {
 }
 
 type childRef struct {
-	ID         string `json:"id"`
-	Generation int    `json:"generation"`
-	Name       string `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type openAIMessage struct {
@@ -805,8 +805,8 @@ func (state *fixtureState) decide(request openAIRequest) (providerTurn, error) {
 		if name == "" {
 			return providerTurn{}, errors.New("held child request had no known task")
 		}
-		if !contains(tools, "read") {
-			return providerTurn{}, errors.New("child did not receive the default read tool")
+		if err := requireToolInventory(tools, []string{"read"}, []string{"ls"}, "scout leaf"); err != nil {
+			return providerTurn{}, err
 		}
 		toolMessages := roleMessages(request.Messages, "tool")
 		if len(toolMessages) == 0 {
@@ -828,10 +828,8 @@ func (state *fixtureState) decide(request openAIRequest) (providerTurn, error) {
 		return providerTurn{}, fmt.Errorf("unexpected fixture model %q", request.Model)
 	}
 	if state.caseName == caseUnselected {
-		for _, name := range tools {
-			if strings.HasPrefix(name, "litter_") {
-				return providerTurn{}, errors.New("unselected PiG exposed a litter tool")
-			}
+		if err := requireToolInventory(tools, fileTools, []string{"ls"}, "unselected root"); err != nil {
+			return providerTurn{}, err
 		}
 		if marker.marker != "UNSELECTED_WIDGET" {
 			return providerTurn{}, errors.New("unselected case got an unexpected prompt")
@@ -839,13 +837,9 @@ func (state *fixtureState) decide(request openAIRequest) (providerTurn, error) {
 		state.parentMarker = true
 		return providerTurn{kind: "text", text: "UNSELECTED_PARENT_MARKER"}, nil
 	}
-	for _, name := range controlTools {
-		if !contains(tools, name) {
-			return providerTurn{}, fmt.Errorf("selected parent is missing %s", name)
-		}
-	}
-	if !contains(tools, "read") {
-		return providerTurn{}, errors.New("selected parent is missing its default read tool")
+	selectedTools := append(append([]string(nil), fileTools...), controlTools...)
+	if err := requireToolInventory(tools, selectedTools, []string{"ls"}, "selected root"); err != nil {
+		return providerTurn{}, err
 	}
 	switch marker.marker {
 	case "START_WIDGET":
@@ -878,7 +872,7 @@ func (state *fixtureState) decide(request openAIRequest) (providerTurn, error) {
 				failures = append(failures, failure)
 				continue
 			}
-			refs = append(refs, childRef{ID: result.Child.ID, Generation: result.Child.Generation, Name: result.Child.Name})
+			refs = append(refs, childRef{ID: result.Child.ID, Name: result.Child.Name})
 		}
 		if len(failures) > 0 {
 			state.refs = refs
@@ -893,12 +887,12 @@ func (state *fixtureState) decide(request openAIRequest) (providerTurn, error) {
 		for _, name := range heldNames {
 			found := false
 			for _, ref := range refs {
-				if ref.Name == name && ref.Generation == 1 {
+				if ref.Name == name {
 					found = true
 				}
 			}
 			if !found {
-				return providerTurn{}, fmt.Errorf("spawn results did not include %s at generation 1", name)
+				return providerTurn{}, fmt.Errorf("spawn results did not include %s by name", name)
 			}
 		}
 		state.parentMarker = true
@@ -925,7 +919,7 @@ func (state *fixtureState) decide(request openAIRequest) (providerTurn, error) {
 		if len(stops) == 0 {
 			calls := make([]toolCall, 0, len(state.refs))
 			for _, ref := range state.refs {
-				calls = append(calls, toolCall{name: "litter_stop", args: map[string]any{"id": ref.ID, "generation": ref.Generation}})
+				calls = append(calls, toolCall{name: "litter_stop", args: map[string]string{"id": ref.ID}})
 			}
 			return providerTurn{kind: "tools", calls: calls}, nil
 		}
@@ -1510,15 +1504,35 @@ func requestToolNames(tools []openAITool) []string {
 	return result
 }
 
+func requireToolInventory(got, required, optional []string, actor string) error {
+	allowed := make(map[string]bool, len(required)+len(optional))
+	for _, name := range required {
+		allowed[name] = true
+	}
+	for _, name := range optional {
+		allowed[name] = true
+	}
+	for _, name := range required {
+		if !contains(got, name) {
+			return fmt.Errorf("%s tool inventory is missing %s: %v", actor, name, got)
+		}
+	}
+	for _, name := range got {
+		if !allowed[name] {
+			return fmt.Errorf("%s tool inventory contains unexpected %s: %v", actor, name, got)
+		}
+	}
+	return nil
+}
+
 type toolResult struct {
 	Operation string `json:"operation"`
 	State     string `json:"state"`
 	Code      string `json:"code"`
 	Report    string `json:"report"`
 	Child     struct {
-		ID         string `json:"id"`
-		Generation int    `json:"generation"`
-		Name       string `json:"name"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
 	} `json:"child"`
 }
 

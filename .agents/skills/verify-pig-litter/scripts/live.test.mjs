@@ -1,153 +1,216 @@
 import { test, expect } from 'bun:test';
-import { configuration, environment, launchArgs, sessionEvidence, completedDelegation, childTranscript, resumedRecall, cancellationAcknowledged, runCommand } from './live.mjs';
+import { configuration, environment, launchArgs, sessionEvidence, sourceIdentity, configuredAgents, currentInspection, stoppedOutcome, completedDelegation, resumedRecall, cancellationAcknowledged, runCommand } from './live.mjs';
 
 const model = 'sample/model';
-function session(state = 'completed', childModel = model) {
+const token = 'private-marker-7f4a';
+const child = { id: 'child-1', name: 'scout-proof', type: 'scout', model, state: 'completed' };
+
+function record(type, id, message) { return { type, id, message }; }
+function assistant(id, content, stopReason = 'toolUse') {
+ return record('message', id, { role: 'assistant', provider: 'sample', model: 'model', stopReason, content });
+}
+function toolResult(id, toolCallId, toolName, value, isError = false) {
+ return record('message', id, { role: 'toolResult', toolCallId, toolName, isError, content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }] });
+}
+function spawnResult({ type = 'scout', cwd, childModel = model, task = 'Read input.txt and report its complete token.' } = {}) {
+ const snapshot = { ...child, type, model: childModel, ...(cwd ? { cwd } : {}) };
+ return [
+  assistant('spawn-call-entry', [{ type: 'toolCall', id: 'spawn-call', name: 'litter_spawn', arguments: { type, name: 'scout-proof', task, ...(cwd ? { cwd } : {}) } }]),
+  toolResult('spawn-result-entry', 'spawn-call', 'litter_spawn', { state: 'starting', child: snapshot, operation: 'litter_spawn', handbackTruncated: false }),
+ ];
+}
+function outcome({ state = 'completed', id = child.id, text = `Read from file: ${token}`, model: childModel = model, reportProvenance = 'child_assistant', truncated = false } = {}) {
+ return { run: { id }, state, model: childModel, text, truncated, usage: { input: 18, output: 4, cacheRead: 0, cacheWrite: 0, totalTokens: 22, cost: 0 }, reportProvenance };
+}
+function completedSession({ state = 'completed', childModel = model, marker = token, operation = 'wait', cwd, type = 'scout', task, truncated = false, reportProvenance = 'child_assistant' } = {}) {
+ const snapshot = { ...child, type, model: childModel, ...(cwd ? { cwd } : {}) };
+ const waitCall = `${operation}-call`;
+ const waitResult = `${operation}-result`;
+ const target = operation === 'wait'
+  ? { state, outcome: outcome({ state, text: `Read from file: ${marker}`, model: childModel, truncated, reportProvenance }), operation: 'litter_wait', handbackTruncated: false }
+  : { state, child: snapshot, outcome: outcome({ state, text: `Read from file: ${marker}`, model: childModel, truncated, reportProvenance }) };
  return [
   { type: 'session', id: 'parent', cwd: '/scratch' },
-  { type: 'message', id: 'call-entry', message: { role: 'assistant', provider: 'sample', model: 'model', stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'child-call', name: 'litter_spawn', arguments: { type: 'scout', task: 'Read input.txt' } }] } },
-  { type: 'message', id: 'result-entry', message: { role: 'toolResult', toolCallId: 'child-call', toolName: 'litter_spawn', isError: false, content: [{ type: 'text', text: JSON.stringify({ state: 'starting', child: { id: 'child', generation: 1, type: 'scout', model: childModel } }) }] } },
-  { type: 'message', id: 'wait-entry', message: { role: 'assistant', provider: 'sample', model: 'model', stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'wait-call', name: 'litter_wait', arguments: { id: 'child', generation: 1 } }] } },
-  { type: 'message', id: 'outcome-entry', message: { role: 'toolResult', toolCallId: 'wait-call', toolName: 'litter_wait', isError: false, content: [{ type: 'text', text: JSON.stringify({ state, outcome: { run: { id: 'child', generation: 1 }, state, model: childModel, text: 'Opaque file token: hidden-token' } }) }] } },
-  { type: 'message', id: 'final-entry', message: { role: 'assistant', provider: 'sample', model: 'model', stopReason: 'stop', content: [{ type: 'text', text: 'Done' }] } },
- ].map(record => JSON.stringify(record)).join('\n') + '\n';
+  ...spawnResult({ cwd, childModel, type, task }),
+  assistant(`${operation}-call-entry`, [{ type: 'toolCall', id: waitCall, name: `litter_${operation}`, arguments: { id: child.id, ...(operation === 'wait' ? { timeoutMs: 120000 } : {}) } }]),
+  toolResult(waitResult, waitCall, `litter_${operation}`, target),
+  assistant('final-entry', [{ type: 'text', text: 'Done' }], 'stop'),
+ ].map(value => JSON.stringify(value)).join('\n') + '\n';
 }
 
-test('runtime inputs preserve inherited configuration without embedding models', () => {
- const config = configuration(['--piglet', 'my-agent', '--model', model, '--pig-home', '/config', '--case', 'all'], {});
+test('runtime inputs preserve inherited configuration and select a local Piglet path', () => {
+ const localPiglet = '/home/oscar/GitHub/pig-litter/piglet.yaml';
+ const config = configuration(['--piglet', localPiglet, '--model', model, '--pig-home', '/config', '--case', 'all'], {});
  const env = environment({ ...config, pigBinary: '/selected/bin/pig' }, { PATH: '/bin', HOME: '/user', PIG_CODING_AGENT_DIR: '/agent', API_KEY: 'opaque', PIG_PIGLET_NAME: 'ambient' });
  expect(env).toEqual({ PATH: '/selected/bin:/bin', HOME: '/user', PIG_CODING_AGENT_DIR: '/agent', API_KEY: 'opaque', PIG_HOME: '/config', TERM: 'xterm-256color' });
  expect(configuration([], {}).model).toBeUndefined();
  expect(configuration([], { PIG_HOME: '/inherited' }).pigHome).toBe('/inherited');
+ expect(launchArgs(config, 'selected', '/sessions')).toContain(localPiglet);
  expect(launchArgs(config, 'selected', '/sessions')).not.toContain('--no-builtin-tools');
- expect(launchArgs(config, 'selected', '/sessions')).toContain('read,write,edit,litter_spawn,litter_list,litter_inspect,litter_message,litter_stop,litter_wait');
- expect(launchArgs(config, 'selected', '/sessions')).toContain('my-agent');
+ expect(launchArgs(config, 'selected', '/sessions')).toContain('read,write,edit,bash,litter_spawn,litter_list,litter_inspect,litter_message,litter_stop,litter_wait');
  expect(launchArgs(config, 'selected', '/sessions')).not.toContain('-e');
  expect(launchArgs(config, 'plain', '/sessions')).not.toContain('--no-builtin-tools');
  expect(launchArgs(config, 'plain', '/sessions')).not.toContain('--piglet');
  expect(launchArgs(config, 'plain', '/sessions')).not.toContain('--no-skills');
 });
 
-test('argument validation bounds command timers', () => {
+test('doctor source identity distinguishes the changed checkout from an installed Piglet', () => {
+ const root = '/home/oscar/GitHub/pig-litter';
+ expect(sourceIdentity(`${root}/piglet.yaml`, '/tmp/scratch', { name: 'pig-litter', source: `${root}/piglet.yaml` }).resolvedPath).toBe(`${root}/piglet.yaml`);
+ expect(sourceIdentity('pig-litter', '/tmp/scratch', { name: 'pig-litter', source: '/home/oscar/.pig/piglets/pig-litter/piglet.yaml' }).name).toBe('pig-litter');
+ expect(() => sourceIdentity(`${root}/piglet.yaml`, '/tmp/scratch', { name: 'pig-litter', source: '/home/oscar/.pig/piglets/pig-litter/piglet.yaml' })).toThrow('different Piglet source');
+ expect(() => sourceIdentity('pig-litter', '/tmp/scratch', { name: 'other', source: '/home/oscar/.pig/piglets/other/piglet.yaml' })).toThrow('resolved pig-litter as other');
+});
+
+test('agent discovery requires a read-only leaf scout and a worker with bash', () => {
+ const definitions = [
+  { name: 'scout', role: 'scout', canDelegate: false, tools: ['read'] },
+  { name: 'worker', role: 'worker', canDelegate: true, tools: ['read', 'write', 'edit', 'bash'] },
+ ];
+ const evidence = sessionEvidence([
+  assistant('list-call-entry', [{ type: 'toolCall', id: 'list-call', name: 'litter_list', arguments: {} }]),
+  toolResult('list-result-entry', 'list-call', 'litter_list', { availableAgentTypes: definitions, children: [], handbackTruncated: false, more: false, moreAgentTypes: false, nextAgentOffset: 2, nextOffset: 0, operation: 'litter_list', state: 'listed', totalAgentTypes: 2, totalChildren: 0 }),
+  assistant('list-final', [{ type: 'text', text: 'Ready' }], 'stop'),
+ ].map(record => JSON.stringify(record)).join('\n'));
+ expect(configuredAgents(evidence)).toEqual({ scout: definitions[0], worker: definitions[1] });
+ const delegating = structuredClone(evidence);
+ delegating.results[0].value.availableAgentTypes[0].canDelegate = true;
+ expect(() => configuredAgents(delegating)).toThrow('delegation disabled');
+ const noBash = structuredClone(evidence);
+ noBash.results[0].value.availableAgentTypes[1].tools = ['read', 'write'];
+ expect(() => configuredAgents(noBash)).toThrow('does not expose bash');
+ expect(configuredAgents(sessionEvidence(''))).toBeUndefined();
+});
+
+test('argument validation bounds command timers and rejects unsupported options', () => {
  expect(() => configuration(['--timeout-ms', '0'], {})).toThrow();
  expect(() => configuration(['--case', 'unknown'], {})).toThrow();
  expect(() => configuration(['--model', 'unqualified'], {})).toThrow();
  expect(() => configuration(['--credentials'], {})).toThrow();
 });
 
-test('completion requires an actual matching toolResult and inherited exact model', () => {
- const evidence = sessionEvidence(session());
- expect(completedDelegation(evidence, 'scout', model, 'hidden-token').result.value.state).toBe('completed');
+test('a completed child is matched by ID, state, inherited model, and its final report', () => {
+ const evidence = sessionEvidence(completedSession());
+ const result = completedDelegation(evidence, 'scout', model, token);
+ expect(result.outcome).toMatchObject({ run: { id: child.id }, state: 'completed', model, reportProvenance: 'child_assistant', truncated: false });
+ expect(result.outcome.text).toBe(`Read from file: ${token}`);
+ expect(result.resultCall.name).toBe('litter_wait');
  expect(evidence.header.id).toBe('parent');
- expect(() => completedDelegation(sessionEvidence(session('failed')), 'scout', model, 'hidden-token')).toThrow();
- expect(() => completedDelegation(sessionEvidence(session('completed', 'other/model')), 'scout', model, 'hidden-token')).toThrow();
- expect(() => completedDelegation(evidence, 'scout', model, 'not-in-file')).toThrow();
- evidence.calls[0].arguments.model = model;
- expect(() => completedDelegation(evidence, 'scout', model, 'hidden-token')).toThrow();
+ expect(() => completedDelegation(sessionEvidence(completedSession({ state: 'failed' })), 'scout', model, token)).toThrow('returned failed');
+ expect(() => completedDelegation(sessionEvidence(completedSession({ childModel: 'other/model' })), 'scout', model, token)).toThrow('effective model');
+ expect(() => completedDelegation(sessionEvidence(completedSession({ marker: 'wrong-marker' })), 'scout', model, token)).toThrow('lacks the expected file token');
+ expect(() => completedDelegation(sessionEvidence(completedSession({ state: 'completed', task: `Read ${token}` })), 'scout', model, token)).toThrow('included in the parent child task');
+ expect(() => completedDelegation(sessionEvidence(completedSession({ truncated: true })), 'scout', model, token)).toThrow('truncated');
+ expect(() => completedDelegation(sessionEvidence(completedSession({ reportProvenance: 'tool_output' })), 'scout', model, token)).toThrow('report provenance');
+ const statusMismatch = sessionEvidence(completedSession());
+ statusMismatch.results.at(-1).value.state = 'running';
+ expect(() => completedDelegation(statusMismatch, 'scout', model, token)).toThrow('status and latest outcome disagree');
 });
 
-test('parent prose alone and unfinished turns cannot satisfy the drive', () => {
- const evidence = sessionEvidence(session());
- evidence.results = [];
- expect(completedDelegation(evidence, 'scout', model, 'hidden-token')).toBeUndefined();
- const unfinished = sessionEvidence(session());
+test('worker completion requires an explicit path with spaces and apostrophes', () => {
+ const cwd = "/tmp/worker's workspace";
+ const evidence = sessionEvidence(completedSession({ type: 'worker', cwd }));
+ const result = completedDelegation(evidence, 'worker', model, token, { cwd });
+ expect(result.call.arguments.cwd).toBe(cwd);
+ expect(result.child.cwd).toBe(cwd);
+ expect(() => completedDelegation(evidence, 'worker', model, token, { cwd: '/tmp/other workspace' })).toThrow('required explicit working directory');
+});
+
+test('child admission and final outcome cannot carry a generation selector', () => {
+ const admitted = sessionEvidence(completedSession());
+ admitted.results[0].value.child.generation = 1;
+ expect(() => completedDelegation(admitted, 'scout', model, token)).toThrow('exposed a generation');
+ const completed = sessionEvidence(completedSession());
+ completed.results.at(-1).value.outcome.run.generation = 1;
+ expect(completedDelegation(completed, 'scout', model, token)).toBeUndefined();
+ const guarded = sessionEvidence(completedSession());
+ guarded.calls.find(call => call.name === 'litter_wait').arguments.generation = 1;
+ expect(() => completedDelegation(guarded, 'scout', model, token)).toThrow('unsupported control field');
+});
+
+test('current inspection returns only ID, state, child, and latest outcome', () => {
+ const evidence = sessionEvidence(completedSession({ operation: 'inspect' }));
+ const inspection = currentInspection(evidence, child.id);
+ expect(inspection.result.value.state).toBe('completed');
+ expect(inspection.outcome.run).toEqual({ id: child.id });
+});
+
+test('stop consumes the SDK operation envelope and an ID-only stopped outcome', () => {
+ const evidence = sessionEvidence(completedSession());
+ evidence.calls.push({ id: 'stop-call', name: 'litter_stop', arguments: { id: child.id } });
+ evidence.results.push({ id: 'stop-call', name: 'litter_stop', isError: false, value: { state: 'stopped', outcome: outcome({ state: 'stopped', text: '' }), stoppedCount: 1, operation: 'litter_stop', handbackTruncated: false } });
+ expect(stoppedOutcome(evidence, child.id).outcome).toMatchObject({ run: { id: child.id }, state: 'stopped' });
+ evidence.results.at(-1).value.outcome.run.generation = 1;
+ expect(() => stoppedOutcome(evidence, child.id)).toThrow('did not match the requested ID');
+});
+
+test('inspection rejects transcript selectors and history or evidence pages', () => {
+ const transcript = sessionEvidence(completedSession({ operation: 'inspect' }));
+ transcript.calls.find(call => call.name === 'litter_inspect').arguments.transcript = true;
+ expect(() => currentInspection(transcript, child.id)).toThrow('unsupported control field');
+ const pages = sessionEvidence(completedSession({ operation: 'inspect' }));
+ pages.results.at(-1).value.entries = [];
+ expect(() => currentInspection(pages, child.id)).toThrow('beyond current status');
+ const waitPages = sessionEvidence(completedSession());
+ waitPages.results.at(-1).value.mailbox = [];
+ expect(() => completedDelegation(waitPages, 'scout', model, token)).toThrow('unexpected fields');
+});
+
+test('parent prose, missing tool results, and tool errors cannot prove completion', () => {
+ const missingResult = sessionEvidence(completedSession());
+ missingResult.results = [];
+ expect(completedDelegation(missingResult, 'scout', model, token)).toBeUndefined();
+ const unfinished = sessionEvidence(completedSession());
  unfinished.assistants.pop();
- expect(completedDelegation(unfinished, 'scout', model, 'hidden-token')).toBeUndefined();
- const cheating = sessionEvidence(session());
- cheating.calls.push({ name: 'read' });
- expect(() => completedDelegation(cheating, 'scout', model, 'hidden-token')).toThrow();
+ expect(completedDelegation(unfinished, 'scout', model, token)).toBeUndefined();
+ const unrelated = sessionEvidence(completedSession());
+ unrelated.calls.push({ id: 'file-call', name: 'read', arguments: { path: 'input.txt' } });
+ expect(() => completedDelegation(unrelated, 'scout', model, token)).toThrow('Parent called another tool');
+ const aborted = sessionEvidence(completedSession());
+ const result = aborted.results.at(-1);
+ result.isError = true;
+ result.value.state = 'failed';
+ result.value.outcome.state = 'failed';
+ expect(() => completedDelegation(aborted, 'scout', model, token)).toThrow('returned failed');
 });
 
-test('a real aborted tool result survives evidence parsing and cannot pass completion', () => {
- const lines = session().trim().split('\n').map(line => JSON.parse(line));
- lines[2].message.isError = true;
- lines[2].message.content = [{ type: 'text', text: 'Tool execution aborted' }];
- const evidence = sessionEvidence(lines.map(record => JSON.stringify(record)).join('\n'));
- expect(evidence.results[0].parseError).toBe('Child control result is not JSON.');
- expect(evidence.results[0].errorText).toBe('Tool execution aborted');
- expect(cancellationAcknowledged(evidence, 'child-call')).toBe(true);
- expect(cancellationAcknowledged(evidence, 'another-call')).toBe(false);
- expect(cancellationAcknowledged(sessionEvidence(session()), 'child-call')).toBe(false);
- expect(() => completedDelegation(evidence, 'scout', model, 'hidden-token')).toThrow();
-});
-
-test('spawn admission and a different generation cannot prove completion', () => {
- const evidence = sessionEvidence(session());
- evidence.results.pop();
- expect(completedDelegation(evidence, 'scout', model, 'hidden-token')).toBeUndefined();
- const wrongGeneration = sessionEvidence(session());
- wrongGeneration.results[1].value.outcome.run.generation = 2;
- expect(completedDelegation(wrongGeneration, 'scout', model, 'hidden-token')).toBeUndefined();
- expect(completedDelegation(wrongGeneration, 'scout', model, 'hidden-token', 2)).toBeUndefined();
- wrongGeneration.calls[1].arguments.generation = 2;
- expect(completedDelegation(wrongGeneration, 'scout', model, 'hidden-token', 2).outcome.state).toBe('completed');
- const orphanedResult = sessionEvidence(session());
- orphanedResult.calls.pop();
- expect(completedDelegation(orphanedResult, 'scout', model, 'hidden-token')).toBeUndefined();
-});
-
-test('hidden completion entries survive the parent session projection', () => {
- const completion = { type: 'custom_message', id: 'completion', customType: 'litter_completion', content: '{"id":"child","generation":1,"state":"completed"}', display: false };
- expect(sessionEvidence(session() + JSON.stringify(completion) + '\n').completions).toEqual([completion]);
-});
-
-test('child transcript requires successful file operations and exact model', () => {
- const entries = [
-  { type: 'message', message: { role: 'assistant', provider: 'sample', model: 'model', stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'read-call', name: 'read', arguments: { path: 'input.txt' } }] } },
-  { type: 'message', message: { role: 'toolResult', toolCallId: 'read-call', toolName: 'read', isError: false, content: [{ type: 'text', text: 'hidden-token' }] } },
- ];
- const child = { id: 'child', generation: 1 };
- const evidence = { calls: [{ id: 'inspect-call', name: 'litter_inspect', arguments: { id: 'child', transcript: true, offset: 0 } }], results: [{ id: 'inspect-call', name: 'litter_inspect', value: { child, entries, more: false } }] };
- expect(childTranscript(evidence, child, model, 'hidden-token', ['read']).calls[0].name).toBe('read');
- expect(() => childTranscript(evidence, child, model, 'hidden-token', ['write'])).toThrow();
- entries[1].message.isError = true;
- expect(() => childTranscript(evidence, child, model, 'hidden-token', ['read'])).toThrow();
- entries[1].message.isError = false;
- evidence.results[0].value.more = true;
- expect(childTranscript(evidence, child, model, 'hidden-token', ['read'])).toBeUndefined();
-});
-
-function recallEvidence() {
- const evidence = sessionEvidence(session());
- evidence.calls.push(
-  { id: 'resume-call', name: 'litter_message', arguments: { id: 'child', generation: 1, resume: true, text: 'Recall the token without tools.' } },
-  { id: 'resume-wait', name: 'litter_wait', arguments: { id: 'child', generation: 2 } },
-  { id: 'resume-inspect', name: 'litter_inspect', arguments: { id: 'child', transcript: true, offset: 7 } },
- );
- const outcome = structuredClone(evidence.results[1]);
- outcome.id = 'resume-wait';
- outcome.value.outcome.run.generation = 2;
- evidence.results.push(
-  { id: 'resume-call', name: 'litter_message', value: { delivery: 'resumed', child: { id: 'child', generation: 2 } } },
-  outcome,
-  { id: 'resume-inspect', name: 'litter_inspect', value: { child: { id: 'child', generation: 2 }, more: false, entries: [{ type: 'message', message: { role: 'assistant', provider: 'sample', model: 'model', stopReason: 'stop', content: [{ type: 'text', text: 'hidden-token' }] } }] } },
- );
- return evidence;
+function resumeSession({ leaked = false, ackAfterOutcome = false } = {}) {
+ const records = completedSession().trim().split('\n').map(line => JSON.parse(line));
+ const resumedOutcomeCall = assistant('resume-wait-entry', [{ type: 'toolCall', id: 'resume-wait-call', name: 'litter_wait', arguments: { id: child.id, timeoutMs: 120000 } }]);
+ const resumedOutcome = toolResult('resume-wait-result', 'resume-wait-call', 'litter_wait', { state: 'completed', outcome: outcome(), operation: 'litter_wait', handbackTruncated: false });
+ const resumeCall = assistant('resume-message-entry', [{ type: 'toolCall', id: 'resume-message-call', name: 'litter_message', arguments: { id: child.id, resume: true, text: leaked ? `Recall ${token}` : 'Recall the input token from retained context.' } }]);
+ const resumeAck = toolResult('resume-message-result', 'resume-message-call', 'litter_message', { delivery: 'resumed', child: { ...child, state: 'running' }, operation: 'litter_message', handbackTruncated: false, state: 'running' });
+ const extra = ackAfterOutcome ? [resumedOutcomeCall, resumedOutcome, resumeCall, resumeAck] : [resumeCall, resumeAck, resumedOutcomeCall, resumedOutcome];
+ return [...records, ...extra, assistant('resume-final', [{ type: 'text', text: 'Done' }], 'stop')].map(record => JSON.stringify(record)).join('\n') + '\n';
 }
 
-test('retained recall excludes leaked tokens, skipped reads, and incomplete transcript pages', () => {
- const scout = { child: { id: 'child' }, transcript: { entries: Array(7) } };
- expect(resumedRecall(recallEvidence(), scout, model, 'hidden-token').outcome.run.generation).toBe(2);
- const leaked = recallEvidence();
- leaked.calls[2].arguments.text = 'Recall hidden-token';
- expect(() => resumedRecall(leaked, scout, model, 'hidden-token')).toThrow();
- const skipped = recallEvidence();
- skipped.calls[4].arguments.offset = 9;
- expect(resumedRecall(skipped, scout, model, 'hidden-token')).toBeUndefined();
- const incomplete = recallEvidence();
- incomplete.results[4].value.more = true;
- expect(resumedRecall(incomplete, scout, model, 'hidden-token')).toBeUndefined();
- const reread = recallEvidence();
- reread.results[4].value.entries[0].message.content.push({ type: 'toolCall', id: 'reread', name: 'read', arguments: { path: 'input.txt' } });
- expect(() => resumedRecall(reread, scout, model, 'hidden-token')).toThrow();
+function acknowledgedResumeWithoutOutcome() {
+ const records = completedSession().trim().split('\n').map(line => JSON.parse(line)).slice(0, -1);
+ return [...records,
+  assistant('resume-message-entry', [{ type: 'toolCall', id: 'resume-message-call', name: 'litter_message', arguments: { id: child.id, resume: true, text: 'Recall the input token from retained context.' } }]),
+  toolResult('resume-message-result', 'resume-message-call', 'litter_message', { delivery: 'resumed', child: { ...child, state: 'running' }, operation: 'litter_message', handbackTruncated: false, state: 'running' }),
+  assistant('resume-final', [{ type: 'text', text: 'Done' }], 'stop'),
+ ].map(record => JSON.stringify(record)).join('\n') + '\n';
+}
+
+test('retained recall uses the same ID after acknowledgement and excludes the supplied token', () => {
+ const evidence = sessionEvidence(resumeSession());
+ const result = resumedRecall(evidence, { child }, model, token);
+ expect(result.child.id).toBe(child.id);
+ expect(result.outcome.text).toBe(`Read from file: ${token}`);
+ expect(result.result.position).toBeGreaterThan(result.message.position);
+ expect(resumedRecall(sessionEvidence(acknowledgedResumeWithoutOutcome()), { child }, model, token)).toBeUndefined();
+ expect(() => resumedRecall(sessionEvidence(resumeSession({ leaked: true })), { child }, model, token)).toThrow('supplied the private token');
+ expect(resumedRecall(sessionEvidence(resumeSession({ ackAfterOutcome: true })), { child }, model, token)).toBeUndefined();
 });
 
-test('an unrelated aborted assistant does not acknowledge a specific cancelled wait', () => {
- const evidence = sessionEvidence(session());
- evidence.assistants.at(-1).stopReason = 'aborted';
- expect(cancellationAcknowledged(evidence, 'wait-call')).toBe(false);
- evidence.results[1].value = { state: 'cancelled' };
- expect(cancellationAcknowledged(evidence, 'wait-call')).toBe(true);
+test('cancellation acknowledgement is scoped to the pending wait', () => {
+ const evidence = sessionEvidence(completedSession());
+ expect(cancellationAcknowledged(evidence, 'other-call')).toBe(false);
+ evidence.results.push({ id: 'cancel-call', name: 'litter_wait', isError: true, errorText: 'Tool execution aborted' });
+ expect(cancellationAcknowledged(evidence, 'cancel-call')).toBe(true);
+ evidence.results.push({ id: 'cancelled-call', name: 'litter_wait', value: { state: 'cancelled', code: 'cancelled', report: 'wait cancelled', operation: 'litter_wait', handbackTruncated: false } });
+ expect(cancellationAcknowledged(evidence, 'cancelled-call')).toBe(true);
 });
 
 async function expectBoundedProcessFailure(options, script, message) {
@@ -157,11 +220,11 @@ async function expectBoundedProcessFailure(options, script, message) {
  await expect(runCommand(['sh', '-c', script], {
   timeoutMs: 100,
   ...options,
-  onStart(child) { leader = child.pid; },
-  onStdout(text, child) {
+  onStart(childProcess) { leader = childProcess.pid; },
+  onStdout(text, childProcess) {
    const pid = Number(text.trim().split('\n')[0]);
    if (Number.isInteger(pid) && pid > 0) descendant = pid;
-   if (options.input) child.stdin.end();
+   if (options.input) childProcess.stdin.end();
   },
  })).rejects.toThrow(message);
  expect(performance.now() - started).toBeLessThan(1200);

@@ -19,12 +19,12 @@ func TestWidgetLinesUsesSequenceForUnnamedChildren(t *testing.T) {
 	firstID := ChildID("0123456789abcdef0123456789abcdef:7")
 	secondID := ChildID("0123456789abcdef0123456789abcdef:8")
 	children := []Snapshot{
-		{Ref: Ref{ID: firstID, Generation: 1}, Name: string(firstID), DisplayLabel: "#7", Type: "worker", State: Running},
-		{Ref: Ref{ID: secondID, Generation: 2}, Name: string(secondID), DisplayLabel: "#8", Type: "scout", State: Failed},
+		{Ref: Ref{ID: firstID}, Name: string(firstID), DisplayLabel: "#7", Type: "worker", State: Running},
+		{Ref: Ref{ID: secondID}, Name: string(secondID), DisplayLabel: "#8", Type: "scout", State: Failed},
 	}
 
 	got := widgetLines(children, 80)
-	want := []string{"Litter 1 live 1 kept", "#7 g1 running worker", "#8 g2 failed scout"}
+	want := []string{"Litter 1 live 1 kept", "#7 running worker", "#8 failed scout"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("widgetLines() = %#v, want %#v", got, want)
 	}
@@ -35,10 +35,10 @@ func TestWidgetLinesUsesSequenceForUnnamedChildren(t *testing.T) {
 
 func TestWidgetLinesKeepsLastTwoNamedChildRows(t *testing.T) {
 	children := []Snapshot{
-		{Ref: Ref{ID: "first:1", Generation: 1}, Name: "setup", DisplayLabel: "setup", State: Completed},
-		{Ref: Ref{ID: "second:1", Generation: 1}, Name: "builder", DisplayLabel: "builder", State: Running},
-		{Ref: Ref{ID: "third:1", Generation: 1}, Name: "reviewer", DisplayLabel: "reviewer", State: Failed},
-		{Ref: Ref{ID: "fourth:1", Generation: 1}, Name: "finisher", DisplayLabel: "finisher", State: Stopping},
+		{Ref: Ref{ID: "first:1"}, Name: "setup", DisplayLabel: "setup", State: Completed},
+		{Ref: Ref{ID: "second:1"}, Name: "builder", DisplayLabel: "builder", State: Running},
+		{Ref: Ref{ID: "third:1"}, Name: "reviewer", DisplayLabel: "reviewer", State: Failed},
+		{Ref: Ref{ID: "fourth:1"}, Name: "finisher", DisplayLabel: "finisher", State: Stopping},
 	}
 
 	got := widgetLines(children, 80)
@@ -50,7 +50,7 @@ func TestWidgetLinesKeepsLastTwoNamedChildRows(t *testing.T) {
 
 func TestWidgetLinesBoundsNarrowUnicodeRows(t *testing.T) {
 	children := []Snapshot{
-		{Ref: Ref{ID: "child:1", Generation: 1}, Name: "猫犬鳥走亀", DisplayLabel: "猫犬鳥走亀", State: Running},
+		{Ref: Ref{ID: "child:1"}, Name: "猫犬鳥走亀", DisplayLabel: "猫犬鳥走亀", State: Running},
 	}
 
 	got := visibleWidgetLines(widgetLines(children, 6))
@@ -68,7 +68,7 @@ func TestWidgetLinesBoundsNarrowUnicodeRows(t *testing.T) {
 
 func TestWidgetLinesCapsWideTerminalRows(t *testing.T) {
 	children := []Snapshot{
-		{Ref: Ref{ID: "child:1", Generation: 1}, Name: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN", DisplayLabel: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN", State: Running},
+		{Ref: Ref{ID: "child:1"}, Name: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN", DisplayLabel: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN", State: Running},
 	}
 
 	got := visibleWidgetLines(widgetLines(children, 80))
