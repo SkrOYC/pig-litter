@@ -151,8 +151,9 @@ func (f *fixture) parentCompletion(ctx context.Context, w http.ResponseWriter, b
 		if err != nil {
 			return "", nil, err
 		}
-		if results[0].Child.ID != runs[2].ID || results[0].Child.State != "completed" || results[0].Outcome.Run != runs[2] || !strings.HasPrefix(results[0].Outcome.Text, "completed clear-child ") {
-			return "", nil, fmt.Errorf("queue clear lost the completed child's retained result: %#v", results[0])
+		reportMatches := strings.HasPrefix(results[0].Outcome.Text, "completed clear-child ")
+		if results[0].Child.ID != runs[2].ID || results[0].Child.State != "paused" || results[0].Outcome.Run != runs[2] || results[0].Outcome.State != "completed" || !reportMatches {
+			return "", nil, fmt.Errorf("queue clear changed retained result: child=%s/%s outcome=%s/%s report_matches=%t", results[0].Child.ID, results[0].Child.State, results[0].Outcome.Run.ID, results[0].Outcome.State, reportMatches)
 		}
 		if results[1].Child.ID == "" || results[1].Child.Name != "capacity-after-clear" {
 			return "", nil, fmt.Errorf("completion capacity stayed reserved after queue clear and abort: %#v", results[1])
