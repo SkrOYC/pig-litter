@@ -5,6 +5,28 @@ import (
 	"testing"
 )
 
+func TestFinalSpawnResultFailureTransformsOnlyNamedSpawn(t *testing.T) {
+	original := `{"state":"starting","child":{"id":"provisional-id","name":"result-hook-retry"}}`
+	data := map[string]any{
+		"toolName": "litter_spawn",
+		"input":    map[string]any{"name": failedSpawnName, "task": failedSpawnTask},
+		"content":  []any{map[string]any{"type": "text", "text": original}},
+	}
+	result, err := finalSpawnResultFailure(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, ok := result.(map[string]any)
+	if !ok || replacement["isError"] != true || textContent(replacement["content"]) != spawnFailureText+original {
+		t.Fatalf("tool result replacement = %#v", result)
+	}
+
+	data["input"] = map[string]any{"name": failedSpawnName, "task": "RESULT_HOOK_SUCCESS"}
+	if result, err := finalSpawnResultFailure(data); err != nil || result != nil {
+		t.Fatalf("successful retry was modified: %#v, %v", result, err)
+	}
+}
+
 func TestDeniedPathMatchesOnlyTheWorkspaceTargets(t *testing.T) {
 	workspace := filepath.Join(t.TempDir(), "workspace")
 	for _, path := range []string{

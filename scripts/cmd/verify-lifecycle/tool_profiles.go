@@ -23,14 +23,14 @@ var toolInventories = map[string]toolInventory{
 
 var fixtureModelInventories = map[string]string{
 	"parent": "worker", "parent_cwd": "worker", "parent_unbounded": "worker", "parent_nested": "worker",
-	"parent_checks": "worker", "parent_shadow": "worker", "parent_messages": "worker", "parent_lifecycle": "worker", "parent_pause": "worker", "parent_completion": "worker", "parent_codemode": "worker_codemode",
+	"parent_checks": "worker", "parent_admission": "worker", "parent_shadow": "worker", "parent_messages": "worker", "parent_lifecycle": "worker", "parent_pause": "worker", "parent_completion": "worker", "parent_codemode": "worker_codemode",
 	"held": "scout", "lifecycle_child": "scout", "completion_child": "scout", "missing_file": "scout", "roles": "scout", "history": "scout", "message_child": "scout", "provider_error": "scout", "cwd_nested": "scout", "nested_sibling": "scout",
 	"codemode_child": "scout",
 	"denied":         "worker", "worker": "worker", "cwd_worker": "worker_native", "unbounded_child": "worker",
 	"nester": "coordinator", "grandchild": "coordinator",
 }
 
-var fixtureModelIDs = []string{"parent", "held", "worker", "parent_cwd", "cwd_worker", "cwd_nested", "parent_unbounded", "unbounded_child", "parent_nested", "nester", "grandchild", "nested_sibling", "parent_checks", "denied", "provider_error", "missing_file", "roles", "history", "parent_messages", "message_child", "parent_lifecycle", "parent_pause", "lifecycle_child", "parent_completion", "completion_child", "parent_codemode", "codemode_child"}
+var fixtureModelIDs = []string{"parent", "held", "worker", "parent_cwd", "cwd_worker", "cwd_nested", "parent_unbounded", "unbounded_child", "parent_nested", "nester", "grandchild", "nested_sibling", "parent_checks", "parent_admission", "denied", "provider_error", "missing_file", "roles", "history", "parent_messages", "message_child", "parent_lifecycle", "parent_pause", "lifecycle_child", "parent_completion", "completion_child", "parent_codemode", "codemode_child"}
 
 func requireToolInventory(request modelRequest, inventory toolInventory) error {
 	allowed := make(map[string]bool, len(inventory.required)+len(inventory.optional))

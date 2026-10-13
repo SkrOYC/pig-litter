@@ -90,7 +90,7 @@ type fixture struct {
 	stage                                                                   int
 	runs                                                                    []ref
 	resumed, worker, stopped                                                ref
-	nestedParent, grandchild, sibling                                       ref
+	nestedParent, grandchild, sibling, admissionProvisional                 ref
 	hostSessionID                                                           string
 	nesterStage, grandchildStage                                            int
 	codemodeResumeTarget, codemodeSurvivor, codemodeStopped, codemodeWaited ref
@@ -730,6 +730,8 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 		text, calls, err = f.parentCompletion(request.Context(), w, body)
 	case "parent_codemode":
 		text, calls, err = f.parentCodemode(request.Context(), body)
+	case "parent_admission":
+		text, calls, err = f.parentAdmission(request.Context(), body)
 	case "completion_child":
 		text, calls, err = f.completionChild(request.Context(), body)
 	case "lifecycle_child":
@@ -951,6 +953,12 @@ func run(directory, pig, extension, scenario string) error {
 		if err := os.WriteFile(filepath.Join(workspace, "litter.yaml"), []byte(configuration), 0o600); err != nil {
 			return err
 		}
+	} else if scenario == "admission" {
+		model = "fixture/parent_admission"
+		configuration := "concurrency: 1\ndepth: 1\nagents:\n  scout:\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n"
+		if err := os.WriteFile(filepath.Join(workspace, "litter.yaml"), []byte(configuration), 0o600); err != nil {
+			return err
+		}
 	} else if scenario == "messages" {
 		model = "fixture/parent_messages"
 		if err := os.WriteFile(filepath.Join(workspace, "litter.yaml"), []byte("concurrency: 2\nmax_mailbox: 2\nagents:\n  scout:\n    instructions: input.txt\n"), 0o600); err != nil {
@@ -969,7 +977,7 @@ func run(directory, pig, extension, scenario string) error {
 	if scenario == "codemode" {
 		arguments = append(arguments, "-e", "builtin:codemode")
 	}
-	if scenario == "checks" || scenario == "shadow" {
+	if scenario == "checks" || scenario == "shadow" || scenario == "admission" {
 		arguments = append([]string{"-e", filepath.Join(filepath.Dir(extension), "litter-fixture-guard")}, arguments...)
 	}
 	command := exec.CommandContext(ctx, pig, arguments...)
@@ -1061,7 +1069,7 @@ func main() {
 	}
 	pig := flag.String("pig-bin", "", "Released PiG binary")
 	extension := flag.String("extension", filepath.Join(filepath.Dir(self), "pig-litter"), "Built pig-litter standalone")
-	scenario := flag.String("scenario", "core", "core, cwd, unbounded, nested, checks, messages, lifecycle, pause, completion, shadow, or codemode")
+	scenario := flag.String("scenario", "core", "core, cwd, unbounded, nested, checks, admission, messages, lifecycle, pause, completion, shadow, or codemode")
 	evidenceRoot := flag.String("evidence-root", filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(self)))), ".pstack", "evidence", "go-lifecycle"), "Evidence directory")
 	flag.Parse()
 	if *pig == "" {

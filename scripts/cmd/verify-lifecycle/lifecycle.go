@@ -79,6 +79,12 @@ func (f *fixture) lifecycleChild(ctx context.Context, body modelRequest) (string
 			user += content(message.Content)
 		}
 	}
+	if strings.Contains(user, "RESULT_HOOK_FAILURE_MUST_NOT_RUN") {
+		return "", nil, errors.New("rolled-back spawn reached the child provider")
+	}
+	if strings.Contains(user, "RESULT_HOOK_SUCCESS") {
+		return "RESULT_HOOK_SUCCESS", nil, nil
+	}
 	if strings.Contains(user, "ROOT_PAUSE_RESUME_A") {
 		if !strings.Contains(user, "root-pause-A") {
 			return "", nil, errors.New("root resumed a child other than root-pause-A")

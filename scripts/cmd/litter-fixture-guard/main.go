@@ -11,6 +11,12 @@ import (
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 )
 
+const (
+	failedSpawnName  = "result-hook-retry"
+	failedSpawnTask  = "RESULT_HOOK_FAILURE_MUST_NOT_RUN"
+	spawnFailureText = "FIXTURE_FINAL_SPAWN_FAILURE\n"
+)
+
 func main() {
 	directory := os.Getenv("LITTER_FIXTURE_EVIDENCE")
 	if directory == "" {
@@ -49,10 +55,48 @@ func main() {
 		}
 		return map[string]any{"block": true, "reason": "PARENT_PERMISSION_DENIED_" + name}, nil
 	})
+	ext.OnToolResult(func(_ sdk.Context, data map[string]any) (any, error) {
+		return finalSpawnResultFailure(data)
+	})
 	if err := ext.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func finalSpawnResultFailure(data map[string]any) (any, error) {
+	toolName, _ := data["toolName"].(string)
+	input, _ := data["input"].(map[string]any)
+	name, _ := input["name"].(string)
+	task, _ := input["task"].(string)
+	if toolName != "litter_spawn" || name != failedSpawnName || task != failedSpawnTask {
+		return nil, nil
+	}
+	original := textContent(data["content"])
+	if original == "" {
+		return nil, fmt.Errorf("successful spawn %q had no text result to replace", name)
+	}
+	return map[string]any{
+		"content": []any{map[string]any{"type": "text", "text": spawnFailureText + original}},
+		"isError": true,
+	}, nil
+}
+
+func textContent(value any) string {
+	blocks, ok := value.([]any)
+	if !ok {
+		return ""
+	}
+	for _, block := range blocks {
+		fields, ok := block.(map[string]any)
+		if !ok || fields["type"] != "text" {
+			continue
+		}
+		if text, ok := fields["text"].(string); ok {
+			return text
+		}
+	}
+	return ""
 }
 
 func deniedPath(workspace, name, path string) bool {
