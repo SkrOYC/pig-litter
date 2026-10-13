@@ -724,6 +724,8 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 		text, calls, err = f.parentMessages(request.Context(), body)
 	case "parent_lifecycle":
 		text, calls, err = f.parentLifecycle(request.Context(), body)
+	case "parent_pause":
+		text, calls, err = f.parentPause(request.Context(), body)
 	case "parent_completion":
 		text, calls, err = f.parentCompletion(request.Context(), w, body)
 	case "parent_codemode":
@@ -929,7 +931,7 @@ func run(directory, pig, extension, scenario string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if scenario == "lifecycle" || scenario == "completion" {
+	if scenario == "lifecycle" || scenario == "pause" || scenario == "completion" {
 		return f.runLifecycle(ctx, directory, workspace, agentDir, pig, extension, stdout, stderr)
 	}
 	model := "fixture/parent"
@@ -1059,7 +1061,7 @@ func main() {
 	}
 	pig := flag.String("pig-bin", "", "Released PiG binary")
 	extension := flag.String("extension", filepath.Join(filepath.Dir(self), "pig-litter"), "Built pig-litter standalone")
-	scenario := flag.String("scenario", "core", "core, cwd, unbounded, nested, checks, messages, lifecycle, completion, shadow, or codemode")
+	scenario := flag.String("scenario", "core", "core, cwd, unbounded, nested, checks, messages, lifecycle, pause, completion, shadow, or codemode")
 	evidenceRoot := flag.String("evidence-root", filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(self)))), ".pstack", "evidence", "go-lifecycle"), "Evidence directory")
 	flag.Parse()
 	if *pig == "" {
