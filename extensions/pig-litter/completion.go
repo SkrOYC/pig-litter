@@ -547,6 +547,15 @@ func (o *owner) completionParentLocked(id ChildID) *record {
 }
 
 func (o *owner) continueForCompletions(parent *record) bool {
+	parent.receiptMu.Lock()
+	receipts := make([]*completionReceipt, 0, len(parent.receipts))
+	for _, receipt := range parent.receipts {
+		receipts = append(receipts, receipt)
+	}
+	parent.receiptMu.Unlock()
+	for _, receipt := range receipts {
+		receipt.complete()
+	}
 	o.tree.mu.Lock()
 	if o.tree.closed {
 		o.tree.mu.Unlock()
