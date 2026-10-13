@@ -76,6 +76,8 @@ Native file and terminal tools execute in the child's own PiG session. PiG handl
 
 A successful individual spawn starts its child independently of the enclosing script. Codemode can spawn and wait within one script. A later script failure leaves that child running. A failed or cancelled admission before success rolls back its own pending work. Normal caller completion leaves successful children running. Explicit pause preserves the session tree; owner replacement, reload, and exit retire it.
 
+Root cancellation cascades while PiG exposes an active run's cancellation signal. In PiG 0.4.1, an SDK abort while a settlement handler waits after `agent_end` stops native continuation without publishing a parent pause. Explicit `litter_stop` still pauses the selected subtree.
+
 PiG 0.4.1's public resource loader discovers directory settings, context, skills, templates, and prompt resources. It does not automatically load arbitrary CLI extensions or themes. Parent-only hooks and extension providers are not automatically inherited. The child uses the embedded SDK's native pipeline and its explicit tool policy.
 
 A trusted parent's delegation authorizes native project settings in the selected child directory. The embedded SDK does not consult the CLI's trust store for that target independently. The parent trust check and role tool ceilings still apply.

@@ -40,6 +40,8 @@ PiG 0.4.1's public resource loader discovers settings, context, skills, template
 
 Trusted delegation authorizes the target directory's native project settings through the SDK. There is no independent CLI trust-store lookup for that target. Keep the root trust check and role ceilings. PiG's public final-event payload also has no originating request token for adversarial raw-envelope replay across model turns. The ticket design relies on measured native event ordering and protects delayed local callbacks through captured pointers.
 
+PiG clears the completed low-level agent's signal before settlement. An SDK abort during a later settlement handler stops continuation without exposing another cancellation signal or abort outcome to the public SDK. Explicit tree pause and active-parent cancellation remain the observable pause boundaries. Do not infer pause from ordinary settlement, which would also pause descendants after normal completion. The CLI gates stdin during an opaque settlement wait, so an RPC abort written then can execute against a later active continuation. The dispatch phase determines its behavior.
+
 ## Evidence and verification
 
 Pinned APIs were checked in the Go module cache and upstream PiG v0.4.1. The unchanged unit/race/vet/build suite and released-host core/cwd scenarios passed. A new codemode spawn+wait fixture is red, with a timeout and no child provider request. Its stabilized evidence is codemode-1094588191 in the fixture worktree.
