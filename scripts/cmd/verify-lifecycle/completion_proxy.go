@@ -26,8 +26,7 @@ type completionDelivery struct {
 		Content    string `json:"content"`
 		Display    bool   `json:"display"`
 		Details    struct {
-			ChildID    string `json:"childId"`
-			Generation int    `json:"generation"`
+			ChildID string `json:"childId"`
 		} `json:"details"`
 	} `json:"message"`
 	Options sdk.SendMessageOptions `json:"options"`
@@ -144,7 +143,7 @@ func proxyCompletionExtension(target, directory string) error {
 			if envelope.CallResult.Error != nil {
 				delivery.Error, _ = json.Marshal(envelope.CallResult.Error)
 			}
-			return writeJSON(filepath.Join(directory, completionDeliveryFile(ref{delivery.Message.Details.ChildID, delivery.Message.Details.Generation})), delivery)
+			return writeJSON(filepath.Join(directory, completionDeliveryFile(ref{ID: delivery.Message.Details.ChildID})), delivery)
 		})
 	}()
 	err = <-forwarded
@@ -160,5 +159,5 @@ func proxyCompletionExtension(target, directory string) error {
 }
 
 func completionDeliveryFile(run ref) string {
-	return fmt.Sprintf("completion-%s-%d.json", run.ID, run.Generation)
+	return fmt.Sprintf("completion-%s.json", run.ID)
 }

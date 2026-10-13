@@ -20,7 +20,7 @@ func framedJSON(raw string) []byte {
 }
 
 func TestCompletionProxyPreservesExactFramesAndObservesTaggedCall(t *testing.T) {
-	raw := ` { "type" : "call", "id":"call-1", "call": {"method":"sendMessage", "args":{"message":{"customType":"litter_completion","content":"report é","display":false,"details":{"childId":"child:1","generation":2}},"options":{"deliverAs":"followUp"}}}} `
+	raw := ` { "type" : "call", "id":"call-1", "call": {"method":"sendMessage", "args":{"message":{"customType":"litter_completion","content":"report é","display":false,"details":{"childId":"child:1"}},"options":{"deliverAs":"followUp"}}}} `
 	input := append(framedJSON(raw), framedJSON(`{"type":"call_result","id":"call-1","call_result":{"result":{}}}`)...)
 	var forwarded bytes.Buffer
 	seen := []string{}
@@ -31,7 +31,7 @@ func TestCompletionProxyPreservesExactFramesAndObservesTaggedCall(t *testing.T) 
 			if err := json.Unmarshal(envelope.Call.Args, &delivery); err != nil {
 				return err
 			}
-			if delivery.Message.Content != "report é" || delivery.Message.Details.ChildID != "child:1" || delivery.Message.Details.Generation != 2 || delivery.Options.DeliverAs != "followUp" || delivery.Options.TriggerTurn != nil {
+			if delivery.Message.Content != "report é" || delivery.Message.Details.ChildID != "child:1" || delivery.Options.DeliverAs != "followUp" || delivery.Options.TriggerTurn != nil {
 				t.Fatalf("tagged completion call decoded incorrectly: %#v", delivery)
 			}
 		}
@@ -66,8 +66,8 @@ func TestCompletionProxyRejectsMalformedFramesBeforeForwarding(t *testing.T) {
 }
 
 func TestBusyCompletionRequiresReportInModelRequest(t *testing.T) {
-	run := ref{"child:1", 2}
-	completion := `{"id":"child:1","generation":2,"state":"completed","model":"fixture/completion_child","report":"completed busy-child result"}`
+	run := ref{ID: "child:1"}
+	completion := `{"origin":"pig-litter","kind":"litter_completion","notice":"automatic status","reportProvenance":"child_assistant","id":"child:1","state":"completed","model":"fixture/completion_child","report":"completed busy-child result"}`
 	for _, test := range []struct {
 		name, role, completion string
 		processed              bool
@@ -75,8 +75,7 @@ func TestBusyCompletionRequiresReportInModelRequest(t *testing.T) {
 		{"real completion", "user", completion, true},
 		{"missing completion", "user", "BUSY_BEGIN", false},
 		{"tool result only", "tool", completion, false},
-		{"stale generation", "user", `{"id":"child:1","generation":1,"state":"completed","model":"fixture/completion_child","report":"completed busy-child result"}`, false},
-		{"other child", "user", `{"id":"child:2","generation":2,"state":"completed","model":"fixture/completion_child","report":"completed busy-child result"}`, false},
+		{"other child", "user", `{"origin":"pig-litter","kind":"litter_completion","notice":"automatic status","reportProvenance":"child_assistant","id":"child:2","state":"completed","model":"fixture/completion_child","report":"completed busy-child result"}`, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			raw, _ := json.Marshal(test.completion)

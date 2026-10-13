@@ -16,22 +16,22 @@ import (
 	"github.com/MichaelKinsy/PiG/tui/widthx"
 )
 
-var fileNames = []string{"read", "ls", "write", "edit"}
+var hostToolNames = []string{"read", "ls", "write", "edit", "bash"}
 var controlNames = []string{"litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
 var descriptions = map[string]string{
 	"litter_spawn":   "Start a background child. Use litter_list to discover named agent types.",
 	"litter_list":    "List available agent types and a bounded page of owned children.",
-	"litter_inspect": "Inspect the current child and authoritative tool evidence. Optional generation must match the current run. Transcript pages span all retained generations.",
-	"litter_message": "Steer a live child or explicitly resume a settled generation.",
+	"litter_inspect": "Get a child's current status and latest result by ID.",
+	"litter_message": "Steer a live child or explicitly resume a settled child with the same ID.",
 	"litter_stop":    "Stop an owned child subtree and report newly stopped runs.",
-	"litter_wait":    "Wait for an exact child generation and its tool evidence. Outcome text is the child assistant's report. A timeout leaves the child running.",
+	"litter_wait":    "Wait for a child result by ID. Outcome text is the child assistant's report. A timeout leaves the child running.",
 	"read":           "Use the original parent host's read tool.", "ls": "Use the original parent host's ls tool.", "write": "Use the original parent host's write tool.", "edit": "Use the original parent host's edit tool.",
 }
 
 var promptGuidelines = map[string][]string{
-	"litter_spawn":   {"Use litter_list to discover agent types before litter_spawn. Give each child a self-contained task and use the returned id and generation for controls."},
-	"litter_inspect": {"Use litter_inspect evidence for actual tool results and errors. Outcome text is child_assistant prose, not verification. Use receipt entryOffset with transcript true to read full output. Omit generation to discover the current run, or supply it to guard the read. Transcript pages include earlier generations.", "Evidence isError flags and counts describe SDK retained-result metadata. The child provider may have seen only canonical tool text, so do not infer what the child saw from your receipts."},
-	"litter_wait":    {"litter_wait outcomes with partial or failed states remain failures even if later tools succeeded. Automatic litter_completion notices come from Pig Litter and repeat the same child-generation outcome. They are status updates, not user requests, and need no duplicate acknowledgment."},
+	"litter_spawn":   {"Use litter_list to discover agent types. Give each child a self-contained task and save its ID for controls. cwd defaults to the caller's directory and relative cwd paths resolve there."},
+	"litter_inspect": {"Inspect returns current status and the latest child report. Use the same ID after resume."},
+	"litter_wait":    {"Partial or failed outcomes remain failures even if later tools succeeded. Automatic litter_completion notices are status updates from Pig Litter and need no duplicate acknowledgment."},
 }
 
 func object(required []string, properties map[string]any) map[string]any {
@@ -45,31 +45,24 @@ func integer(minimum, maximum int) map[string]any {
 }
 
 var schemas = map[string]map[string]any{
-	"litter_spawn": object([]string{"type", "task"}, map[string]any{"type": text(64), "task": text(16384), "name": text(128), "model": text(256)}),
-	"litter_list":  object([]string{}, map[string]any{"offset": integer(0, 1000000), "limit": integer(1, 50), "agentOffset": integer(0, 1000000), "agentLimit": integer(1, 50)}),
-	"litter_inspect": object([]string{"id"}, map[string]any{
-		"id":         text(128),
-		"generation": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647, "description": "Optional current-run generation to compare against. Omit it to inspect the current run."},
-		"transcript": map[string]any{"type": "boolean", "description": "Return raw retained transcript entries. Defaults to false."},
-		"offset":     map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000, "description": "Entry offset into the whole retained log when transcript is true."},
-		"limit":      map[string]any{"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum entries from the whole retained log when transcript is true."},
-	}),
-	"litter_message": object([]string{"id", "generation", "text"}, map[string]any{"id": text(128), "generation": integer(1, 2147483647), "text": text(16384), "mode": map[string]any{"type": "string", "enum": []string{"steer", "follow_up"}}, "resume": map[string]any{"type": "boolean"}}),
-	"litter_stop":    object([]string{"id", "generation"}, map[string]any{"id": text(128), "generation": integer(1, 2147483647)}),
-	"litter_wait":    object([]string{"id", "generation"}, map[string]any{"id": text(128), "generation": integer(1, 2147483647), "timeoutMs": integer(1, 300000)}),
+	"litter_spawn":   object([]string{"type", "task"}, map[string]any{"type": text(64), "task": text(16384), "name": text(128), "model": text(256), "cwd": text(4096)}),
+	"litter_list":    object([]string{}, map[string]any{"offset": integer(0, 1000000), "limit": integer(1, 50), "agentOffset": integer(0, 1000000), "agentLimit": integer(1, 50)}),
+	"litter_inspect": object([]string{"id"}, map[string]any{"id": text(128)}),
+	"litter_message": object([]string{"id", "text"}, map[string]any{"id": text(128), "text": text(16384), "mode": map[string]any{"type": "string", "enum": []string{"steer", "follow_up"}}, "resume": map[string]any{"type": "boolean"}}),
+	"litter_stop":    object([]string{"id"}, map[string]any{"id": text(128)}),
+	"litter_wait":    object([]string{"id"}, map[string]any{"id": text(128), "timeoutMs": integer(1, 300000)}),
 }
 
 type operationArgs struct {
 	ID                     ChildID
-	Generation             *int
 	Type, Task, Text, Mode string
 	Name                   *string
 	Model                  string
+	Cwd                    string
 	Offset                 int
 	Limit                  *int
 	AgentOffset            int
 	AgentLimit             *int
-	Transcript             bool
 	Resume                 bool
 	TimeoutMs              *int
 }
@@ -98,7 +91,7 @@ func safeLabel(value string) (string, error) {
 	return label, nil
 }
 
-func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage, caller Ref, callID string, toolContext *sdk.Context) (map[string]any, error) {
+func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage, caller *run, callID string, toolContext *sdk.Context) (map[string]any, error) {
 	if err := o.current(); err != nil {
 		return nil, err
 	}
@@ -106,12 +99,10 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, reject("rejected", "invalid tool arguments")
 	}
-	ref := Ref{ID: args.ID}
-	if args.Generation != nil {
-		ref.Generation = *args.Generation
-	}
 	var parent *record
-	if caller.ID != "" {
+	var callerID ChildID
+	if caller != nil {
+		callerID = caller.ref.ID
 		o.tree.mu.Lock()
 		var err error
 		parent, err = o.tree.currentLocked(caller)
@@ -180,15 +171,23 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 				return nil, err
 			}
 		}
-		manager, err := coding.NewInMemorySessionManager(o.cwd)
+		base := o.cwd
+		if parent != nil {
+			base = parent.cwd
+		}
+		cwd, err := childDirectory(base, args.Cwd)
 		if err != nil {
 			return nil, err
 		}
-		snapshot, err := o.tree.admit(admission{parent: caller.ID, parentGeneration: caller.Generation, kind: args.Type, name: label, model: model, cwd: o.cwd, task: args.Task, agent: agent, history: manager, authority: bridge})
+		manager, err := coding.NewInMemorySessionManager(cwd)
 		if err != nil {
 			return nil, err
 		}
-		o.deferActivation(ackKey{caller, callID}, snapshot.Ref, ctx.Done(), func() bool { return ctx.Err() != nil })
+		snapshot, execution, err := o.tree.admit(admission{parent: callerID, parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, history: manager, authority: bridge})
+		if err != nil {
+			return nil, err
+		}
+		o.deferActivation(ackKey{caller, callID}, execution, ctx.Done(), func() bool { return ctx.Err() != nil })
 		if toolContext != nil {
 			o.watchRequest(ackKey{caller, callID}, *toolContext)
 		}
@@ -196,7 +195,7 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 		return map[string]any{"state": snapshot.State, "child": snapshot}, nil
 	}
 	if name == "litter_list" {
-		children, err := o.tree.list(caller.ID)
+		children, err := o.tree.list(callerID)
 		if err != nil {
 			return nil, err
 		}
@@ -223,27 +222,31 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 		page := children[min(args.Offset, len(children)):min(args.Offset+limit, len(children))]
 		return map[string]any{"state": "listed", "children": page, "nextOffset": args.Offset + len(page), "more": len(children) > args.Offset+limit, "totalChildren": len(children), "availableAgentTypes": agents, "nextAgentOffset": args.AgentOffset + len(agents), "moreAgentTypes": len(names) > args.AgentOffset+agentLimit, "totalAgentTypes": len(names)}, nil
 	}
-	if err := o.tree.owned(caller.ID, args.ID); err != nil {
+	if err := o.tree.owned(callerID, args.ID); err != nil {
 		return nil, err
 	}
 	if name == "litter_inspect" {
-		inspection, err := o.tree.inspect(InspectTarget{ID: args.ID, Generation: args.Generation}, args.Transcript, args.Offset, pageLimit(args.Limit, 10))
+		inspection, err := o.tree.inspect(args.ID)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"state": inspection.Child.State, "child": inspection.Child, "outcome": inspection.Outcome, "evidence": inspection.Evidence, "historyAvailable": inspection.HistoryAvailable, "transcriptRequested": inspection.TranscriptRequested, "transcriptScope": "all_retained_generations", "mailbox": inspection.Mailbox, "mailboxTotal": inspection.MailboxTotal, "mailboxMore": inspection.MailboxMore, "entries": inspection.Entries, "nextOffset": inspection.NextOffset, "more": inspection.More}, nil
+		return map[string]any{"state": inspection.Child.State, "child": inspection.Child, "outcome": inspection.Outcome}, nil
+	}
+	selected, err := o.tree.selectRun(args.ID)
+	if err != nil {
+		return nil, err
 	}
 	if name == "litter_wait" {
 		key := ackKey{caller, callID}
-		o.beginOutcomeAck(key, ref, name, toolContext)
-		outcome, err := o.tree.wait(ctx, ref, pageLimit(args.TimeoutMs, min(o.config.MaxRunMillis, 300000)))
+		o.beginOutcomeAck(key, selected, name, toolContext)
+		outcome, err := o.tree.wait(ctx, selected, pageLimit(args.TimeoutMs, 30000))
 		o.readyOutcomeAck(key, err == nil && outcome.State.terminal())
 		return map[string]any{"state": outcome.State, "outcome": &outcome}, err
 	}
 	if name == "litter_stop" {
 		key := ackKey{caller, callID}
-		o.beginOutcomeAck(key, ref, name, toolContext)
-		outcome, count, err := o.tree.stop(ref)
+		o.beginOutcomeAck(key, selected, name, toolContext)
+		outcome, count, err := o.tree.stop(selected)
 		o.readyOutcomeAck(key, err == nil && outcome != nil && outcome.State.terminal())
 		state := Stopping
 		if outcome != nil {
@@ -266,7 +269,7 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 				return nil, reject("permission_denied", "project trust was revoked")
 			}
 			o.tree.mu.Lock()
-			target, err := o.tree.currentLocked(ref)
+			target, err := o.tree.currentLocked(selected)
 			var model string
 			if err == nil {
 				model = target.model
@@ -279,14 +282,14 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 				return nil, err
 			}
 		}
-		snapshot, err := o.tree.message(ctx, ref, mode, args.Text)
+		snapshot, execution, err := o.tree.message(ctx, selected, mode, args.Text)
 		if err != nil {
 			return nil, err
 		}
 		delivery := "queued"
 		if mode == "resume" {
 			delivery = "resumed"
-			o.deferActivation(ackKey{caller, callID}, snapshot.Ref, ctx.Done(), func() bool { return ctx.Err() != nil })
+			o.deferActivation(ackKey{caller, callID}, execution, ctx.Done(), func() bool { return ctx.Err() != nil })
 			if toolContext != nil {
 				o.watchRequest(ackKey{caller, callID}, *toolContext)
 			}
@@ -322,11 +325,14 @@ func resultContent(operation string, value map[string]any, err error) (string, b
 	if value == nil {
 		value = map[string]any{}
 	}
-	value["operation"] = operation
+	if operation != "litter_inspect" || err != nil {
+		value["operation"] = operation
+	}
 	clipped := false
 	if outcome, ok := value["outcome"].(*Outcome); ok && outcome != nil {
 		copy := *outcome
 		copy.Text, clipped = bounded(copy.Text, 8192)
+		copy.HandbackTruncated = copy.HandbackTruncated || clipped
 		value["outcome"] = &copy
 	}
 	if report, ok := value["report"].(string); ok {
@@ -334,7 +340,9 @@ func resultContent(operation string, value map[string]any, err error) (string, b
 		value["report"], truncated = bounded(report, 1024)
 		clipped = clipped || truncated
 	}
-	value["handbackTruncated"] = clipped
+	if operation != "litter_inspect" || err != nil {
+		value["handbackTruncated"] = clipped
+	}
 	data, marshalErr := json.Marshal(value)
 	if marshalErr != nil {
 		return `{"state":"failed","code":"failed","report":"cannot encode child result","handbackTruncated":false}`, true

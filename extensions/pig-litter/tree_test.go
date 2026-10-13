@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -23,7 +22,24 @@ func testTree(t *testing.T, config Config) *Tree {
 	return tree
 }
 
+func testRun(t *testing.T, tree *Tree, ref Ref) *run {
+	t.Helper()
+	selected, err := tree.selectRun(ref.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return selected
+}
+
 func testAdmission(t *testing.T, tree *Tree, parent Ref, kind, name string) Snapshot {
+	definition, ok := tree.config.Agents[kind]
+	if !ok {
+		t.Fatalf("unknown test agent %q", kind)
+	}
+	return testAdmissionWithAgent(t, tree, parent, kind, name, definition)
+}
+
+func testAdmissionWithAgent(t *testing.T, tree *Tree, parent Ref, kind, name string, definition AgentDefinition) Snapshot {
 	t.Helper()
 	manager, err := coding.NewInMemorySessionManager(t.TempDir())
 	if err != nil {
@@ -32,8 +48,11 @@ func testAdmission(t *testing.T, tree *Tree, parent Ref, kind, name string) Snap
 	if _, err := manager.AppendCustomMessage("fixture", "retained marker", false, nil); err != nil {
 		t.Fatal(err)
 	}
-	agent := tree.config.Agents[kind]
-	snapshot, err := tree.admit(admission{parent: parent.ID, parentGeneration: parent.Generation, kind: kind, name: name, model: "fixture/child", cwd: "/fixture", task: "task", agent: agent, history: manager})
+	var parentRun *run
+	if parent.ID != "" {
+		parentRun = testRun(t, tree, parent)
+	}
+	snapshot, _, err := tree.admit(admission{parent: parent.ID, parentRun: parentRun, kind: kind, name: name, model: "fixture/child", cwd: "/fixture", task: "task", agent: definition, history: manager})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,82 +63,143 @@ func TestAdmissionCountsDescendantsAndRejectsDepthWritersAndNames(t *testing.T) 
 	config := defaultConfig()
 	config.Concurrency = 2
 	tree := testTree(t, config)
-	parent := testAdmission(t, tree, Ref{}, "scout", "parent")
-	child := testAdmission(t, tree, parent.Ref, "scout", "child")
+	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate child tasks", Tools: []string{"read"}, CanDelegate: true}
+	parent := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
+	child := testAdmissionWithAgent(t, tree, parent.Ref, "coordinator", "child", coordinator)
 	if child.Depth != 2 || child.Parent == nil || *child.Parent != parent.ID {
 		t.Fatalf("grandchild %#v", child)
 	}
-	if _, err := tree.admit(admission{agent: config.Agents["scout"]}); err == nil {
+	if _, _, err := tree.admit(admission{agent: config.Agents["scout"]}); err == nil {
 		t.Fatal("accepted a third live descendant")
 	}
-	if _, err := tree.admit(admission{parent: child.ID, parentGeneration: 1, agent: config.Agents["scout"]}); err == nil || !strings.Contains(err.Error(), "depth") {
+	if _, _, err := tree.admit(admission{parent: child.ID, parentRun: testRun(t, tree, child.Ref), agent: config.Agents["scout"]}); err == nil || !strings.Contains(err.Error(), "depth") {
 		t.Fatalf("depth rejection %v", err)
 	}
 	writers := testTree(t, defaultConfig())
 	writer := testAdmission(t, writers, Ref{}, "worker", "writer")
-	if _, err := writers.admit(admission{cwd: "/fixture", agent: writers.config.Agents["worker"]}); err == nil || !strings.Contains(err.Error(), "writer conflict") {
+	if _, _, err := writers.admit(admission{cwd: "/fixture", agent: writers.config.Agents["worker"]}); err == nil || !strings.Contains(err.Error(), "writer conflict") {
 		t.Fatalf("writer rejection %v", err)
 	}
-	if _, _, err := writers.stop(writer.Ref); err != nil {
+	if _, _, err := writers.stop(testRun(t, writers, writer.Ref)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writers.admit(admission{name: "writer", agent: writers.config.Agents["scout"]}); err == nil || !strings.Contains(err.Error(), "name already") {
+	if _, _, err := writers.admit(admission{name: "writer", agent: writers.config.Agents["scout"]}); err == nil || !strings.Contains(err.Error(), "name already") {
 		t.Fatalf("name rejection %v", err)
+	}
+}
+
+func TestAdmissionUsesEffectiveRoleForDelegationAndBashForWriterConflict(t *testing.T) {
+	tree := testTree(t, defaultConfig())
+	scoutNameWorker := AgentDefinition{Role: "worker", Instructions: "delegate within the read ceiling", Tools: []string{"read"}, CanDelegate: true}
+	parent := testAdmissionWithAgent(t, tree, Ref{}, "scout", "coordinator", scoutNameWorker)
+	if _, _, err := tree.admit(admission{parent: parent.ID, parentRun: testRun(t, tree, parent.Ref), agent: tree.config.Agents["scout"]}); err != nil {
+		t.Fatalf("worker role named scout could not delegate: %v", err)
+	}
+
+	leaf := testAdmissionWithAgent(t, tree, Ref{}, "worker", "leaf", AgentDefinition{Role: "scout", Instructions: "inspect only", Tools: []string{"read"}, CanDelegate: true})
+	if _, _, err := tree.admit(admission{parent: leaf.ID, parentRun: testRun(t, tree, leaf.Ref), agent: tree.config.Agents["scout"]}); err == nil || !strings.Contains(err.Error(), "cannot delegate") {
+		t.Fatalf("scout role delegated under a different name: %v", err)
+	}
+
+	writers := testTree(t, defaultConfig())
+	bashOnly := AgentDefinition{Role: "worker", Instructions: "run commands", Tools: []string{"bash"}}
+	testAdmissionWithAgent(t, writers, Ref{}, "worker", "shell", bashOnly)
+	if _, _, err := writers.admit(admission{agent: writers.config.Agents["worker"], cwd: "/fixture"}); err == nil || !strings.Contains(err.Error(), "writer conflict") {
+		t.Fatalf("bash-only child did not reserve the shared directory for writes: %v", err)
 	}
 }
 
 func TestWaitCancellationAndTimeoutLeaveChildRunning(t *testing.T) {
 	tree := testTree(t, defaultConfig())
 	child := testAdmission(t, tree, Ref{}, "scout", "held")
-	if _, err := tree.wait(context.Background(), child.Ref, 1); err == nil || err.(*treeError).code != "wait_timeout" {
+	selected := testRun(t, tree, child.Ref)
+	if _, err := tree.wait(context.Background(), selected, 1); err == nil || err.(*treeError).code != "wait_timeout" {
 		t.Fatalf("wait timeout %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := tree.wait(ctx, child.Ref, 1000); err == nil || err.(*treeError).code != "cancelled" {
+	if _, err := tree.wait(ctx, selected, 1000); err == nil || err.(*treeError).code != "cancelled" {
 		t.Fatalf("cancelled wait %v", err)
 	}
 	list, err := tree.list("")
 	if err != nil || len(list) != 1 || list[0].State != Starting {
 		t.Fatalf("child changed %#v %v", list, err)
 	}
-	outcome, count, err := tree.stop(child.Ref)
+	outcome, count, err := tree.stop(selected)
 	if err != nil || count != 1 || outcome.State != Stopped {
 		t.Fatalf("stop %#v %d %v", outcome, count, err)
 	}
-	if _, count, err := tree.stop(child.Ref); err != nil || count != 0 {
+	if _, count, err := tree.stop(selected); err != nil || count != 0 {
 		t.Fatalf("repeat stop %d %v", count, err)
 	}
 }
 
-func TestExplicitResumeKeepsHistoryAndIDAndRejectsStaleGeneration(t *testing.T) {
+func TestResumeRetainsHistoryAndStaleRunCallbacksCannotAffectReplacement(t *testing.T) {
 	tree := testTree(t, defaultConfig())
 	child := testAdmission(t, tree, Ref{}, "scout", "retained")
+	original := testRun(t, tree, child.Ref)
 	manager := tree.records[child.ID].history
-	if _, _, err := tree.stop(child.Ref); err != nil {
-		t.Fatal(err)
-	}
-	tree.acknowledge(child.Ref)
-	resumed, err := tree.message(context.Background(), child.Ref, "resume", "continue")
-	if err != nil || resumed.ID != child.ID || resumed.Generation != 2 {
-		t.Fatalf("resume %#v %v", resumed, err)
+	tree.finish(tree.records[child.ID], original, Outcome{State: Completed, Text: "before resume"})
+	tree.acknowledge(original)
+	inspection, err := tree.inspect(child.ID)
+	if err != nil || inspection.Child.State != Completed || inspection.Outcome == nil || inspection.Outcome.Text != "before resume" {
+		t.Fatalf("inspect did not return current result %#v %v", inspection, err)
 	}
 	if tree.records[child.ID].history != manager {
-		t.Fatal("resume replaced the actual manager")
+		t.Fatal("initial completion replaced retained history")
 	}
-	if _, err := tree.wait(context.Background(), child.Ref, 1); err == nil || !strings.Contains(err.Error(), "stale") {
-		t.Fatalf("stale generation %v", err)
+
+	started := make(chan struct{})
+	results := make(chan struct {
+		snapshot Snapshot
+		selected *run
+		err      error
+	}, 2)
+	for range 2 {
+		go func() {
+			<-started
+			snapshot, selected, err := tree.message(context.Background(), original, "resume", "continue")
+			results <- struct {
+				snapshot Snapshot
+				selected *run
+				err      error
+			}{snapshot, selected, err}
+		}()
 	}
-	inspection, err := tree.inspect(InspectTarget{ID: child.ID}, true, 0, 10)
-	if err != nil || !inspection.HistoryAvailable || len(inspection.Entries) != 1 || !strings.Contains(string(inspection.Entries[0]), "retained marker") {
-		t.Fatalf("retained transcript %#v %v", inspection, err)
+	close(started)
+	var resumed Snapshot
+	var replacement *run
+	successes, failures := 0, 0
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			failures++
+			continue
+		}
+		successes++
+		resumed, replacement = result.snapshot, result.selected
 	}
-	tree.retireHistory(tree.records[child.ID])
-	if tree.records[child.ID].run.ref.Generation != 1 {
-		t.Fatal("retired pending resume did not restore settled generation")
+	if successes != 1 || failures != 1 || resumed.ID != child.ID || replacement == nil || replacement == original {
+		t.Fatalf("concurrent resume results successes=%d failures=%d snapshot=%#v", successes, failures, resumed)
 	}
-	if _, err := tree.message(context.Background(), child.Ref, "resume", "again"); err == nil || !strings.Contains(err.Error(), "history is unavailable") {
-		t.Fatalf("retired history %v", err)
+	if tree.records[child.ID].history != manager {
+		t.Fatal("resume replaced the retained manager")
+	}
+	if err := tree.activate(original); err == nil {
+		t.Fatal("stale run activated its replacement")
+	}
+	tree.cancelPending(original)
+	if _, _, err := tree.stop(original); err == nil {
+		t.Fatal("stale run stopped its replacement")
+	}
+	if outcome, err := tree.wait(context.Background(), original, 1); err != nil || outcome.State != Completed || outcome.Text != "before resume" {
+		t.Fatalf("wait did not retain its selected run: %#v %v", outcome, err)
+	}
+	if _, err := tree.wait(context.Background(), replacement, 1); err == nil || err.(*treeError).code != "wait_timeout" {
+		t.Fatalf("stale cancellation changed the replacement: %v", err)
+	}
+	if current := testRun(t, tree, child.Ref); current != replacement {
+		t.Fatal("stale run callback replaced the current execution")
 	}
 }
 
@@ -136,31 +216,33 @@ func TestCleanupKeepsCapacityUntilItJoins(t *testing.T) {
 		close(cleaned)
 		return Outcome{State: Stopped}
 	}
-	if err := tree.activate(child.Ref); err != nil {
+	selected := testRun(t, tree, child.Ref)
+	if err := tree.activate(selected); err != nil {
 		t.Fatal(err)
 	}
 	<-entered
 	stopped := make(chan struct{})
-	go func() { _, _, _ = tree.stop(child.Ref); close(stopped) }()
+	go func() { _, _, _ = tree.stop(selected); close(stopped) }()
 	select {
 	case <-cleaned:
 		t.Fatal("cleanup completed before release")
 	default:
 	}
-	if _, err := tree.admit(admission{agent: config.Agents["scout"]}); err == nil {
+	if _, _, err := tree.admit(admission{agent: config.Agents["scout"]}); err == nil {
 		t.Fatal("capacity released before cleanup")
 	}
 	close(cleanup)
 	<-stopped
-	if outcome, err := tree.wait(context.Background(), child.Ref, 1000); err != nil || outcome.State != Stopped {
+	if outcome, err := tree.wait(context.Background(), selected, 1000); err != nil || outcome.State != Stopped {
 		t.Fatalf("joined stop %#v %v", outcome, err)
 	}
 }
 
-func TestSubtreeOwnershipAndStopAreGenerationScoped(t *testing.T) {
+func TestSubtreeOwnershipAndStopAreScopedToSelectedRun(t *testing.T) {
 	tree := testTree(t, defaultConfig())
-	parent := testAdmission(t, tree, Ref{}, "scout", "parent")
-	child := testAdmission(t, tree, parent.Ref, "scout", "child")
+	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate child tasks", Tools: []string{"read"}, CanDelegate: true}
+	parent := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
+	child := testAdmissionWithAgent(t, tree, parent.Ref, "coordinator", "child", coordinator)
 	sibling := testAdmission(t, tree, Ref{}, "scout", "sibling")
 	list, err := tree.list(parent.ID)
 	if err != nil || len(list) != 1 || list[0].ID != child.ID {
@@ -177,24 +259,28 @@ func TestSubtreeOwnershipAndStopAreGenerationScoped(t *testing.T) {
 		<-run.ctx.Done()
 		return Outcome{State: Stopped}
 	}
-	if err := tree.activate(parent.Ref); err != nil {
+	parentRun := testRun(t, tree, parent.Ref)
+	childRun := testRun(t, tree, child.Ref)
+	if err := tree.activate(parentRun); err != nil {
 		t.Fatal(err)
 	}
-	if err := tree.activate(child.Ref); err != nil {
+	if err := tree.activate(childRun); err != nil {
 		t.Fatal(err)
 	}
 	<-started
 	<-started
 	results := make(chan int, 2)
 	for range 2 {
-		go func() { _, count, _ := tree.stop(parent.Ref); results <- count }()
+		go func() { _, count, _ := tree.stop(parentRun); results <- count }()
 	}
 	if total := <-results + <-results; total != 2 {
 		t.Fatalf("concurrent stop counted %d", total)
 	}
 	list, _ = tree.list("")
-	if list[2].State != Starting {
-		t.Fatalf("stop affected sibling %#v", list[2])
+	for _, snapshot := range list {
+		if snapshot.ID == sibling.ID && snapshot.State != Starting {
+			t.Fatalf("stop affected sibling %#v", snapshot)
+		}
 	}
 }
 
@@ -202,25 +288,27 @@ func TestCompletionReservationWaitsForActualAppend(t *testing.T) {
 	config := defaultConfig()
 	config.MaxMailbox = 1
 	tree := testTree(t, config)
-	parent := testAdmission(t, tree, Ref{}, "scout", "parent")
+	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate child tasks", Tools: []string{"read"}, CanDelegate: true}
+	parent := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
 	child := testAdmission(t, tree, parent.Ref, "scout", "child")
-	tree.finish(tree.records[child.ID], tree.records[child.ID].run, Outcome{State: Completed, Text: "first"})
-	if _, err := tree.message(context.Background(), child.Ref, "resume", "again"); err == nil || !strings.Contains(err.Error(), "mailbox capacity") {
+	selected := testRun(t, tree, child.Ref)
+	tree.finish(tree.records[child.ID], selected, Outcome{State: Completed, Text: "first"})
+	if _, _, err := tree.message(context.Background(), selected, "resume", "again"); err == nil || !strings.Contains(err.Error(), "mailbox capacity") {
 		t.Fatalf("unappended completion released capacity %v", err)
 	}
-	if !tree.startCompletion(child.Ref) || tree.startCompletion(child.Ref) {
+	if !tree.startCompletion(selected) || tree.startCompletion(selected) {
 		t.Fatal("completion claim was not unique")
 	}
 	appended := 0
-	receipt := &completionReceipt{fallback: func() error { appended++; return nil }, appended: func() { tree.acknowledge(child.Ref) }}
+	receipt := &completionReceipt{fallback: func() error { appended++; return nil }, appended: func() { tree.acknowledge(selected) }}
 	receipt.retire()
 	receipt.complete()
 	receipt.retire()
 	if appended != 1 {
 		t.Fatalf("fallback appended %d times", appended)
 	}
-	resumed, err := tree.message(context.Background(), child.Ref, "resume", "again")
-	if err != nil || resumed.Generation != 2 {
+	resumed, _, err := tree.message(context.Background(), selected, "resume", "again")
+	if err != nil || resumed.ID != child.ID {
 		t.Fatalf("acknowledged resume %#v %v", resumed, err)
 	}
 }
@@ -230,15 +318,16 @@ func TestFailedCompletionEnqueueRetainsReservation(t *testing.T) {
 	config.MaxMailbox = 1
 	tree := testTree(t, config)
 	child := testAdmission(t, tree, Ref{}, "scout", "child")
-	tree.finish(tree.records[child.ID], tree.records[child.ID].run, Outcome{State: Completed, Text: "done"})
+	selected := testRun(t, tree, child.Ref)
+	tree.finish(tree.records[child.ID], selected, Outcome{State: Completed, Text: "done"})
 	acknowledged := false
-	receipt := &completionReceipt{fallback: func() error { return errors.New("history unavailable") }, appended: func() { acknowledged = true; tree.acknowledge(child.Ref) }}
+	receipt := &completionReceipt{fallback: func() error { return errors.New("history unavailable") }, appended: func() { acknowledged = true; tree.acknowledge(selected) }}
 	receipt.retire()
 	receipt.complete()
 	if acknowledged {
 		t.Fatal("failed retained append acknowledged delivery")
 	}
-	if _, err := tree.message(context.Background(), child.Ref, "resume", "again"); err == nil {
+	if _, _, err := tree.message(context.Background(), selected, "resume", "again"); err == nil {
 		t.Fatal("failed receipt released its reservation")
 	}
 }
@@ -248,20 +337,21 @@ func TestPendingMessagesAreBoundedAndCancelledAdmissionsNeverLaunch(t *testing.T
 	config.MaxMailbox = 1
 	tree := testTree(t, config)
 	child := testAdmission(t, tree, Ref{}, "scout", "child")
-	if snapshot, err := tree.message(context.Background(), child.Ref, "steer", "first"); err != nil || snapshot.State != Starting {
+	selected := testRun(t, tree, child.Ref)
+	if snapshot, _, err := tree.message(context.Background(), selected, "steer", "first"); err != nil || snapshot.State != Starting {
 		t.Fatalf("pending message %#v %v", snapshot, err)
 	}
-	if _, err := tree.message(context.Background(), child.Ref, "steer", "second"); err == nil {
+	if _, _, err := tree.message(context.Background(), selected, "steer", "second"); err == nil {
 		t.Fatal("accepted full mailbox")
 	}
-	tree.cancelPending(child.Ref)
-	if err := tree.activate(child.Ref); err == nil {
+	tree.cancelPending(selected)
+	if err := tree.activate(selected); err == nil {
 		t.Fatal("activated cancelled admission")
 	}
-	if outcome, err := tree.wait(context.Background(), child.Ref, 1000); err != nil || outcome.State != Stopped {
+	if outcome, err := tree.wait(context.Background(), selected, 1000); err != nil || outcome.State != Stopped {
 		t.Fatalf("cancelled admission %#v %v", outcome, err)
 	}
-	if _, err := tree.admit(admission{name: "child", agent: config.Agents["scout"]}); err == nil {
+	if _, _, err := tree.admit(admission{name: "child", agent: config.Agents["scout"]}); err == nil {
 		t.Fatal("reused cancelled child name")
 	}
 }
@@ -279,10 +369,11 @@ func TestNormalHandlerCleanupDoesNotCancelSpawnAcknowledgement(t *testing.T) {
 				return Outcome{State: Completed, Text: "started after acknowledgement"}
 			}
 			key := ackKey{callID: "spawn"}
-			o.deferActivation(key, child.Ref, requestDone, func() bool { return cancelRequest })
+			selected := testRun(t, tree, child.Ref)
+			o.deferActivation(key, selected, requestDone, func() bool { return cancelRequest })
 			close(requestDone)
 			if cancelRequest {
-				outcome, err := tree.wait(context.Background(), child.Ref, 1000)
+				outcome, err := tree.wait(context.Background(), selected, 1000)
 				if err != nil || outcome.State != Stopped {
 					t.Fatalf("cancelled pending spawn %#v %v", outcome, err)
 				}
@@ -294,7 +385,7 @@ func TestNormalHandlerCleanupDoesNotCancelSpawnAcknowledgement(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("normal handler cleanup cancelled the admitted child")
 			}
-			outcome, err := tree.wait(context.Background(), child.Ref, 1000)
+			outcome, err := tree.wait(context.Background(), selected, 1000)
 			if err != nil || outcome.Text != "started after acknowledgement" {
 				t.Fatalf("acknowledged spawn %#v %v", outcome, err)
 			}
@@ -302,7 +393,7 @@ func TestNormalHandlerCleanupDoesNotCancelSpawnAcknowledgement(t *testing.T) {
 	}
 }
 
-func TestOutcomeCapturesCurrentTerminalAssistantAndGenerationUsage(t *testing.T) {
+func TestOutcomeCapturesCurrentTerminalAssistantAndUsage(t *testing.T) {
 	before := coding.SessionStats{Tokens: coding.SessionStatsTokens{Input: 100, Output: 50, Total: 150}, Cost: 1}
 	after := coding.SessionStats{Tokens: coding.SessionStatsTokens{Input: 110, Output: 55, Total: 165}, Cost: 1.2}
 	terminal := &agent.AssistantMessage{StopReason: ai.StopReason("stop"), Content: []ai.AssistantContentBlock{ai.TextContent{Text: "resume succeeded"}}}
@@ -316,26 +407,25 @@ func TestOutcomeCapturesCurrentTerminalAssistantAndGenerationUsage(t *testing.T)
 	}
 }
 
-func TestInspectionClipsReportWithoutChangingRetainedOutcome(t *testing.T) {
+func TestInspectionReturnsLatestOutcome(t *testing.T) {
 	tree := testTree(t, defaultConfig())
 	child := testAdmission(t, tree, Ref{}, "scout", "child")
-	report := strings.Repeat("é", 3000)
-	tree.finish(tree.records[child.ID], tree.records[child.ID].run, Outcome{State: Completed, Text: report})
-	inspection, err := tree.inspect(InspectTarget{ID: child.ID}, false, 0, 10)
-	if err != nil || len(inspection.Outcome.Text) != 2048 || !inspection.Outcome.HandbackTruncated || tree.records[child.ID].run.outcome.Text != report {
-		t.Fatalf("inspection %#v %v", inspection, err)
+	selected := testRun(t, tree, child.Ref)
+	report := "the child's latest report"
+	tree.finish(tree.records[child.ID], selected, Outcome{State: Completed, Text: report})
+	inspection, err := tree.inspect(child.ID)
+	if err != nil || inspection.Outcome == nil || inspection.Outcome.Text != report || tree.records[child.ID].run.outcome.Text != report {
+		t.Fatalf("inspection lost the latest result: %v", err)
 	}
-	if _, err := tree.records[child.ID].history.AppendCustomMessage("large", strings.Repeat("x", 33000), false, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tree.inspect(InspectTarget{ID: child.ID}, true, 1, 1); err == nil {
-		t.Fatal("allowed unbounded transcript page")
+	if inspection.Child.State != Completed {
+		t.Fatalf("inspection omitted current state %#v", inspection.Child)
 	}
 }
 
 func TestCloseJoinsConcurrentCallers(t *testing.T) {
 	tree := testTree(t, defaultConfig())
 	child := testAdmission(t, tree, Ref{}, "scout", "child")
+	selected := testRun(t, tree, child.Ref)
 	entered, release := make(chan struct{}), make(chan struct{})
 	tree.execute = func(_ *record, run *run) Outcome {
 		close(entered)
@@ -343,18 +433,39 @@ func TestCloseJoinsConcurrentCallers(t *testing.T) {
 		<-release
 		return Outcome{State: Stopped}
 	}
-	if err := tree.activate(child.Ref); err != nil {
+	if err := tree.activate(selected); err != nil {
 		t.Fatal(err)
 	}
 	<-entered
-	var wait sync.WaitGroup
-	wait.Add(2)
-	for range 2 {
-		go func() { defer wait.Done(); tree.close() }()
+	closed := make(chan struct{}, 2)
+	go func() { tree.close(); closed <- struct{}{} }()
+	<-tree.ctx.Done()
+	select {
+	case <-closed:
+		t.Fatal("close returned before execution joined")
+	default:
+	}
+	secondStarted := make(chan struct{})
+	go func() {
+		close(secondStarted)
+		tree.close()
+		closed <- struct{}{}
+	}()
+	<-secondStarted
+	select {
+	case <-closed:
+		t.Fatal("concurrent close returned before execution joined")
+	default:
 	}
 	close(release)
-	wait.Wait()
-	if tree.live != 0 {
-		t.Fatalf("close retained %d live slots", tree.live)
+	for range 2 {
+		select {
+		case <-closed:
+		case <-time.After(time.Second):
+			t.Fatal("concurrent close did not join execution")
+		}
+	}
+	if _, err := tree.list(""); err == nil || err.(*treeError).code != "unavailable" {
+		t.Fatalf("closed tree remained available: %v", err)
 	}
 }

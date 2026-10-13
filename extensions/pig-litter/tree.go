@@ -4,8 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
-	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,7 +15,7 @@ import (
 
 type reservation struct {
 	parent          ChildID
-	generation      int
+	parentRun       *run
 	sent            bool
 	outcomeObserved bool
 }
@@ -32,18 +30,18 @@ type Tree struct {
 	records    map[ChildID]*record
 	order      []ChildID
 	names      map[string]ChildID
-	pending    map[Ref]*reservation
+	pending    map[*run]*reservation
 	live       int
 	closed     bool
 	closedDone chan struct{}
 	execute    func(*record, *run) Outcome
-	completion func(*record, Outcome)
+	completion func(*record, *run, Outcome)
 	changed    func()
 }
 
 type admission struct {
 	parent                       ChildID
-	parentGeneration             int
+	parentRun                    *run
 	kind, name, model, cwd, task string
 	agent                        AgentDefinition
 	history                      *coding.SessionManager
@@ -56,21 +54,37 @@ func newTree(config Config) (*Tree, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Tree{config: config, identity: hex.EncodeToString(id[:]), ctx: ctx, cancel: cancel, records: map[ChildID]*record{}, names: map[string]ChildID{}, pending: map[Ref]*reservation{}, closedDone: make(chan struct{})}, nil
+	return &Tree{config: config, identity: hex.EncodeToString(id[:]), ctx: ctx, cancel: cancel, records: map[ChildID]*record{}, names: map[string]ChildID{}, pending: map[*run]*reservation{}, closedDone: make(chan struct{})}, nil
 }
 
-func (t *Tree) currentLocked(ref Ref) (*record, error) {
+func (t *Tree) currentLocked(selected *run) (*record, error) {
 	if t.closed {
 		return nil, reject("unavailable", "the owning Session is closed")
 	}
-	r := t.records[ref.ID]
+	if selected == nil {
+		return nil, reject("rejected", "unknown child ID")
+	}
+	r := t.records[selected.ref.ID]
 	if r == nil {
 		return nil, reject("rejected", "unknown child ID")
 	}
-	if r.run.ref.Generation != ref.Generation {
-		return nil, reject("rejected", fmt.Sprintf("stale child generation %d; current generation is %d; use litter_inspect with id only to refresh", ref.Generation, r.run.ref.Generation))
+	if r.run != selected {
+		return nil, reject("rejected", "the child execution is no longer current")
 	}
 	return r, nil
+}
+
+func (t *Tree) selectRun(id ChildID) (*run, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return nil, reject("unavailable", "the owning Session is closed")
+	}
+	r := t.records[id]
+	if r == nil {
+		return nil, reject("rejected", "unknown child ID")
+	}
+	return r.run, nil
 }
 
 func (t *Tree) belongsLocked(caller ChildID, r *record) bool {
@@ -112,7 +126,7 @@ func (t *Tree) snapshotLocked(r *record) Snapshot {
 		value := r.parent
 		parent = &value
 	}
-	return Snapshot{Ref: r.run.ref, Parent: parent, Depth: r.depth, Name: r.name, DisplayLabel: displayLabel(r.name, r.id), Type: r.kind, Model: r.model, State: r.run.state}
+	return Snapshot{Ref: r.run.ref, Parent: parent, Depth: r.depth, Name: r.name, DisplayLabel: displayLabel(r.name, r.id), Type: r.kind, Model: r.model, Cwd: r.cwd, State: r.run.state}
 }
 
 func displayLabel(name string, id ChildID) string {
@@ -154,45 +168,42 @@ func (t *Tree) roomLocked(parent ChildID, writer bool, cwd string, except ChildI
 
 func (t *Tree) newRunLocked(ref Ref, prompt string) *run {
 	ctx, cancel := context.WithCancel(t.ctx)
-	return &run{ref: ref, state: Starting, ctx: ctx, cancel: cancel, prompt: prompt, done: make(chan struct{}), ready: make(chan struct{}), mailbox: make(chan message, t.config.MaxMailbox), receipts: map[Ref]*completionReceipt{}}
+	return &run{ref: ref, state: Starting, ctx: ctx, cancel: cancel, prompt: prompt, done: make(chan struct{}), ready: make(chan struct{}), mailbox: make(chan message, t.config.MaxMailbox), receipts: map[*run]*completionReceipt{}, completionDone: make(chan struct{})}
 }
 
-func (t *Tree) admit(request admission) (Snapshot, error) {
+func (t *Tree) admit(request admission) (Snapshot, *run, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
-		return Snapshot{}, reject("unavailable", "the owning Session is closed")
+		return Snapshot{}, nil, reject("unavailable", "the owning Session is closed")
 	}
 	depth := 1
 	var parent *record
 	if request.parent != "" {
 		var err error
-		parent, err = t.currentLocked(Ref{request.parent, request.parentGeneration})
+		parent, err = t.currentLocked(request.parentRun)
 		if err != nil {
-			return Snapshot{}, err
+			return Snapshot{}, nil, err
 		}
 		if !parent.canDelegate || parent.run.state != Starting && parent.run.state != Running {
-			return Snapshot{}, reject("permission_denied", "the parent cannot delegate")
+			return Snapshot{}, nil, reject("permission_denied", "the parent cannot delegate")
 		}
 		depth = parent.depth + 1
-		if parent.readOnly && request.agent.Role != "scout" {
-			return Snapshot{}, reject("permission_denied", "read-only parent cannot delegate a worker")
-		}
 		for _, name := range request.agent.Tools {
 			if !slices.Contains(parent.tools, name) {
-				return Snapshot{}, reject("permission_denied", "child tools exceed the caller ceiling")
+				return Snapshot{}, nil, reject("permission_denied", "child tools exceed the caller ceiling")
 			}
 		}
 	}
 	if depth > t.config.Depth {
-		return Snapshot{}, reject("rejected", "child depth limit reached")
+		return Snapshot{}, nil, reject("rejected", "child depth limit reached")
 	}
 	if len(t.records) >= t.config.MaxRecords {
-		return Snapshot{}, reject("rejected", "retained child limit reached")
+		return Snapshot{}, nil, reject("rejected", "retained child limit reached")
 	}
-	readOnly := request.agent.Role == "scout" || !slices.Contains(request.agent.Tools, "write") && !slices.Contains(request.agent.Tools, "edit")
+	readOnly := request.agent.Role == "scout" || !slices.Contains(request.agent.Tools, "write") && !slices.Contains(request.agent.Tools, "edit") && !slices.Contains(request.agent.Tools, "bash")
 	if err := t.roomLocked(request.parent, !readOnly, request.cwd, ""); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, nil, err
 	}
 	t.sequence++
 	id := ChildID(t.identity + ":" + strconv.Itoa(t.sequence))
@@ -202,23 +213,21 @@ func (t *Tree) admit(request admission) (Snapshot, error) {
 	}
 	nameKey := string(request.parent) + "\x00" + name
 	if _, exists := t.names[nameKey]; exists {
-		return Snapshot{}, reject("rejected", "child name already belongs to this owner")
+		return Snapshot{}, nil, reject("rejected", "child name already belongs to this owner")
 	}
-	r := &record{id: id, parent: request.parent, parentGeneration: request.parentGeneration, depth: depth, name: name, kind: request.kind, model: request.model, instructions: request.agent.Instructions, task: request.task, cwd: request.cwd, tools: slices.Clone(request.agent.Tools), canDelegate: request.agent.CanDelegate, readOnly: readOnly, history: request.history, authority: request.authority}
-	if parent != nil {
-		r.parentRun = parent.run
-	}
-	r.run = t.newRunLocked(Ref{id, 1}, "Task:\n"+request.task)
+	r := &record{id: id, parent: request.parent, depth: depth, name: name, kind: request.kind, model: request.model, instructions: request.agent.Instructions, task: request.task, cwd: request.cwd, tools: slices.Clone(request.agent.Tools), canDelegate: request.agent.CanDelegate && request.agent.Role != "scout", readOnly: readOnly, history: request.history, authority: request.authority}
+	r.run = t.newRunLocked(Ref{id}, "Task:\n"+request.task)
 	t.records[id], t.names[nameKey] = r, id
 	t.order = append(t.order, id)
-	t.pending[r.run.ref] = &reservation{parent: r.parent, generation: r.parentGeneration}
+	r.run.parent = request.parentRun
+	t.pending[r.run] = &reservation{parent: r.parent, parentRun: request.parentRun}
 	t.live++
-	return t.snapshotLocked(r), nil
+	return t.snapshotLocked(r), r.run, nil
 }
 
-func (t *Tree) activate(ref Ref) error {
+func (t *Tree) activate(selected *run) error {
 	t.mu.Lock()
-	r, err := t.currentLocked(ref)
+	r, err := t.currentLocked(selected)
 	if err != nil {
 		t.mu.Unlock()
 		return err
@@ -233,9 +242,7 @@ func (t *Tree) activate(ref Ref) error {
 	t.mu.Unlock()
 	t.notify()
 	go func() {
-		timer := time.AfterFunc(time.Duration(t.config.MaxRunMillis)*time.Millisecond, func() { t.mu.Lock(); run.deadline = true; t.mu.Unlock(); run.cancel(); run.abort() })
 		outcome := t.execute(r, run)
-		timer.Stop()
 		t.finish(r, run, outcome)
 	}()
 	return nil
@@ -250,20 +257,21 @@ func (r *run) abort() {
 	}
 }
 
-func (t *Tree) cancelPending(ref Ref) {
+func (t *Tree) cancelPending(selected *run) {
 	t.mu.Lock()
-	r := t.records[ref.ID]
-	if r == nil || r.run.ref != ref || r.run.started || r.run.state != Starting {
+	r := t.records[selected.ref.ID]
+	if r == nil || r.run != selected || r.run.started || r.run.state != Starting {
 		t.mu.Unlock()
 		return
 	}
 	run := r.run
 	run.cancel()
 	run.state = Stopped
-	run.outcome = &Outcome{Run: ref, State: Stopped, Model: r.model, Error: "spawn admission ended before the tool result was acknowledged"}
+	run.outcome = &Outcome{Run: selected.ref, State: Stopped, Model: r.model, Error: "spawn admission ended before the tool result was acknowledged"}
 	close(run.done)
 	t.live--
-	delete(t.pending, ref)
+	delete(t.pending, selected)
+	close(selected.completionDone)
 	if r.previous != nil {
 		r.run = r.previous
 		r.previous = nil
@@ -290,13 +298,7 @@ func (t *Tree) finish(r *record, run *run, raw Outcome) {
 	}
 	raw.Text, raw.Truncated = bounded(raw.Text, t.config.MaxResultBytes)
 	raw.Error, _ = bounded(raw.Error, 1024)
-	if run.deadline {
-		raw.State = Failed
-		if raw.Text != "" {
-			raw.State = Partial
-		}
-		raw.Error = "child run time bound reached"
-	} else if run.ctx.Err() != nil {
+	if run.ctx.Err() != nil {
 		raw.State = Stopped
 	}
 	run.state, run.outcome = raw.State, &raw
@@ -316,7 +318,7 @@ mailboxDrained:
 	t.mu.Unlock()
 	t.notify()
 	if !closed && t.completion != nil {
-		go t.completion(r, raw)
+		go t.completion(r, run, raw)
 	}
 }
 
@@ -342,84 +344,30 @@ func (t *Tree) list(caller ChildID) ([]Snapshot, error) {
 	return list, nil
 }
 
-func (t *Tree) inspect(target InspectTarget, transcript bool, offset, limit int) (Inspection, error) {
-	if offset < 0 || offset > 1000000 || limit < 1 || limit > 50 {
-		return Inspection{}, reject("rejected", "invalid transcript page")
-	}
+func (t *Tree) inspect(id ChildID) (Inspection, error) {
 	t.mu.Lock()
-	r := t.records[target.ID]
+	defer t.mu.Unlock()
+	r := t.records[id]
 	if r == nil || t.closed {
-		t.mu.Unlock()
-		return Inspection{}, reject("unavailable", "child history is unavailable")
+		return Inspection{}, reject("unavailable", "child is unavailable")
 	}
-	if target.Generation != nil && *target.Generation < 1 {
-		t.mu.Unlock()
-		return Inspection{}, reject("rejected", "inspection generation must be a positive integer")
-	}
-	if target.Generation != nil {
-		if _, err := t.currentLocked(Ref{target.ID, *target.Generation}); err != nil {
-			t.mu.Unlock()
-			return Inspection{}, err
-		}
-	}
-	result := Inspection{Child: t.snapshotLocked(r), Outcome: previewOutcome(r.run.outcome, 2048), HistoryAvailable: r.history != nil && !r.historyLost, TranscriptRequested: transcript, Entries: []json.RawMessage{}, Mailbox: []Outcome{}}
-	var frozenEvidence *ToolEvidence
+	var outcome *Outcome
 	if r.run.outcome != nil {
-		frozenEvidence = r.run.outcome.Evidence
+		copy := *r.run.outcome
+		outcome = &copy
 	}
-	manager := r.history
-	var entries []json.RawMessage
-	if manager != nil {
-		entries = historyEntries(manager)
-	}
-	for _, childID := range t.order {
-		child := t.records[childID]
-		if child.parent == target.ID && child.run.outcome != nil {
-			result.MailboxTotal++
-			result.Mailbox = append(result.Mailbox, *previewOutcome(child.run.outcome, 512))
-		}
-	}
-	if len(result.Mailbox) > 8 {
-		result.Mailbox = result.Mailbox[len(result.Mailbox)-8:]
-	}
-	result.MailboxMore = result.MailboxTotal > 8
-	t.mu.Unlock()
-	if manager != nil {
-		result.Evidence = projectEvidence(result.Child.Ref, entries)
-	} else if frozenEvidence != nil {
-		result.Evidence = *frozenEvidence
-	} else {
-		result.Evidence = ToolEvidence{Source: "retained_tool_results", TextFormat: "concatenated_text_blocks", Unavailable: "retained history and frozen evidence are unavailable"}
-	}
-	if transcript && manager != nil {
-		start := min(offset, len(entries))
-		end := min(start+limit, len(entries))
-		result.Entries = append(result.Entries, entries[start:end]...)
-		data, err := json.Marshal(result.Entries)
-		if err != nil {
-			return Inspection{}, err
-		}
-		if len(data) > min(t.config.MaxHistoryBytes, 32768) {
-			return Inspection{}, reject("rejected", "transcript page exceeds 32768 bytes")
-		}
-		result.NextOffset, result.More = offset+len(result.Entries), end < len(entries)
-	}
-	return result, nil
+	return Inspection{Child: t.snapshotLocked(r), Outcome: outcome}, nil
 }
 
-func (t *Tree) wait(ctx context.Context, ref Ref, timeout int) (Outcome, error) {
+func (t *Tree) wait(ctx context.Context, selected *run, timeout int) (Outcome, error) {
 	if timeout < 1 || timeout > 300000 {
 		return Outcome{}, reject("rejected", "invalid wait timeout")
 	}
 	t.mu.Lock()
-	r, err := t.currentLocked(ref)
-	var run *run
-	if err == nil {
-		run = r.run
-	}
+	closed := t.closed
 	t.mu.Unlock()
-	if err != nil {
-		return Outcome{}, err
+	if closed {
+		return Outcome{}, reject("unavailable", "the owning Session is closed")
 	}
 	if ctx.Err() != nil {
 		return Outcome{}, reject("cancelled", "wait cancelled")
@@ -427,8 +375,8 @@ func (t *Tree) wait(ctx context.Context, ref Ref, timeout int) (Outcome, error) 
 	timer := time.NewTimer(time.Duration(timeout) * time.Millisecond)
 	defer timer.Stop()
 	select {
-	case <-run.done:
-		return *run.outcome, nil
+	case <-selected.done:
+		return *selected.outcome, nil
 	case <-timer.C:
 		return Outcome{}, reject("wait_timeout", "wait timed out")
 	case <-ctx.Done():
@@ -436,65 +384,69 @@ func (t *Tree) wait(ctx context.Context, ref Ref, timeout int) (Outcome, error) 
 	}
 }
 
-func (t *Tree) resume(ref Ref, text string) (Snapshot, error) {
+func (t *Tree) resume(selected *run, text string) (Snapshot, *run, error) {
 	t.mu.Lock()
-	r, err := t.currentLocked(ref)
+	r, err := t.currentLocked(selected)
 	if err != nil {
 		t.mu.Unlock()
-		return Snapshot{}, err
+		return Snapshot{}, nil, err
 	}
 	if !r.run.state.terminal() {
 		t.mu.Unlock()
-		return Snapshot{}, reject("rejected", "resume needs a settled child and text")
+		return Snapshot{}, nil, reject("rejected", "resume needs a settled child and text")
 	}
 	manager := r.history
 	if manager == nil || r.historyLost {
 		t.mu.Unlock()
-		return Snapshot{}, reject("unavailable", "retained history is unavailable for resume")
+		return Snapshot{}, nil, reject("unavailable", "retained history is unavailable for resume")
 	}
 	t.mu.Unlock()
 	if historyBytes(manager)+len(text)+512 > t.config.MaxHistoryBytes {
-		return Snapshot{}, reject("rejected", "resume would exceed the retained history limit")
+		return Snapshot{}, nil, reject("rejected", "resume would exceed the retained history limit")
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	r, err = t.currentLocked(ref)
+	r, err = t.currentLocked(selected)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, nil, err
 	}
 	if r.history != manager || r.historyLost || !r.run.state.terminal() {
-		return Snapshot{}, reject("unavailable", "retained history or generation changed before resume")
+		return Snapshot{}, nil, reject("unavailable", "retained history or execution changed before resume")
 	}
 	if err := t.roomLocked(r.parent, !r.readOnly, r.cwd, r.id); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, nil, err
 	}
 	r.previous = r.run
-	r.run = t.newRunLocked(Ref{r.id, ref.Generation + 1}, text)
-	t.pending[r.run.ref] = &reservation{parent: r.parent, generation: r.parentGeneration}
+	r.run = t.newRunLocked(Ref{r.id}, text)
+	r.run.beforeCompletion = selected.completionDone
+	if r.parent != "" {
+		r.run.parent = t.records[r.parent].run
+	}
+	t.pending[r.run] = &reservation{parent: r.parent, parentRun: r.run.parent}
 	t.live++
-	return t.snapshotLocked(r), nil
+	return t.snapshotLocked(r), r.run, nil
 }
 
-func (t *Tree) message(ctx context.Context, ref Ref, mode, text string) (Snapshot, error) {
+func (t *Tree) message(ctx context.Context, selected *run, mode, text string) (Snapshot, *run, error) {
 	if len(text) > 16384 || len(strings.TrimSpace(text)) == 0 {
-		return Snapshot{}, reject("rejected", "invalid child message or message byte bound reached")
+		return Snapshot{}, nil, reject("rejected", "invalid child message or message byte bound reached")
 	}
 	if mode == "resume" {
-		return t.resume(ref, text)
+		return t.resume(selected, text)
 	}
 	if mode != "steer" && mode != "follow_up" {
-		return Snapshot{}, reject("rejected", "invalid child message")
+		return Snapshot{}, nil, reject("rejected", "invalid child message")
 	}
 	t.mu.Lock()
-	r, err := t.currentLocked(ref)
+	r, err := t.currentLocked(selected)
 	if err != nil {
 		t.mu.Unlock()
-		return Snapshot{}, err
+		return Snapshot{}, nil, err
 	}
 	run := r.run
 	if run.state != Starting && run.state != Running {
 		t.mu.Unlock()
-		return Snapshot{}, reject("rejected", "child is not live")
+		return Snapshot{}, nil, reject("rejected", "child is not live")
 	}
 	run.mu.Lock()
 	session, disposing := run.session, run.disposing
@@ -502,7 +454,7 @@ func (t *Tree) message(ctx context.Context, ref Ref, mode, text string) (Snapsho
 	state := run.state
 	t.mu.Unlock()
 	if disposing || session != nil && !session.IsStreaming() && state == Running {
-		return Snapshot{}, reject("rejected", "child is settling and cannot accept a message")
+		return Snapshot{}, nil, reject("rejected", "child is settling and cannot accept a message")
 	}
 	run.messageMu.Lock()
 	queued := run.pendingMessages
@@ -511,7 +463,7 @@ func (t *Tree) message(ctx context.Context, ref Ref, mode, text string) (Snapsho
 	}
 	if queued >= t.config.MaxMailbox {
 		run.messageMu.Unlock()
-		return Snapshot{}, reject("rejected", "child message bound reached")
+		return Snapshot{}, nil, reject("rejected", "child message bound reached")
 	}
 	request := message{mode: mode, text: text, result: make(chan error, 1)}
 	select {
@@ -519,7 +471,7 @@ func (t *Tree) message(ctx context.Context, ref Ref, mode, text string) (Snapsho
 		run.pendingMessages++
 	default:
 		run.messageMu.Unlock()
-		return Snapshot{}, reject("rejected", "child message bound reached")
+		return Snapshot{}, nil, reject("rejected", "child message bound reached")
 	}
 	run.messageMu.Unlock()
 	select {
@@ -527,23 +479,23 @@ func (t *Tree) message(ctx context.Context, ref Ref, mode, text string) (Snapsho
 		select {
 		case err := <-request.result:
 			if err != nil {
-				return Snapshot{}, err
+				return Snapshot{}, nil, err
 			}
 		case <-run.ctx.Done():
-			return Snapshot{}, reject("cancelled", "child stopped before message delivery")
+			return Snapshot{}, nil, reject("cancelled", "child stopped before message delivery")
 		case <-ctx.Done():
-			return Snapshot{}, reject("cancelled", "message caller cancelled")
+			return Snapshot{}, nil, reject("cancelled", "message caller cancelled")
 		}
 	default:
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.snapshotLocked(r), nil
+	return t.snapshotLocked(r), run, nil
 }
 
-func (t *Tree) stop(ref Ref) (*Outcome, int, error) {
+func (t *Tree) stop(selected *run) (*Outcome, int, error) {
 	t.mu.Lock()
-	target, err := t.currentLocked(ref)
+	target, err := t.currentLocked(selected)
 	if err != nil {
 		t.mu.Unlock()
 		return nil, 0, err
@@ -595,7 +547,7 @@ func (t *Tree) retireHistory(r *record) {
 	live := !run.state.terminal()
 	t.mu.Unlock()
 	if pending {
-		t.cancelPending(run.ref)
+		t.cancelPending(run)
 	} else if live {
 		run.abort()
 	}
@@ -638,15 +590,29 @@ func (t *Tree) close() {
 	close(t.closedDone)
 }
 
-func (t *Tree) acknowledge(ref Ref) { t.mu.Lock(); delete(t.pending, ref); t.mu.Unlock(); t.notify() }
+func (t *Tree) acknowledge(selected *run) {
+	t.mu.Lock()
+	if t.pending[selected] != nil {
+		delete(t.pending, selected)
+		close(selected.completionDone)
+		if r := t.records[selected.ref.ID]; r != nil && r.delivering == selected {
+			r.delivering = nil
+		}
+	}
+	t.mu.Unlock()
+	t.notify()
+}
 
-func (t *Tree) startCompletion(ref Ref) bool {
+func (t *Tree) startCompletion(selected *run) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	reservation := t.pending[ref]
+	reservation := t.pending[selected]
 	if t.closed || reservation == nil || reservation.sent {
 		return false
 	}
 	reservation.sent = true
+	if r := t.records[selected.ref.ID]; r != nil {
+		r.delivering = selected
+	}
 	return true
 }

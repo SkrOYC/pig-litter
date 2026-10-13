@@ -26,12 +26,7 @@ func TestLatestRootPromptIgnoresLaterChildNotifications(t *testing.T) {
 
 func TestProviderDrivesActualSpawnReadHoldAndStopResults(t *testing.T) {
 	state := newFixtureState(caseDirect)
-	parentTools := make([]openAITool, 0, len(controlTools)+1)
-	for _, name := range append(append([]string(nil), controlTools...), "read") {
-		var tool openAITool
-		tool.Function.Name = name
-		parentTools = append(parentTools, tool)
-	}
+	parentTools := providerTools(append(append([]string(nil), fileTools...), controlTools...)...)
 	start := openAIRequest{Model: "parent", Tools: parentTools, Messages: []openAIMessage{{Role: "user", Content: rawJSON(t, "START_WIDGET")}}}
 	turn, err := state.decide(start)
 	if err != nil {
@@ -41,8 +36,7 @@ func TestProviderDrivesActualSpawnReadHoldAndStopResults(t *testing.T) {
 		t.Fatalf("initial start turn = %#v", turn)
 	}
 
-	childTools := []openAITool{{}}
-	childTools[0].Function.Name = "read"
+	childTools := providerTools("read")
 	for index, name := range heldNames {
 		letter := "A"
 		if index == 1 {
@@ -70,8 +64,8 @@ func TestProviderDrivesActualSpawnReadHoldAndStopResults(t *testing.T) {
 	}
 
 	toolMessages := []openAIMessage{
-		{Role: "tool", Content: rawJSON(t, `{"operation":"litter_spawn","child":{"id":"tree:1","generation":1,"name":"held-a"}}`)},
-		{Role: "tool", Content: rawJSON(t, `{"operation":"litter_spawn","child":{"id":"tree:2","generation":1,"name":"held-b"}}`)},
+		{Role: "tool", Content: rawJSON(t, `{"operation":"litter_spawn","child":{"id":"tree:1","name":"held-a"}}`)},
+		{Role: "tool", Content: rawJSON(t, `{"operation":"litter_spawn","child":{"id":"tree:2","name":"held-b"}}`)},
 	}
 	parentMessages := []openAIMessage{{Role: "user", Content: rawJSON(t, "START_WIDGET")}}
 	parentMessages = append(parentMessages, toolMessages...)
@@ -114,12 +108,7 @@ func TestProviderDrivesActualSpawnReadHoldAndStopResults(t *testing.T) {
 
 func TestSpawnFailureWithoutIDStopsTheFixtureAndKeepsDiagnostic(t *testing.T) {
 	state := newFixtureState(caseDirect)
-	tools := make([]openAITool, 0, len(controlTools)+1)
-	for _, name := range append(append([]string(nil), controlTools...), "read") {
-		var tool openAITool
-		tool.Function.Name = name
-		tools = append(tools, tool)
-	}
+	tools := providerTools(append(append([]string(nil), fileTools...), controlTools...)...)
 	failedResult := `{"operation":"litter_spawn","state":"unavailable","code":"unavailable","report":"exact model is unavailable to the root and stock SDK"}`
 	request := openAIRequest{Model: "parent", Tools: tools, Messages: []openAIMessage{
 		{Role: "user", Content: rawJSON(t, "START_WIDGET")},
@@ -144,7 +133,7 @@ func TestSpawnFailureWithoutIDStopsTheFixtureAndKeepsDiagnostic(t *testing.T) {
 
 func TestProviderRequestEvidenceIsBoundedAndCountsResults(t *testing.T) {
 	state := newFixtureState(caseUnselected)
-	request := openAIRequest{Model: "parent", Messages: []openAIMessage{
+	request := openAIRequest{Model: "parent", Tools: providerTools(fileTools...), Messages: []openAIMessage{
 		{Role: "user", Content: rawJSON(t, "UNSELECTED_WIDGET")},
 		{Role: "tool", Content: rawJSON(t, `{"operation":"fixture_action"}`)},
 		{Role: "tool", Content: rawJSON(t, "plain result")},
@@ -163,6 +152,38 @@ func TestProviderRequestEvidenceIsBoundedAndCountsResults(t *testing.T) {
 	counts := state.requestEvidence()[0].ToolResultCounts
 	if counts["fixture_action"] != 1 || counts["unparsed"] != 1 {
 		t.Fatalf("tool result counts = %#v", counts)
+	}
+}
+
+func TestToolInventoriesAcceptEffectiveActorsAndRejectEscalation(t *testing.T) {
+	selected := append(append([]string(nil), fileTools...), controlTools...)
+	for _, test := range []struct {
+		name     string
+		got      []string
+		required []string
+		optional []string
+		wantErr  bool
+	}{
+		{"scout leaf", []string{"read"}, []string{"read"}, []string{"ls"}, false},
+		{"scout leaf with ls", []string{"read", "ls"}, []string{"read"}, []string{"ls"}, false},
+		{"scout leaf control escalation", []string{"read", "litter_spawn"}, []string{"read"}, []string{"ls"}, true},
+		{"scout leaf write escalation", []string{"read", "write"}, []string{"read"}, []string{"ls"}, true},
+		{"scout leaf missing read", []string{"ls"}, []string{"read"}, []string{"ls"}, true},
+		{"readonly root", fileTools, fileTools, []string{"ls"}, false},
+		{"readonly root control escalation", append(append([]string(nil), fileTools...), "litter_spawn"), fileTools, []string{"ls"}, true},
+		{"selected root", selected, selected, []string{"ls"}, false},
+		{"selected root missing bash", removeName(selected, "bash"), selected, []string{"ls"}, true},
+		{"selected root missing stop", removeName(selected, "litter_stop"), selected, []string{"ls"}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := requireToolInventory(test.got, test.required, test.optional, test.name)
+			if test.wantErr && err == nil {
+				t.Fatal("accepted a forbidden or incomplete tool inventory")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("rejected the expected tool inventory: %v", err)
+			}
+		})
 	}
 }
 
@@ -335,4 +356,24 @@ func rawJSON(t *testing.T, value any) json.RawMessage {
 		t.Fatal(err)
 	}
 	return encoded
+}
+
+func providerTools(names ...string) []openAITool {
+	tools := make([]openAITool, 0, len(names))
+	for _, name := range names {
+		var tool openAITool
+		tool.Function.Name = name
+		tools = append(tools, tool)
+	}
+	return tools
+}
+
+func removeName(values []string, name string) []string {
+	result := make([]string, 0, len(values)-1)
+	for _, value := range values {
+		if value != name {
+			result = append(result, value)
+		}
+	}
+	return result
 }

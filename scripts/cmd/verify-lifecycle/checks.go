@@ -2,26 +2,29 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 )
 
-type childCheck struct{ name, kind, model, task, state, errorText string }
+type childCheck struct {
+	name, kind, model, task, state, errorText string
+	noControlsObserved                        bool
+}
 
 var childChecks = []childCheck{
-	{"deniedRead", "worker", "denied", "deny-read", "partial", "tool read failed"},
-	{"deniedWrite", "worker", "denied", "deny-write", "partial", "tool write failed"},
-	{"providerFailure", "scout", "provider_error", "provider-failure", "failed", "intentional provider failure"},
-	{"toolFailure", "scout", "missing_file", "missing-file", "partial", "tool read failed"},
-	{"readonlyDelegation", "scout", "roles", "role-ceiling", "partial", "tool litter_spawn failed"},
-	{"historyRetired", "scout", "history", "oversized-history", "partial", "retained child history exceeded"},
+	{"deniedRead", "worker", "denied", "deny-read", "partial", "tool read failed", false},
+	{"deniedWrite", "worker", "denied", "deny-write", "partial", "tool write failed", false},
+	{"providerFailure", "scout", "provider_error", "provider-failure", "failed", "intentional provider failure", false},
+	{"toolFailure", "scout", "missing_file", "missing-file", "partial", "tool read failed", false},
+	{"readonlyDelegation", "scout", "roles", "role-ceiling", "completed", "", true},
+	{"namedScoutCannotDelegate", "custom_scout", "roles", "named-role-ceiling", "completed", "", true},
+	{"historyRetired", "scout", "history", "oversized-history", "partial", "retained child history exceeded", false},
 }
 
 func validScenario(name string) bool {
 	switch name {
-	case "core", "nested", "checks", "messages", "lifecycle", "completion", "shadow":
+	case "core", "cwd", "nested", "checks", "messages", "lifecycle", "completion", "shadow", "unbounded":
 		return true
 	}
 	return false
@@ -41,10 +44,6 @@ func (f *fixture) parentShadow(body modelRequest) (string, []call, error) {
 	f.checks["parentProviderShadowRejected"] = true
 	f.done = true
 	return "provider shadow rejected", nil, nil
-}
-
-func jsonResult(message message, value *result) error {
-	return json.Unmarshal([]byte(content(message.Content)), value)
 }
 
 func (f *fixture) parentChecks(body modelRequest) (string, []call, error) {
@@ -88,13 +87,26 @@ func (f *fixture) parentChecks(body modelRequest) (string, []call, error) {
 	if f.stage == 4 {
 		check := childChecks[index]
 		latest := tools[len(tools)-1]
-		if latest.State != check.state || !strings.Contains(latest.Outcome.Error, check.errorText) {
+		if latest.State != check.state || (check.errorText != "" && !strings.Contains(latest.Outcome.Error, check.errorText)) {
 			return "", nil, fmt.Errorf("%s outcome is %s with %q, want %s and %q", check.name, latest.State, latest.Outcome.Error, check.state, check.errorText)
 		}
+		if check.model == "history" && (latest.Outcome.Run.ID != f.worker.ID || !latest.Outcome.Truncated || len(latest.Outcome.Text) > 256) {
+			return "", nil, errors.New("over-budget history did not return a bounded partial outcome for the same child")
+		}
+		if check.noControlsObserved {
+			f.mu.Lock()
+			observed := f.checks[check.name]
+			f.mu.Unlock()
+			if !observed {
+				return "", nil, fmt.Errorf("%s did not observe a scout tool inventory without litter controls", check.name)
+			}
+		}
+		f.mu.Lock()
 		f.checks[check.name] = true
+		f.mu.Unlock()
 		if check.model == "history" {
 			f.stage = 5
-			return "", []call{{"litter_inspect", map[string]any{"id": f.worker.ID, "transcript": true}}}, nil
+			return "", []call{{"litter_message", with(f.worker, "resume", true, "text", "must not recreate history")}}, nil
 		}
 		f.runs = append(f.runs, f.worker)
 		f.stage = 2
@@ -102,14 +114,7 @@ func (f *fixture) parentChecks(body modelRequest) (string, []call, error) {
 	}
 	if f.stage == 5 {
 		latest := tools[len(tools)-1]
-		if latest.HistoryAvailable || len(latest.Entries) != 0 {
-			return "", nil, errors.New("over-budget manager remained available after cleanup")
-		}
-		f.stage = 6
-		return "", []call{{"litter_message", with(f.worker, "resume", true, "text", "must not recreate history")}}, nil
-	}
-	if f.stage == 6 {
-		if tools[len(tools)-1].State != "unavailable" {
+		if latest.State != "unavailable" || !strings.Contains(latest.Report, "retained history is unavailable") {
 			return "", nil, errors.New("over-budget history resumed")
 		}
 		f.checks["historyResumeUnavailable"] = true
@@ -154,14 +159,22 @@ func (f *fixture) checkedChild(ctx context.Context, body modelRequest) (string, 
 		}
 		return "assistant finished after failed read", nil, nil
 	case "roles":
-		if len(tools) == 0 {
-			return "", []call{{"litter_spawn", map[string]any{"type": "worker", "task": "forbidden writer", "model": "fixture/worker"}}}, nil
+		for _, name := range toolNames(body) {
+			if strings.HasPrefix(name, "litter_") {
+				return "", nil, fmt.Errorf("scout tool inventory unexpectedly exposes %s", name)
+			}
 		}
-		var value result
-		if len(tools) != 1 || jsonResult(tools[0], &value) != nil || value.State != "rejected" || value.Code != "permission_denied" {
-			return "", nil, errors.New("readonly child delegated a writer")
+		if len(tools) != 0 {
+			return "", nil, errors.New("scout called a tool while checking its delegation ceiling")
 		}
-		return "assistant finished after refused writer delegation", nil, nil
+		checkName := "readonlyDelegation"
+		if strings.Contains(user, "named-role-ceiling") {
+			checkName = "namedScoutCannotDelegate"
+		}
+		f.mu.Lock()
+		f.checks[checkName] = true
+		f.mu.Unlock()
+		return "scout delegation controls absent", nil, nil
 	case "history":
 		return strings.Repeat("large retained history ", 4000), nil, nil
 	case "message_child":
@@ -228,7 +241,7 @@ func (f *fixture) parentMessages(ctx context.Context, body modelRequest) (string
 		return "", []call{{"litter_wait", with(f.worker, "timeoutMs", 10000)}}, nil
 	case 5:
 		if len(tools) != 5 || tools[4].State != "completed" || tools[4].Outcome.Text != "MESSAGE_ORDER_DONE" || tools[4].Outcome.Usage.TotalTokens != 45 {
-			return "", nil, errors.New("ordered messages did not finish in the owning generation")
+			return "", nil, errors.New("ordered messages did not finish under the stable child ID")
 		}
 		f.done = true
 		return "message ordering complete", nil, nil

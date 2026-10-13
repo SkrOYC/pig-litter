@@ -11,30 +11,27 @@ import (
 )
 
 type completionDetails struct {
-	ChildID    ChildID `json:"childId"`
-	Generation int     `json:"generation"`
+	ChildID ChildID `json:"childId"`
 }
 
 type completionNotice struct {
-	Origin           string        `json:"origin"`
-	Kind             string        `json:"kind"`
-	Notice           string        `json:"notice"`
-	ReportProvenance string        `json:"reportProvenance"`
-	ID               ChildID       `json:"id"`
-	Generation       int           `json:"generation"`
-	State            State         `json:"state"`
-	Model            string        `json:"model"`
-	Report           string        `json:"report"`
-	Error            string        `json:"error"`
-	Truncated        bool          `json:"truncated"`
-	Evidence         *ToolEvidence `json:"evidence,omitempty"`
+	Origin           string  `json:"origin"`
+	Kind             string  `json:"kind"`
+	Notice           string  `json:"notice"`
+	ReportProvenance string  `json:"reportProvenance"`
+	ID               ChildID `json:"id"`
+	State            State   `json:"state"`
+	Model            string  `json:"model"`
+	Report           string  `json:"report"`
+	Error            string  `json:"error"`
+	Truncated        bool    `json:"truncated"`
 }
 
 func completionContent(outcome Outcome) (string, error) {
 	content, err := json.Marshal(completionNotice{
 		Origin: "pig-litter", Kind: "litter_completion", ReportProvenance: "child_assistant",
-		Notice: "Automatic status from the Pig Litter extension, not a user message. Do not acknowledge or repeat an outcome already reported for this id and generation. The report is child_assistant prose; use tool evidence or litter_inspect transcript for verification.",
-		ID:     outcome.Run.ID, Generation: outcome.Run.Generation, State: outcome.State, Model: outcome.Model, Report: outcome.Text, Error: outcome.Error, Truncated: outcome.Truncated, Evidence: outcome.Evidence,
+		Notice: "Automatic status from the Pig Litter extension, not a user message. Do not acknowledge or repeat an outcome already reported for this child. The report is the child assistant's latest result.",
+		ID:     outcome.Run.ID, State: outcome.State, Model: outcome.Model, Report: outcome.Text, Error: outcome.Error, Truncated: outcome.Truncated,
 	})
 	return string(content), err
 }
@@ -43,31 +40,36 @@ type completionReceipt struct {
 	once     sync.Once
 	appended func()
 	fallback func() error
+	observed func() bool
 }
 
 type outcomeAcknowledgement struct {
-	ref       Ref
+	run       *run
 	operation string
 	done      chan struct{}
 	once      sync.Once
 	ready     bool
 }
 
-func (o *owner) beginOutcomeAck(key ackKey, ref Ref, operation string, request *sdk.Context) {
-	if key.caller.ID != "" || key.callID == "" {
+func (o *owner) beginOutcomeAck(key ackKey, selected *run, operation string, request *sdk.Context) {
+	if key.caller != nil || key.callID == "" {
 		return
 	}
 	o.tree.mu.Lock()
-	pending := o.tree.pending[ref]
-	valid := pending != nil && pending.parent == key.caller.ID && pending.generation == key.caller.Generation && !o.tree.closed
-	o.tree.mu.Unlock()
+	pending := o.tree.pending[selected]
+	valid := pending != nil && pending.parentRun == key.caller && !o.tree.closed
 	if !valid {
+		o.tree.mu.Unlock()
 		return
 	}
-	ack := &outcomeAcknowledgement{ref: ref, operation: operation, done: make(chan struct{})}
+	if o.afterOutcomeReservation != nil {
+		o.afterOutcomeReservation()
+	}
+	ack := &outcomeAcknowledgement{run: selected, operation: operation, done: make(chan struct{})}
 	o.ackMu.Lock()
 	o.outcomeAcks[key] = ack
 	o.ackMu.Unlock()
+	o.tree.mu.Unlock()
 	var requestDone <-chan struct{}
 	if request != nil {
 		requestDone = request.Done()
@@ -85,7 +87,7 @@ func (o *owner) beginOutcomeAck(key ackKey, ref Ref, operation string, request *
 	}()
 }
 
-func (o *owner) observeOutcome(caller Ref, operation, callID, content string, failed bool) {
+func (o *owner) observeOutcome(caller *run, operation, callID, content string, failed bool) {
 	key := ackKey{caller, callID}
 	o.ackMu.Lock()
 	ack := o.outcomeAcks[key]
@@ -97,7 +99,7 @@ func (o *owner) observeOutcome(caller Ref, operation, callID, content string, fa
 		Operation string   `json:"operation"`
 		Outcome   *Outcome `json:"outcome"`
 	}
-	valid := !failed && operation == ack.operation && json.Unmarshal([]byte(content), &handback) == nil && handback.Operation == ack.operation && handback.Outcome != nil && handback.Outcome.Run == ack.ref && handback.Outcome.State.terminal()
+	valid := !failed && operation == ack.operation && json.Unmarshal([]byte(content), &handback) == nil && handback.Operation == ack.operation && handback.Outcome != nil && handback.Outcome.Run == ack.run.ref && handback.Outcome.State.terminal()
 	o.settleOutcomeAck(key, valid)
 }
 
@@ -116,55 +118,47 @@ func (o *owner) readyOutcomeAck(key ackKey, returned bool) {
 func (o *owner) settleOutcomeAck(key ackKey, received bool) {
 	o.ackMu.Lock()
 	ack := o.outcomeAcks[key]
-	ready := ack != nil && ack.ready
 	o.ackMu.Unlock()
 	if ack == nil {
 		return
 	}
 	ack.once.Do(func() {
-		if received && ready {
-			o.tree.mu.Lock()
-			if pending := o.tree.pending[ack.ref]; pending != nil && pending.parent == key.caller.ID && pending.generation == key.caller.Generation {
+		o.tree.mu.Lock()
+		o.ackMu.Lock()
+		if received && ack.ready && o.outcomeAcks[key] == ack {
+			if pending := o.tree.pending[ack.run]; pending != nil && pending.parentRun == key.caller {
 				pending.outcomeObserved = true
 			}
-			o.tree.mu.Unlock()
 		}
-		o.ackMu.Lock()
 		if o.outcomeAcks[key] == ack {
 			delete(o.outcomeAcks, key)
 		}
 		o.ackMu.Unlock()
+		o.tree.mu.Unlock()
 		close(ack.done)
 	})
 }
 
-func (o *owner) awaitOutcomeAck(ref Ref) bool {
+func (o *owner) awaitOutcomeAck(selected *run) bool {
 	for {
 		o.tree.mu.Lock()
-		pending := o.tree.pending[ref]
+		o.ackMu.Lock()
+		pending := o.tree.pending[selected]
 		observed := pending != nil && pending.outcomeObserved
 		closed := o.tree.closed
-		o.tree.mu.Unlock()
-		if o.afterOutcomeSnapshot != nil {
-			o.afterOutcomeSnapshot()
-		}
-		if observed || closed {
-			return observed
-		}
-		o.ackMu.Lock()
 		var done <-chan struct{}
 		for _, ack := range o.outcomeAcks {
-			if ack.ref == ref {
+			if ack.run == selected {
 				done = ack.done
 				break
 			}
 		}
 		o.ackMu.Unlock()
-		if done == nil {
-			o.tree.mu.Lock()
-			pending := o.tree.pending[ref]
-			observed := pending != nil && pending.outcomeObserved
-			o.tree.mu.Unlock()
+		o.tree.mu.Unlock()
+		if o.afterOutcomeSnapshot != nil {
+			o.afterOutcomeSnapshot()
+		}
+		if observed || closed || done == nil {
 			return observed
 		}
 		select {
@@ -175,7 +169,12 @@ func (o *owner) awaitOutcomeAck(ref Ref) bool {
 	}
 }
 
-func (r *completionReceipt) complete() { r.once.Do(r.appended) }
+func (r *completionReceipt) complete() {
+	if r.observed == nil || r.observed() {
+		r.once.Do(r.appended)
+	}
+}
+
 func (r *completionReceipt) retire() {
 	r.once.Do(func() {
 		if r.fallback() == nil {
@@ -184,7 +183,7 @@ func (r *completionReceipt) retire() {
 	})
 }
 
-func (o *owner) observeCompletion(caller Ref, message map[string]any) {
+func (o *owner) observeCompletion(caller *run, message map[string]any) {
 	if message["customType"] != "litter_completion" {
 		return
 	}
@@ -196,53 +195,82 @@ func (o *owner) observeCompletion(caller Ref, message map[string]any) {
 	if json.Unmarshal(raw, &details) != nil {
 		return
 	}
-	ref := Ref{details.ChildID, details.Generation}
 	o.tree.mu.Lock()
-	pending := o.tree.pending[ref]
-	valid := pending != nil && pending.sent && pending.parent == caller.ID && pending.generation == caller.Generation && !o.tree.closed
-	r := o.tree.records[ref.ID]
+	r := o.tree.records[details.ChildID]
+	var selected *run
+	if r != nil {
+		selected = r.delivering
+	}
+	pending := o.tree.pending[selected]
+	valid := pending != nil && pending.sent && pending.parentRun == caller && !o.tree.closed
 	o.tree.mu.Unlock()
-	if !valid || r == nil {
+	if !valid {
 		return
 	}
-	if caller.ID == "" {
-		o.tree.acknowledge(ref)
-		return
-	}
-	parentRun := r.parentRun
-	if parentRun == nil {
-		return
-	}
-	parentRun.mu.Lock()
-	receipt := parentRun.receipts[ref]
-	delete(parentRun.receipts, ref)
-	parentRun.mu.Unlock()
+	selected.mu.Lock()
+	receipt := selected.deliveryReceipt
+	selected.mu.Unlock()
 	if receipt != nil {
 		receipt.complete()
 	}
 }
 
-func completionExists(manager *coding.SessionManager, details completionDetails) bool {
-	for _, entry := range manager.Entries() {
-		raw, err := json.Marshal(entry)
+type completionEntry struct {
+	ID         string            `json:"id"`
+	CustomType string            `json:"customType"`
+	Content    string            `json:"content"`
+	Details    completionDetails `json:"details"`
+	Message    *struct {
+		CustomType string            `json:"customType"`
+		Content    string            `json:"content"`
+		Details    completionDetails `json:"details"`
+	} `json:"message"`
+}
+
+func (o *owner) completionEntries(parent ChildID) ([]json.RawMessage, error) {
+	if parent == "" {
+		entries, err := o.context.SessionManager().GetEntries()
 		if err != nil {
+			return nil, err
+		}
+		return rawEntries(entries)
+	}
+	o.tree.mu.Lock()
+	r := o.tree.records[parent]
+	var manager *coding.SessionManager
+	if r != nil {
+		manager = r.history
+	}
+	o.tree.mu.Unlock()
+	if manager == nil {
+		return nil, reject("unavailable", "parent retained history is unavailable")
+	}
+	return rawEntries(manager.Entries())
+}
+
+func rawEntries(entries any) ([]json.RawMessage, error) {
+	data, err := json.Marshal(entries)
+	if err != nil {
+		return nil, err
+	}
+	var raw []json.RawMessage
+	err = json.Unmarshal(data, &raw)
+	return raw, err
+}
+
+func completionStored(entries []json.RawMessage, known map[string]struct{}, details completionDetails, content string) bool {
+	for _, raw := range entries {
+		var entry completionEntry
+		if json.Unmarshal(raw, &entry) != nil || entry.ID == "" {
 			continue
 		}
-		var item struct {
-			CustomType string            `json:"customType"`
-			Details    completionDetails `json:"details"`
-			Message    *struct {
-				CustomType string            `json:"customType"`
-				Details    completionDetails `json:"details"`
-			} `json:"message"`
-		}
-		if json.Unmarshal(raw, &item) != nil {
+		if _, exists := known[entry.ID]; exists {
 			continue
 		}
-		if item.CustomType == "litter_completion" && item.Details == details {
+		if entry.CustomType == "litter_completion" && entry.Details == details && entry.Content == content {
 			return true
 		}
-		if item.Message != nil && item.Message.CustomType == "litter_completion" && item.Message.Details == details {
+		if entry.Message != nil && entry.Message.CustomType == "litter_completion" && entry.Message.Details == details && entry.Message.Content == content {
 			return true
 		}
 	}
@@ -263,10 +291,8 @@ func (o *owner) appendRetained(parentID ChildID, details completionDetails, cont
 	if manager == nil {
 		return reject("unavailable", "parent retained history is unavailable")
 	}
-	if !completionExists(manager, details) {
-		if _, err := manager.AppendCustomMessage("litter_completion", content, false, details); err != nil {
-			return err
-		}
+	if _, err := manager.AppendCustomMessage("litter_completion", content, false, details); err != nil {
+		return err
 	}
 	if historyBytes(manager) > o.config.MaxHistoryBytes {
 		o.tree.retireHistory(parent)
@@ -275,24 +301,78 @@ func (o *owner) appendRetained(parentID ChildID, details completionDetails, cont
 	return nil
 }
 
-func (o *owner) sendCompletion(r *record, outcome Outcome) {
-	if err := o.current(); err != nil || !o.tree.startCompletion(outcome.Run) {
+func (o *owner) sendCompletion(r *record, selected *run, outcome Outcome) {
+	if selected.beforeCompletion != nil {
+		select {
+		case <-selected.beforeCompletion:
+		case <-o.tree.ctx.Done():
+			return
+		}
+	}
+	if err := o.current(); err != nil || !o.tree.startCompletion(selected) {
 		return
 	}
 	content, err := completionContent(outcome)
 	if err != nil {
 		return
 	}
-	details := completionDetails{outcome.Run.ID, outcome.Run.Generation}
-	if r.parent == "" {
-		observed := o.awaitOutcomeAck(outcome.Run)
+	details := completionDetails{outcome.Run.ID}
+	if r.parent == "" && o.awaitOutcomeAck(selected) {
 		if err := o.current(); err != nil {
 			return
 		}
-		if observed {
-			if err := o.context.AppendEntry("litter_completion", json.RawMessage(content)); err == nil {
-				o.tree.acknowledge(outcome.Run)
+		if err := o.context.AppendEntry("litter_completion", json.RawMessage(content)); err == nil {
+			o.tree.acknowledge(selected)
+		}
+		return
+	}
+	entries, err := o.completionEntries(r.parent)
+	if err != nil {
+		return
+	}
+	known := make(map[string]struct{}, len(entries))
+	for _, raw := range entries {
+		var entry struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &entry) == nil {
+			known[entry.ID] = struct{}{}
+		}
+	}
+	observed := func() bool {
+		entries, err := o.completionEntries(r.parent)
+		return err == nil && completionStored(entries, known, details, content)
+	}
+	var receipt *completionReceipt
+	receipt = &completionReceipt{
+		appended: func() {
+			if parent := selected.parent; parent != nil {
+				parent.mu.Lock()
+				if parent.receipts[selected] == receipt {
+					delete(parent.receipts, selected)
+				}
+				parent.mu.Unlock()
 			}
+			selected.mu.Lock()
+			if selected.deliveryReceipt == receipt {
+				selected.deliveryReceipt = nil
+			}
+			selected.mu.Unlock()
+			o.tree.acknowledge(selected)
+		},
+		observed: observed,
+		fallback: func() error {
+			if observed() {
+				return nil
+			}
+			return o.appendRetained(r.parent, details, content)
+		},
+	}
+	selected.mu.Lock()
+	selected.deliveryReceipt = receipt
+	selected.mu.Unlock()
+	if r.parent == "" {
+		if err := o.current(); err != nil {
 			return
 		}
 		idle, err := o.context.IsIdle()
@@ -307,38 +387,59 @@ func (o *owner) sendCompletion(r *record, outcome Outcome) {
 		_ = o.context.SendCustomMessage(sdk.CustomMessage{CustomType: "litter_completion", Content: content, Display: false, Details: details}, options)
 		return
 	}
-	parentRun := r.parentRun
-	fallback := func() error { return o.appendRetained(r.parent, details, content) }
+	parentRun := selected.parent
 	if parentRun == nil {
-		if fallback() == nil {
-			o.tree.acknowledge(outcome.Run)
-		}
-		return
-	}
-	receipt := &completionReceipt{appended: func() { o.tree.acknowledge(outcome.Run) }, fallback: fallback}
-	parentRun.mu.Lock()
-	session := parentRun.session
-	if session == nil || parentRun.disposing {
-		parentRun.mu.Unlock()
 		receipt.retire()
 		return
 	}
-	parentRun.receipts[outcome.Run] = receipt
-	parentRun.mu.Unlock()
-	trigger := false
-	err = session.SendCustomMessage(context.Background(), extension.CustomMessageRef{CustomType: "litter_completion", Content: content, Display: false, Details: details}, &extension.SendMessageOptions{TriggerTurn: &trigger})
-	if err != nil {
+	for {
+		parentRun.deliveryMu.Lock()
 		parentRun.mu.Lock()
-		parentRun.completionSendError, _ = bounded(err.Error(), 256)
+		session, disposing := parentRun.session, parentRun.disposing
+		if session != nil && !disposing {
+			parentRun.receipts[selected] = receipt
+			parentRun.mu.Unlock()
+			trigger := false
+			err = session.SendCustomMessage(context.Background(), extension.CustomMessageRef{CustomType: "litter_completion", Content: content, Display: false, Details: details}, &extension.SendMessageOptions{TriggerTurn: &trigger})
+			parentRun.deliveryMu.Unlock()
+			if err != nil {
+				parentRun.mu.Lock()
+				parentRun.completionSendError, _ = bounded(err.Error(), 256)
+				parentRun.mu.Unlock()
+			}
+			return
+		}
 		parentRun.mu.Unlock()
+		parentRun.deliveryMu.Unlock()
+		if disposing {
+			select {
+			case <-parentRun.done:
+			case <-o.tree.ctx.Done():
+				return
+			}
+			receipt.retire()
+			return
+		}
+		if o.beforeParentReadyWait != nil {
+			o.beforeParentReadyWait()
+		}
+		select {
+		case <-parentRun.ready:
+			continue
+		case <-parentRun.done:
+			receipt.retire()
+			return
+		case <-o.tree.ctx.Done():
+			return
+		}
 	}
 }
 
-func (o *owner) retireReceipts(run *run) {
-	run.mu.Lock()
-	receipts := run.receipts
-	run.receipts = map[Ref]*completionReceipt{}
-	run.mu.Unlock()
+func (o *owner) retireReceipts(execution *run) {
+	execution.mu.Lock()
+	receipts := execution.receipts
+	execution.receipts = map[*run]*completionReceipt{}
+	execution.mu.Unlock()
 	for _, receipt := range receipts {
 		receipt.retire()
 	}
