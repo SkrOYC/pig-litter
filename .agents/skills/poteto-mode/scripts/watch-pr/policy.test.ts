@@ -174,6 +174,59 @@ describe("snapshot query planning", () => {
       kind: "blocker",
       blocker: { kind: "failing-checks" },
     });
+
+    const blockedWithoutHeadRollup = await read({
+      facts: { mergeStateStatus: "BLOCKED" },
+      commitRollups: [{ oid: "head", state: null }],
+    });
+    expect(classifyPr(blockedWithoutHeadRollup)).toMatchObject({
+      kind: "blocker",
+      blocker: {
+        kind: "merge-gate",
+        reason: { kind: "github-merge-state", status: "BLOCKED" },
+      },
+    });
+
+    for (const mergeStateStatus of [
+      "BEHIND",
+      "HAS_HOOKS",
+      "UNKNOWN",
+      "UNSTABLE",
+    ] as const) {
+      const snapshot = await read({
+        facts: { mergeStateStatus },
+        commitRollups: [{ oid: "head", state: null }],
+      });
+      expect(classifyPr(snapshot)).toMatchObject({
+        kind: "blocker",
+        blocker: {
+          kind: "merge-gate",
+          reason: { kind: "github-merge-state", status: mergeStateStatus },
+        },
+      });
+    }
+
+    const cleanWithoutChecks = await read({
+      facts: { mergeStateStatus: "CLEAN" },
+      commitRollups: [{ oid: "head", state: null }],
+    });
+    expect(cleanWithoutChecks).toMatchObject({
+      kind: "open",
+      ci: { kind: "ci-clean", all: [] },
+    });
+    expect(classifyPr(cleanWithoutChecks).kind).toBe("ready");
+
+    const reportedChecks = await readSnapshot({
+      reader: fakeReader({
+        facts: { mergeStateStatus: "BLOCKED" },
+        fastPath: { kind: "checks", checks: [passingCheck()] },
+        commitRollups: [{ oid: "head", state: "PENDING" }],
+      }),
+      context: context(7),
+      pendingHistory: "include",
+      allowDraft: false,
+    });
+    expect(classifyPr(reportedChecks).kind).toBe("ready");
   });
 
   it("short-circuits merged rows before threads and checks", async () => {

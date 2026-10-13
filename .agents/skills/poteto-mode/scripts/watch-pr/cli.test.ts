@@ -198,6 +198,62 @@ describe("main", () => {
     expect(harness.stdout[0]).not.toContain('"kind":"QUEUE"');
   });
 
+  it("blocks readiness when GitHub is blocked and no checks are reported", async () => {
+    const reader = fakeReader({
+      facts: { mergeStateStatus: "BLOCKED" },
+      fastPath: {
+        kind: "unusable",
+        exitCode: 1,
+        stderr: "no checks reported",
+      },
+      commitRollups: [{ oid: "head", state: null }],
+    });
+    const harness = testRuntime(reader);
+    const code = await main(
+      ["--owner", "owner", "--repo", "repo", "--pr", "1"],
+      harness.runtime,
+    );
+    expect(code).toBe(6);
+    expect(JSON.parse(harness.stdout[0])).toMatchObject({
+      kind: "BLOCKER",
+      exitCode: 6,
+      blocker: {
+        kind: "merge-gate",
+        reason: { kind: "github-merge-state", status: "BLOCKED" },
+      },
+    });
+  });
+
+  it("shows an unclean GitHub state instead of a passing empty check set", async () => {
+    const reader = fakeReader({
+      facts: { mergeStateStatus: "BLOCKED" },
+      fastPath: {
+        kind: "unusable",
+        exitCode: 1,
+        stderr: "no checks reported",
+      },
+      commitRollups: [{ oid: "head", state: null }],
+    });
+    const harness = testRuntime(reader);
+    const code = await main(
+      [
+        "--owner",
+        "owner",
+        "--repo",
+        "repo",
+        "--pr",
+        "1",
+        "--status-only",
+        "--pretty",
+      ],
+      harness.runtime,
+    );
+    expect(code).toBe(0);
+    expect(harness.stdout[0]).toContain(
+      "| [#1](https://github.com/owner/repo/pull/1) | ⚠️ no checks reported | ✅ | ⚠️ GitHub BLOCKED |",
+    );
+  });
+
   it("returns exit 4 for a hidden GitHub-side CI refusal", async () => {
     const reader = fakeReader({
       facts: { mergeStateStatus: "BLOCKED" },
