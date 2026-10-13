@@ -46,12 +46,13 @@ func (f *fixture) parentCodemode(ctx context.Context, body modelRequest) (string
 			return "", nil, errors.New("codemode fixture started with prior tool results")
 		}
 		f.stage = 1
-		code := "// @options: {\"timeout_ms\": 15000}\n" +
+		code := "// @options: {\"timeout_ms\": 30000, \"max_output_tokens\": 128}\n" +
+			"let listCalls = 0;\n" +
+			"for (; listCalls < 257; listCalls++) await tools.litter_list({});\n" +
 			"const spawned = JSON.parse(await tools.litter_spawn({ type: \"scout\", task: \"codemode-resume-target\", name: \"resume-target\", model: \"fixture/codemode_child\" }));\n" +
 			"const waited = JSON.parse(await tools.litter_wait({ id: spawned.child.id, timeoutMs: 5000 }));\n" +
 			"const outcome = waited.outcome || {};\n" +
-			"store(\"resume-target\", spawned.child.id);\n" +
-			"return { id: spawned.child.id, waitedId: outcome.run ? outcome.run.id : \"\", state: waited.state, text: outcome.text || \"\", report: waited.report || \"\" };"
+			"return { listCalls, id: spawned.child.id, waitedId: outcome.run ? outcome.run.id : \"\", state: waited.state, text: outcome.text || \"\", report: waited.report || \"\" };"
 		return "", []call{codemodeTool(code)}, nil
 	}
 	if len(messages) == 0 {
@@ -60,14 +61,17 @@ func (f *fixture) parentCodemode(ctx context.Context, body modelRequest) (string
 	last := messages[len(messages)-1]
 	switch f.stage {
 	case 1:
-		var value struct{ ID, WaitedID, State, Text, Report string }
+		var value struct {
+			ListCalls                         int
+			ID, WaitedID, State, Text, Report string
+		}
 		if err := decodeCodemodeOutput(last, &value); err != nil {
 			return "", nil, err
 		}
 		if value.State != "completed" {
 			return "", nil, fmt.Errorf("codemode wait ended in %s: %s", value.State, value.Report)
 		}
-		if value.ID == "" || value.WaitedID != value.ID || value.Text != "CODEMODE_INITIAL_RESULT" {
+		if value.ListCalls != 257 || value.ID == "" || value.WaitedID != value.ID || value.Text != "CODEMODE_INITIAL_RESULT" {
 			return "", nil, fmt.Errorf("codemode did not await its spawned child: %#v", value)
 		}
 		f.codemodeResumeTarget = ref{ID: value.ID}
