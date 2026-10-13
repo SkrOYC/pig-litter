@@ -365,13 +365,18 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = err.Error()
 		return
 	}
+	active := services.SettingsManager().ResolvedDefaultTools()
+	if r.canDelegate {
+		active = append(active, controlNames...)
+	}
 	r.deliveryMu.Lock()
-	session, err := runtime.New(coding.SessionStartOptions{SessionManager: manager, Model: model, ResourceLoader: loader, ExtraTools: tools, AllowedTools: allowed, ActiveBuiltinTools: allowed})
+	session, err := runtime.New(coding.SessionStartOptions{SessionManager: manager, Model: model, ResourceLoader: loader, ExtraTools: tools, AllowedTools: allowed})
 	if err != nil {
 		r.deliveryMu.Unlock()
 		outcome.Error = err.Error()
 		return
 	}
+	session.SetActiveToolsByName(active)
 	eventDrain := make(chan struct{})
 	go func() {
 		defer close(eventDrain)
