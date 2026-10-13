@@ -37,21 +37,21 @@ func TestSessionNodesUseNativeUUIDsAndImmediateParentAuthority(t *testing.T) {
 			t.Fatalf("UUID knowledge granted nonparent authority for %s", test.id)
 		}
 	}
-	listed, err := tree.list("")
+	listed, err := tree.list(nil)
 	if err != nil || len(listed) != 1 || listed[0].ID != parent.ID {
 		t.Fatalf("root did not list only its immediate active child: %#v %v", listed, err)
 	}
 	original := testRun(t, tree, parent.Ref)
 	tree.finish(tree.records[parent.ID], original, Outcome{State: Completed, Text: "parent finished"})
 	tree.acknowledge(original)
-	listed, err = tree.list("")
+	listed, err = tree.list(nil)
 	if err != nil || len(listed) != 0 {
 		t.Fatalf("root listed an inactive child: %#v %v", listed, err)
 	}
 	if err := testRun(t, tree, child.Ref).ctx.Err(); err != nil {
 		t.Fatalf("normal parent completion cancelled its child: %v", err)
 	}
-	resumed, replacement, err := tree.resume(original, "continue")
+	resumed, replacement, err := tree.resume(testCaller(original), original, "continue")
 	if err != nil || resumed.ID != parent.ID {
 		t.Fatalf("resume changed identity: %#v %v", resumed, err)
 	}
@@ -71,7 +71,7 @@ func TestPauseRetainsCompletedDescendantsAndResumesOnlySelectedNode(t *testing.T
 	parentRun, childRun := testRun(t, tree, parent.Ref), testRun(t, tree, child.Ref)
 	tree.finish(tree.records[child.ID], childRun, Outcome{State: Completed, Text: "retained child result"})
 	tree.acknowledge(childRun)
-	outcome, count, err := tree.stop(parentRun)
+	outcome, count, err := tree.stop(testCaller(parentRun), parentRun)
 	if err != nil || outcome.State != Paused || count != 1 {
 		t.Fatalf("pause result %#v %d %v", outcome, count, err)
 	}
@@ -79,11 +79,11 @@ func TestPauseRetainsCompletedDescendantsAndResumesOnlySelectedNode(t *testing.T
 	if err != nil || inspection.Child.State != Paused || inspection.Outcome.State != Completed || inspection.Outcome.Text != "retained child result" {
 		t.Fatalf("pause lost the latest result: %#v %v", inspection, err)
 	}
-	if _, _, err := tree.resume(childRun, "stale resume"); err == nil {
+	if _, _, err := tree.resume(testCaller(childRun), childRun, "stale resume"); err == nil {
 		t.Fatal("a child resumed while its parent was paused")
 	}
 	tree.acknowledge(parentRun)
-	_, resumedParent, err := tree.resume(parentRun, "continue parent")
+	_, resumedParent, err := tree.resume(testCaller(parentRun), parentRun, "continue parent")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestPauseRetainsCompletedDescendantsAndResumesOnlySelectedNode(t *testing.T
 	if _, err := tree.selectOwned(resumedParent, child.ID); err != nil {
 		t.Fatal(err)
 	}
-	resumed, resumedChild, err := tree.resume(childRun, "explicitly continue child")
+	resumed, resumedChild, err := tree.resume(testCaller(childRun), childRun, "explicitly continue child")
 	if err != nil || resumed.ID != child.ID || resumed.State != Starting || resumedChild == childRun {
 		t.Fatalf("explicit child resume failed: %#v %v", resumed, err)
 	}
@@ -119,7 +119,7 @@ func TestRootPauseIncludesIdleNodesAndBlocksStaleAdmission(t *testing.T) {
 	if _, _, err := tree.admit(admission{agent: tree.config.Agents["scout"]}); err == nil {
 		t.Fatal("a paused root admitted a child")
 	}
-	if _, _, err := tree.message(context.Background(), selected, "resume", "continue"); err == nil {
+	if _, _, err := tree.message(context.Background(), testCaller(selected), selected, "resume", "continue"); err == nil {
 		t.Fatal("a paused root resumed a child")
 	}
 	tree.mu.Lock()

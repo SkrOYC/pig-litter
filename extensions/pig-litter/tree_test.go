@@ -14,12 +14,13 @@ import (
 
 func testTree(t *testing.T, config Config) *Tree {
 	t.Helper()
-	tree, err := newTree(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	tree := newTree(config)
 	t.Cleanup(tree.close)
 	return tree
+}
+
+func testCaller(selected *run) *run {
+	return selected.owner.parent.run
 }
 
 func testRun(t *testing.T, tree *Tree, ref Ref) *run {
@@ -80,7 +81,7 @@ func TestAdmissionCountsDescendantsAndRejectsDepthWritersAndNames(t *testing.T) 
 	if _, _, err := writers.admit(admission{cwd: "/fixture", agent: writers.config.Agents["worker"]}); err == nil || !strings.Contains(err.Error(), "writer conflict") {
 		t.Fatalf("writer rejection %v", err)
 	}
-	if _, _, err := writers.stop(testRun(t, writers, writer.Ref)); err != nil {
+	if _, _, err := writers.stop(nil, testRun(t, writers, writer.Ref)); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := writers.admit(admission{name: "writer", agent: writers.config.Agents["scout"]}); err == nil || !strings.Contains(err.Error(), "name already") {
@@ -121,15 +122,15 @@ func TestWaitCancellationAndTimeoutLeaveChildRunning(t *testing.T) {
 	if _, err := tree.wait(ctx, selected, 1000); err == nil || err.(*treeError).code != "cancelled" {
 		t.Fatalf("cancelled wait %v", err)
 	}
-	list, err := tree.list("")
+	list, err := tree.list(nil)
 	if err != nil || len(list) != 1 || list[0].State != Starting {
 		t.Fatalf("child changed %#v %v", list, err)
 	}
-	outcome, count, err := tree.stop(selected)
+	outcome, count, err := tree.stop(testCaller(selected), selected)
 	if err != nil || count != 1 || outcome.State != Paused {
 		t.Fatalf("stop %#v %d %v", outcome, count, err)
 	}
-	if _, count, err := tree.stop(selected); err != nil || count != 0 {
+	if _, count, err := tree.stop(testCaller(selected), selected); err != nil || count != 0 {
 		t.Fatalf("repeat stop %d %v", count, err)
 	}
 }
@@ -158,7 +159,7 @@ func TestResumeRetainsHistoryAndStaleRunCallbacksCannotAffectReplacement(t *test
 	for range 2 {
 		go func() {
 			<-started
-			snapshot, selected, err := tree.message(context.Background(), original, "resume", "continue")
+			snapshot, selected, err := tree.message(context.Background(), testCaller(original), original, "resume", "continue")
 			results <- struct {
 				snapshot Snapshot
 				selected *run
@@ -189,7 +190,7 @@ func TestResumeRetainsHistoryAndStaleRunCallbacksCannotAffectReplacement(t *test
 		t.Fatal("stale run activated its replacement")
 	}
 	tree.cancelPending(original)
-	if _, _, err := tree.stop(original); err == nil {
+	if _, _, err := tree.stop(testCaller(original), original); err == nil {
 		t.Fatal("stale run stopped its replacement")
 	}
 	if outcome, err := tree.wait(context.Background(), original, 1); err != nil || outcome.State != Completed || outcome.Text != "before resume" {
@@ -222,7 +223,7 @@ func TestCleanupKeepsCapacityUntilItJoins(t *testing.T) {
 	}
 	<-entered
 	stopped := make(chan struct{})
-	go func() { _, _, _ = tree.stop(selected); close(stopped) }()
+	go func() { _, _, _ = tree.stop(testCaller(selected), selected); close(stopped) }()
 	select {
 	case <-cleaned:
 		t.Fatal("cleanup completed before release")
@@ -244,12 +245,12 @@ func TestSubtreeOwnershipAndStopAreScopedToSelectedRun(t *testing.T) {
 	parent := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
 	child := testAdmissionWithAgent(t, tree, parent.Ref, "coordinator", "child", coordinator)
 	sibling := testAdmission(t, tree, Ref{}, "scout", "sibling")
-	list, err := tree.list(parent.ID)
+	list, err := tree.list(testRun(t, tree, parent.Ref))
 	if err != nil || len(list) != 1 || list[0].ID != child.ID {
 		t.Fatalf("owned list %#v %v", list, err)
 	}
 	for _, id := range []ChildID{parent.ID, sibling.ID} {
-		if err := tree.owned(parent.ID, id); err == nil {
+		if _, err := tree.selectOwned(testRun(t, tree, parent.Ref), id); err == nil {
 			t.Fatalf("accepted unrelated child %s", id)
 		}
 	}
@@ -271,12 +272,12 @@ func TestSubtreeOwnershipAndStopAreScopedToSelectedRun(t *testing.T) {
 	<-started
 	results := make(chan int, 2)
 	for range 2 {
-		go func() { _, count, _ := tree.stop(parentRun); results <- count }()
+		go func() { _, count, _ := tree.stop(testCaller(parentRun), parentRun); results <- count }()
 	}
 	if total := <-results + <-results; total != 2 {
 		t.Fatalf("concurrent stop counted %d", total)
 	}
-	list, _ = tree.list("")
+	list, _ = tree.list(nil)
 	for _, snapshot := range list {
 		if snapshot.ID == sibling.ID && snapshot.State != Starting {
 			t.Fatalf("stop affected sibling %#v", snapshot)
@@ -293,7 +294,7 @@ func TestCompletionReservationWaitsForActualAppend(t *testing.T) {
 	child := testAdmission(t, tree, parent.Ref, "scout", "child")
 	selected := testRun(t, tree, child.Ref)
 	tree.finish(tree.records[child.ID], selected, Outcome{State: Completed, Text: "first"})
-	if _, _, err := tree.message(context.Background(), selected, "resume", "again"); err == nil || !strings.Contains(err.Error(), "mailbox capacity") {
+	if _, _, err := tree.message(context.Background(), testCaller(selected), selected, "resume", "again"); err == nil || !strings.Contains(err.Error(), "mailbox capacity") {
 		t.Fatalf("unappended completion released capacity %v", err)
 	}
 	if !tree.startCompletion(selected) || tree.startCompletion(selected) {
@@ -307,7 +308,7 @@ func TestCompletionReservationWaitsForActualAppend(t *testing.T) {
 	if appended != 1 {
 		t.Fatalf("fallback appended %d times", appended)
 	}
-	resumed, _, err := tree.message(context.Background(), selected, "resume", "again")
+	resumed, _, err := tree.message(context.Background(), testCaller(selected), selected, "resume", "again")
 	if err != nil || resumed.ID != child.ID {
 		t.Fatalf("acknowledged resume %#v %v", resumed, err)
 	}
@@ -327,7 +328,7 @@ func TestFailedCompletionEnqueueRetainsReservation(t *testing.T) {
 	if acknowledged {
 		t.Fatal("failed retained append acknowledged delivery")
 	}
-	if _, _, err := tree.message(context.Background(), selected, "resume", "again"); err == nil {
+	if _, _, err := tree.message(context.Background(), testCaller(selected), selected, "resume", "again"); err == nil {
 		t.Fatal("failed receipt released its reservation")
 	}
 }
@@ -338,10 +339,10 @@ func TestPendingMessagesAreBoundedAndCancelledAdmissionsNeverLaunch(t *testing.T
 	tree := testTree(t, config)
 	child := testAdmission(t, tree, Ref{}, "scout", "child")
 	selected := testRun(t, tree, child.Ref)
-	if snapshot, _, err := tree.message(context.Background(), selected, "steer", "first"); err != nil || snapshot.State != Starting {
+	if snapshot, _, err := tree.message(context.Background(), testCaller(selected), selected, "steer", "first"); err != nil || snapshot.State != Starting {
 		t.Fatalf("pending message %#v %v", snapshot, err)
 	}
-	if _, _, err := tree.message(context.Background(), selected, "steer", "second"); err == nil {
+	if _, _, err := tree.message(context.Background(), testCaller(selected), selected, "steer", "second"); err == nil {
 		t.Fatal("accepted full mailbox")
 	}
 	tree.cancelPending(selected)
@@ -351,8 +352,8 @@ func TestPendingMessagesAreBoundedAndCancelledAdmissionsNeverLaunch(t *testing.T
 	if outcome, err := tree.wait(context.Background(), selected, 1000); err != nil || outcome.State != Stopped {
 		t.Fatalf("cancelled admission %#v %v", outcome, err)
 	}
-	if _, _, err := tree.admit(admission{name: "child", agent: config.Agents["scout"]}); err == nil {
-		t.Fatal("reused cancelled child name")
+	if _, _, err := tree.admit(admission{name: "child", agent: config.Agents["scout"]}); err != nil {
+		t.Fatalf("failed admission retained its name or capacity: %v", err)
 	}
 }
 
@@ -370,7 +371,7 @@ func TestNormalHandlerCleanupDoesNotCancelSpawnAcknowledgement(t *testing.T) {
 			}
 			key := ackKey{callID: "spawn"}
 			selected := testRun(t, tree, child.Ref)
-			o.deferActivation(key, selected, requestDone, func() bool { return cancelRequest })
+			o.deferActivation(key, selected, requestDone, func() bool { return cancelRequest }, "litter_spawn")
 			close(requestDone)
 			if cancelRequest {
 				outcome, err := tree.wait(context.Background(), selected, 1000)
@@ -465,7 +466,7 @@ func TestCloseJoinsConcurrentCallers(t *testing.T) {
 			t.Fatal("concurrent close did not join execution")
 		}
 	}
-	if _, err := tree.list(""); err == nil || err.(*treeError).code != "unavailable" {
+	if _, err := tree.list(nil); err == nil || err.(*treeError).code != "unavailable" {
 		t.Fatalf("closed tree remained available: %v", err)
 	}
 }

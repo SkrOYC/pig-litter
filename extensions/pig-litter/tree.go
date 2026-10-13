@@ -2,6 +2,7 @@ package piglitter
 
 import (
 	"context"
+	"crypto/rand"
 	"slices"
 	"strings"
 	"sync"
@@ -12,27 +13,28 @@ import (
 
 type reservation struct {
 	parent          ChildID
-	parentRun       *run
+	nonce           string
 	sent            bool
 	outcomeObserved bool
 }
 
 type Tree struct {
-	mu         sync.Mutex
-	config     Config
-	ctx        context.Context
-	cancel     context.CancelFunc
-	root       *record
-	records    map[ChildID]*record
-	order      []ChildID
-	names      map[string]ChildID
-	pending    map[*run]*reservation
-	live       int
-	closed     bool
-	closedDone chan struct{}
-	execute    func(*record, *run) Outcome
-	completion func(*record, *run, Outcome)
-	changed    func()
+	mu           sync.Mutex
+	config       Config
+	ctx          context.Context
+	cancel       context.CancelFunc
+	root         *record
+	records      map[ChildID]*record
+	order        []ChildID
+	names        map[string]ChildID
+	pending      map[*run]*reservation
+	live         int
+	closed       bool
+	closedDone   chan struct{}
+	completionWG sync.WaitGroup
+	execute      func(*record, *run) Outcome
+	completion   func(*record, *run, Outcome)
+	changed      func()
 }
 
 type admission struct {
@@ -40,12 +42,11 @@ type admission struct {
 	kind, name, model, cwd, task string
 	agent                        AgentDefinition
 	history                      *coding.SessionManager
-	authority                    *authority
 }
 
-func newTree(config Config) (*Tree, error) {
+func newTree(config Config) *Tree {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Tree{config: config, root: &record{id: "root", name: "root"}, ctx: ctx, cancel: cancel, records: map[ChildID]*record{}, names: map[string]ChildID{}, pending: map[*run]*reservation{}, closedDone: make(chan struct{})}, nil
+	return &Tree{config: config, root: &record{id: "root", name: "root"}, ctx: ctx, cancel: cancel, records: map[ChildID]*record{}, names: map[string]ChildID{}, pending: map[*run]*reservation{}, closedDone: make(chan struct{})}
 }
 
 func (t *Tree) currentLocked(selected *run) (*record, error) {
@@ -107,26 +108,6 @@ func (t *Tree) belongsLocked(caller *record, r *record) bool {
 	return false
 }
 
-func (t *Tree) owned(caller ChildID, id ChildID) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.closed {
-		return reject("unavailable", "the owning Session is closed")
-	}
-	parent := t.root
-	if caller != "" {
-		parent = t.records[caller]
-	}
-	r := t.records[id]
-	if r == nil {
-		return reject("rejected", "unknown child ID")
-	}
-	if parent == nil || r.parent != parent {
-		return reject("permission_denied", "only the immediate parent can control this child")
-	}
-	return nil
-}
-
 func (t *Tree) selectOwned(caller *run, id ChildID) (*run, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -142,6 +123,21 @@ func (t *Tree) selectOwned(caller *run, id ChildID) (*run, error) {
 		return nil, reject("permission_denied", "only the immediate parent can control this child")
 	}
 	return r.run, nil
+}
+
+func (t *Tree) controlLocked(caller, selected *run) (*record, error) {
+	parent, err := t.callerLocked(caller)
+	if err != nil {
+		return nil, err
+	}
+	r, err := t.currentLocked(selected)
+	if err != nil {
+		return nil, err
+	}
+	if r.parent != parent {
+		return nil, reject("permission_denied", "only the immediate parent can control this child")
+	}
+	return r, nil
 }
 
 func (r *record) parentID() ChildID {
@@ -203,7 +199,7 @@ func (t *Tree) roomLocked(parent ChildID, writer bool, cwd string, except ChildI
 
 func (t *Tree) newRunLocked(ref Ref, prompt string) *run {
 	ctx, cancel := context.WithCancel(t.ctx)
-	return &run{ref: ref, state: Starting, ctx: ctx, cancel: cancel, prompt: prompt, done: make(chan struct{}), ready: make(chan struct{}), mailbox: make(chan message, t.config.MaxMailbox), receipts: map[*run]*completionReceipt{}, completionDone: make(chan struct{})}
+	return &run{ref: ref, noticeID: rand.Text(), state: Starting, ctx: ctx, cancel: cancel, prompt: prompt, done: make(chan struct{}), ready: make(chan struct{}), mailbox: make(chan message, t.config.MaxMailbox)}
 }
 
 func (t *Tree) admit(request admission) (Snapshot, *run, error) {
@@ -255,13 +251,12 @@ func (t *Tree) admit(request admission) (Snapshot, *run, error) {
 	if _, exists := t.names[nameKey]; exists {
 		return Snapshot{}, nil, reject("rejected", "child name already belongs to this owner")
 	}
-	r := &record{id: id, parent: parent, depth: depth, name: name, kind: request.kind, model: request.model, instructions: request.agent.Instructions, task: request.task, cwd: request.cwd, tools: slices.Clone(request.agent.Tools), canDelegate: request.agent.CanDelegate && request.agent.Role != "scout", readOnly: readOnly, history: request.history, authority: request.authority}
+	r := &record{id: id, parent: parent, depth: depth, name: name, kind: request.kind, model: request.model, instructions: request.agent.Instructions, task: request.task, cwd: request.cwd, tools: slices.Clone(request.agent.Tools), canDelegate: request.agent.CanDelegate && request.agent.Role != "scout", readOnly: readOnly, history: request.history}
 	r.run = t.newRunLocked(Ref{id}, "Task:\n"+request.task)
 	r.run.owner = r
 	t.records[id], t.names[nameKey] = r, id
 	t.order = append(t.order, id)
-	r.run.parent = request.parentRun
-	t.pending[r.run] = &reservation{parent: r.parentID(), parentRun: request.parentRun}
+	t.pending[r.run] = &reservation{parent: r.parentID(), nonce: r.run.noticeID}
 	t.live++
 	return t.snapshotLocked(r), r.run, nil
 }
@@ -301,24 +296,30 @@ func (r *run) abort() {
 func (t *Tree) cancelPending(selected *run) {
 	t.mu.Lock()
 	r := t.records[selected.ref.ID]
-	if r == nil || r.run != selected || r.run.started || r.run.state != Starting {
+	if r == nil || r.run != selected || r.run.started {
 		t.mu.Unlock()
 		return
 	}
 	run := r.run
 	run.cancel()
-	run.state = Stopped
-	run.outcome = &Outcome{Run: selected.ref, State: Stopped, Model: r.model, Error: "spawn admission ended before the tool result was acknowledged"}
-	close(run.done)
-	t.live--
-	delete(t.pending, selected)
-	close(selected.completionDone)
+	if run.outcome == nil {
+		run.state = Stopped
+		run.outcome = &Outcome{Run: selected.ref, State: Stopped, Model: r.model, Error: "child admission ended before final tool success"}
+		close(run.done)
+		t.live--
+	}
+	if t.pending[selected] != nil {
+		delete(t.pending, selected)
+	}
 	if r.previous != nil {
 		r.run = r.previous
 		r.previous = nil
-		r.paused = selected.resumePaused
+		r.paused = r.paused || selected.resumePaused
+		r.latest = r.run.outcome
 	} else {
-		r.latest = run.outcome
+		delete(t.records, r.id)
+		delete(t.names, string(r.parentID())+"\x00"+r.name)
+		t.order = slices.DeleteFunc(t.order, func(id ChildID) bool { return id == r.id })
 	}
 	t.mu.Unlock()
 	t.notify()
@@ -361,13 +362,22 @@ func (t *Tree) finish(r *record, run *run, raw Outcome) {
 		}
 	}
 mailboxDrained:
+	run.messageMu.Lock()
+	run.pendingMessages = 0
+	run.messageMu.Unlock()
 	t.live--
 	close(run.done)
-	closed := t.closed
+	deliver := run.started && !t.closed && t.completion != nil
+	if deliver {
+		t.completionWG.Add(1)
+	}
 	t.mu.Unlock()
 	t.notify()
-	if !closed && t.completion != nil {
-		go t.completion(r, run, raw)
+	if deliver {
+		go func() {
+			defer t.completionWG.Done()
+			t.completion(r, run, raw)
+		}()
 	}
 }
 
@@ -377,24 +387,31 @@ func (t *Tree) notify() {
 	}
 }
 
-func (t *Tree) list(caller ChildID) ([]Snapshot, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.closed {
-		return nil, reject("unavailable", "the owning Session is closed")
-	}
-	parent := t.root
-	if caller != "" {
-		parent = t.records[caller]
-	}
+func (t *Tree) snapshotsLocked(parent *record, activeOnly bool) []Snapshot {
 	list := []Snapshot{}
 	for _, id := range t.order {
 		r := t.records[id]
-		if r.parent == parent && !r.paused && !r.run.state.terminal() {
+		if r.parent == parent && (!activeOnly || !r.paused && !r.run.state.terminal()) {
 			list = append(list, t.snapshotLocked(r))
 		}
 	}
-	return list, nil
+	return list
+}
+
+func (t *Tree) list(caller *run) ([]Snapshot, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	parent, err := t.callerLocked(caller)
+	if err != nil {
+		return nil, err
+	}
+	return t.snapshotsLocked(parent, true), nil
+}
+
+func (t *Tree) retained() []Snapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.snapshotsLocked(t.root, false)
 }
 
 func (t *Tree) inspect(id ChildID) (Inspection, error) {
@@ -437,9 +454,9 @@ func (t *Tree) wait(ctx context.Context, selected *run, timeout int) (Outcome, e
 	}
 }
 
-func (t *Tree) resume(selected *run, text string) (Snapshot, *run, error) {
+func (t *Tree) resume(caller, selected *run, text string) (Snapshot, *run, error) {
 	t.mu.Lock()
-	r, err := t.currentLocked(selected)
+	r, err := t.controlLocked(caller, selected)
 	if err != nil {
 		t.mu.Unlock()
 		return Snapshot{}, nil, err
@@ -459,7 +476,7 @@ func (t *Tree) resume(selected *run, text string) (Snapshot, *run, error) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	r, err = t.currentLocked(selected)
+	r, err = t.controlLocked(caller, selected)
 	if err != nil {
 		return Snapshot{}, nil, err
 	}
@@ -479,27 +496,23 @@ func (t *Tree) resume(selected *run, text string) (Snapshot, *run, error) {
 	r.run.owner = r
 	r.run.resumePaused = r.paused
 	r.paused = false
-	r.run.beforeCompletion = selected.completionDone
-	if r.parent != nil {
-		r.run.parent = r.parent.run
-	}
-	t.pending[r.run] = &reservation{parent: r.parentID(), parentRun: r.run.parent}
+	t.pending[r.run] = &reservation{parent: r.parentID(), nonce: r.run.noticeID}
 	t.live++
 	return t.snapshotLocked(r), r.run, nil
 }
 
-func (t *Tree) message(ctx context.Context, selected *run, mode, text string) (Snapshot, *run, error) {
+func (t *Tree) message(ctx context.Context, caller, selected *run, mode, text string) (Snapshot, *run, error) {
 	if len(text) > 16384 || len(strings.TrimSpace(text)) == 0 {
 		return Snapshot{}, nil, reject("rejected", "invalid child message or message byte bound reached")
 	}
 	if mode == "resume" {
-		return t.resume(selected, text)
+		return t.resume(caller, selected, text)
 	}
 	if mode != "steer" && mode != "follow_up" {
 		return Snapshot{}, nil, reject("rejected", "invalid child message")
 	}
 	t.mu.Lock()
-	r, err := t.currentLocked(selected)
+	r, err := t.controlLocked(caller, selected)
 	if err != nil {
 		t.mu.Unlock()
 		return Snapshot{}, nil, err
@@ -517,6 +530,11 @@ func (t *Tree) message(ctx context.Context, selected *run, mode, text string) (S
 	if disposing || session != nil && !session.IsStreaming() && state == Running {
 		return Snapshot{}, nil, reject("rejected", "child is settling and cannot accept a message")
 	}
+	t.mu.Lock()
+	if _, err := t.controlLocked(caller, selected); err != nil || r.paused || run.state != Starting && run.state != Running {
+		t.mu.Unlock()
+		return Snapshot{}, nil, reject("rejected", "child is no longer active")
+	}
 	run.messageMu.Lock()
 	queued := run.pendingMessages
 	if session != nil {
@@ -524,6 +542,7 @@ func (t *Tree) message(ctx context.Context, selected *run, mode, text string) (S
 	}
 	if queued >= t.config.MaxMailbox {
 		run.messageMu.Unlock()
+		t.mu.Unlock()
 		return Snapshot{}, nil, reject("rejected", "child message bound reached")
 	}
 	request := message{mode: mode, text: text, result: make(chan error, 1)}
@@ -532,9 +551,11 @@ func (t *Tree) message(ctx context.Context, selected *run, mode, text string) (S
 		run.pendingMessages++
 	default:
 		run.messageMu.Unlock()
+		t.mu.Unlock()
 		return Snapshot{}, nil, reject("rejected", "child message bound reached")
 	}
 	run.messageMu.Unlock()
+	t.mu.Unlock()
 	select {
 	case <-run.ready:
 		select {
@@ -554,9 +575,9 @@ func (t *Tree) message(ctx context.Context, selected *run, mode, text string) (S
 	return t.snapshotLocked(r), run, nil
 }
 
-func (t *Tree) stop(selected *run) (*Outcome, int, error) {
+func (t *Tree) stop(caller, selected *run) (*Outcome, int, error) {
 	t.mu.Lock()
-	target, err := t.currentLocked(selected)
+	target, err := t.controlLocked(caller, selected)
 	if err != nil {
 		t.mu.Unlock()
 		return nil, 0, err
@@ -666,6 +687,12 @@ func (t *Tree) close() {
 	for _, run := range runs {
 		<-run.done
 	}
+	t.completionWG.Wait()
+	t.mu.Lock()
+	for selected := range t.pending {
+		delete(t.pending, selected)
+	}
+	t.mu.Unlock()
 	close(t.closedDone)
 }
 
@@ -673,10 +700,6 @@ func (t *Tree) acknowledge(selected *run) {
 	t.mu.Lock()
 	if t.pending[selected] != nil {
 		delete(t.pending, selected)
-		close(selected.completionDone)
-		if r := t.records[selected.ref.ID]; r != nil && r.delivering == selected {
-			r.delivering = nil
-		}
 	}
 	t.mu.Unlock()
 	t.notify()
@@ -690,8 +713,5 @@ func (t *Tree) startCompletion(selected *run) bool {
 		return false
 	}
 	reservation.sent = true
-	if r := t.records[selected.ref.ID]; r != nil {
-		r.delivering = selected
-	}
 	return true
 }

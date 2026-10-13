@@ -84,13 +84,13 @@ type record struct {
 	canDelegate, readOnly                      bool
 	history                                    *coding.SessionManager
 	historyLost                                bool
-	authority                                  *authority
 	run                                        *run
 	previous                                   *run
-	delivering                                 *run
 	paused                                     bool
 	latest                                     *Outcome
 	deliveryMu                                 sync.Mutex
+	receiptMu                                  sync.Mutex
+	receipts                                   map[*run]*completionReceipt
 }
 
 type message struct {
@@ -100,10 +100,8 @@ type message struct {
 
 type run struct {
 	ref                 Ref
+	noticeID            string
 	owner               *record
-	parent              *run
-	beforeCompletion    <-chan struct{}
-	completionDone      chan struct{}
 	deliveryReceipt     *completionReceipt
 	state               State
 	ctx                 context.Context
@@ -115,13 +113,11 @@ type run struct {
 	resumePaused        bool
 	mailbox             chan message
 	mu                  sync.Mutex
-	deliveryMu          sync.Mutex
 	messageMu           sync.Mutex
 	pendingMessages     int
 	session             *coding.Session
 	disposing           bool
 	ready               chan struct{}
-	receipts            map[*run]*completionReceipt
 	completionSendError string
 }
 

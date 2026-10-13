@@ -113,14 +113,3 @@ func TestControlSchemasAcceptIDOnlyInputsAndRejectGeneration(t *testing.T) {
 		})
 	}
 }
-
-func TestMemorySettingsDisableRetryAndWarming(t *testing.T) {
-	manager, err := memorySettings()
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings := manager.Get()
-	if settings.CacheWarming != "off" || settings.Retry == nil || settings.Retry.Enabled == nil || *settings.Retry.Enabled {
-		t.Fatalf("unexpected child settings %#v", settings)
-	}
-}

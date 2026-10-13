@@ -2,9 +2,10 @@ package piglitter
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"slices"
+	"maps"
 	"sort"
 	"strings"
 	"unicode"
@@ -20,12 +21,11 @@ var hostToolNames = []string{"read", "ls", "write", "edit", "bash"}
 var controlNames = []string{"litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
 var descriptions = map[string]string{
 	"litter_spawn":   "Start a background child. Use litter_list to discover named agent types.",
-	"litter_list":    "List available agent types and a bounded page of owned children.",
+	"litter_list":    "List available agent types and active immediate children.",
 	"litter_inspect": "Get a child's current status and latest result by ID.",
 	"litter_message": "Steer a live child or explicitly resume a settled child with the same ID.",
-	"litter_stop":    "Stop an owned child subtree and report newly stopped runs.",
+	"litter_stop":    "Pause an immediate child and its descendants. Resume each node explicitly with litter_message.",
 	"litter_wait":    "Wait for a child result by ID. Outcome text is the child assistant's report. A timeout leaves the child running.",
-	"read":           "Use the original parent host's read tool.", "ls": "Use the original parent host's ls tool.", "write": "Use the original parent host's write tool.", "edit": "Use the original parent host's edit tool.",
 }
 
 var promptGuidelines = map[string][]string{
@@ -99,10 +99,9 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, reject("rejected", "invalid tool arguments")
 	}
+	key := ackKey{caller: caller, callID: callID, nonce: rand.Text()}
 	var parent *record
-	var callerID ChildID
 	if caller != nil {
-		callerID = caller.ref.ID
 		o.tree.mu.Lock()
 		var err error
 		parent, err = o.tree.callerLocked(caller)
@@ -119,7 +118,19 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 		if !trusted {
 			return nil, reject("permission_denied", "project trust was revoked")
 		}
-		agent, exists := o.config.Agents[args.Type]
+		base := o.cwd
+		if parent != nil {
+			base = parent.cwd
+		}
+		cwd, err := childDirectory(base, args.Cwd)
+		if err != nil {
+			return nil, err
+		}
+		config, err := LoadConfig(cwd)
+		if err != nil {
+			return nil, err
+		}
+		agent, exists := config.Agents[args.Type]
 		if !exists || strings.TrimSpace(args.Task) == "" || len(args.Task) > 16384 {
 			return nil, reject("rejected", "choose a named agent and a bounded task")
 		}
@@ -142,28 +153,6 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 		if _, err := o.modelFor(ctx, model, o.services.ModelRuntime()); err != nil {
 			return nil, err
 		}
-		var bridge *authority
-		if parent != nil {
-			if !parent.canDelegate {
-				return nil, reject("permission_denied", "this agent cannot delegate")
-			}
-			bridge = parent.authority
-			for _, tool := range agent.Tools {
-				if !slices.Contains(parent.tools, tool) {
-					return nil, reject("permission_denied", "the named agent exceeds the caller tool ceiling")
-				}
-			}
-		} else if toolContext != nil {
-			bridge = &authority{context: *toolContext, sessionID: o.sessionID, epoch: o.epoch}
-		}
-		if bridge == nil {
-			return nil, reject("unavailable", "root tool execution bridge is unavailable")
-		}
-		for _, tool := range agent.Tools {
-			if _, err := o.canonicalTool(bridge.context, tool); err != nil {
-				return nil, err
-			}
-		}
 		label := ""
 		if args.Name != nil {
 			label, err = safeLabel(*args.Name)
@@ -171,31 +160,23 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 				return nil, err
 			}
 		}
-		base := o.cwd
-		if parent != nil {
-			base = parent.cwd
-		}
-		cwd, err := childDirectory(base, args.Cwd)
-		if err != nil {
-			return nil, err
-		}
 		manager, err := coding.NewInMemorySessionManager(cwd)
 		if err != nil {
 			return nil, err
 		}
-		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, history: manager, authority: bridge})
+		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, history: manager})
 		if err != nil {
 			return nil, err
 		}
-		o.deferActivation(ackKey{caller, callID}, execution, ctx.Done(), func() bool { return ctx.Err() != nil })
+		o.deferActivation(key, execution, ctx.Done(), func() bool { return ctx.Err() != nil }, name)
 		if toolContext != nil {
-			o.watchRequest(ackKey{caller, callID}, *toolContext)
+			o.watchRequest(key, *toolContext)
 		}
 		o.widget()
-		return map[string]any{"state": snapshot.State, "child": snapshot}, nil
+		return map[string]any{"state": snapshot.State, "child": snapshot, "_receipt": key.nonce}, nil
 	}
 	if name == "litter_list" {
-		children, err := o.tree.list(callerID)
+		children, err := o.tree.list(caller)
 		if err != nil {
 			return nil, err
 		}
@@ -203,14 +184,21 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 		if args.Offset < 0 || args.Offset > 1000000 || args.AgentOffset < 0 || args.AgentOffset > 1000000 || limit < 1 || limit > 50 || agentLimit < 1 || agentLimit > 50 {
 			return nil, reject("rejected", "invalid list page")
 		}
-		names := make([]string, 0, len(o.config.Agents))
-		for name := range o.config.Agents {
+		config := o.config
+		if parent != nil {
+			config, err = LoadConfig(parent.cwd)
+			if err != nil {
+				return nil, err
+			}
+		}
+		names := make([]string, 0, len(config.Agents))
+		for name := range config.Agents {
 			names = append(names, name)
 		}
 		sort.Strings(names)
 		agents := []map[string]any{}
 		for _, name := range names[min(args.AgentOffset, len(names)):min(args.AgentOffset+agentLimit, len(names))] {
-			definition := o.config.Agents[name]
+			definition := config.Agents[name]
 			description := []rune(definition.Instructions)
 			description = description[:min(160, len(description))]
 			value := map[string]any{"name": name, "role": definition.Role, "description": string(description), "tools": definition.Tools, "canDelegate": definition.CanDelegate}
@@ -234,19 +222,17 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 		return map[string]any{"state": inspection.Child.State, "child": inspection.Child, "outcome": inspection.Outcome}, nil
 	}
 	if name == "litter_wait" {
-		key := ackKey{caller, callID}
 		o.beginOutcomeAck(key, selected, name, toolContext)
 		outcome, err := o.tree.wait(ctx, selected, pageLimit(args.TimeoutMs, 30000))
 		o.readyOutcomeAck(key, err == nil && outcome.State.terminal())
-		return map[string]any{"state": outcome.State, "outcome": &outcome}, err
+		return map[string]any{"state": outcome.State, "outcome": &outcome, "_receipt": key.nonce}, err
 	}
 	if name == "litter_stop" {
-		key := ackKey{caller, callID}
 		o.beginOutcomeAck(key, selected, name, toolContext)
-		outcome, count, err := o.tree.stop(selected)
+		outcome, count, err := o.tree.stop(caller, selected)
 		o.readyOutcomeAck(key, err == nil && outcome != nil && outcome.State.terminal())
 		state := Paused
-		return map[string]any{"state": state, "outcome": outcome, "stoppedCount": count}, err
+		return map[string]any{"state": state, "outcome": outcome, "stoppedCount": count, "_receipt": key.nonce}, err
 	}
 	if name == "litter_message" {
 		mode := args.Mode
@@ -276,25 +262,27 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 				return nil, err
 			}
 		}
-		snapshot, execution, err := o.tree.message(ctx, selected, mode, args.Text)
+		snapshot, execution, err := o.tree.message(ctx, caller, selected, mode, args.Text)
 		if err != nil {
 			return nil, err
 		}
 		delivery := "queued"
 		if mode == "resume" {
 			delivery = "resumed"
-			o.deferActivation(ackKey{caller, callID}, execution, ctx.Done(), func() bool { return ctx.Err() != nil })
+			o.deferActivation(key, execution, ctx.Done(), func() bool { return ctx.Err() != nil }, name)
 			if toolContext != nil {
-				o.watchRequest(ackKey{caller, callID}, *toolContext)
+				o.watchRequest(key, *toolContext)
 			}
 		}
 		o.widget()
-		return map[string]any{"state": snapshot.State, "child": snapshot, "delivery": delivery}, nil
+		return map[string]any{"state": snapshot.State, "child": snapshot, "delivery": delivery, "_receipt": key.nonce}, nil
 	}
 	return nil, reject("rejected", "unknown child operation")
 }
 
 func resultContent(operation string, value map[string]any, err error) (string, bool) {
+	value = maps.Clone(value)
+	delete(value, "_receipt")
 	failed := false
 	if err != nil {
 		code := "failed"
@@ -346,9 +334,16 @@ func resultContent(operation string, value map[string]any, err error) (string, b
 
 func sdkResult(operation string, value map[string]any, err error) sdk.ToolResult {
 	text, failed := resultContent(operation, value, err)
-	return sdk.ToolResult{Content: text, IsError: failed}
+	return sdk.ToolResult{Content: text, IsError: failed, Details: resultDetails(value)}
 }
 func nativeResult(operation string, value map[string]any, err error) agent.AgentToolResult {
 	text, failed := resultContent(operation, value, err)
-	return agent.AgentToolResult{Content: []ai.ToolResultMessageContent{ai.TextContent{Text: text}}, IsError: failed}
+	return agent.AgentToolResult{Content: []ai.ToolResultMessageContent{ai.TextContent{Text: text}}, IsError: failed, Details: resultDetails(value)}
+}
+
+func resultDetails(value map[string]any) any {
+	if nonce, ok := value["_receipt"].(string); ok {
+		return map[string]any{"pigLitterCall": nonce}
+	}
+	return nil
 }
