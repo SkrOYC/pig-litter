@@ -227,12 +227,13 @@ func (f *fixture) codemodeChild(ctx context.Context, body modelRequest) (string,
 			user += content(message.Content) + "\n"
 		}
 	}
+	latest := latestUserText(body)
 	switch {
 	case strings.Contains(user, "codemode-resume-target"):
-		if strings.Contains(user, "CODEMODE_RESUME_BEFORE_THROW") {
+		if strings.Contains(latest, "CODEMODE_RESUME_BEFORE_THROW") {
 			return f.hold(ctx, "codemode-resume-after-failure"), nil, nil
 		}
-		if strings.Contains(user, "CODEMODE_RESUME_NOW") {
+		if strings.Contains(latest, "CODEMODE_RESUME_NOW") {
 			return "CODEMODE_RESUMED_RESULT", nil, nil
 		}
 		return "CODEMODE_INITIAL_RESULT", nil, nil
