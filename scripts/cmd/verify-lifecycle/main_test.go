@@ -108,6 +108,30 @@ func TestServeValidatesConfiguredInstructionLiteralForEachScout(t *testing.T) {
 	}
 }
 
+func TestCWDResourceMarkersMustComeFromSystemMessages(t *testing.T) {
+	system, err := json.Marshal("USER_ONLY_WORKER_INSTRUCTIONS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := json.Marshal("Task: NATIVE_CWD_WORKER_INSTRUCTIONS NATIVE_CWD_CONTEXT_MARKER NATIVE_CWD_APPEND_MARKER")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := append([]string{"read", "write", "edit", "bash"}, controlTools...)
+	body := modelRequestWithTools("cwd_worker", tools...)
+	body.Messages = []message{{Role: "system", Content: system}, {Role: "user", Content: user}}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fixture{scenario: "cwd", changed: make(chan struct{})}
+	response := httptest.NewRecorder()
+	f.serve(response, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(raw))))
+	if response.Code != http.StatusInternalServerError || f.failure == nil {
+		t.Fatalf("user-only resource markers returned %d without a fixture failure: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestUnboundedChildUsesOriginalWritePathReceipt(t *testing.T) {
 	for _, test := range []struct {
 		name, receipt string

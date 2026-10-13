@@ -403,7 +403,7 @@ func (f *fixture) runLifecycle(ctx context.Context, directory, workspace, agentD
 		}
 	}
 	if f.scenario == "completion" {
-		if err := f.runCompletion(ctx, directory, send, wait, events); err != nil {
+		if err := f.runCompletion(ctx, directory, send, wait, waitToolExecution, events); err != nil {
 			return err
 		}
 	} else if f.scenario == "pause" {

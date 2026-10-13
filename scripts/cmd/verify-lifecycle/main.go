@@ -154,6 +154,17 @@ func systemPrompt(body modelRequest) string {
 	return ""
 }
 
+func systemMessageText(body modelRequest) string {
+	var text strings.Builder
+	for _, value := range body.Messages {
+		if value.Role == "system" {
+			text.WriteString(content(value.Content))
+			text.WriteByte('\n')
+		}
+	}
+	return text.String()
+}
+
 func messageText(body modelRequest) string {
 	var text strings.Builder
 	for _, value := range body.Messages {
@@ -631,16 +642,16 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 			return
 		}
 		if f.scenario == "cwd" && (body.Model == "cwd_worker" || body.Model == "cwd_nested") {
-			all := messageText(body)
+			system := systemMessageText(body)
 			expected := "NATIVE_CWD_WORKER_INSTRUCTIONS"
 			if body.Model == "cwd_nested" {
 				expected = "NATIVE_CWD_SCOUT_INSTRUCTIONS"
 			}
-			if !strings.Contains(all, expected) || !strings.Contains(all, "NATIVE_CWD_CONTEXT_MARKER") || !strings.Contains(all, "NATIVE_CWD_APPEND_MARKER") || strings.Contains(all, "PRIVATE_PROJECT_APPEND_MARKER") {
+			if !strings.Contains(system, expected) || !strings.Contains(system, "NATIVE_CWD_CONTEXT_MARKER") || !strings.Contains(system, "NATIVE_CWD_APPEND_MARKER") || strings.Contains(system, "PRIVATE_PROJECT_APPEND_MARKER") {
 				f.fail(w, errors.New("child did not resolve its native directory instructions and resources"))
 				return
 			}
-			if strings.Contains(all, "PRIVATE_AGENT_APPEND_MARKER") {
+			if strings.Contains(system, "PRIVATE_AGENT_APPEND_MARKER") {
 				f.fail(w, errors.New("child project resources did not take precedence over agent append text"))
 				return
 			}
@@ -666,7 +677,7 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 				return
 			}
 		}
-		if body.Model == "cwd_worker" && !strings.Contains(messageText(body), "NATIVE_CWD_WORKER_INSTRUCTIONS") {
+		if body.Model == "cwd_worker" && !strings.Contains(systemMessageText(body), "NATIVE_CWD_WORKER_INSTRUCTIONS") {
 			f.fail(w, errors.New("worker did not resolve the configuration in its target cwd"))
 			return
 		}
@@ -809,7 +820,9 @@ func rejectAtPrefixedPaths(root string) error {
 
 func fixtureConfigFiles(workspace, configDir, scenario string) map[string]string {
 	files := map[string]string{}
-	if scenario != "cwd" {
+	if scenario == "completion" {
+		files[filepath.Join(workspace, "litter.yaml")] = "concurrency: 2\ndepth: 2\nmax_mailbox: 1\nmax_result_bytes: 8192\nagents:\n  scout:\n    instructions: input.txt\n"
+	} else if scenario != "cwd" {
 		files[filepath.Join(workspace, "litter.yaml")] = "concurrency: 2\ndepth: 2\nmax_result_bytes: 8192\nagents:\n  scout:\n    instructions: input.txt\n"
 	}
 	if scenario == "core" {
@@ -977,7 +990,7 @@ func run(directory, pig, extension, scenario string) error {
 	if scenario == "codemode" {
 		arguments = append(arguments, "-e", "builtin:codemode")
 	}
-	if scenario == "checks" || scenario == "shadow" || scenario == "admission" {
+	if scenario == "checks" || scenario == "shadow" || scenario == "admission" || scenario == "codemode" {
 		arguments = append([]string{"-e", filepath.Join(filepath.Dir(extension), "litter-fixture-guard")}, arguments...)
 	}
 	command := exec.CommandContext(ctx, pig, arguments...)
@@ -985,6 +998,9 @@ func run(directory, pig, extension, scenario string) error {
 	defer stopProcess(command)
 	command.Dir = workspace
 	command.Env = fixtureEnvironment(pig, bashPath, directory, agentDir)
+	if scenario == "codemode" {
+		command.Env = append(command.Env, "LITTER_FIXTURE_REPLACE_DETAILS=1")
+	}
 	if scenario == "cwd" {
 		command.Env = fixtureEnvironment(pig, bashPath, directory, "")
 	}

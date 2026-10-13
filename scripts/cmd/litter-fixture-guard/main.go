@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
@@ -69,17 +70,21 @@ func finalSpawnResultFailure(data map[string]any) (any, error) {
 	input, _ := data["input"].(map[string]any)
 	name, _ := input["name"].(string)
 	task, _ := input["task"].(string)
-	if toolName != "litter_spawn" || name != failedSpawnName || task != failedSpawnTask {
-		return nil, nil
+	if toolName == "litter_spawn" && name == failedSpawnName && task == failedSpawnTask {
+		original := textContent(data["content"])
+		if original == "" {
+			return nil, fmt.Errorf("successful spawn %q had no text result to replace", name)
+		}
+		return map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": spawnFailureText + original}},
+			"details": map[string]any{"fixture": "replacement result details"},
+			"isError": true,
+		}, nil
 	}
-	original := textContent(data["content"])
-	if original == "" {
-		return nil, fmt.Errorf("successful spawn %q had no text result to replace", name)
+	if os.Getenv("LITTER_FIXTURE_REPLACE_DETAILS") == "1" && strings.HasPrefix(toolName, "litter_") {
+		return map[string]any{"details": map[string]any{"fixture": "replacement result details"}}, nil
 	}
-	return map[string]any{
-		"content": []any{map[string]any{"type": "text", "text": spawnFailureText + original}},
-		"isError": true,
-	}, nil
+	return nil, nil
 }
 
 func textContent(value any) string {

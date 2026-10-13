@@ -79,7 +79,7 @@ func (f *fixture) parentCodemode(ctx context.Context, body modelRequest) (string
 		f.markCheck("codemodeSpawnWait")
 		f.stage = 2
 		code := "// @options: {\"timeout_ms\": 15000}\n" +
-			"await tools.litter_message({ id: " + jsonString(f.codemodeResumeTarget.ID) + ", text: \"CODEMODE_RESUME_NOW\", resume: true });\n" +
+			"await tools.litter_message({ id: " + jsonString(f.codemodeResumeTarget.ID) + ", text: \"CODEMODE_RESUME_BEFORE_THROW\", resume: true });\n" +
 			"await tools.litter_spawn({ type: \"scout\", task: \"codemode-survivor\", name: \"codemode-survivor\", model: \"fixture/codemode_child\" });\n" +
 			"throw new Error(\"outer codemode failure after successful resume and spawn\");"
 		return "", []call{codemodeTool(code)}, nil
@@ -88,9 +88,15 @@ func (f *fixture) parentCodemode(ctx context.Context, body modelRequest) (string
 		if !strings.Contains(output, "Script failed") || !strings.Contains(output, "outer codemode failure after successful resume and spawn") {
 			return "", nil, fmt.Errorf("codemode script did not report its outer failure: %s", output)
 		}
-		if err := f.wait(ctx, func() bool { return f.held["codemode-survivor"] != nil }); err != nil {
-			return "", nil, fmt.Errorf("successful spawn did not survive its outer script failure: %w", err)
+		if err := f.wait(ctx, func() bool {
+			return f.held["codemode-resume-after-failure"] != nil && f.held["codemode-survivor"] != nil
+		}); err != nil {
+			return "", nil, fmt.Errorf("resumed child and successful spawn did not survive their outer script failure: %w", err)
 		}
+		if err := f.releaseTask("codemode-resume-after-failure"); err != nil {
+			return "", nil, err
+		}
+		f.markCheck("codemodeResumeHeldUntilOuterFailure")
 		f.stage = 3
 		return "", []call{
 			{"litter_list", map[string]any{}},
@@ -101,7 +107,7 @@ func (f *fixture) parentCodemode(ctx context.Context, body modelRequest) (string
 		if err != nil {
 			return "", nil, fmt.Errorf("codemode resume results are not JSON: %w", err)
 		}
-		if results[1].State != "completed" || results[1].Outcome.Run != f.codemodeResumeTarget || results[1].Outcome.Text != "CODEMODE_RESUMED_RESULT" {
+		if results[1].State != "completed" || results[1].Outcome.Run != f.codemodeResumeTarget || !strings.HasPrefix(results[1].Outcome.Text, "completed codemode-resume-after-failure ") {
 			return "", nil, fmt.Errorf("codemode resume did not survive its outer script failure: %#v", results[1])
 		}
 		for _, child := range results[0].Children {
@@ -223,6 +229,9 @@ func (f *fixture) codemodeChild(ctx context.Context, body modelRequest) (string,
 	}
 	switch {
 	case strings.Contains(user, "codemode-resume-target"):
+		if strings.Contains(user, "CODEMODE_RESUME_BEFORE_THROW") {
+			return f.hold(ctx, "codemode-resume-after-failure"), nil, nil
+		}
 		if strings.Contains(user, "CODEMODE_RESUME_NOW") {
 			return "CODEMODE_RESUMED_RESULT", nil, nil
 		}
