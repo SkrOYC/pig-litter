@@ -164,7 +164,13 @@ describe("main", () => {
   });
 
   it("bypasses the queue machine for queued-stack status-only", async () => {
-    const reader = fakeReader();
+    const reader = fakeReader({
+      fastPath: {
+        kind: "unusable",
+        exitCode: 1,
+        stderr: "no checks reported",
+      },
+    });
     const harness = testRuntime(reader);
     const code = await main(
       [
@@ -187,6 +193,7 @@ describe("main", () => {
       terminal: true,
       exitCode: 0,
       mode: "queued-stack",
+      rows: [{ kind: "open", ci: { kind: "ci-clean", all: [] } }],
     });
     expect(harness.stdout[0]).not.toContain('"kind":"QUEUE"');
   });

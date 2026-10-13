@@ -18,6 +18,7 @@ import {
   passingCheck,
   pendingCheck,
 } from "./fakes.test-helper.ts";
+import type { FakeReaderOptions } from "./fakes.test-helper.ts";
 import type {
   GitHubReader,
   NonEmpty,
@@ -131,6 +132,48 @@ describe("snapshot query planning", () => {
       allowDraft: false,
     });
     expect(failed.calls).toContain("commitRollups");
+  });
+
+  it("keeps merge, review, and required-check gates with an empty rollup", async () => {
+    const noChecks = {
+      kind: "unusable",
+      exitCode: 1,
+      stderr: "no checks reported",
+    } as const;
+    const read = async (options: FakeReaderOptions) =>
+      readSnapshot({
+        reader: fakeReader({ ...options, fastPath: noChecks }),
+        context: context(6),
+        pendingHistory: "include",
+        allowDraft: false,
+      });
+
+    const mergeConflict = await read({ facts: { mergeable: "CONFLICTING" } });
+    expect(classifyPr(mergeConflict)).toMatchObject({
+      kind: "blocker",
+      blocker: { kind: "merge-conflicts" },
+    });
+
+    const reviewGate = await read({
+      facts: { reviewDecision: "CHANGES_REQUESTED" },
+    });
+    expect(classifyPr(reviewGate)).toMatchObject({
+      kind: "blocker",
+      blocker: { kind: "merge-gate", reason: "changes-requested" },
+    });
+
+    const requiredCheck = await read({
+      facts: { mergeStateStatus: "BLOCKED" },
+      commitRollups: [{ oid: "head", state: "FAILURE" }],
+    });
+    expect(requiredCheck).toMatchObject({
+      kind: "open",
+      ci: { kind: "ci-github-rejected", all: [] },
+    });
+    expect(classifyPr(requiredCheck)).toMatchObject({
+      kind: "blocker",
+      blocker: { kind: "failing-checks" },
+    });
   });
 
   it("short-circuits merged rows before threads and checks", async () => {

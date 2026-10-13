@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   WatcherQueryError,
   mapRollupNode,
+  parseCheckRollupPage,
   orderStack,
   parsePullRequest,
   parseReviewThreads,
@@ -80,9 +81,10 @@ describe("checks fallback chain", () => {
 
   it("propagates GraphQL lookup errors instead of treating them as empty", async () => {
     const error = new WatcherQueryError({
-      kind: "missing-key",
+      kind: "command-exit",
       retryable: true,
-      detail: "missing data.repository.pullRequest.commits.nodes",
+      code: 1,
+      detail: "GraphQL request failed",
     });
     const reader: GitHubReader = {
       ...fakeReader({
@@ -93,6 +95,36 @@ describe("checks fallback chain", () => {
       },
     };
     await expect(resolveChecks(reader, context)).rejects.toBe(error);
+  });
+
+  it("accepts a null status rollup from a valid GraphQL response", () => {
+    expect(
+      parseCheckRollupPage({
+        data: {
+          repository: {
+            pullRequest: {
+              commits: {
+                nodes: [{ commit: { statusCheckRollup: null } }],
+              },
+            },
+          },
+        },
+      }),
+    ).toEqual({ checks: [], endCursor: null });
+  });
+
+  it("rejects GraphQL data with a missing status rollup", () => {
+    expect(() =>
+      parseCheckRollupPage({
+        data: {
+          repository: {
+            pullRequest: {
+              commits: { nodes: [{ commit: {} }] },
+            },
+          },
+        },
+      }),
+    ).toThrow("missing statusCheckRollup.contexts");
   });
 });
 
