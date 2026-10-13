@@ -78,11 +78,15 @@ A successful individual spawn starts its child independently of the enclosing sc
 
 PiG 0.4.1's public resource loader discovers directory settings, context, skills, templates, and prompt resources. It does not automatically load arbitrary CLI extensions or themes. Parent-only hooks and extension providers are not automatically inherited. The child uses the embedded SDK's native pipeline and its explicit tool policy.
 
+A trusted parent's delegation authorizes native project settings in the selected child directory. The embedded SDK does not consult the CLI's trust store for that target independently. The parent trust check and role tool ceilings still apply.
+
 Every active execution owns a separate Go Runtime, Session, subscription, and cancellation context. Failed tools produce partial or failed outcomes with canonical error context. Resume keeps the preceding conversation internally. Report clipping has a separate flag. Inspection retains the latest result even when the conversation becomes unavailable for resume.
 
 Completion JSON identifies `origin:"pig-litter"` and labels the report as child assistant prose. Wait and stop handoffs register before they block. A successful terminal handback consumes its selected outcome. Its completion then appends as an audit entry outside model context, without repeating the report to the model. Delivery capacity releases after the corresponding message or audit entry is stored.
 
-Unconsumed outcomes reach their immediate parent through completion messages. A busy root receives them as follow-up messages. Idle or paused parents retain them without inference. A disposed parent Session uses retained history as the fallback. A provider or tool that ignores cancellation can delay pause and shutdown.
+Unconsumed outcomes reach their immediate parent through stored custom messages. A busy parent continues only for an unconsumed notice it has not seen. A successful wait suppresses a queued duplicate. Idle or paused parents retain notices without inference. A disposed parent Session uses retained history as the fallback. A provider or tool that ignores cancellation can delay pause and shutdown.
+
+Delivery failures mark the receiving parent's latest result partial with a bounded error. A failure delivering to root marks the child's latest result partial. Fresh inspection and waits reflect that result. Outcomes already returned to a caller remain unchanged.
 
 The session model takes inspiration from [Claude Code subagents](https://code.claude.com/docs/en/sub-agents), [directory settings](https://code.claude.com/docs/en/settings), and [project instructions](https://code.claude.com/docs/en/memory). PiG determines native discovery behavior. Pig Litter defines direct-parent controls, nested delegation, and explicit subtree pause without automatic resume.
 

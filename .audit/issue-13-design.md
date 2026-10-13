@@ -16,7 +16,7 @@ Resolve each child's named agent definition and native resources against its spa
 
 Final individual tool-call success commits an admission for direct and nested calls. Use actual tool-execution result evidence after hooks, before a next nested wait can proceed. Enclosing script completion is never an activation barrier. Failed/cancelled individual calls before that point roll back only their own provisional work.
 
-Invocation-specific private receipt identity must survive reused call IDs; keying a replacement solely by caller and call ID is insufficient. Keep admission settlement, terminal handback consumption, and completion storage acknowledgement separate. A successful terminal handback suppresses duplicate model-visible notices. Release delivery capacity after actual stored message/audit evidence, or conclusive shutdown abandonment. Paused and idle nodes receive retained messages without inference.
+Private call tickets bind a native caller, model turn, and tool call before any side effect. Final event handlers capture that ticket and settle it once. Cancellation and retirement use the same pointer. Hook-editable result content and details carry no identity. PiG's synchronous dispatch closes a model turn before a reused provider call ID enters a new scope. Concurrent duplicate IDs in the same scope are rejected. Keep admission settlement, terminal handback consumption, and completion storage acknowledgement separate. A successful terminal handback suppresses duplicate model-visible notices. Release delivery capacity after actual stored message/audit evidence, or conclusive shutdown abandonment. Paused and idle nodes receive retained messages without inference.
 
 Publish outcomes after native Send settles. Acknowledge PiG event barriers before filtering events. Join message workers and clear deferred inputs on pause so they cannot restart implicitly. Serialize native-session install/disposal and retained-manager delivery. Cleanup uses a live bounded context and joins drains before closing owned resources.
 
@@ -29,6 +29,8 @@ Graft B's explicit embedded-native configuration boundary, post-Send publication
 Reject B's deliberate model-visible notice after a consumed wait, its actor protocol as unnecessary for this bounded tree, and C's handler-time admission/consumption before final result hooks. Reject C's duplicated topology indexes and single-notice replacement without an admission bound.
 
 PiG 0.4.1's public resource loader discovers settings, context, skills, templates and prompt resources. Arbitrary CLI extension/theme discovery is internal to the CLI. That is a documented embedded-SDK boundary, not a reason to build a new CLI bootstrap or restore forwarding.
+
+Trusted delegation authorizes the target directory's native project settings through the SDK. There is no independent CLI trust-store lookup for that target. Keep the root trust check and role ceilings. PiG's public final-event payload also has no originating request token for adversarial raw-envelope replay across model turns. The ticket design relies on measured native event ordering and protects delayed local callbacks through captured pointers.
 
 ## Evidence and verification
 
