@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,9 +11,21 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	piglitter "github.com/SkrOYC/pig-litter/extensions/pig-litter"
 )
+
+func TestWaitReturnsFixtureFailure(t *testing.T) {
+	failure := errors.New("fixture provider request failed")
+	f := &fixture{changed: make(chan struct{}), failure: failure}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := f.wait(ctx, func() bool { return false }); !errors.Is(err, failure) {
+		t.Fatalf("wait error = %v, want fixture failure", err)
+	}
+}
 
 func TestServeValidatesConfiguredInstructionLiteralForEachScout(t *testing.T) {
 	for _, test := range []struct {

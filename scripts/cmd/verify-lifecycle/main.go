@@ -175,8 +175,12 @@ func (f *fixture) wait(ctx context.Context, check func() bool) error {
 	defer cancel()
 	for {
 		f.mu.Lock()
+		failure := f.failure
 		ready, changed := check(), f.changed
 		f.mu.Unlock()
+		if failure != nil {
+			return failure
+		}
 		if ready {
 			return nil
 		}
@@ -561,8 +565,8 @@ func (f *fixture) cwdWorkerRequest(body modelRequest) (string, []call, error) {
 		}
 		return "", []call{{"write", map[string]string{"path": "@~/cwd-home-output.txt", "content": "cwd home output marker\n"}}}, nil
 	case 10:
-		if content(tools[9].Content) != "Successfully wrote to "+f.homeOutput {
-			return "", nil, fmt.Errorf("home @ write receipt = %q, want %q", content(tools[9].Content), "Successfully wrote to "+f.homeOutput)
+		if content(tools[9].Content) != "Successfully wrote to @~/cwd-home-output.txt" {
+			return "", nil, fmt.Errorf("home @ write receipt = %q, want original path spelling", content(tools[9].Content))
 		}
 		return "", []call{{"read", map[string]string{"path": "@~/cwd-home-output.txt"}}}, nil
 	case 11:
@@ -932,7 +936,7 @@ func run(directory, pig, extension, scenario string) error {
 		model = "fixture/parent_cwd"
 	} else if scenario == "nested" {
 		model = "fixture/parent_nested"
-		configuration := "concurrency: 2\ndepth: 2\nagents:\n  scout:\n    instructions: input.txt\n  coordinator:\n    role: worker\n    instructions: input.txt\n    tools: [read]\n    can_delegate: true\n"
+		configuration := "concurrency: 3\ndepth: 2\nagents:\n  scout:\n    instructions: input.txt\n  coordinator:\n    role: worker\n    instructions: input.txt\n    tools: [read]\n    can_delegate: true\n"
 		if err := os.WriteFile(filepath.Join(workspace, "litter.yaml"), []byte(configuration), 0o600); err != nil {
 			return err
 		}
