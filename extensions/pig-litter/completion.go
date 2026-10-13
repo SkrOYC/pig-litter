@@ -623,13 +623,16 @@ func contextCompletion(message any) (completionDetails, bool) {
 
 func (o *owner) completionContext(parent *record, messages []any) []any {
 	kept := make([]any, 0, len(messages))
-	seen := map[string]bool{}
+	seen := map[completionDetails]bool{}
 	var audits []*run
 	o.tree.mu.Lock()
 	for _, message := range messages {
 		details, ok := contextCompletion(message)
 		if ok {
-			seen[details.Receipt] = true
+			if seen[details] {
+				continue
+			}
+			seen[details] = true
 			if notice := parent.notices[details.Receipt]; notice != nil && notice.selected.ref.ID == details.ChildID {
 				if notice.outcomeObserved {
 					audits = append(audits, notice.selected)
@@ -642,7 +645,7 @@ func (o *owner) completionContext(parent *record, messages []any) []any {
 		kept = append(kept, message)
 	}
 	for id, notice := range parent.notices {
-		if notice.stored && !seen[id] {
+		if notice.stored && !seen[completionDetails{ChildID: notice.selected.ref.ID, Receipt: id}] {
 			delete(parent.notices, id)
 		}
 	}
