@@ -478,7 +478,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		}
 	}()
 	baseline := session.GetSessionStats()
-	_, sendErr := session.Send(run.ctx, run.prompt)
+	sendErr := o.tree.sendInput(session, run)
 	stopDelivery()
 	<-deliveryDone
 	session.ClearQueue()

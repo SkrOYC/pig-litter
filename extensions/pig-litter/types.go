@@ -76,22 +76,23 @@ type Snapshot struct {
 }
 
 type record struct {
-	id                                         ChildID
-	parent                                     *record
-	depth                                      int
-	name, kind, model, instructions, task, cwd string
-	tools                                      []string
-	canDelegate, readOnly                      bool
-	history                                    *coding.SessionManager
-	historyLost                                bool
-	run                                        *run
-	previous                                   *run
-	paused                                     bool
-	latest                                     *Outcome
-	deliveryMu                                 sync.Mutex
-	receiptMu                                  sync.Mutex
-	receipts                                   map[*run]*completionReceipt
-	notices                                    map[string]*reservation
+	id                                   ChildID
+	parent                               *record
+	depth                                int
+	name, kind, model, instructions, cwd string
+	pendingTask                          string
+	tools                                []string
+	canDelegate, readOnly                bool
+	history                              *coding.SessionManager
+	historyLost                          bool
+	run                                  *run
+	previous                             *run
+	paused                               bool
+	latest                               *Outcome
+	deliveryMu                           sync.Mutex
+	receiptMu                            sync.Mutex
+	receipts                             map[*run]*completionReceipt
+	notices                              map[string]*reservation
 }
 
 type message struct {

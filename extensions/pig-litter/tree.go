@@ -260,7 +260,7 @@ func (t *Tree) admit(request admission) (Snapshot, *run, error) {
 	if _, exists := t.names[nameKey]; exists {
 		return Snapshot{}, nil, reject("rejected", "child name already belongs to this owner")
 	}
-	r := &record{id: id, parent: parent, depth: depth, name: name, kind: request.kind, model: request.model, instructions: request.agent.Instructions, task: request.task, cwd: request.cwd, tools: slices.Clone(request.agent.Tools), canDelegate: request.agent.CanDelegate && request.agent.Role != "scout", readOnly: readOnly, history: request.history}
+	r := &record{id: id, parent: parent, depth: depth, name: name, kind: request.kind, model: request.model, instructions: request.agent.Instructions, pendingTask: request.task, cwd: request.cwd, tools: slices.Clone(request.agent.Tools), canDelegate: request.agent.CanDelegate && request.agent.Role != "scout", readOnly: readOnly, history: request.history}
 	r.run = t.newRunLocked(Ref{id}, "Task:\n"+request.task)
 	r.run.owner = r
 	t.records[id], t.names[nameKey] = r, id
@@ -492,8 +492,12 @@ func (t *Tree) resume(caller, selected *run, text string) (Snapshot, *run, error
 		t.mu.Unlock()
 		return Snapshot{}, nil, reject("unavailable", "retained history is unavailable for resume")
 	}
+	prompt := text
+	if r.pendingTask != "" {
+		prompt = "Task:\n" + r.pendingTask + "\n\nResume instructions:\n" + text
+	}
 	t.mu.Unlock()
-	if historyBytes(manager)+len(text)+512 > t.config.MaxHistoryBytes {
+	if historyBytes(manager)+len(prompt)+512 > t.config.MaxHistoryBytes {
 		return Snapshot{}, nil, reject("rejected", "resume would exceed the retained history limit")
 	}
 	t.mu.Lock()
@@ -514,7 +518,7 @@ func (t *Tree) resume(caller, selected *run, text string) (Snapshot, *run, error
 		}
 	}
 	r.previous = r.run
-	r.run = t.newRunLocked(Ref{r.id}, text)
+	r.run = t.newRunLocked(Ref{r.id}, prompt)
 	r.run.owner = r
 	r.run.resumePaused = r.paused
 	r.paused = false
