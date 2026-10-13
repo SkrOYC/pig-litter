@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import {
-  ChecksUnavailable,
   WatcherQueryError,
   mapRollupNode,
   orderStack,
@@ -15,6 +14,7 @@ import {
   passingCheck,
   pendingCheck,
 } from "./fakes.test-helper.ts";
+import type { GitHubReader } from "./types.ts";
 import { parsePrNumber } from "./types.ts";
 
 const context = {
@@ -63,18 +63,36 @@ describe("checks fallback chain", () => {
     expect(reader.calls).toEqual(["checksFastPath", "checkRollupPage:null"]);
   });
 
-  it("fails closed when both paths are empty", async () => {
+  it("accepts a verified empty GraphQL rollup", async () => {
     const reader = fakeReader({
       fastPath: {
         kind: "unusable",
-        exitCode: 8,
-        stderr: "credential cannot read checks",
+        exitCode: 1,
+        stderr: "no checks reported",
       },
     });
-    await expect(resolveChecks(reader, context)).rejects.toBeInstanceOf(
-      ChecksUnavailable,
-    );
+    expect(await resolveChecks(reader, context)).toEqual({
+      source: "graphql-rollup",
+      checks: [],
+    });
     expect(reader.calls).toEqual(["checksFastPath", "checkRollupPage:null"]);
+  });
+
+  it("propagates GraphQL lookup errors instead of treating them as empty", async () => {
+    const error = new WatcherQueryError({
+      kind: "missing-key",
+      retryable: true,
+      detail: "missing data.repository.pullRequest.commits.nodes",
+    });
+    const reader: GitHubReader = {
+      ...fakeReader({
+        fastPath: { kind: "unusable", exitCode: 1, stderr: "" },
+      }),
+      async checkRollupPage() {
+        throw error;
+      },
+    };
+    await expect(resolveChecks(reader, context)).rejects.toBe(error);
   });
 });
 
