@@ -18,43 +18,57 @@ Build the prebuilt standalone with the same script, then select it with `pig -e 
 
 ## Configure children
 
-Put [litter.yaml](litter.yaml) in the trusted project root. It sets concurrency, depth, retained history, report and mailbox bounds, run limits, and named agents. The bundled `scout` uses `read`. The bundled `worker` also uses `write` and `edit`. Add `ls` only when the parent has made its canonical builtin callable. Named agents can narrow their tools, choose an exact `provider/model`, change their literal instructions, or disable delegation. They cannot exceed their role or caller's tool ceiling.
+Put `litter.yaml` in `~/.config/pig/agent/` to configure children across projects. With no explicit configuration root, Pig Litter loads that file, then any settings in PiG's default `~/.pig/agent/litter.yaml`. Explicit `PIG_HOME`, `XDG_CONFIG_HOME`, agent-directory overrides, or Pi compatibility mode select their own user directory instead. Put [litter.yaml](litter.yaml) in a trusted project root to override user settings for that project. Agent fields merge by name, so a project can change one field while retaining the user's other choices.
 
-The main Session is depth zero and occupies no child slot. Depth two permits grandchildren. A concurrency limit of four rejects a fifth live child without a launch queue. A second live writer in the same working directory is rejected. Every admitted child has a stable ID and an explicit generation.
+Either file can override `scout` or `worker`, including their role, instructions, tools, model, and delegation setting. Additional agent names use the same definition format. Changing a role resets omitted instructions, tools, and delegation to that role's defaults. The model stays inherited unless overridden. The scout role uses `read` by default and cannot delegate. The worker role also uses `write`, `edit`, and `bash` by default. Add `ls` only when the parent has made its canonical builtin callable. Agent tools cannot exceed the selected role or caller's tool ceiling.
 
-Configuration parsing rejects duplicate and unknown keys, aliases, invalid numeric types, empty documents, oversized files, nonregular files, and symlinks. Missing `litter.yaml` uses bundled defaults.
+For example, set a worker model across projects with this user configuration:
+
+```yaml
+agents:
+  worker:
+    model: PROVIDER/MODEL
+```
+
+Replace `PROVIDER/MODEL` with an exact configured model identifier. A project can override that model or add literal instructions under the same `worker` name.
+
+The main Session is depth zero and occupies no child slot. Depth two permits grandchildren through workers. A concurrency limit of four rejects a fifth live child without a launch queue. A second live writer in the same working directory is rejected. Every admitted child has one stable ID.
+
+Configuration parsing rejects duplicate and unknown keys, aliases, invalid numeric types, empty documents, oversized files, nonregular files, and symlinks. Missing configuration files leave the preceding defaults in effect. Limits cover concurrency, depth, retained conversations, results, queued messages, and turns. Child runs have no wall-clock deadline.
 
 ## Use the tools
 
 The Resource registers exactly `litter_spawn`, `litter_list`, `litter_inspect`, `litter_message`, `litter_stop`, and `litter_wait`.
 
-Call `litter_list` to discover named agent types and children. It pages agent definitions and retained children independently. Call `litter_spawn` with a self-contained task. Spawn returns admission immediately. Use `litter_wait` separately for an exact ID and generation. A timeout or cancelled wait leaves the child running. `litter_inspect` accepts an ID to discover the current run. Its optional `generation` must match that run, or the call returns a stale-generation error. `transcript` defaults to `false`, and `transcriptRequested` echoes the choice. `offset` and `limit` page the whole retained log when `transcript:true`; `entries` stays empty otherwise. Transcript pages include all retained generations. `litter_message` steers a live child or resumes a settled child with `resume:true`. Resume keeps the in-memory history and child ID, then increments the generation. `litter_stop` aborts the selected subtree and waits for cleanup.
+Call `litter_list` to discover named agent types and children. It pages agent definitions and retained children independently. Call `litter_spawn` with a self-contained task. Spawn returns admission immediately. Its optional `cwd` selects the child's working directory. Relative directories resolve against the caller's working directory. The directory must exist. Child file tools and terminal commands run relative to that directory.
 
-Wait, inspection, and completion results include bounded `evidence` from actual retained tool results. It separates current results from earlier failures and counts all observed results. Each receipt gives its generation, tool, path when available, error flag, text preview, and raw transcript `entryOffset` and `entryId`. Use the offset with `transcript:true` to retrieve the original result. `textFormat` is `concatenated_text_blocks`, matching the SDK's text projection. Receipts count text and non-text blocks. `more` marks omitted receipts, and `truncated` marks clipped previews. Evidence fits 4096 serialized bytes. The child assistant's report carries `reportProvenance:"child_assistant"`. Tool receipts support verification of that report. They describe the returned observation at the time of the call.
+Use `litter_inspect` with the child ID to check its current state and latest result. Use `litter_wait` to wait for its result. Waiting defaults to 30 seconds and accepts an optional `timeoutMs`. A wait timeout or cancelled wait leaves the child running. Inspection returns no transcript, tool evidence, mailbox, or entry pages. Result text is the child's report, with state, model, usage, and any error.
+
+Use `litter_message` to steer a live child or resume a settled child with `resume:true`. Resume retains the conversation and uses the same ID. Use `litter_stop` to cancel the selected subtree and wait for cleanup.
 
 ```json
-{"type":"scout","task":"Read the requested file and report its main functions.","name":"survey"}
+{"type":"worker","task":"Run the project checks and report the results.","name":"checks","cwd":"./packages/app"}
 ```
 
 ```json
-{"id":"CHILD_ID","generation":1,"text":"Continue from retained history.","resume":true}
+{"id":"CHILD_ID","text":"Continue from retained conversation.","resume":true}
 ```
 
 ```json
-{"id":"CHILD_ID","generation":2,"transcript":true,"offset":0,"limit":50}
+{"id":"CHILD_ID"}
 ```
 
-Histories last while their owning main Session and extension connection live. Replacement, reload, exit, and crashes lose them. An SDK turn can temporarily exceed `max_history_bytes`. Pig Litter then drops the retained manager after cleanup and rejects resume. A compact terminal widget shows recent children. Each snapshot's `displayLabel` is the stable name at the start of its widget row. Named children keep their logical name. Unnamed children use `#` followed by the ID sequence suffix. `/pig-litter` explains the controls. A focused transcript inspector, durable history, workflow runner, and product worktrees are outside this increment.
+Conversations last while their owning main Session and extension connection live. Replacement, reload, exit, and crashes lose them. An SDK turn can temporarily exceed `max_history_bytes`. Pig Litter then drops the retained conversation after cleanup and rejects resume. A compact terminal widget shows recent children. Named children keep their logical name. Unnamed children use `#` followed by the ID sequence suffix. `/pig-litter` explains the controls.
 
 ## Authority and limits
 
 The Resource requires project trust and an exact model available to both the parent and independent Go SDK. The SDK resolves normal configured credentials from the parent's agent directory. Pig Litter copies no parent conversation, credentials, skills, context files, other extensions, or prompt templates into a child. Instructions remain literal text. Parent extension-registered providers are unavailable to independent children, including providers that shadow a normal provider ID. There is no model fallback.
 
-Child file tools call the original parent's `Context.ExecuteTool` with their own cancellation context. PiG applies the parent's validation and permission hooks. Pig Litter checks the callable tool, canonical builtin provenance, schema, trust, and finite ceiling before every call. Stock PiG provides no atomic registry freeze between that check and dispatch. A malicious trusted extension could change the registry concurrently. These checks are a tool restriction, not a filesystem sandbox. Paths outside the project remain accessible when the parent permits them.
+Child file and terminal tools call the original parent's `Context.ExecuteTool` with their own cancellation context. PiG applies the parent's validation and permission hooks. Relative file paths resolve against the child's working directory. Terminal commands change to that directory before execution. Pig Litter checks callable tools, canonical builtin provenance, schema, trust, and the caller's tool ceiling before every call. Stock PiG provides no atomic registry freeze between that check and dispatch. A malicious trusted extension could change the registry concurrently. These checks restrict tools but don't sandbox filesystem paths. Paths outside the project remain accessible when the parent permits them.
 
 Root inference starts after the matching spawn tool-result `message_end`. That event freezes the parent handback. It does not acknowledge disk persistence. Admission can be cancelled before that event. An ordinary caller turn ending leaves acknowledged children running. Explicit stop, owner replacement, reload, and exit retire the tree.
 
-Every generation owns a separate Go Runtime, Session, subscription, and cancellation context. Terminal assistant events and usage deltas describe that generation. Failed tools produce truthful partial or failed outcomes with canonical error context. A successful resume keeps earlier failed results in history. Generation metadata stays outside model context. Report clipping has a separate flag. If history is retired, `historyAvailable:false` identifies the loss of raw transcript access, and inspection keeps frozen evidence when available.
+Every active execution owns a separate Go Runtime, Session, subscription, and cancellation context. Failed tools produce partial or failed outcomes with canonical error context. Resume keeps the preceding conversation internally. Report clipping has a separate flag. Inspection retains the latest result even when the conversation becomes unavailable for resume.
 
 Completion JSON identifies `origin:"pig-litter"` and labels the report as child assistant prose. Wait and stop handoffs register before they block. After a successful terminal tool-result `message_end`, the matching completion appends as an audit custom entry outside model context. Its reservation releases after that append succeeds. Other completion reservations remain held until their custom message is appended. A busy root receives asynchronous completions as follow-up messages. An idle root retains them without inference. A disposed parent Session uses retained history as the fallback. Stock sends provide no durable acknowledgement. A provider or trusted tool that ignores cancellation can delay stop and shutdown.
 
@@ -69,7 +83,7 @@ devenv shell -- check-pig-extension
 
 The second command validates the source factory, prebuilt standalone, and Piglet against the pinned release. The coordinator owns released-host lifecycle and terminal verification. Compilation and pure tests alone do not prove those checks.
 
-Run the Go loopback fixtures in a disposable workspace with isolated fixture credentials and only the pinned PiG directory on the child's `PATH`.
+Run the Go loopback fixtures in a disposable workspace with isolated fixture credentials and a restricted `PATH` containing pinned PiG and the required terminal tools.
 
 ```sh
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario core
@@ -79,9 +93,13 @@ devenv shell -- scripts/verify-stock-lifecycle.sh --scenario messages
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario lifecycle
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario completion
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario shadow
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario cwd
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario unbounded
 ```
 
-The fixtures record provider requests, stdout, stderr, and result receipts under `.pstack/evidence/go-lifecycle`. They verify parent-mediated file operations and permission denials, concurrency and depth limits, privacy, bounded reports and usage, retained resume, stale generations, and subtree stop. Additional cases check provider and tool failures, readonly delegation, exact model restrictions, history retirement, message ordering, replacement, and live-child exit. The completion case forwards extension protocol frames unchanged to observe delivery acknowledgements. It verifies that a busy parent processes a hidden child completion without another user prompt, and that an idle parent appends it without inference.
+The fixtures record provider requests, stdout, stderr, and results under `.pstack/evidence/go-lifecycle`. They verify parent-mediated file and terminal operations, permission denials, child working directories, concurrency, depth, privacy, results, usage, retained resume, and subtree stop. Additional cases check provider and tool failures, scout leaf enforcement, model restrictions, conversation retention, message ordering, replacement, and live-child exit. The completion case forwards extension protocol frames unchanged to observe delivery acknowledgements. It verifies that a busy parent processes a hidden child completion without another user prompt, and that an idle parent appends it without inference.
+
+The `unbounded` scenario keeps a child active beyond two minutes and requires successful completion. Fixture deadlines bound the verification process without limiting product child runs.
 
 Run the terminal driver with `tmux` available. Each case uses a private socket and isolated provider fixture.
 

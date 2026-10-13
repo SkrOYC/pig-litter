@@ -19,7 +19,7 @@ func widgetLines(children []Snapshot, terminalWidth int) []string {
 	for _, child := range children[max(0, len(children)-2):] {
 		row := child.DisplayLabel + " " + string(child.State)
 		if child.Name == string(child.ID) {
-			row = fmt.Sprintf("%s g%d %s %s", child.DisplayLabel, child.Generation, child.State, child.Type)
+			row = fmt.Sprintf("%s %s %s", child.DisplayLabel, child.State, child.Type)
 		}
 		lines = append(lines, widthx.TruncateToWidth(row, width, "", false))
 	}

@@ -1,0 +1,70 @@
+package main
+
+import (
+	"fmt"
+	"sort"
+)
+
+type toolInventory struct {
+	name     string
+	required []string
+	optional []string
+}
+
+var controlTools = []string{"litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
+
+var toolInventories = map[string]toolInventory{
+	"scout":       {name: "scout leaf", required: []string{"read"}, optional: []string{"ls"}},
+	"coordinator": {name: "read-only worker coordinator", required: append([]string{"read"}, controlTools...)},
+	"worker":      {name: "full worker", required: append([]string{"read", "write", "edit", "bash"}, controlTools...), optional: []string{"ls"}},
+}
+
+var fixtureModelInventories = map[string]string{
+	"parent": "worker", "parent_cwd": "worker", "parent_unbounded": "worker", "parent_nested": "worker",
+	"parent_checks": "worker", "parent_shadow": "worker", "parent_messages": "worker", "parent_lifecycle": "worker", "parent_completion": "worker",
+	"held": "scout", "lifecycle_child": "scout", "completion_child": "scout", "missing_file": "scout", "roles": "scout", "history": "scout", "message_child": "scout", "provider_error": "scout", "cwd_nested": "scout",
+	"denied": "worker", "worker": "worker", "cwd_worker": "worker", "unbounded_child": "worker",
+	"nester": "coordinator", "grandchild": "coordinator",
+}
+
+var fixtureModelIDs = []string{"parent", "held", "worker", "parent_cwd", "cwd_worker", "cwd_nested", "parent_unbounded", "unbounded_child", "parent_nested", "nester", "grandchild", "parent_checks", "denied", "provider_error", "missing_file", "roles", "history", "parent_messages", "message_child", "parent_lifecycle", "lifecycle_child", "parent_completion", "completion_child"}
+
+func requireToolInventory(request modelRequest, inventory toolInventory) error {
+	allowed := make(map[string]bool, len(inventory.required)+len(inventory.optional))
+	for _, name := range inventory.required {
+		allowed[name] = true
+	}
+	for _, name := range inventory.optional {
+		allowed[name] = true
+	}
+	got := toolNames(request)
+	for _, name := range inventory.required {
+		if !contains(got, name) {
+			return fmt.Errorf("%s tool inventory is missing %s: %v", inventory.name, name, got)
+		}
+	}
+	for _, name := range got {
+		if !allowed[name] {
+			return fmt.Errorf("%s tool inventory contains unexpected %s: %v", inventory.name, name, got)
+		}
+	}
+	return nil
+}
+
+func requireFixtureModelTools(request modelRequest) error {
+	profileName, exists := fixtureModelInventories[request.Model]
+	if !exists {
+		return fmt.Errorf("fixture model %q has no tool inventory", request.Model)
+	}
+	profile, exists := toolInventories[profileName]
+	if !exists {
+		return fmt.Errorf("fixture model %q references unknown tool inventory %q", request.Model, profileName)
+	}
+	return requireToolInventory(request, profile)
+}
+
+func configuredFixtureModelIDs() []string {
+	ids := append([]string(nil), fixtureModelIDs...)
+	sort.Strings(ids)
+	return ids
+}

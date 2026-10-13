@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
@@ -14,6 +15,11 @@ func main() {
 	directory := os.Getenv("LITTER_FIXTURE_EVIDENCE")
 	if directory == "" {
 		fmt.Fprintln(os.Stderr, "LITTER_FIXTURE_EVIDENCE is required")
+		os.Exit(1)
+	}
+	workspace, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	var mu sync.Mutex
@@ -28,7 +34,7 @@ func main() {
 		name, _ := data["toolName"].(string)
 		input, _ := data["input"].(map[string]any)
 		path, _ := input["path"].(string)
-		if name != "read" && name != "write" || path != "denied-read.txt" && path != "denied-write.txt" {
+		if !deniedPath(workspace, name, path) {
 			return nil, nil
 		}
 		mu.Lock()
@@ -47,4 +53,18 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func deniedPath(workspace, name, path string) bool {
+	if name != "read" && name != "write" {
+		return false
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(workspace, path)
+	}
+	path = filepath.Clean(path)
+	return slices.Contains([]string{
+		filepath.Join(workspace, "denied-read.txt"),
+		filepath.Join(workspace, "denied-write.txt"),
+	}, path)
 }

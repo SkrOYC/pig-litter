@@ -3,7 +3,6 @@ package piglitter
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sync"
 
 	"github.com/MichaelKinsy/PiG/coding"
@@ -12,8 +11,7 @@ import (
 type ChildID string
 
 type Ref struct {
-	ID         ChildID `json:"id"`
-	Generation int     `json:"generation"`
+	ID ChildID `json:"id"`
 }
 
 type State string
@@ -52,16 +50,15 @@ type Usage struct {
 }
 
 type Outcome struct {
-	Run               Ref           `json:"run"`
-	State             State         `json:"state"`
-	Model             string        `json:"model"`
-	Text              string        `json:"text"`
-	Error             string        `json:"error,omitempty"`
-	Truncated         bool          `json:"truncated"`
-	HandbackTruncated bool          `json:"handbackTruncated,omitempty"`
-	Usage             Usage         `json:"usage"`
-	ReportProvenance  string        `json:"reportProvenance,omitempty"`
-	Evidence          *ToolEvidence `json:"evidence,omitempty"`
+	Run               Ref    `json:"run"`
+	State             State  `json:"state"`
+	Model             string `json:"model"`
+	Text              string `json:"text"`
+	Error             string `json:"error,omitempty"`
+	Truncated         bool   `json:"truncated"`
+	HandbackTruncated bool   `json:"handbackTruncated,omitempty"`
+	Usage             Usage  `json:"usage"`
+	ReportProvenance  string `json:"reportProvenance,omitempty"`
 }
 
 type Snapshot struct {
@@ -72,14 +69,13 @@ type Snapshot struct {
 	DisplayLabel string   `json:"displayLabel"`
 	Type         string   `json:"type"`
 	Model        string   `json:"model"`
+	Cwd          string   `json:"cwd"`
 	State        State    `json:"state"`
 }
 
 type record struct {
 	id                                         ChildID
 	parent                                     ChildID
-	parentGeneration                           int
-	parentRun                                  *run
 	depth                                      int
 	name, kind, model, instructions, task, cwd string
 	tools                                      []string
@@ -89,6 +85,7 @@ type record struct {
 	authority                                  *authority
 	run                                        *run
 	previous                                   *run
+	delivering                                 *run
 }
 
 type message struct {
@@ -98,42 +95,32 @@ type message struct {
 
 type run struct {
 	ref                 Ref
+	parent              *run
+	beforeCompletion    <-chan struct{}
+	completionDone      chan struct{}
+	deliveryReceipt     *completionReceipt
 	state               State
 	ctx                 context.Context
 	cancel              context.CancelFunc
 	done                chan struct{}
 	started             bool
-	deadline            bool
 	outcome             *Outcome
 	prompt              string
 	mailbox             chan message
 	mu                  sync.Mutex
+	deliveryMu          sync.Mutex
 	messageMu           sync.Mutex
 	pendingMessages     int
 	session             *coding.Session
 	disposing           bool
 	ready               chan struct{}
-	receipts            map[Ref]*completionReceipt
+	receipts            map[*run]*completionReceipt
 	completionSendError string
 }
 
 type Inspection struct {
-	Child               Snapshot          `json:"child"`
-	Outcome             *Outcome          `json:"outcome,omitempty"`
-	HistoryAvailable    bool              `json:"historyAvailable"`
-	TranscriptRequested bool              `json:"transcriptRequested"`
-	Mailbox             []Outcome         `json:"mailbox"`
-	MailboxTotal        int               `json:"mailboxTotal"`
-	MailboxMore         bool              `json:"mailboxMore"`
-	Entries             []json.RawMessage `json:"entries"`
-	NextOffset          int               `json:"nextOffset"`
-	More                bool              `json:"more"`
-	Evidence            ToolEvidence      `json:"evidence"`
-}
-
-type InspectTarget struct {
-	ID         ChildID
-	Generation *int
+	Child   Snapshot `json:"child"`
+	Outcome *Outcome `json:"outcome,omitempty"`
 }
 
 func bounded(text string, maximum int) (string, bool) {
@@ -158,18 +145,4 @@ func historyBytes(manager *coding.SessionManager) int {
 	return len(data)
 }
 
-func previewOutcome(outcome *Outcome, maximum int) *Outcome {
-	if outcome == nil {
-		return nil
-	}
-	copy := *outcome
-	copy.Evidence = nil
-	var clipped bool
-	copy.Text, clipped = bounded(copy.Text, maximum)
-	copy.HandbackTruncated = clipped
-	copy.Error, clipped = bounded(copy.Error, 256)
-	copy.HandbackTruncated = copy.HandbackTruncated || clipped
-	return &copy
-}
-
-func (r Ref) String() string { return fmt.Sprintf("%s:%d", r.ID, r.Generation) }
+func (r Ref) String() string { return string(r.ID) }

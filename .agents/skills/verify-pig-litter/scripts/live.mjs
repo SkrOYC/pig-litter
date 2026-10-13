@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
-import { mkdtemp, mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 const repository = resolve(import.meta.dir, '../../../..');
-const diagnosticText = 'Use litter_list to discover named agents and children. Use litter_spawn to start a background child, then inspect, message, stop, or wait by ID and generation.';
+const diagnosticText = 'Use litter_list to discover named agents and children. Use litter_spawn to start a background child, then inspect, message, stop, or wait by ID.';
 const controlTools = ['litter_spawn', 'litter_list', 'litter_inspect', 'litter_message', 'litter_stop', 'litter_wait'];
 
 export function configuration(args, env = process.env) {
@@ -40,7 +40,7 @@ export function launchArgs(config, kind, sessionDir, rpc = false) {
  if (config.model) args.push('--model', config.model);
  if (kind === 'direct') args.push('-e', join(repository, 'extensions/pig-litter'));
  else if (kind !== 'plain') args.push('--piglet', config.piglet);
- if (kind !== 'plain') args.push('--tools', ['read', 'write', 'edit', ...controlTools].join(','));
+ if (kind !== 'plain') args.push('--tools', ['read', 'write', 'edit', 'bash', ...controlTools].join(','));
  if (rpc) args.push('--mode', 'rpc', '--no-session');
  return args;
 }
@@ -50,12 +50,11 @@ export function sessionEvidence(text) {
  const calls = [];
  const results = [];
  const assistants = [];
- const completions = [];
- for (const entry of records) {
+ for (const [position, entry] of records.entries()) {
   const message = entry.type === 'message' ? entry.message : undefined;
   if (message?.role === 'assistant') {
-   assistants.push({ provider: message.provider, model: message.model, stopReason: message.stopReason, entryId: entry.id });
-   for (const block of message.content ?? []) if (block.type === 'toolCall') calls.push({ id: block.id, name: block.name, arguments: block.arguments, entryId: entry.id });
+   assistants.push({ provider: message.provider, model: message.model, stopReason: message.stopReason, entryId: entry.id, position });
+   for (const block of message.content ?? []) if (block.type === 'toolCall') calls.push({ id: block.id, name: block.name, arguments: block.arguments, entryId: entry.id, position });
   }
   if (message?.role === 'toolResult') {
    const content = typeof message.content === 'string' ? message.content : (message.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('\n');
@@ -64,78 +63,154 @@ export function sessionEvidence(text) {
    if (controlTools.includes(message.toolName)) {
     try { value = JSON.parse(content); } catch { parseError = 'Child control result is not JSON.'; }
    }
-   results.push({ id: message.toolCallId, name: message.toolName, isError: message.isError, value, parseError, errorText: parseError && content.slice(0, 8192), entryId: entry.id });
+   results.push({ id: message.toolCallId, name: message.toolName, isError: message.isError, value, parseError, errorText: parseError && content.slice(0, 8192), entryId: entry.id, position });
   }
-  if (entry.type === 'custom_message' && entry.customType === 'litter_completion') completions.push(entry);
  }
- return { header: records.find(entry => entry.type === 'session'), modelChanges: records.filter(entry => entry.type === 'model_change').map(entry => ({ provider: entry.provider, model: entry.modelId })), calls, results, assistants, completions };
+ return { header: records.find(entry => entry.type === 'session'), modelChanges: records.filter(entry => entry.type === 'model_change').map(entry => ({ provider: entry.provider, model: entry.modelId })), calls, results, assistants };
 }
 
-export function completedDelegation(evidence, type, model, token, generation = 1) {
+export function sourceIdentity(requested, cwd, source) {
+ ensure(source && typeof source.source === 'string' && source.source.length > 0, `Selected Piglet ${requested} did not report its source path.`);
+ const localPath = isAbsolute(requested) || requested.includes('/') || requested.endsWith('.yaml') || requested.endsWith('.yml');
+ const resolved = resolve(cwd, source.source);
+ if (localPath) ensure(resolved === resolve(cwd, requested), `PiG resolved ${requested} to a different Piglet source at ${resolved}.`);
+ else ensure(source.name === requested, `PiG resolved ${requested} as ${source.name ?? 'an unnamed Piglet'}.`);
+ return { ...source, resolvedPath: resolved };
+}
+
+function assertIdOnlyControls(evidence) {
+ const allowed = {
+  litter_inspect: ['id'],
+  litter_wait: ['id', 'timeoutMs'],
+  litter_message: ['id', 'text', 'mode', 'resume'],
+  litter_stop: ['id'],
+ };
+ for (const call of evidence.calls) {
+  const keys = allowed[call.name];
+  if (!keys) continue;
+  ensure(Object.keys(call.arguments ?? {}).every(key => keys.includes(key)), `${call.name} used an unsupported control field.`);
+  ensure(typeof call.arguments.id === 'string' && call.arguments.id.length > 0, `${call.name} did not identify a child by ID.`);
+ }
+ for (const call of evidence.calls.filter(call => call.name === 'litter_spawn')) ensure(!('generation' in (call.arguments ?? {})), 'Child spawn supplied a generation target.');
+}
+
+export function currentInspection(evidence, id) {
+ assertIdOnlyControls(evidence);
+ const result = evidence.results.findLast(result => {
+  const call = evidence.calls.find(call => call.id === result.id && call.name === 'litter_inspect' && call.arguments.id === id);
+  return call && result.name === call.name;
+ });
+ if (!result) return undefined;
+ if (result.isError) throw new Error('ID-only inspection failed.');
+ ensure(Object.keys(result.value ?? {}).sort().join(',') === 'child,outcome,state', 'Inspection exposed fields beyond current status, child, and latest outcome.');
+ ensure(result.value.child?.id === id && !('generation' in result.value.child), 'Inspection did not return the requested ID-only child.');
+ if (result.value.outcome) ensure(result.value.outcome.run?.id === id && Object.keys(result.value.outcome.run).join(',') === 'id', 'Inspection outcome did not match the requested ID.');
+ return { result, child: result.value.child, outcome: result.value.outcome };
+}
+
+export function stoppedOutcome(evidence, id) {
+ assertIdOnlyControls(evidence);
+ const result = evidence.results.findLast(result => {
+  const call = evidence.calls.find(call => call.id === result.id && call.name === 'litter_stop' && call.arguments.id === id);
+  return call && result.name === call.name;
+ });
+ if (!result) return undefined;
+ if (result.isError) throw new Error('ID-only stop failed.');
+ ensure(Object.keys(result.value ?? {}).sort().join(',') === 'handbackTruncated,operation,outcome,state,stoppedCount', 'Stop handback contains unexpected fields.');
+ ensure(result.value.operation === 'litter_stop' && result.value.handbackTruncated === false, 'Stop handback is misidentified or truncated.');
+ ensure(Number.isInteger(result.value.stoppedCount), 'Stop handback omitted its stopped child count.');
+ ensure(result.value.state === 'stopped' && result.value.outcome?.state === 'stopped', 'Stop did not return a stopped outcome.');
+ ensure(result.value.outcome.run?.id === id && Object.keys(result.value.outcome.run).join(',') === 'id', 'Stopped outcome did not match the requested ID.');
+ return { result, outcome: result.value.outcome };
+}
+
+export function configuredAgents(evidence) {
+ const calls = evidence.calls.filter(call => call.name === 'litter_list');
+ if (!calls.length) return undefined;
+ ensure(calls.length === 1, 'Parent must discover agent definitions once.');
+ const result = evidence.results.find(result => result.id === calls[0].id && result.name === 'litter_list');
+ if (!result) return undefined;
+ ensure(!result.isError, 'Agent discovery failed.');
+ const definitions = result.value?.availableAgentTypes;
+ ensure(Array.isArray(definitions), 'Agent discovery did not return available agent types.');
+ function requireAgent(name, role, tool, leaf = false) {
+  const agent = definitions.find(agent => agent.name === name);
+  ensure(agent && agent.role === role, `Agent ${name} is not configured as ${role}.`);
+  if (leaf) ensure(agent.canDelegate === false, `Agent ${name} must have delegation disabled.`);
+  if (tool) ensure(agent.tools?.includes(tool), `Agent ${name} does not expose ${tool}.`);
+  return { name: agent.name, role: agent.role, canDelegate: agent.canDelegate, tools: agent.tools };
+ }
+ return { scout: requireAgent('scout', 'scout', 'read', true), worker: requireAgent('worker', 'worker', 'bash') };
+}
+
+export function completedDelegation(evidence, type, model, token, { cwd, operation = 'wait', afterPosition = -1 } = {}) {
+ assertIdOnlyControls(evidence);
  const call = evidence.calls.findLast(call => call.name === 'litter_spawn' && call.arguments?.type === type);
- const admission = evidence.results.find(result => result.id === call?.id);
+ const admission = evidence.results.findLast(result => result.id === call?.id && result.name === 'litter_spawn');
  if (!call || !admission) return undefined;
  if (evidence.calls.some(call => !controlTools.includes(call.name))) throw new Error('Parent called another tool; this does not prove child delegation.');
  if (call.arguments.model) throw new Error('The child call set a model instead of testing parent model inheritance.');
+ ensure(typeof call.arguments.task === 'string' && !call.arguments.task.includes(token), 'Private file token was included in the parent child task.');
  if (admission.isError || !admission.value?.child?.id) throw new Error(`Child ${type} admission returned ${admission.value?.state ?? 'an invalid result'}.`);
+ ensure(Object.keys(admission.value ?? {}).sort().join(',') === 'child,handbackTruncated,operation,state', 'Spawn handback contains unexpected fields.');
+ ensure(admission.value.operation === 'litter_spawn' && admission.value.handbackTruncated === false, 'Spawn handback is misidentified or truncated.');
  const child = admission.value.child;
+ if ('generation' in child) throw new Error('Child admission exposed a generation instead of an ID-only control target.');
  if (child.type !== type || child.model !== model) throw new Error('Child type or effective model does not match the selected run.');
+ if (cwd) {
+  ensure(call.arguments.cwd === cwd, 'Child spawn did not receive the required explicit working directory.');
+  ensure(child.cwd === cwd, 'Child snapshot did not preserve its explicit working directory.');
+ }
  const result = evidence.results.findLast(result => {
-  const matchingCall = evidence.calls.find(call => call.id === result.id && ['litter_wait', 'litter_inspect'].includes(call.name) && call.arguments?.id === child.id && (call.name !== 'litter_wait' || call.arguments.generation === generation));
-  return matchingCall && result.name === matchingCall.name && result.value?.outcome?.run?.id === child.id && result.value.outcome.run.generation === generation;
+  if (result.position <= afterPosition) return false;
+  const matchingCall = evidence.calls.find(call => call.id === result.id && call.name === `litter_${operation}` && call.arguments?.id === child.id);
+  if (!matchingCall || matchingCall.position <= afterPosition) return false;
+  const outcome = result.value?.outcome;
+  return result.name === matchingCall.name && outcome?.run?.id === child.id && !('generation' in outcome.run);
  });
  if (!result) return undefined;
  const outcome = result.value.outcome;
  if (result.isError || outcome.state !== 'completed') throw new Error(`Child ${type} returned ${outcome.state ?? 'an invalid result'}.`);
+ if (Object.keys(outcome.run ?? {}).join(',') !== 'id') throw new Error('Child outcome run identity contains fields beyond its ID.');
+ if (operation === 'wait') {
+  ensure(Object.keys(result.value).sort().join(',') === 'handbackTruncated,operation,outcome,state', 'Wait handback contains unexpected fields.');
+  ensure(result.value.operation === 'litter_wait' && result.value.handbackTruncated === false, 'Wait handback is misidentified or truncated.');
+ }
+ if (operation === 'inspect' && Object.keys(result.value).sort().join(',') !== 'child,outcome,state') throw new Error('Inspection returned fields beyond current status, child, and latest outcome.');
+ if (result.value.state !== outcome.state) throw new Error('Child status and latest outcome disagree.');
  if (outcome.model !== model) throw new Error('Child outcome model does not match the selected run.');
  if (Buffer.byteLength(outcome.text ?? '') > 8192 || !outcome.text?.includes(token)) throw new Error('Child handback lacks the expected file token or exceeds the report limit.');
+ if (typeof outcome.truncated !== 'boolean' || outcome.truncated) throw new Error('Child handback was truncated or omitted its truncation status.');
+ if (!outcome.usage || typeof outcome.usage !== 'object') throw new Error('Child outcome omitted usage.');
+ if (outcome.error) throw new Error('Child outcome reported an error.');
+ if (outcome.reportProvenance !== 'child_assistant') throw new Error('Child handback does not identify its report provenance.');
  if (evidence.assistants.some(message => `${message.provider}/${message.model}` !== model)) throw new Error('Parent assistant used a different model than the doctor observed.');
  if (evidence.assistants.at(-1)?.stopReason !== 'stop') return undefined;
- return { call, admission, result, child, outcome };
+ const resultCall = evidence.calls.find(call => call.id === result.id);
+ return { call, admission, result, resultCall, child, outcome };
 }
 
 export function cancellationAcknowledged(evidence, callId) {
  return evidence.results.some(result => result.id === callId && (result.value?.state === 'cancelled' || result.isError && /abort|cancel/i.test(result.errorText ?? result.value?.report ?? '')));
 }
 
-export function childTranscript(evidence, child, model, token, tools) {
- const inspection = evidence.results.findLast(result => {
-  const call = evidence.calls.find(call => call.id === result.id && call.name === 'litter_inspect' && call.arguments?.id === child.id && call.arguments.transcript === true && (call.arguments.offset ?? 0) === 0);
-  return call && result.name === call.name && result.value?.child?.id === child.id && result.value.child.generation === child.generation && result.value.more === false && !result.isError;
- });
- const entries = inspection?.value.entries;
- if (!entries?.length) return undefined;
- const transcript = sessionEvidence(entries.map(entry => JSON.stringify(entry)).join('\n'));
- for (const name of tools) {
-  const call = transcript.calls.find(call => call.name === name);
-  const result = transcript.results.find(result => result.id === call?.id && !result.isError);
-  ensure(call && result, `Child transcript lacks a successful ${name} call.`);
- }
- ensure(JSON.stringify(entries).includes(token), 'Child transcript lacks the file token.');
- ensure(transcript.assistants.length && transcript.assistants.every(message => `${message.provider}/${message.model}` === model), 'Child transcript used a different model.');
- return { entries, calls: transcript.calls, results: transcript.results, assistants: transcript.assistants };
-}
-
 export function resumedRecall(evidence, scout, model, token) {
- const message = evidence.results.find(result => {
-  const call = evidence.calls.find(call => call.id === result.id && call.name === 'litter_message' && call.arguments?.id === scout.child.id && call.arguments.generation === 1 && call.arguments.resume === true);
+ assertIdOnlyControls(evidence);
+ const message = evidence.results.findLast(result => {
+  const call = evidence.calls.find(call => call.id === result.id && call.name === 'litter_message' && call.arguments?.id === scout.child.id && call.arguments.resume === true);
   if (!call || result.isError || result.value?.delivery !== 'resumed') return false;
   ensure(typeof call.arguments.text === 'string' && !call.arguments.text.includes(token), 'Resume message supplied the private token instead of testing retained recall.');
-  return result.value.child?.id === scout.child.id;
+  return result.value.child?.id === scout.child.id && !('generation' in result.value.child);
  });
  if (!message) return undefined;
- ensure(message.value.child.generation === 2, 'Resume did not advance the child generation.');
- const completed = completedDelegation(evidence, 'scout', model, token, 2);
+ ensure(Object.keys(message.value).sort().join(',') === 'child,delivery,handbackTruncated,operation,state', 'Resume acknowledgement contains unexpected fields.');
+ ensure(message.value.operation === 'litter_message' && message.value.handbackTruncated === false, 'Resume acknowledgement is misidentified or truncated.');
+ const messageCall = evidence.calls.find(call => call.id === message.id);
+ const completed = completedDelegation(evidence, 'scout', model, token, { afterPosition: message.position });
  if (!completed) return undefined;
- const inspection = evidence.results.find(result => {
-  const call = evidence.calls.find(call => call.id === result.id && call.name === 'litter_inspect' && call.arguments?.id === scout.child.id && call.arguments.transcript === true && call.arguments.offset === scout.transcript.entries.length);
-  return call && result.name === call.name && !result.isError && result.value?.child?.id === scout.child.id && result.value.child.generation === 2 && result.value.more === false && result.value.entries?.length;
- });
- if (!inspection) return undefined;
- const transcript = sessionEvidence(inspection.value.entries.map(entry => JSON.stringify(entry)).join('\n'));
- ensure(!transcript.calls.length, 'Resumed scout called tools instead of recalling retained history.');
- ensure(transcript.assistants.length && transcript.assistants.every(message => `${message.provider}/${message.model}` === model), 'Resumed transcript used another model.');
- return { message, inspection, ...completed };
+ ensure(completed.resultCall.position > message.position && completed.result.position > message.position, 'Resumed completion arrived before its resume acknowledgement.');
+ ensure(messageCall?.position < completed.resultCall.position, 'Resumed wait started before its resume acknowledgement.');
+ return { message, ...completed };
 }
 
 function ensure(condition, message) { if (!condition) throw new Error(message); }
@@ -307,6 +382,7 @@ export async function drive(config) {
   await command(['tmux', '-V']);
   const status = JSON.parse(await command([config.pigBinary, 'status', '--json', '--no-input'], workspace));
   const source = kind === 'plain' || kind === 'direct' ? undefined : JSON.parse(await command([config.pigBinary, 'piglet', 'show', config.piglet, '--json'], workspace));
+  const selectedSource = source && sourceIdentity(config.piglet, workspace, source);
   const runtime = await rpcProbe(launchArgs(config, kind, sessions, true), workspace);
   const model = runtime.get_state?.model;
   const selected = `${model?.provider}/${model?.id}`;
@@ -323,7 +399,7 @@ export async function drive(config) {
    const revision = path && await command(['git', '-C', path, 'rev-parse', 'HEAD']).catch(() => undefined);
    resolvedSources.push({ path, revision: revision?.trim(), sourceInfo: entry.sourceInfo });
   }
-  return { version, paths: status.paths, model: selected, commands, resolvedSources, source: source && { name: source.name, path: source.source, extensions: source.piglet?.extensions?.map(extension => ({ name: extension.name, origins: extension.origins })) }, auth: { status: auth.status, provider: auth.provider } };
+  return { version, paths: status.paths, model: selected, commands, resolvedSources, source: selectedSource && { name: selectedSource.name, path: selectedSource.source, resolvedPath: selectedSource.resolvedPath, extensions: selectedSource.piglet?.extensions?.map(extension => ({ name: extension.name, origins: extension.origins })) }, auth: { status: auth.status, provider: auth.provider } };
  }
  async function sessionProjection(sessionDir) {
   const files = (await readdir(sessionDir, { recursive: true }).catch(() => [])).filter(path => path.endsWith('.jsonl'));
@@ -373,7 +449,8 @@ export async function drive(config) {
   }
   if (kind === 'selected' || kind === 'cancel') {
    const inputToken = `scout-${randomUUID()}`;
-   await writeFile(join(workspace, 'input.txt'), `${inputToken}\n`);
+   const inputPath = join(workspace, 'input.txt');
+   await writeFile(inputPath, `${inputToken}\n`);
    async function progress(label, check) {
     return await wait(async () => {
      const text = await screen(kind, label);
@@ -385,12 +462,15 @@ export async function drive(config) {
      if (!session) return undefined;
      ensure(session.evidence.calls.every(call => controlTools.includes(call.name)), 'Parent called a tool outside the child controls.');
      ensure(session.evidence.assistants.every(message => `${message.provider}/${message.model}` === receipt.doctor.model), 'Parent used a different model.');
+     const agents = configuredAgents(session.evidence);
+     if (!agents) return undefined;
+     receipt.agents = agents;
      return check(session.evidence);
     }, label);
    }
    const onlyControls = 'Use only litter_* controls yourself. Do not call file tools yourself. Omit model in spawn so children inherit your model.';
    if (kind === 'cancel') {
-    await send(kind, `Spawn one scout named cancel-proof with task ${JSON.stringify('Read input.txt in 1000 separate read tool calls. Do not delegate or write. Report the token only after all reads.')} and then call litter_wait with its returned ID and generation, timeoutMs 300000. ${onlyControls}`);
+    await send(kind, `Call litter_list once to discover the scout and worker agents. Spawn one scout named cancel-proof with task ${JSON.stringify('Read input.txt in 1000 separate read tool calls. Do not delegate or write. Report the token only after all reads.')} and then call litter_wait with its returned ID and timeoutMs 300000. ${onlyControls}`);
     const before = await progress('before-cancel', evidence => {
      const admission = evidence.results.find(result => result.name === 'litter_spawn' && result.value?.child?.name === 'cancel-proof');
      const call = evidence.calls.find(call => call.name === 'litter_wait' && call.arguments?.id === admission?.value?.child?.id);
@@ -398,6 +478,7 @@ export async function drive(config) {
     });
     receipt.cancelledCall = before.call;
     receipt.cancelledChild = before.admission.value.child;
+    ensure(!('generation' in receipt.cancelledChild), 'Cancellation child snapshot exposed a generation.');
     const spawn = (await sessionProjection(sessions)).evidence.calls.find(call => call.id === before.admission.id);
     ensure(!spawn.arguments.model && receipt.cancelledChild.model === receipt.doctor.model, 'Cancellation child did not inherit the parent model.');
     receipt.actions.push({ key: 'Escape', at: new Date().toISOString() });
@@ -408,40 +489,45 @@ export async function drive(config) {
     await send(kind, '/pig-litter');
     await wait(async () => (await screen(kind, 'after-cancel')).split(diagnosticText).length - 1 > notificationCount, 'new notification after cancellation', 10000);
     const child = receipt.cancelledChild;
-    await send(kind, `Inspect child ${child.id} without transcript, then explicitly stop it with litter_stop id ${child.id} generation ${child.generation}. Do not spawn. ${onlyControls}`);
+    await send(kind, `Inspect child ${child.id} by ID to confirm it is still running, then explicitly stop that same ID. Do not spawn. ${onlyControls}`);
     receipt.cancellation = await progress('explicit-stop', evidence => {
-     const inspection = evidence.results.find(result => result.name === 'litter_inspect' && result.value?.child?.id === child.id);
-     const stopped = evidence.results.find(result => result.name === 'litter_stop' && result.value?.outcome?.run?.id === child.id);
+     const inspection = currentInspection(evidence, child.id);
+     const stopped = stoppedOutcome(evidence, child.id);
      if (!inspection || !stopped || evidence.assistants.at(-1)?.stopReason !== 'stop') return undefined;
-     ensure(inspection.value.child.state === 'running', 'Cancelled wait did not leave the child running.');
-     ensure(stopped.value.outcome.state === 'stopped' && !stopped.isError, 'Explicit stop did not stop the child.');
-     return { callId: before.call.id, waitCancelled: true, childContinued: true, newNotificationObserved: true, inspection, stopped };
+     ensure(inspection.child.state === 'running', 'Cancelled wait did not leave the child running.');
+     ensure(inspection.result.value.state === 'running', 'ID-only inspection returned an invalid current status.');
+     return { callId: before.call.id, waitCancelled: true, childContinued: true, newNotificationObserved: true, childId: child.id, state: stopped.outcome.state };
     });
     receipt.cancellation.files = await readdir(workspace);
     ensure(receipt.cancellation.files.length === 1 && receipt.cancellation.files[0] === 'input.txt', 'Cancellation task unexpectedly wrote workspace files.');
    } else {
-    await send(kind, `Call litter_list once to discover agents. Spawn exactly one scout named scout-proof with task ${JSON.stringify('Read input.txt and report its complete token. Do not change files or delegate.')} and wait for its returned ID and generation with litter_wait timeoutMs 120000. Then inspect that child with transcript true, offset 0, limit 20. ${onlyControls}`);
+    await send(kind, `Call litter_list once to discover agents. Spawn exactly one scout named scout-proof with task ${JSON.stringify('Read input.txt and report its complete token. Do not change files or delegate.')} and wait for its returned ID with litter_wait timeoutMs 120000. Use only its latest status and outcome. ${onlyControls}`);
     const scout = await progress('scout-progress', evidence => {
      const completed = completedDelegation(evidence, 'scout', receipt.doctor.model, inputToken);
-     if (!completed) return undefined;
-     const transcript = childTranscript(evidence, completed.child, receipt.doctor.model, inputToken, ['read']);
-     return transcript ? { ...completed, transcript } : undefined;
+     return completed;
     });
-    receipt.scout = scout;
-    const outputToken = `worker-${randomUUID()}`;
-    await writeFile(join(workspace, 'output.txt'), 'Disposable output fixture: replace this content.\n');
-    await send(kind, `Spawn exactly one worker named worker-proof with task ${JSON.stringify(`Replace the existing disposable output.txt with exactly ${outputToken} followed by a newline, then read it back and report that token. Do not delegate.`)} and wait for its returned ID and generation with litter_wait timeoutMs 120000. Then inspect that child with transcript true, offset 0, limit 20. ${onlyControls}`);
+    ensure(scout.resultCall.name === 'litter_wait', 'Scout completion did not come from litter_wait.');
+    receipt.scout = { child: { id: scout.child.id, type: scout.child.type, model: scout.child.model, state: scout.child.state }, outcome: { state: scout.outcome.state, model: scout.outcome.model, truncated: scout.outcome.truncated, reportProvenance: scout.outcome.reportProvenance } };
+    await rm(inputPath);
+    await access(inputPath).then(() => { throw new Error('Scout input remained available before resume.'); }, error => { if (error.code !== 'ENOENT') throw error; });
+    receipt.scoutInputRemoved = true;
+    const workerCwd = join(workspace, "worker's workspace");
+    const workerInput = `worker-${randomUUID()}`;
+    await mkdir(workerCwd, { recursive: true });
+    await writeFile(join(workerCwd, 'private-input.txt'), workerInput);
+    await writeFile(join(workerCwd, 'worker-output.txt'), 'Disposable worker output.\n');
+    await send(kind, `Spawn exactly one worker named worker-proof with cwd ${JSON.stringify(workerCwd)} and task ${JSON.stringify("Use a bash terminal command only. Run `cat private-input.txt > worker-output.txt && printf '\\n' >> worker-output.txt && cat worker-output.txt`, then include that output verbatim in your report. Do not use file tools or delegate.")} and wait for its returned ID with litter_wait timeoutMs 120000. Use only its latest status and outcome. ${onlyControls}`);
     receipt.worker = await progress('worker-progress', evidence => {
-     const completed = completedDelegation(evidence, 'worker', receipt.doctor.model, outputToken);
-     if (!completed) return undefined;
-     const transcript = childTranscript(evidence, completed.child, receipt.doctor.model, outputToken, ['write', 'read']);
-     return transcript ? { ...completed, transcript } : undefined;
+     return completedDelegation(evidence, 'worker', receipt.doctor.model, workerInput, { cwd: workerCwd });
     });
-    ensure(await readFile(join(workspace, 'output.txt'), 'utf8') === `${outputToken}\n`, 'Actual worker file content differs from the requested marker.');
-    await send(kind, `Resume the completed scout using litter_message id ${scout.child.id} generation 1 resume true with text ${JSON.stringify('Report the input.txt token from your retained conversation. Do not read files or delegate again.')} and wait for the returned generation with litter_wait timeoutMs 120000. Then inspect that child with transcript true, offset ${scout.transcript.entries.length}, limit 20. ${onlyControls}`);
+    ensure(receipt.worker.resultCall.name === 'litter_wait', 'Worker completion did not come from litter_wait.');
+    ensure(await readFile(join(workerCwd, 'worker-output.txt'), 'utf8') === `${workerInput}\n`, 'Worker output does not contain the private input read by the child.');
+    receipt.worker = { child: { id: receipt.worker.child.id, type: receipt.worker.child.type, model: receipt.worker.child.model, cwd: receipt.worker.child.cwd, state: receipt.worker.child.state }, outcome: { state: receipt.worker.outcome.state, model: receipt.worker.outcome.model, truncated: receipt.worker.outcome.truncated, reportProvenance: receipt.worker.outcome.reportProvenance }, fileEffect: { input: 'private-input.txt', output: 'worker-output.txt', verified: true } };
+    await send(kind, `Resume the completed scout with litter_message id ${scout.child.id} resume true and text ${JSON.stringify('Report the input.txt token from your retained conversation. Do not read files or delegate again.')}. Then wait for the same ID with litter_wait timeoutMs 120000. Use only its latest status and outcome. ${onlyControls}`);
     receipt.resume = await progress('resume-progress', evidence => resumedRecall(evidence, scout, receipt.doctor.model, inputToken));
+    receipt.resume = { childId: receipt.resume.child.id, resumeAcknowledged: true, outcome: { state: receipt.resume.outcome.state, model: receipt.resume.outcome.model, truncated: receipt.resume.outcome.truncated, reportProvenance: receipt.resume.outcome.reportProvenance }, outcomeAfterAcknowledgement: true };
     ensure(receipt.liveWidgetObserved, 'No live child widget was observed.');
-    receipt.fileEffects = { input: inputToken, output: outputToken };
+    receipt.fileEffects = { scoutInputRemovedBeforeResume: true, workerCwd, workerOutputVerified: true };
    }
   }
   const session = await sessionProjection(sessions);
