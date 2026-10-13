@@ -126,6 +126,14 @@ describe("checks fallback chain", () => {
       }),
     ).toThrow("missing statusCheckRollup.contexts");
   });
+
+  it("rejects a GraphQL check response without a commit", () => {
+    expect(() =>
+      parseCheckRollupPage({
+        data: { repository: { pullRequest: { commits: { nodes: [] } } } },
+      }),
+    ).toThrow("missing commits.nodes[0].commit");
+  });
 });
 
 describe("rollup node mapping", () => {

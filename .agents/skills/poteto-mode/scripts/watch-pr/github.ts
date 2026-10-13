@@ -356,7 +356,7 @@ export function parseCheckRollupPage(value: unknown): T.RollupPage {
     at(value, ["data", "repository", "pullRequest", "commits", "nodes"]),
     "commits.nodes",
   );
-  if (commits.length === 0) return { checks: [], endCursor: null };
+  if (commits.length === 0) missing("commits.nodes[0].commit");
   const commit = record(
     at(commits[commits.length - 1], ["commit"]),
     "commit",
