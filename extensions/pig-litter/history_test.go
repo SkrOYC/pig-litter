@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync"
+	"strings"
 	"testing"
 
 	"github.com/MichaelKinsy/PiG/agent"
@@ -27,12 +27,14 @@ func TestNativeSessionConstructionHistoryFitsTheDefaultBudget(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "models.json"), []byte(models), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	trusted := true
-	settings, err := memorySettings()
-	if err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("CHILD_DIRECTORY_CONTEXT"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: dir, AgentDir: dir, ProjectTrusted: &trusted, SettingsManager: settings})
+	if err := os.WriteFile(filepath.Join(dir, "input.txt"), []byte("DO_NOT_USE_THIS_FILE_AS_INSTRUCTIONS"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	trusted := true
+	services, err := coding.NewServices(coding.ServicesOptions{CWD: dir, AgentDir: dir, ProjectTrusted: &trusted})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,31 +54,33 @@ func TestNativeSessionConstructionHistoryFitsTheDefaultBudget(t *testing.T) {
 			return agent.AgentToolResult{}, nil
 		}})
 	}
-	session, err := runtime.New(coding.SessionStartOptions{SessionManager: manager, Model: services.ModelRuntime().GetModel("fixture", "child"), SystemPrompt: "input.txt", ResourceLoader: coding.NoResources, SkipBuiltinTools: true, ExtraTools: tools})
+	loader := coding.NewDefaultResourceLoader(coding.DefaultResourceLoaderOptions{CWD: dir, AgentDir: dir, SettingsManager: services.SettingsManager(), AppendSystemPromptOverride: func(found []string) []string { return append(found, "input.txt") }})
+	if err := loader.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.New(coding.SessionStartOptions{SessionManager: manager, Model: services.ModelRuntime().GetModel("fixture", "child"), ResourceLoader: loader, ExtraTools: tools, AllowedTools: map[string]struct{}{"read": {}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer session.Close()
 	go func() {
-		for range session.Events() {
+		for event := range session.Events() {
+			coding.AcknowledgeEvent(event)
 		}
 	}()
-	var mu sync.Mutex
-	unsubscribe := session.Subscribe(func(event agent.AgentEvent) {
-		if _, ok := event.(agent.MessageEndEvent); ok {
-			mu.Lock()
-			t.Logf("message_end retained history is %d bytes", historyBytes(manager))
-			mu.Unlock()
-		}
-	})
-	defer unsubscribe()
+	prompt := session.SystemPrompt()
+	if !strings.Contains(prompt, "CHILD_DIRECTORY_CONTEXT") || !strings.Contains(prompt, "input.txt") || strings.Contains(prompt, "DO_NOT_USE_THIS_FILE_AS_INSTRUCTIONS") {
+		t.Fatalf("native prompt lost directory context or literal role instructions: %s", prompt)
+	}
 	size := historyBytes(manager)
-	t.Logf("native initial history is %d bytes before child inference", size)
 	if size == 0 || size > defaultConfig().MaxHistoryBytes {
 		t.Fatalf("native construction history exceeded the default budget: %d bytes", size)
 	}
 	if _, err := session.Send(context.Background(), "short task"); err != nil {
 		t.Fatal(err)
+	}
+	if report := session.LastAssistantText(); report == nil || *report != "short response" {
+		t.Fatalf("native Send did not settle: %v", report)
 	}
 	if size := historyBytes(manager); size > defaultConfig().MaxHistoryBytes {
 		t.Fatalf("short native turn exceeded the default budget: %d", size)

@@ -91,8 +91,8 @@ func TestProviderDrivesActualSpawnReadHoldAndStopResults(t *testing.T) {
 		state.cancelHold(name)
 	}
 	stopResults := []openAIMessage{
-		{Role: "tool", Content: rawJSON(t, `{"operation":"litter_stop","state":"stopped"}`)},
-		{Role: "tool", Content: rawJSON(t, `{"operation":"litter_stop","state":"stopped"}`)},
+		{Role: "tool", Content: rawJSON(t, `{"operation":"litter_stop","state":"paused"}`)},
+		{Role: "tool", Content: rawJSON(t, `{"operation":"litter_stop","state":"paused"}`)},
 	}
 	stopMessages := []openAIMessage{{Role: "user", Content: rawJSON(t, "STOP_WIDGET tree:1 tree:2")}}
 	stopMessages = append(stopMessages, toolMessages...)
@@ -265,8 +265,8 @@ func TestPigletOriginRejectsJavaScriptAndNonLocalResources(t *testing.T) {
 
 func TestWidgetGeometryStartupAndEditorPredicates(t *testing.T) {
 	live := strings.Join([]string{"Litter 2 live 0 kept", "held-a running", "held-b running"}, "\n")
-	stopped := strings.Join([]string{"Litter 0 live 2 kept", "held-a stopped", "held-b stopped"}, "\n")
-	if !widgetShows(live, "running") || !widgetShows(stopped, "stopped") || widgetShows(live, "stopped") {
+	paused := strings.Join([]string{"Litter 0 live 2 kept", "held-a paused", "held-b paused"}, "\n")
+	if !widgetShows(live, "running") || !widgetShows(paused, "paused") || widgetShows(live, "paused") {
 		t.Fatal("widget state predicate did not distinguish live and retained children")
 	}
 	if got, err := parsePaneGeometry("32 32\n"); err != nil || got != (paneGeometry{width: 32, height: 32}) {

@@ -86,16 +86,16 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 			if err := host.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 				t.Fatal(err)
 			}
-			selected := &run{ref: Ref{"child:1"}, completionDone: make(chan struct{})}
-			tree := &Tree{ctx: context.Background(), pending: map[*run]*reservation{selected: {outcomeObserved: test.observed}}}
+			selected := &run{ref: Ref{"child:1"}}
+			tree := &Tree{ctx: context.Background(), root: &record{}, pending: map[*run]*reservation{selected: {outcomeObserved: test.observed}}}
 			ext := sdk.New("completion-test")
 			var o *owner
 			ext.OnEvent("session_start", func(ctx sdk.Context, _ map[string]any) (any, error) {
 				state := &extensionState{}
-				o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}}
+				o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 				state.owner = o
 				if test.handoff {
-					key := ackKey{callID: "wait-result"}
+					key := &callTicket{callID: "wait-result"}
 					o.beginOutcomeAck(key, selected, "litter_wait", &ctx)
 					if test.handoffReady {
 						o.readyOutcomeAck(key, true)
@@ -113,7 +113,7 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 					ref.ID = "other-child"
 				}
 				content, _ := resultContent("litter_wait", map[string]any{"outcome": &Outcome{Run: ref, State: Completed}}, nil)
-				o.observeOutcome(nil, tool, "wait-result", content, test.handoffFailed)
+				testObserveOutcome(o, nil, tool, "wait-result", content, test.handoffFailed)
 				return nil, nil
 			})
 			done := make(chan error, 1)
@@ -124,10 +124,15 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 			writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgReady, Ready: &subprocess.ReadyPayload{Cwd: t.TempDir(), Width: 80}})
 			writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgRequest, ID: "complete", Request: &subprocess.RequestPayload{Method: "event", Event: "session_start", HandlerID: 1, Args: json.RawMessage(`{}`)}})
 			idleCalls, sends, sessionReads, audits := 0, 0, 0, 0
-			for {
+			for completed, observed := false, !test.handoff; !completed || !observed; {
 				envelope := readCompletionEnvelope(t, host)
 				if envelope.Type == subprocess.MsgResponse && envelope.ID == "complete" {
-					break
+					completed = true
+					continue
+				}
+				if envelope.Type == subprocess.MsgResponse && envelope.ID == "observe" {
+					observed = true
+					continue
 				}
 				if envelope.Type != subprocess.MsgCall {
 					continue
@@ -185,10 +190,10 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 					if err := json.Unmarshal(envelope.Call.Args, &args); err != nil {
 						t.Fatal(err)
 					}
-					if args.Message.CustomType != "litter_completion" || args.Message.Display || args.Message.Details != (completionDetails{selected.ref.ID}) {
+					if args.Message.CustomType != "litter_completion" || args.Message.Display || args.Message.Details != (completionDetails{ChildID: selected.ref.ID}) {
 						t.Fatalf("completion message changed: %#v", args.Message)
 					}
-					if test.state == `{"idle":false}` && !consumed && (args.Options.TriggerTurn != nil || args.Options.DeliverAs != "followUp") {
+					if test.state == `{"idle":false}` && !consumed && (args.Options.TriggerTurn == nil || *args.Options.TriggerTurn || args.Options.DeliverAs != "") {
 						t.Fatalf("busy completion options: %#v", args.Options)
 					}
 					if test.name == "idle" && (args.Options.TriggerTurn == nil || *args.Options.TriggerTurn || args.Options.DeliverAs != "") {
@@ -240,14 +245,14 @@ func TestOutcomeHandoffCancellationAndAcknowledgmentKeepReservation(t *testing.T
 			t.Run(fmt.Sprintf("%s received=%t", operation, received), func(t *testing.T) {
 				tree := testTree(t, defaultConfig())
 				child := testAdmission(t, tree, Ref{}, "scout", operation)
-				o := &owner{tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}}
-				key := ackKey{callID: operation}
+				o := &owner{tree: tree, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
+				key := &callTicket{callID: operation}
 				o.beginOutcomeAck(key, testRun(t, tree, child.Ref), operation, nil)
 				o.readyOutcomeAck(key, true)
 				settled := make(chan bool, 1)
 				go func() { settled <- o.awaitOutcomeAck(testRun(t, tree, child.Ref)) }()
 				content, _ := resultContent(operation, map[string]any{"outcome": &Outcome{Run: child.Ref, State: Completed}}, nil)
-				o.observeOutcome(nil, operation, key.callID, content, !received)
+				testObserveOutcome(o, nil, operation, key.callID, content, !received)
 				select {
 				case observed := <-settled:
 					if observed != received {
@@ -273,8 +278,8 @@ func TestOutcomeHandoffCancellationAndAcknowledgmentKeepReservation(t *testing.T
 func TestCancelledWaitReleasesHandoffWithoutClaimingAnOutcome(t *testing.T) {
 	tree := testTree(t, defaultConfig())
 	child := testAdmission(t, tree, Ref{}, "scout", "waiting")
-	o := &owner{tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}}
-	key := ackKey{callID: "cancelled-wait"}
+	o := &owner{tree: tree, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
+	key := &callTicket{callID: "cancelled-wait"}
 	o.beginOutcomeAck(key, testRun(t, tree, child.Ref), "litter_wait", nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -286,8 +291,8 @@ func TestCancelledWaitReleasesHandoffWithoutClaimingAnOutcome(t *testing.T) {
 	if pending := tree.pending[testRun(t, tree, child.Ref)]; pending == nil || pending.outcomeObserved {
 		t.Fatalf("cancelled wait lost the completion reservation %#v", pending)
 	}
-	stopped, _, err := tree.stop(testRun(t, tree, child.Ref))
-	if err != nil || stopped == nil || stopped.State != Stopped {
+	stopped, _, err := tree.stop(nil, testRun(t, tree, child.Ref))
+	if err != nil || stopped == nil || stopped.State != Paused {
 		t.Fatalf("cancelled wait changed the child %#v %v", stopped, err)
 	}
 }
@@ -295,8 +300,8 @@ func TestCancelledWaitReleasesHandoffWithoutClaimingAnOutcome(t *testing.T) {
 func TestUncorrelatedWaitCannotHoldCompletionDelivery(t *testing.T) {
 	tree := testTree(t, defaultConfig())
 	child := testAdmission(t, tree, Ref{}, "scout", "uncorrelated")
-	o := &owner{tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}}
-	key := ackKey{}
+	o := &owner{tree: tree, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
+	key := &callTicket{}
 	o.beginOutcomeAck(key, testRun(t, tree, child.Ref), "litter_wait", nil)
 	o.readyOutcomeAck(key, true)
 	settled := make(chan bool, 1)
@@ -316,7 +321,7 @@ func TestUncorrelatedWaitCannotHoldCompletionDelivery(t *testing.T) {
 	o.beginOutcomeAck(key, testRun(t, tree, child.Ref), "litter_wait", nil)
 	o.readyOutcomeAck(key, true)
 	content, _ := resultContent("litter_wait", map[string]any{"outcome": &Outcome{Run: child.Ref, State: Completed}}, nil)
-	o.observeOutcome(nil, "litter_wait", key.callID, content, false)
+	testObserveOutcome(o, nil, "litter_wait", key.callID, content, false)
 	if !o.awaitOutcomeAck(testRun(t, tree, child.Ref)) {
 		t.Fatal("the correlated terminal outcome was not observed")
 	}
@@ -332,11 +337,11 @@ func TestOutcomeRegistrationPrecedesCompletionDecision(t *testing.T) {
 			var releaseOnce sync.Once
 			releaseRegistration := func() { releaseOnce.Do(func() { close(release) }) }
 			defer releaseRegistration()
-			o := &owner{tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}, afterOutcomeReservation: func() {
+			o := &owner{tree: tree, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}, afterOutcomeReservation: func() {
 				close(reserved)
 				<-release
 			}}
-			key := ackKey{callID: "outcome"}
+			key := &callTicket{callID: "outcome"}
 			go func() {
 				o.beginOutcomeAck(key, selected, operation, nil)
 				close(registered)
@@ -358,7 +363,7 @@ func TestOutcomeRegistrationPrecedesCompletionDecision(t *testing.T) {
 			<-registered
 			o.readyOutcomeAck(key, true)
 			content, _ := resultContent(operation, map[string]any{"outcome": &Outcome{Run: child.Ref, State: Completed}}, nil)
-			o.observeOutcome(nil, operation, key.callID, content, false)
+			testObserveOutcome(o, nil, operation, key.callID, content, false)
 			select {
 			case observed := <-decision:
 				if !observed {
@@ -379,19 +384,19 @@ func TestCompletionAuditAfterSettlementBetweenObservationAndAckRead(t *testing.T
 		t.Fatal(err)
 	}
 	ref := Ref{"child:1"}
-	selected := &run{ref: ref, completionDone: make(chan struct{})}
-	tree := &Tree{ctx: context.Background(), pending: map[*run]*reservation{selected: {}}}
+	selected := &run{ref: ref}
+	tree := &Tree{ctx: context.Background(), root: &record{}, pending: map[*run]*reservation{selected: {}}}
 	snapshot, release := make(chan struct{}), make(chan struct{})
 	var gate sync.Once
 	var o *owner
 	ext := sdk.New("interleaving-test")
 	ext.OnEvent("session_start", func(ctx sdk.Context, _ map[string]any) (any, error) {
 		state := &extensionState{}
-		o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}, afterOutcomeSnapshot: func() {
+		o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}, afterOutcomeSnapshot: func() {
 			gate.Do(func() { close(snapshot); <-release })
 		}}
 		state.owner = o
-		key := ackKey{callID: "wait-result"}
+		key := &callTicket{callID: "wait-result"}
 		o.beginOutcomeAck(key, selected, "litter_wait", &ctx)
 		o.readyOutcomeAck(key, true)
 		o.sendCompletion(&record{}, selected, Outcome{Run: ref, State: Completed, Model: "fixture/child", Text: "verified child report"})
@@ -399,7 +404,7 @@ func TestCompletionAuditAfterSettlementBetweenObservationAndAckRead(t *testing.T
 	})
 	ext.OnEvent("message_end", func(_ sdk.Context, data map[string]any) (any, error) {
 		message := data["message"].(map[string]any)
-		o.observeOutcome(nil, message["toolName"].(string), message["toolCallId"].(string), message["content"].(string), message["isError"].(bool))
+		testObserveOutcome(o, nil, message["toolName"].(string), message["toolCallId"].(string), message["content"].(string), message["isError"].(bool))
 		return nil, nil
 	})
 	done := make(chan error, 1)
@@ -509,16 +514,16 @@ func TestIdenticalCompletionsRequireNewSDKEntries(t *testing.T) {
 	if err := host.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	first := &run{ref: Ref{"child:1"}, completionDone: make(chan struct{})}
-	second := &run{ref: first.ref, beforeCompletion: first.completionDone, completionDone: make(chan struct{})}
+	first := &run{ref: Ref{"child:1"}, noticeID: "first-receipt"}
+	second := &run{ref: first.ref, noticeID: "second-receipt"}
 	child := &record{id: first.ref.ID, run: first}
-	tree := &Tree{ctx: context.Background(), records: map[ChildID]*record{child.id: child}, pending: map[*run]*reservation{first: {}, second: {}}}
+	tree := &Tree{ctx: context.Background(), root: &record{}, records: map[ChildID]*record{child.id: child}, pending: map[*run]*reservation{first: {nonce: first.noticeID}, second: {nonce: second.noticeID}}}
 	var o *owner
 	ext := sdk.New("repeated-completion-test")
 	ext.OnEvent("exercise", func(ctx sdk.Context, data map[string]any) (any, error) {
 		if o == nil {
 			state := &extensionState{}
-			o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}}
+			o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 			state.owner = o
 		}
 		switch data["action"] {
@@ -529,8 +534,12 @@ func TestIdenticalCompletionsRequireNewSDKEntries(t *testing.T) {
 			child.run = second
 			tree.mu.Unlock()
 			o.sendCompletion(child, second, Outcome{Run: second.ref, State: Completed, Text: "same report"})
-		case "observe":
-			o.observeCompletion(nil, map[string]any{"customType": "litter_completion", "details": completionDetails{child.id}})
+		case "observe", "observeSecond":
+			nonce := first.noticeID
+			if data["action"] == "observeSecond" {
+				nonce = second.noticeID
+			}
+			o.observeCompletion(nil, map[string]any{"customType": "litter_completion", "details": completionDetails{ChildID: child.id, Receipt: nonce}})
 		}
 		return nil, nil
 	})
@@ -542,6 +551,7 @@ func TestIdenticalCompletionsRequireNewSDKEntries(t *testing.T) {
 	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgReady, Ready: &subprocess.ReadyPayload{Cwd: t.TempDir(), Width: 80}})
 	entries := []map[string]any{}
 	var sent string
+	var sentDetails completionDetails
 	exercise := func(action string) {
 		t.Helper()
 		args, _ := json.Marshal(map[string]string{"action": action})
@@ -568,11 +578,16 @@ func TestIdenticalCompletionsRequireNewSDKEntries(t *testing.T) {
 			case "isIdle":
 				response.Result = json.RawMessage(`{"idle":true}`)
 			case "sendMessage":
-				var args struct{ Message struct{ Content string } }
+				var args struct {
+					Message struct {
+						Content string
+						Details completionDetails
+					}
+				}
 				if err := json.Unmarshal(envelope.Call.Args, &args); err != nil {
 					t.Fatal(err)
 				}
-				sent = args.Message.Content
+				sent, sentDetails = args.Message.Content, args.Message.Details
 			default:
 				t.Fatalf("unexpected host method %q", envelope.Call.Method)
 			}
@@ -580,7 +595,7 @@ func TestIdenticalCompletionsRequireNewSDKEntries(t *testing.T) {
 		}
 	}
 	appendNotice := func(id string) {
-		entries = append(entries, map[string]any{"id": id, "type": "custom_message", "customType": "litter_completion", "content": sent, "details": completionDetails{child.id}})
+		entries = append(entries, map[string]any{"id": id, "type": "custom_message", "customType": "litter_completion", "content": sent, "details": sentDetails})
 	}
 	exercise("first")
 	exercise("observe")
@@ -599,6 +614,10 @@ func TestIdenticalCompletionsRequireNewSDKEntries(t *testing.T) {
 	}
 	appendNotice("sdk-second")
 	exercise("observe")
+	if tree.pending[second] == nil {
+		t.Fatal("old callback acknowledged a new stored receipt")
+	}
+	exercise("observeSecond")
 	if tree.pending[second] != nil {
 		t.Fatal("new SDK entry did not acknowledge the identical resumed report")
 	}
@@ -609,7 +628,7 @@ func TestIdenticalCompletionsRequireNewSDKEntries(t *testing.T) {
 }
 
 func TestNestedCompletionFollowsParentLifecycleAndReleasesReceipt(t *testing.T) {
-	for _, parentState := range []string{"running", "starting", "construction failed", "disposed", "owner cancelled"} {
+	for _, parentState := range []string{"running", "starting", "construction failed", "disposed", "owner cancelled", "consumed"} {
 		t.Run(parentState, func(t *testing.T) { testNestedCompletion(t, parentState) })
 	}
 }
@@ -622,11 +641,7 @@ func testNestedCompletion(t *testing.T, parentState string) {
 	if err := os.WriteFile(filepath.Join(dir, "models.json"), []byte(models), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := memorySettings()
-	if err != nil {
-		t.Fatal(err)
-	}
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: dir, AgentDir: dir, SettingsManager: settings})
+	services, err := coding.NewServices(coding.ServicesOptions{CWD: dir, AgentDir: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -646,12 +661,13 @@ func testNestedCompletion(t *testing.T, parentState string) {
 	}
 	defer session.Close()
 	go func() {
-		for range session.Events() {
+		for event := range session.Events() {
+			coding.AcknowledgeEvent(event)
 		}
 	}()
 	unrelated := &run{ref: Ref{"other-child"}}
 	unrelatedReceipt := &completionReceipt{}
-	parentRun := &run{ref: Ref{"parent"}, ready: make(chan struct{}), done: make(chan struct{}), receipts: map[*run]*completionReceipt{unrelated: unrelatedReceipt}}
+	parentRun := &run{ref: Ref{"parent"}, ready: make(chan struct{}), done: make(chan struct{})}
 	if parentState == "running" {
 		parentRun.session = session
 		close(parentRun.ready)
@@ -663,12 +679,15 @@ func testNestedCompletion(t *testing.T, parentState string) {
 		}
 		close(parentRun.done)
 	}
-	liveDelivery := parentState == "running" || parentState == "starting"
+	liveDelivery := parentState == "running"
 	treeContext, cancelTree := context.WithCancel(context.Background())
 	defer cancelTree()
-	selected := &run{ref: Ref{"child"}, parent: parentRun, completionDone: make(chan struct{})}
-	child := &record{id: "child", parent: "parent", run: selected}
-	tree := &Tree{ctx: treeContext, records: map[ChildID]*record{"child": child, "parent": {id: "parent", run: parentRun, history: manager}}, pending: map[*run]*reservation{selected: {parent: "parent", parentRun: parentRun}}}
+	selected := &run{ref: Ref{"child"}}
+	parent := &record{id: "parent", run: parentRun, history: manager, receipts: map[*run]*completionReceipt{unrelated: unrelatedReceipt}}
+	parentRun.owner = parent
+	child := &record{id: "child", parent: parent, run: selected}
+	selected.owner = child
+	tree := &Tree{ctx: treeContext, records: map[ChildID]*record{"child": child, "parent": parent}, pending: map[*run]*reservation{selected: {parent: "parent", outcomeObserved: parentState == "consumed"}}}
 	entered, release := make(chan struct{}), make(chan struct{})
 	var o *owner
 	unsubscribe := session.Subscribe(func(event agent.AgentEvent) {
@@ -688,20 +707,11 @@ func testNestedCompletion(t *testing.T, parentState string) {
 	ext := sdk.New("nested-completion-test")
 	ext.OnEvent("exercise", func(ctx sdk.Context, _ map[string]any) (any, error) {
 		state := &extensionState{}
-		o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, config: defaultConfig(), beforeParentReadyWait: func() {
-			switch parentState {
-			case "starting":
-				parentRun.mu.Lock()
-				parentRun.session = session
-				close(parentRun.ready)
-				parentRun.mu.Unlock()
-			case "construction failed":
-				close(parentRun.done)
-			case "owner cancelled":
-				cancelTree()
-			}
-		}}
+		o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, config: defaultConfig()}
 		state.owner = o
+		if parentState == "owner cancelled" {
+			cancelTree()
+		}
 		o.sendCompletion(child, selected, Outcome{Run: selected.ref, State: Completed, Text: "nested report"})
 		return nil, nil
 	})
@@ -763,8 +773,8 @@ func testNestedCompletion(t *testing.T, parentState string) {
 			t.Fatal("completed child retained its delivery receipt")
 		}
 	}
-	if len(parentRun.receipts) != 1 || parentRun.receipts[unrelated] != unrelatedReceipt {
-		t.Fatalf("nested receipt retirement changed unrelated receipts: %#v", parentRun.receipts)
+	if len(parent.receipts) != 1 || parent.receipts[unrelated] != unrelatedReceipt {
+		t.Fatalf("nested receipt retirement changed unrelated receipts: %#v", parent.receipts)
 	}
 	if liveDelivery {
 		select {
@@ -781,11 +791,41 @@ func testNestedCompletion(t *testing.T, parentState string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := completionStored(entries, nil, completionDetails{child.id}, notice); got != (parentState != "owner cancelled") {
+	if got := completionStored(entries, completionDetails{ChildID: child.id}, notice); got != (parentState != "owner cancelled" && parentState != "consumed") {
 		t.Fatalf("persisted nested completion=%t for parent %s", got, parentState)
+	}
+	if parentState == "consumed" {
+		found := false
+		for _, raw := range entries {
+			var entry struct {
+				Type, CustomType string
+				Data             completionNotice
+			}
+			if json.Unmarshal(raw, &entry) == nil && entry.Type == "custom" && entry.CustomType == "litter_completion" && entry.Data.Report == "nested report" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("consumed nested result was not stored as an audit entry")
+		}
 	}
 	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgShutdown, Shutdown: &subprocess.ShutdownPayload{Reason: "complete"}})
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func testObserveOutcome(o *owner, caller *run, operation, callID, content string, failed bool) {
+	o.ackMu.Lock()
+	var ticket *callTicket
+	for key := range o.outcomeAcks {
+		if key.caller == caller && key.callID == callID {
+			ticket = key
+			break
+		}
+	}
+	o.ackMu.Unlock()
+	if ticket != nil {
+		o.observeOutcome(ticket, operation, content, failed)
 	}
 }

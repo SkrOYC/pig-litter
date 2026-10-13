@@ -5,6 +5,36 @@ import (
 	"testing"
 )
 
+func TestFinalSpawnResultFailureTransformsOnlyNamedSpawn(t *testing.T) {
+	t.Setenv("LITTER_FIXTURE_REPLACE_DETAILS", "0")
+	original := `{"state":"starting","child":{"id":"provisional-id","name":"result-hook-retry"}}`
+	data := map[string]any{
+		"toolName": "litter_spawn",
+		"input":    map[string]any{"name": failedSpawnName, "task": failedSpawnTask},
+		"content":  []any{map[string]any{"type": "text", "text": original}},
+	}
+	result, err := finalSpawnResultFailure(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, ok := result.(map[string]any)
+	if !ok || replacement["isError"] != true || textContent(replacement["content"]) != spawnFailureText+original || replacement["details"] == nil {
+		t.Fatalf("tool result replacement = %#v", result)
+	}
+
+	t.Setenv("LITTER_FIXTURE_REPLACE_DETAILS", "1")
+	data["input"] = map[string]any{"name": failedSpawnName, "task": "RESULT_HOOK_SUCCESS"}
+	result, err = finalSpawnResultFailure(data)
+	replacement, ok = result.(map[string]any)
+	if err != nil || !ok || replacement["details"] == nil || replacement["content"] != nil || replacement["isError"] != nil {
+		t.Fatalf("successful litter result did not receive a details-only replacement: %#v, %v", result, err)
+	}
+	data["toolName"] = "read"
+	if result, err := finalSpawnResultFailure(data); err != nil || result != nil {
+		t.Fatalf("file tool result was modified: %#v, %v", result, err)
+	}
+}
+
 func TestDeniedPathMatchesOnlyTheWorkspaceTargets(t *testing.T) {
 	workspace := filepath.Join(t.TempDir(), "workspace")
 	for _, path := range []string{
