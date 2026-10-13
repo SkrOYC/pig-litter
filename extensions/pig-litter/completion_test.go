@@ -92,10 +92,10 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 			var o *owner
 			ext.OnEvent("session_start", func(ctx sdk.Context, _ map[string]any) (any, error) {
 				state := &extensionState{}
-				o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}}
+				o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 				state.owner = o
 				if test.handoff {
-					key := ackKey{callID: "wait-result"}
+					key := &callTicket{callID: "wait-result"}
 					o.beginOutcomeAck(key, selected, "litter_wait", &ctx)
 					if test.handoffReady {
 						o.readyOutcomeAck(key, true)
@@ -113,7 +113,7 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 					ref.ID = "other-child"
 				}
 				content, _ := resultContent("litter_wait", map[string]any{"outcome": &Outcome{Run: ref, State: Completed}}, nil)
-				o.observeOutcome(nil, tool, "wait-result", content, test.handoffFailed, "")
+				testObserveOutcome(o, nil, tool, "wait-result", content, test.handoffFailed)
 				return nil, nil
 			})
 			done := make(chan error, 1)
@@ -240,14 +240,14 @@ func TestOutcomeHandoffCancellationAndAcknowledgmentKeepReservation(t *testing.T
 			t.Run(fmt.Sprintf("%s received=%t", operation, received), func(t *testing.T) {
 				tree := testTree(t, defaultConfig())
 				child := testAdmission(t, tree, Ref{}, "scout", operation)
-				o := &owner{tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}}
-				key := ackKey{callID: operation}
+				o := &owner{tree: tree, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
+				key := &callTicket{callID: operation}
 				o.beginOutcomeAck(key, testRun(t, tree, child.Ref), operation, nil)
 				o.readyOutcomeAck(key, true)
 				settled := make(chan bool, 1)
 				go func() { settled <- o.awaitOutcomeAck(testRun(t, tree, child.Ref)) }()
 				content, _ := resultContent(operation, map[string]any{"outcome": &Outcome{Run: child.Ref, State: Completed}}, nil)
-				o.observeOutcome(nil, operation, key.callID, content, !received, "")
+				testObserveOutcome(o, nil, operation, key.callID, content, !received)
 				select {
 				case observed := <-settled:
 					if observed != received {
@@ -273,8 +273,8 @@ func TestOutcomeHandoffCancellationAndAcknowledgmentKeepReservation(t *testing.T
 func TestCancelledWaitReleasesHandoffWithoutClaimingAnOutcome(t *testing.T) {
 	tree := testTree(t, defaultConfig())
 	child := testAdmission(t, tree, Ref{}, "scout", "waiting")
-	o := &owner{tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}}
-	key := ackKey{callID: "cancelled-wait"}
+	o := &owner{tree: tree, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
+	key := &callTicket{callID: "cancelled-wait"}
 	o.beginOutcomeAck(key, testRun(t, tree, child.Ref), "litter_wait", nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -295,8 +295,8 @@ func TestCancelledWaitReleasesHandoffWithoutClaimingAnOutcome(t *testing.T) {
 func TestUncorrelatedWaitCannotHoldCompletionDelivery(t *testing.T) {
 	tree := testTree(t, defaultConfig())
 	child := testAdmission(t, tree, Ref{}, "scout", "uncorrelated")
-	o := &owner{tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}}
-	key := ackKey{}
+	o := &owner{tree: tree, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
+	key := &callTicket{}
 	o.beginOutcomeAck(key, testRun(t, tree, child.Ref), "litter_wait", nil)
 	o.readyOutcomeAck(key, true)
 	settled := make(chan bool, 1)
@@ -316,7 +316,7 @@ func TestUncorrelatedWaitCannotHoldCompletionDelivery(t *testing.T) {
 	o.beginOutcomeAck(key, testRun(t, tree, child.Ref), "litter_wait", nil)
 	o.readyOutcomeAck(key, true)
 	content, _ := resultContent("litter_wait", map[string]any{"outcome": &Outcome{Run: child.Ref, State: Completed}}, nil)
-	o.observeOutcome(nil, "litter_wait", key.callID, content, false, "")
+	testObserveOutcome(o, nil, "litter_wait", key.callID, content, false)
 	if !o.awaitOutcomeAck(testRun(t, tree, child.Ref)) {
 		t.Fatal("the correlated terminal outcome was not observed")
 	}
@@ -332,11 +332,11 @@ func TestOutcomeRegistrationPrecedesCompletionDecision(t *testing.T) {
 			var releaseOnce sync.Once
 			releaseRegistration := func() { releaseOnce.Do(func() { close(release) }) }
 			defer releaseRegistration()
-			o := &owner{tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}, afterOutcomeReservation: func() {
+			o := &owner{tree: tree, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}, afterOutcomeReservation: func() {
 				close(reserved)
 				<-release
 			}}
-			key := ackKey{callID: "outcome"}
+			key := &callTicket{callID: "outcome"}
 			go func() {
 				o.beginOutcomeAck(key, selected, operation, nil)
 				close(registered)
@@ -358,7 +358,7 @@ func TestOutcomeRegistrationPrecedesCompletionDecision(t *testing.T) {
 			<-registered
 			o.readyOutcomeAck(key, true)
 			content, _ := resultContent(operation, map[string]any{"outcome": &Outcome{Run: child.Ref, State: Completed}}, nil)
-			o.observeOutcome(nil, operation, key.callID, content, false, "")
+			testObserveOutcome(o, nil, operation, key.callID, content, false)
 			select {
 			case observed := <-decision:
 				if !observed {
@@ -387,11 +387,11 @@ func TestCompletionAuditAfterSettlementBetweenObservationAndAckRead(t *testing.T
 	ext := sdk.New("interleaving-test")
 	ext.OnEvent("session_start", func(ctx sdk.Context, _ map[string]any) (any, error) {
 		state := &extensionState{}
-		o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}, afterOutcomeSnapshot: func() {
+		o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}, afterOutcomeSnapshot: func() {
 			gate.Do(func() { close(snapshot); <-release })
 		}}
 		state.owner = o
-		key := ackKey{callID: "wait-result"}
+		key := &callTicket{callID: "wait-result"}
 		o.beginOutcomeAck(key, selected, "litter_wait", &ctx)
 		o.readyOutcomeAck(key, true)
 		o.sendCompletion(&record{}, selected, Outcome{Run: ref, State: Completed, Model: "fixture/child", Text: "verified child report"})
@@ -399,7 +399,7 @@ func TestCompletionAuditAfterSettlementBetweenObservationAndAckRead(t *testing.T
 	})
 	ext.OnEvent("message_end", func(_ sdk.Context, data map[string]any) (any, error) {
 		message := data["message"].(map[string]any)
-		o.observeOutcome(nil, message["toolName"].(string), message["toolCallId"].(string), message["content"].(string), message["isError"].(bool), "")
+		testObserveOutcome(o, nil, message["toolName"].(string), message["toolCallId"].(string), message["content"].(string), message["isError"].(bool))
 		return nil, nil
 	})
 	done := make(chan error, 1)
@@ -518,7 +518,7 @@ func TestIdenticalCompletionsRequireNewSDKEntries(t *testing.T) {
 	ext.OnEvent("exercise", func(ctx sdk.Context, data map[string]any) (any, error) {
 		if o == nil {
 			state := &extensionState{}
-			o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}}
+			o = &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 			state.owner = o
 		}
 		switch data["action"] {
@@ -807,5 +807,20 @@ func testNestedCompletion(t *testing.T, parentState string) {
 	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgShutdown, Shutdown: &subprocess.ShutdownPayload{Reason: "complete"}})
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func testObserveOutcome(o *owner, caller *run, operation, callID, content string, failed bool) {
+	o.ackMu.Lock()
+	var ticket *callTicket
+	for key := range o.outcomeAcks {
+		if key.caller == caller && key.callID == callID {
+			ticket = key
+			break
+		}
+	}
+	o.ackMu.Unlock()
+	if ticket != nil {
+		o.observeOutcome(ticket, operation, content, failed)
 	}
 }

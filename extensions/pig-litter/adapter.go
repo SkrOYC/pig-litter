@@ -16,11 +16,6 @@ import (
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 )
 
-type ackKey struct {
-	caller *run
-	callID string
-	nonce  string
-}
 type acknowledgement struct {
 	run       *run
 	operation string
@@ -33,6 +28,7 @@ type extensionState struct {
 	initialization sync.Mutex
 	epoch          uint64
 	owner          *owner
+	calls          *callScope
 }
 
 type owner struct {
@@ -44,8 +40,8 @@ type owner struct {
 	services                 *coding.Services
 	tree                     *Tree
 	ackMu                    sync.Mutex
-	acks                     map[ackKey]*acknowledgement
-	outcomeAcks              map[ackKey]*outcomeAcknowledgement
+	acks                     map[*callTicket]*acknowledgement
+	outcomeAcks              map[*callTicket]*outcomeAcknowledgement
 	afterOutcomeSnapshot     func()
 	afterOutcomeReservation  func()
 	rootMu                   sync.Mutex
@@ -128,7 +124,7 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 	}
 	tree := newTree(config)
 	tree.root.id = ChildID(id)
-	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, acks: map[ackKey]*acknowledgement{}, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}}
+	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 	tree.execute, tree.completion, tree.changed = o.executeRun, o.sendCompletion, o.widget
 	s.mu.Lock()
 	if s.epoch != epoch {
@@ -151,15 +147,16 @@ func (s *extensionState) retire() {
 	s.epoch++
 	previous := s.owner
 	s.owner = nil
+	s.calls = nil
 	s.mu.Unlock()
 	if previous == nil {
 		return
 	}
 	previous.ackMu.Lock()
 	acks := previous.acks
-	previous.acks = map[ackKey]*acknowledgement{}
+	previous.acks = map[*callTicket]*acknowledgement{}
 	outcomeAcks := previous.outcomeAcks
-	previous.outcomeAcks = map[ackKey]*outcomeAcknowledgement{}
+	previous.outcomeAcks = map[*callTicket]*outcomeAcknowledgement{}
 	previous.ackMu.Unlock()
 	for _, ack := range acks {
 		ack.once.Do(func() { close(ack.done); previous.tree.cancelPending(ack.run) })
@@ -225,7 +222,7 @@ func (o *owner) modelFor(ctx context.Context, name string, runtime *coding.Model
 	return nil, reject("unavailable", "exact model is unavailable to the stock SDK")
 }
 
-func (o *owner) deferActivation(key ackKey, selected *run, done <-chan struct{}, cancelled func() bool, operation string) {
+func (o *owner) deferActivation(key *callTicket, selected *run, done <-chan struct{}, cancelled func() bool, operation string) {
 	ack := &acknowledgement{run: selected, operation: operation, done: make(chan struct{})}
 	o.ackMu.Lock()
 	o.acks[key] = ack
@@ -243,7 +240,7 @@ func (o *owner) deferActivation(key ackKey, selected *run, done <-chan struct{},
 	}()
 }
 
-func (o *owner) watchRequest(key ackKey, ctx sdk.Context) {
+func (o *owner) watchRequest(key *callTicket, ctx sdk.Context) {
 	o.ackMu.Lock()
 	ack := o.acks[key]
 	o.ackMu.Unlock()
@@ -263,7 +260,7 @@ func (o *owner) watchRequest(key ackKey, ctx sdk.Context) {
 	}()
 }
 
-func (o *owner) settleAck(key ackKey, failed bool) {
+func (o *owner) settleAck(key *callTicket, failed bool) {
 	o.ackMu.Lock()
 	ack := o.acks[key]
 	delete(o.acks, key)
@@ -352,7 +349,11 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	if r.canDelegate {
 		for _, name := range controlNames {
 			tools = append(tools, &nativeTool{name: name, schema: schemas[name], execute: func(ctx context.Context, callID string, raw json.RawMessage) (agent.AgentToolResult, error) {
-				value, err := o.operation(ctx, name, raw, run, callID, nil)
+				ticket, err := o.callScope(run).begin(run, callID, name, o.config.MaxMailbox)
+				if err != nil {
+					return nativeResult(name, nil, err), nil
+				}
+				value, err := o.operation(ctx, raw, ticket, nil)
 				return nativeResult(name, value, err), nil
 			}})
 			allowed[name] = struct{}{}
@@ -392,6 +393,11 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	unsubscribe := session.Subscribe(func(event agent.AgentEvent) {
 		switch event := event.(type) {
 		case agent.TurnStartEvent:
+			run.mu.Lock()
+			previous := run.calls
+			run.calls = newCallScope()
+			run.mu.Unlock()
+			o.retireScope(previous)
 			observedMu.Lock()
 			turns++
 			exceeded := turns > o.config.MaxTurns
@@ -409,8 +415,10 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			if exceeded {
 				session.RequestAbort()
 			}
+		case agent.TurnEndEvent:
+			o.retireScope(o.callScope(run))
 		case agent.ToolExecutionEndEvent:
-			o.observeCall(run, event.ToolName, event.ToolCallID, event.Result, event.IsError || event.Result.IsError)
+			o.observeCall(run, event.ToolName, event.ToolCallID, event.Result, event.IsError)
 			if event.IsError || event.Result.IsError {
 				observedMu.Lock()
 				if failure == "" {
@@ -486,7 +494,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	<-eventDrain
 	r.deliveryMu.Unlock()
 	unsubscribe()
-	o.retireAcks(run)
+	o.retireScope(o.callScope(run))
 	o.retireReceipts(run)
 	observedMu.Lock()
 	if sendErr != nil && failure == "" {
@@ -544,29 +552,6 @@ func outcomeFrom(terminal *agent.AssistantMessage, before, after coding.SessionS
 	return outcome
 }
 
-func (o *owner) retireAcks(caller *run) {
-	o.ackMu.Lock()
-	keys := []ackKey{}
-	outcomes := []ackKey{}
-	for key := range o.acks {
-		if key.caller == caller {
-			keys = append(keys, key)
-		}
-	}
-	for key := range o.outcomeAcks {
-		if key.caller == caller {
-			outcomes = append(outcomes, key)
-		}
-	}
-	o.ackMu.Unlock()
-	for _, key := range keys {
-		o.settleAck(key, true)
-	}
-	for _, key := range outcomes {
-		o.settleOutcomeAck(key, false)
-	}
-}
-
 func (o *owner) widget() {
 	if !o.context.HasUI() {
 		return
@@ -608,7 +593,11 @@ func newExtension(state *extensionState) *sdk.Extension {
 			if signal == nil {
 				signal = o.tree.ctx
 			}
-			value, err := o.operation(signal, name, raw, nil, ctx.ToolCallID(), &ctx)
+			ticket, err := o.callScope(nil).begin(nil, ctx.ToolCallID(), name, o.config.MaxMailbox)
+			if err != nil {
+				return sdkResult(name, nil, err), nil
+			}
+			value, err := o.operation(signal, raw, ticket, &ctx)
 			return sdkResult(name, value, err), nil
 		}})
 	}
@@ -622,6 +611,25 @@ func newExtension(state *extensionState) *sdk.Extension {
 		message, _ := data["message"].(map[string]any)
 		if message["role"] == "custom" {
 			o.observeCompletion(nil, message)
+		}
+		return nil, nil
+	})
+	ext.OnEvent("turn_start", func(_ sdk.Context, _ map[string]any) (any, error) {
+		state.mu.Lock()
+		previous, o := state.calls, state.owner
+		state.calls = newCallScope()
+		state.mu.Unlock()
+		if o != nil {
+			o.retireScope(previous)
+		}
+		return nil, nil
+	})
+	ext.OnEvent("turn_end", func(_ sdk.Context, _ map[string]any) (any, error) {
+		state.mu.Lock()
+		scope, o := state.calls, state.owner
+		state.mu.Unlock()
+		if o != nil {
+			o.retireScope(scope)
 		}
 		return nil, nil
 	})
@@ -649,7 +657,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 		state.mu.Unlock()
 		if o != nil {
 			o.settleRoot()
-			o.retireAcks(nil)
+			o.retireScope(o.callScope(nil))
 		}
 		return nil, nil
 	})
@@ -681,32 +689,23 @@ func toolFailure(tool string, result agent.AgentToolResult) string {
 }
 
 func (o *owner) observeCall(caller *run, operation, callID string, result agent.AgentToolResult, failed bool) {
-	raw, err := json.Marshal(result.Details)
-	var details struct {
-		Nonce string `json:"pigLitterCall"`
-	}
-	if err != nil || json.Unmarshal(raw, &details) != nil || details.Nonce == "" {
+	ticket := o.callScope(caller).capture(callID, operation)
+	o.finishCall(ticket, result, failed)
+}
+
+func (o *owner) finishCall(ticket *callTicket, result agent.AgentToolResult, failed bool) {
+	if ticket == nil {
 		return
 	}
-	key := ackKey{caller: caller, callID: callID, nonce: details.Nonce}
 	var content strings.Builder
 	for _, block := range result.Content {
 		if block, ok := block.(ai.TextContent); ok {
 			content.WriteString(block.Text)
 		}
 	}
-	o.ackMu.Lock()
-	ack := o.acks[key]
-	o.ackMu.Unlock()
-	if ack != nil && operation == ack.operation {
-		var handback struct {
-			Operation string   `json:"operation"`
-			Child     Snapshot `json:"child"`
-		}
-		valid := !failed && json.Unmarshal([]byte(content.String()), &handback) == nil && handback.Operation == operation && handback.Child.ID == ack.run.ref.ID
-		o.settleAck(key, !valid)
-	}
-	o.observeOutcome(caller, operation, callID, content.String(), failed, details.Nonce)
+	o.settleAck(ticket, failed)
+	o.observeOutcome(ticket, ticket.operation, content.String(), failed)
+	ticket.scope.forget(ticket)
 }
 
 func (o *owner) observeToolEvent(data map[string]any) {
@@ -730,7 +729,7 @@ func (o *owner) observeToolEvent(data map[string]any) {
 			result.Content = append(result.Content, ai.TextContent{Text: block.Text})
 		}
 	}
-	o.observeCall(nil, event.ToolName, event.ToolCallID, result, event.IsError || event.Result.IsError)
+	o.observeCall(nil, event.ToolName, event.ToolCallID, result, event.IsError)
 }
 
 func (o *owner) watchRoot(signal context.Context) {

@@ -362,14 +362,14 @@ func TestNormalHandlerCleanupDoesNotCancelSpawnAcknowledgement(t *testing.T) {
 		t.Run(map[bool]string{false: "normal response", true: "request aborted"}[cancelRequest], func(t *testing.T) {
 			tree := testTree(t, defaultConfig())
 			child := testAdmission(t, tree, Ref{}, "scout", "child")
-			o := &owner{tree: tree, acks: map[ackKey]*acknowledgement{}}
+			o := &owner{tree: tree, acks: map[*callTicket]*acknowledgement{}}
 			requestDone := make(chan struct{})
 			started := make(chan struct{})
 			tree.execute = func(_ *record, _ *run) Outcome {
 				close(started)
 				return Outcome{State: Completed, Text: "started after acknowledgement"}
 			}
-			key := ackKey{callID: "spawn"}
+			key := &callTicket{callID: "spawn"}
 			selected := testRun(t, tree, child.Ref)
 			o.deferActivation(key, selected, requestDone, func() bool { return cancelRequest }, "litter_spawn")
 			close(requestDone)

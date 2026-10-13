@@ -56,7 +56,7 @@ type outcomeAcknowledgement struct {
 	ready     bool
 }
 
-func (o *owner) beginOutcomeAck(key ackKey, selected *run, operation string, request *sdk.Context) {
+func (o *owner) beginOutcomeAck(key *callTicket, selected *run, operation string, request *sdk.Context) {
 	if key.callID == "" {
 		return
 	}
@@ -92,8 +92,7 @@ func (o *owner) beginOutcomeAck(key ackKey, selected *run, operation string, req
 	}()
 }
 
-func (o *owner) observeOutcome(caller *run, operation, callID, content string, failed bool, nonce string) {
-	key := ackKey{caller: caller, callID: callID, nonce: nonce}
+func (o *owner) observeOutcome(key *callTicket, operation, content string, failed bool) {
 	o.ackMu.Lock()
 	ack := o.outcomeAcks[key]
 	o.ackMu.Unlock()
@@ -108,7 +107,7 @@ func (o *owner) observeOutcome(caller *run, operation, callID, content string, f
 	o.settleOutcomeAck(key, valid)
 }
 
-func (o *owner) readyOutcomeAck(key ackKey, returned bool) {
+func (o *owner) readyOutcomeAck(key *callTicket, returned bool) {
 	if !returned {
 		o.settleOutcomeAck(key, false)
 		return
@@ -120,7 +119,7 @@ func (o *owner) readyOutcomeAck(key ackKey, returned bool) {
 	o.ackMu.Unlock()
 }
 
-func (o *owner) settleOutcomeAck(key ackKey, received bool) {
+func (o *owner) settleOutcomeAck(key *callTicket, received bool) {
 	o.ackMu.Lock()
 	ack := o.outcomeAcks[key]
 	o.ackMu.Unlock()

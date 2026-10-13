@@ -2,7 +2,6 @@ package piglitter
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -91,7 +90,7 @@ func safeLabel(value string) (string, error) {
 	return label, nil
 }
 
-func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage, caller *run, callID string, toolContext *sdk.Context) (map[string]any, error) {
+func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTicket, toolContext *sdk.Context) (map[string]any, error) {
 	if err := o.current(); err != nil {
 		return nil, err
 	}
@@ -99,7 +98,7 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, reject("rejected", "invalid tool arguments")
 	}
-	key := ackKey{caller: caller, callID: callID, nonce: rand.Text()}
+	name, caller := key.operation, key.caller
 	var parent *record
 	if caller != nil {
 		o.tree.mu.Lock()
@@ -173,7 +172,7 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 			o.watchRequest(key, *toolContext)
 		}
 		o.widget()
-		return map[string]any{"state": snapshot.State, "child": snapshot, "_receipt": key.nonce}, nil
+		return map[string]any{"state": snapshot.State, "child": snapshot}, nil
 	}
 	if name == "litter_list" {
 		children, err := o.tree.list(caller)
@@ -225,14 +224,14 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 		o.beginOutcomeAck(key, selected, name, toolContext)
 		outcome, err := o.tree.wait(ctx, selected, pageLimit(args.TimeoutMs, 30000))
 		o.readyOutcomeAck(key, err == nil && outcome.State.terminal())
-		return map[string]any{"state": outcome.State, "outcome": &outcome, "_receipt": key.nonce}, err
+		return map[string]any{"state": outcome.State, "outcome": &outcome}, err
 	}
 	if name == "litter_stop" {
 		o.beginOutcomeAck(key, selected, name, toolContext)
 		outcome, count, err := o.tree.stop(caller, selected)
 		o.readyOutcomeAck(key, err == nil && outcome != nil && outcome.State.terminal())
 		state := Paused
-		return map[string]any{"state": state, "outcome": outcome, "stoppedCount": count, "_receipt": key.nonce}, err
+		return map[string]any{"state": state, "outcome": outcome, "stoppedCount": count}, err
 	}
 	if name == "litter_message" {
 		mode := args.Mode
@@ -275,14 +274,13 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 			}
 		}
 		o.widget()
-		return map[string]any{"state": snapshot.State, "child": snapshot, "delivery": delivery, "_receipt": key.nonce}, nil
+		return map[string]any{"state": snapshot.State, "child": snapshot, "delivery": delivery}, nil
 	}
 	return nil, reject("rejected", "unknown child operation")
 }
 
 func resultContent(operation string, value map[string]any, err error) (string, bool) {
 	value = maps.Clone(value)
-	delete(value, "_receipt")
 	failed := false
 	if err != nil {
 		code := "failed"
@@ -334,16 +332,9 @@ func resultContent(operation string, value map[string]any, err error) (string, b
 
 func sdkResult(operation string, value map[string]any, err error) sdk.ToolResult {
 	text, failed := resultContent(operation, value, err)
-	return sdk.ToolResult{Content: text, IsError: failed, Details: resultDetails(value)}
+	return sdk.ToolResult{Content: text, IsError: failed}
 }
 func nativeResult(operation string, value map[string]any, err error) agent.AgentToolResult {
 	text, failed := resultContent(operation, value, err)
-	return agent.AgentToolResult{Content: []ai.ToolResultMessageContent{ai.TextContent{Text: text}}, IsError: failed, Details: resultDetails(value)}
-}
-
-func resultDetails(value map[string]any) any {
-	if nonce, ok := value["_receipt"].(string); ok {
-		return map[string]any{"pigLitterCall": nonce}
-	}
-	return nil
+	return agent.AgentToolResult{Content: []ai.ToolResultMessageContent{ai.TextContent{Text: text}}, IsError: failed}
 }

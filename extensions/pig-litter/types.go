@@ -113,6 +113,7 @@ type run struct {
 	resumePaused        bool
 	mailbox             chan message
 	mu                  sync.Mutex
+	calls               *callScope
 	messageMu           sync.Mutex
 	pendingMessages     int
 	session             *coding.Session
