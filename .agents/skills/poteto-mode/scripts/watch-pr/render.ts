@@ -3,6 +3,8 @@ export const renderJson = (verdict: T.WatcherVerdict): string =>
   `${JSON.stringify(verdict)}\n`;
 function ciCell(row: T.PrSnapshot): string {
   if (row.kind !== "open") return "\u2014";
+  if (row.ci.all.length === 0 && row.facts.mergeStateStatus !== "CLEAN")
+    return "⚠️ no checks reported";
   const was = row.ci.hadPreviousPassingCi ? ", was ✅" : "";
   switch (row.ci.kind) {
     case "ci-clean":
@@ -31,8 +33,18 @@ function reviewCell(row: T.PrSnapshot): string {
       : "✅";
 }
 function mergeCell(row: T.PrSnapshot): string {
-  if (row.kind === "merged") return "✅ merged";
-  if (row.kind === "closed") return "❌ closed";
+  if (row.kind !== "open") {
+    switch (row.kind) {
+      case "merged":
+        return "✅ merged";
+      case "closed":
+        return "❌ closed";
+      default: {
+        const exhaustive: never = row;
+        return exhaustive;
+      }
+    }
+  }
   if (row.facts.isDraft) return "⏸ draft";
   if (row.facts.reviewDecision === "CHANGES_REQUESTED")
     return "⚠️ changes requested";
@@ -40,7 +52,9 @@ function mergeCell(row: T.PrSnapshot): string {
     row.facts.mergeStateStatus === "DIRTY" ||
     row.facts.mergeStateStatus === "CONFLICTING"
     ? "⚠️ conflict"
-    : "✅";
+    : row.ci.all.length === 0 && row.facts.mergeStateStatus !== "CLEAN"
+      ? `⚠️ GitHub ${row.facts.mergeStateStatus}`
+      : "✅";
 }
 export function renderStatusTable(rows: T.NonEmpty<T.PrSnapshot>): string {
   const lines = ["| PR | CI | Review | Merge |", "| --- | --- | --- | --- |"];
@@ -105,6 +119,13 @@ function renderBlocker(blocker: T.MergeBlocker | StatusQueryBlocker): string {
       ].join("\n");
     }
     case "merge-gate": {
+      if (typeof blocker.reason === "object")
+        return [
+          "BLOCKER: github-merge-state",
+          `pr=${blocker.pr.number}`,
+          `mergeStateStatus=${blocker.reason.status}`,
+          "action=verify GitHub merge state and required check configuration",
+        ].join("\n");
       const action =
         blocker.reason === "closed-without-merge"
           ? "restore or remove the closed PR from the queued stack"
