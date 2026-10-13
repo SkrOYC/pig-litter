@@ -228,7 +228,7 @@ type completionEntry struct {
 }
 
 func (o *owner) completionEntries(parent ChildID) ([]json.RawMessage, error) {
-	if parent == "" {
+	if o.tree.rootID(parent) {
 		entries, err := o.context.SessionManager().GetEntries()
 		if err != nil {
 			return nil, err
@@ -317,7 +317,7 @@ func (o *owner) sendCompletion(r *record, selected *run, outcome Outcome) {
 		return
 	}
 	details := completionDetails{outcome.Run.ID}
-	if r.parent == "" && o.awaitOutcomeAck(selected) {
+	if o.tree.rootID(r.parentID()) && o.awaitOutcomeAck(selected) {
 		if err := o.current(); err != nil {
 			return
 		}
@@ -326,7 +326,7 @@ func (o *owner) sendCompletion(r *record, selected *run, outcome Outcome) {
 		}
 		return
 	}
-	entries, err := o.completionEntries(r.parent)
+	entries, err := o.completionEntries(r.parentID())
 	if err != nil {
 		return
 	}
@@ -340,7 +340,7 @@ func (o *owner) sendCompletion(r *record, selected *run, outcome Outcome) {
 		}
 	}
 	observed := func() bool {
-		entries, err := o.completionEntries(r.parent)
+		entries, err := o.completionEntries(r.parentID())
 		return err == nil && completionStored(entries, known, details, content)
 	}
 	var receipt *completionReceipt
@@ -365,13 +365,13 @@ func (o *owner) sendCompletion(r *record, selected *run, outcome Outcome) {
 			if observed() {
 				return nil
 			}
-			return o.appendRetained(r.parent, details, content)
+			return o.appendRetained(r.parentID(), details, content)
 		},
 	}
 	selected.mu.Lock()
 	selected.deliveryReceipt = receipt
 	selected.mu.Unlock()
-	if r.parent == "" {
+	if o.tree.rootID(r.parentID()) {
 		if err := o.current(); err != nil {
 			return
 		}

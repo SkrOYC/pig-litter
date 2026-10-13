@@ -287,7 +287,7 @@ func TestCancelledWaitReleasesHandoffWithoutClaimingAnOutcome(t *testing.T) {
 		t.Fatalf("cancelled wait lost the completion reservation %#v", pending)
 	}
 	stopped, _, err := tree.stop(testRun(t, tree, child.Ref))
-	if err != nil || stopped == nil || stopped.State != Stopped {
+	if err != nil || stopped == nil || stopped.State != Paused {
 		t.Fatalf("cancelled wait changed the child %#v %v", stopped, err)
 	}
 }
@@ -667,8 +667,9 @@ func testNestedCompletion(t *testing.T, parentState string) {
 	treeContext, cancelTree := context.WithCancel(context.Background())
 	defer cancelTree()
 	selected := &run{ref: Ref{"child"}, parent: parentRun, completionDone: make(chan struct{})}
-	child := &record{id: "child", parent: "parent", run: selected}
-	tree := &Tree{ctx: treeContext, records: map[ChildID]*record{"child": child, "parent": {id: "parent", run: parentRun, history: manager}}, pending: map[*run]*reservation{selected: {parent: "parent", parentRun: parentRun}}}
+	parent := &record{id: "parent", run: parentRun, history: manager}
+	child := &record{id: "child", parent: parent, run: selected}
+	tree := &Tree{ctx: treeContext, records: map[ChildID]*record{"child": child, "parent": parent}, pending: map[*run]*reservation{selected: {parent: "parent", parentRun: parentRun}}}
 	entered, release := make(chan struct{}), make(chan struct{})
 	var o *owner
 	unsubscribe := session.Subscribe(func(event agent.AgentEvent) {

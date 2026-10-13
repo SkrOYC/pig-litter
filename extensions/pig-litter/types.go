@@ -20,6 +20,8 @@ const (
 	Starting    State = "starting"
 	Running     State = "running"
 	Stopping    State = "stopping"
+	Pausing     State = "pausing"
+	Paused      State = "paused"
 	Completed   State = "completed"
 	Partial     State = "partial"
 	Failed      State = "failed"
@@ -29,7 +31,7 @@ const (
 
 func (s State) terminal() bool {
 	switch s {
-	case Completed, Partial, Failed, Stopped, Unavailable:
+	case Completed, Partial, Failed, Stopped, Paused, Unavailable:
 		return true
 	}
 	return false
@@ -75,7 +77,7 @@ type Snapshot struct {
 
 type record struct {
 	id                                         ChildID
-	parent                                     ChildID
+	parent                                     *record
 	depth                                      int
 	name, kind, model, instructions, task, cwd string
 	tools                                      []string
@@ -86,6 +88,9 @@ type record struct {
 	run                                        *run
 	previous                                   *run
 	delivering                                 *run
+	paused                                     bool
+	latest                                     *Outcome
+	deliveryMu                                 sync.Mutex
 }
 
 type message struct {
@@ -95,6 +100,7 @@ type message struct {
 
 type run struct {
 	ref                 Ref
+	owner               *record
 	parent              *run
 	beforeCompletion    <-chan struct{}
 	completionDone      chan struct{}
@@ -106,6 +112,7 @@ type run struct {
 	started             bool
 	outcome             *Outcome
 	prompt              string
+	resumePaused        bool
 	mailbox             chan message
 	mu                  sync.Mutex
 	deliveryMu          sync.Mutex

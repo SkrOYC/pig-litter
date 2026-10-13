@@ -52,7 +52,7 @@ func testAdmissionWithAgent(t *testing.T, tree *Tree, parent Ref, kind, name str
 	if parent.ID != "" {
 		parentRun = testRun(t, tree, parent)
 	}
-	snapshot, _, err := tree.admit(admission{parent: parent.ID, parentRun: parentRun, kind: kind, name: name, model: "fixture/child", cwd: "/fixture", task: "task", agent: definition, history: manager})
+	snapshot, _, err := tree.admit(admission{parentRun: parentRun, kind: kind, name: name, model: "fixture/child", cwd: "/fixture", task: "task", agent: definition, history: manager})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestAdmissionCountsDescendantsAndRejectsDepthWritersAndNames(t *testing.T) 
 	if _, _, err := tree.admit(admission{agent: config.Agents["scout"]}); err == nil {
 		t.Fatal("accepted a third live descendant")
 	}
-	if _, _, err := tree.admit(admission{parent: child.ID, parentRun: testRun(t, tree, child.Ref), agent: config.Agents["scout"]}); err == nil || !strings.Contains(err.Error(), "depth") {
+	if _, _, err := tree.admit(admission{parentRun: testRun(t, tree, child.Ref), agent: config.Agents["scout"]}); err == nil || !strings.Contains(err.Error(), "depth") {
 		t.Fatalf("depth rejection %v", err)
 	}
 	writers := testTree(t, defaultConfig())
@@ -92,12 +92,12 @@ func TestAdmissionUsesEffectiveRoleForDelegationAndBashForWriterConflict(t *test
 	tree := testTree(t, defaultConfig())
 	scoutNameWorker := AgentDefinition{Role: "worker", Instructions: "delegate within the read ceiling", Tools: []string{"read"}, CanDelegate: true}
 	parent := testAdmissionWithAgent(t, tree, Ref{}, "scout", "coordinator", scoutNameWorker)
-	if _, _, err := tree.admit(admission{parent: parent.ID, parentRun: testRun(t, tree, parent.Ref), agent: tree.config.Agents["scout"]}); err != nil {
+	if _, _, err := tree.admit(admission{parentRun: testRun(t, tree, parent.Ref), agent: tree.config.Agents["scout"]}); err != nil {
 		t.Fatalf("worker role named scout could not delegate: %v", err)
 	}
 
 	leaf := testAdmissionWithAgent(t, tree, Ref{}, "worker", "leaf", AgentDefinition{Role: "scout", Instructions: "inspect only", Tools: []string{"read"}, CanDelegate: true})
-	if _, _, err := tree.admit(admission{parent: leaf.ID, parentRun: testRun(t, tree, leaf.Ref), agent: tree.config.Agents["scout"]}); err == nil || !strings.Contains(err.Error(), "cannot delegate") {
+	if _, _, err := tree.admit(admission{parentRun: testRun(t, tree, leaf.Ref), agent: tree.config.Agents["scout"]}); err == nil || !strings.Contains(err.Error(), "cannot delegate") {
 		t.Fatalf("scout role delegated under a different name: %v", err)
 	}
 
@@ -126,7 +126,7 @@ func TestWaitCancellationAndTimeoutLeaveChildRunning(t *testing.T) {
 		t.Fatalf("child changed %#v %v", list, err)
 	}
 	outcome, count, err := tree.stop(selected)
-	if err != nil || count != 1 || outcome.State != Stopped {
+	if err != nil || count != 1 || outcome.State != Paused {
 		t.Fatalf("stop %#v %d %v", outcome, count, err)
 	}
 	if _, count, err := tree.stop(selected); err != nil || count != 0 {
@@ -233,7 +233,7 @@ func TestCleanupKeepsCapacityUntilItJoins(t *testing.T) {
 	}
 	close(cleanup)
 	<-stopped
-	if outcome, err := tree.wait(context.Background(), selected, 1000); err != nil || outcome.State != Stopped {
+	if outcome, err := tree.wait(context.Background(), selected, 1000); err != nil || outcome.State != Paused {
 		t.Fatalf("joined stop %#v %v", outcome, err)
 	}
 }

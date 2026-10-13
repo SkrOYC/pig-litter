@@ -151,6 +151,7 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		services.Close()
 		return nil, err
 	}
+	tree.root.id = ChildID(id)
 	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, canonical: map[string]canonicalTool{}, acks: map[ackKey]*acknowledgement{}, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}}
 	tools, err := ctx.GetAllTools()
 	if err != nil {

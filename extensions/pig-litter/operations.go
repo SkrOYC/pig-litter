@@ -105,7 +105,7 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 		callerID = caller.ref.ID
 		o.tree.mu.Lock()
 		var err error
-		parent, err = o.tree.currentLocked(caller)
+		parent, err = o.tree.callerLocked(caller)
 		o.tree.mu.Unlock()
 		if err != nil {
 			return nil, err
@@ -183,7 +183,7 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 		if err != nil {
 			return nil, err
 		}
-		snapshot, execution, err := o.tree.admit(admission{parent: callerID, parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, history: manager, authority: bridge})
+		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, history: manager, authority: bridge})
 		if err != nil {
 			return nil, err
 		}
@@ -222,7 +222,8 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 		page := children[min(args.Offset, len(children)):min(args.Offset+limit, len(children))]
 		return map[string]any{"state": "listed", "children": page, "nextOffset": args.Offset + len(page), "more": len(children) > args.Offset+limit, "totalChildren": len(children), "availableAgentTypes": agents, "nextAgentOffset": args.AgentOffset + len(agents), "moreAgentTypes": len(names) > args.AgentOffset+agentLimit, "totalAgentTypes": len(names)}, nil
 	}
-	if err := o.tree.owned(callerID, args.ID); err != nil {
+	selected, err := o.tree.selectOwned(caller, args.ID)
+	if err != nil {
 		return nil, err
 	}
 	if name == "litter_inspect" {
@@ -231,10 +232,6 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 			return nil, err
 		}
 		return map[string]any{"state": inspection.Child.State, "child": inspection.Child, "outcome": inspection.Outcome}, nil
-	}
-	selected, err := o.tree.selectRun(args.ID)
-	if err != nil {
-		return nil, err
 	}
 	if name == "litter_wait" {
 		key := ackKey{caller, callID}
@@ -248,10 +245,7 @@ func (o *owner) operation(ctx context.Context, name string, raw json.RawMessage,
 		o.beginOutcomeAck(key, selected, name, toolContext)
 		outcome, count, err := o.tree.stop(selected)
 		o.readyOutcomeAck(key, err == nil && outcome != nil && outcome.State.terminal())
-		state := Stopping
-		if outcome != nil {
-			state = outcome.State
-		}
+		state := Paused
 		return map[string]any{"state": state, "outcome": outcome, "stoppedCount": count}, err
 	}
 	if name == "litter_message" {
