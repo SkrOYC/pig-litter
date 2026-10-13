@@ -325,7 +325,6 @@ func (t *Tree) cancelPending(selected *run) {
 		r.run = r.previous
 		r.previous = nil
 		r.paused = r.paused || selected.resumePaused
-		r.latest = r.run.outcome
 	} else {
 		delete(t.records, r.id)
 		delete(t.names, string(r.parentID())+"\x00"+r.name)
@@ -362,7 +361,7 @@ func (t *Tree) finish(r *record, run *run, raw Outcome) {
 		raw.State = Stopped
 	}
 	run.state, run.outcome = raw.State, &raw
-	if r.run == run {
+	if r.run == run && r.previous == nil {
 		r.latest = &raw
 	}
 	run.cancel()
@@ -770,7 +769,7 @@ func (t *Tree) deliveryFailed(selected *run, failure error) {
 		target = child
 	}
 	description, _ := bounded("child completion delivery failed: "+failure.Error(), 1024)
-	if !target.run.state.terminal() {
+	if !target.run.state.terminal() && target.previous == nil {
 		target.run.deliveryError = description
 		return
 	}

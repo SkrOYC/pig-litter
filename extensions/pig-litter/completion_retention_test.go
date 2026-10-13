@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/coding/extension/host/subprocess"
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 )
@@ -265,5 +266,53 @@ func TestLateDeliveryFailureUpdatesCurrentObservationWithoutChangingCapturedResu
 	inspection, _ = tree.inspect(parent.id)
 	if err != nil || stopped.State != Partial || stopped.Error != after.Error || inspection.Child.State != Paused || inspection.Outcome.State != Partial {
 		t.Fatalf("pause lost the retained delivery failure: stopped=%#v inspection=%#v error=%v", stopped, inspection, err)
+	}
+}
+
+func TestRejectedResumePreservesRetainedDeliveryFailure(t *testing.T) {
+	for _, timing := range []string{"before resume", "pending resume", "paused pending resume"} {
+		t.Run(timing, func(t *testing.T) {
+			tree := testTree(t, defaultConfig())
+			coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read"}, CanDelegate: true}
+			parentRef := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
+			childRef := testAdmission(t, tree, parentRef.Ref, "scout", "child")
+			parent, child := tree.records[parentRef.ID], tree.records[childRef.ID]
+			tree.finish(parent, parent.run, Outcome{State: Completed, Text: "parent report", Usage: Usage{TotalTokens: 23}})
+			previous := parent.run
+			if timing == "before resume" {
+				tree.deliveryFailed(child.run, fmt.Errorf("parent history unavailable"))
+			}
+			_, provisional, err := tree.resume(nil, previous, "try again")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if timing != "before resume" {
+				tree.deliveryFailed(child.run, fmt.Errorf("parent history unavailable"))
+			}
+			if timing == "paused pending resume" {
+				if _, _, err := tree.stop(nil, provisional); err != nil {
+					t.Fatal(err)
+				}
+			}
+			o := testCallOwner(tree)
+			ticket := testCall(t, o, nil, "rejected-resume", "litter_message")
+			o.deferActivation(ticket, provisional, nil, func() bool { return false }, "litter_message")
+			o.finishCall(ticket, agent.AgentToolResult{}, true)
+			inspection, err := tree.inspect(parent.id)
+			wantState := Partial
+			if timing == "paused pending resume" {
+				wantState = Paused
+			}
+			if err != nil || inspection.Child.ID != parentRef.ID || inspection.Child.State != wantState || inspection.Outcome == nil || inspection.Outcome.State != Partial || inspection.Outcome.Text != "parent report" || inspection.Outcome.Error != "child completion delivery failed: parent history unavailable" || inspection.Outcome.Usage.TotalTokens != 23 {
+				t.Fatalf("rejected resume lost the retained observation: %#v %v", inspection, err)
+			}
+			observed, err := tree.wait(context.Background(), previous, 1)
+			if err != nil || observed != *inspection.Outcome {
+				t.Fatalf("wait disagrees with retained inspection: %#v %v", observed, err)
+			}
+			if previous.outcome.State != Completed || previous.outcome.Error != "" {
+				t.Fatalf("rejected resume changed a captured result: %#v", previous.outcome)
+			}
+		})
 	}
 }
