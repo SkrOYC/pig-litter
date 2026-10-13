@@ -92,14 +92,15 @@ func TestServeValidatesConfiguredInstructionLiteralForEachScout(t *testing.T) {
 	}
 }
 
-func TestUnboundedChildUsesCanonicalWriteReceipt(t *testing.T) {
+func TestUnboundedChildUsesOriginalWritePathReceipt(t *testing.T) {
 	for _, test := range []struct {
 		name, receipt string
 		wantErr       bool
 	}{
-		{"canonical success", "Successfully wrote to /fixture/workspace/unbounded-marker.txt", false},
+		{"original path success", "Successfully wrote to unbounded-marker.txt", false},
 		{"contents are not a receipt", "unbounded marker\n", true},
-		{"different target", "Successfully wrote to /fixture/workspace/other.txt", true},
+		{"different path", "Successfully wrote to other.txt", true},
+		{"rewritten absolute path", "Successfully wrote to /fixture/workspace/unbounded-marker.txt", true},
 		{"denied write", "Error: permission denied", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -107,16 +108,16 @@ func TestUnboundedChildUsesCanonicalWriteReceipt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			f := &fixture{expectedCWD: "/fixture/workspace"}
+			f := &fixture{}
 			text, calls, err := f.unboundedChildRequest(context.Background(), modelRequest{Messages: []message{{Role: "tool", Content: raw}}})
 			if test.wantErr {
 				if err == nil {
-					t.Fatalf("accepted %q as a successful canonical write", test.receipt)
+					t.Fatalf("accepted %q as a successful native write", test.receipt)
 				}
 				return
 			}
 			if err != nil || text != "unbounded child marker recorded" || len(calls) != 0 {
-				t.Fatalf("canonical write returned %q, %#v, %v", text, calls, err)
+				t.Fatalf("native write returned %q, %#v, %v", text, calls, err)
 			}
 		})
 	}

@@ -520,8 +520,11 @@ func (f *fixture) unboundedChildRequest(ctx context.Context, body modelRequest) 
 		}
 		return "", []call{{"write", map[string]string{"path": "unbounded-marker.txt", "content": "unbounded marker\n"}}}, nil
 	}
-	if len(tools) != 1 || content(tools[0].Content) != "Successfully wrote to "+filepath.Join(f.expectedCWD, "unbounded-marker.txt") {
-		return "", nil, errors.New("provider hold completed but the child marker write was not observed")
+	if len(tools) != 1 {
+		return "", nil, fmt.Errorf("unbounded child returned %d write results, want 1", len(tools))
+	}
+	if receipt := content(tools[0].Content); receipt != "Successfully wrote to unbounded-marker.txt" {
+		return "", nil, fmt.Errorf("unbounded child write receipt = %q, want original path %q", receipt, "unbounded-marker.txt")
 	}
 	return "unbounded child marker recorded", nil, nil
 }
