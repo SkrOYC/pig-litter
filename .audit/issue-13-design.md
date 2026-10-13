@@ -18,9 +18,13 @@ Final individual tool-call success commits an admission for direct and nested ca
 
 Private call tickets bind a native caller, model turn, and tool call before any side effect. Final event handlers capture that ticket and settle it once. Cancellation and retirement use the same pointer. Hook-editable result content and details carry no identity. PiG's synchronous dispatch closes a model turn before a reused provider call ID enters a new scope. Concurrent duplicate IDs in the same scope are rejected. Keep admission settlement, terminal handback consumption, and completion storage acknowledgement separate. A successful terminal handback suppresses duplicate model-visible notices. Release delivery capacity after actual stored message/audit evidence, or conclusive shutdown abandonment. Paused and idle nodes receive retained messages without inference.
 
+Completion delivery distinguishes active model/tool work from settlement through native turn-start and agent-end events. Active work receives deferred custom messages. Settlement uses PiG's native steering queue, which PiG checks after all boundary handlers finish. The settlement hook also recognizes matching native pending messages, covering deferred admission before the phase transition. Four measured candidates showed that a stored-entry snapshot misses later handlers and unconditional queued delivery causes consumed-only inference. A restart probe also ruled out follow-ups during an already planned continuation. Steering passed that probe and all sixteen actor and phase cases. The settled event clears the phase for a later explicit prompt.
+
 Publish outcomes after native Send settles. Acknowledge PiG event barriers before filtering events. Join message workers and clear deferred inputs on pause so they cannot restart implicitly. Serialize native-session install/disposal and retained-manager delivery. Cleanup uses a live bounded context and joins drains before closing owned resources.
 
 Keep the initial task pending until PiG stores its marked user-input transaction. An awaited Agent subscriber runs after native Session persistence and clears that pending input. Setup pause or failure before storage leaves the task available to explicit resume. Later resumes and compaction cannot replay an already stored task.
+
+A provisional resume retains the node's latest observation until activation. Rejection restores the prior execution without overwriting a newer delivery error. Pausing the provisional execution also preserves that observation. Captured execution outcomes remain immutable.
 
 ## Arena result
 
