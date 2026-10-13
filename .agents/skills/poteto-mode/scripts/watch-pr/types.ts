@@ -80,7 +80,7 @@ export type FailedCheck = Extract<Check, { readonly kind: "failed" }>;
 export type PendingCheck = Extract<Check, { readonly kind: "pending" }>;
 export interface CheckRead {
   readonly source: "gh-pr-checks" | "graphql-rollup";
-  readonly checks: NonEmpty<Check>;
+  readonly checks: readonly Check[];
 }
 export interface CommitRollup {
   readonly oid: string;
@@ -107,7 +107,7 @@ export type GitHubMergeAllowed =
 export type GitHubMergeAssessment = GitHubMergeAllowed | GitHubMergeRefusal;
 interface CiBase {
   readonly source: CheckRead["source"];
-  readonly all: NonEmpty<Check>;
+  readonly all: readonly Check[];
   readonly hadPreviousPassingCi: boolean;
 }
 export type CiFailing = CiBase & {
@@ -168,7 +168,13 @@ export interface MergedPr {
   readonly mergedAt: string | null;
 }
 export type MergeGateReason =
-  "closed-without-merge" | "draft-pr" | "changes-requested";
+  | "closed-without-merge"
+  | "draft-pr"
+  | "changes-requested"
+  | {
+      readonly kind: "github-merge-state";
+      readonly status: Exclude<MergeStateStatus, "CLEAN">;
+    };
 export type MergeBlocker =
   | {
       readonly kind: "merge-conflicts";
@@ -207,11 +213,6 @@ export type QueryFailure =
       readonly retryable: true;
       readonly detail: string;
       readonly code: number;
-    }
-  | {
-      readonly kind: "checks-unavailable";
-      readonly retryable: true;
-      readonly detail: string;
     }
   | {
       readonly kind: "invalid-context-url";

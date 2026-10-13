@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
-  ChecksUnavailable,
   WatcherQueryError,
   mapRollupNode,
+  parseCheckRollupPage,
   orderStack,
   parsePullRequest,
   parseReviewThreads,
@@ -15,6 +15,7 @@ import {
   passingCheck,
   pendingCheck,
 } from "./fakes.test-helper.ts";
+import type { GitHubReader } from "./types.ts";
 import { parsePrNumber } from "./types.ts";
 
 const context = {
@@ -63,18 +64,75 @@ describe("checks fallback chain", () => {
     expect(reader.calls).toEqual(["checksFastPath", "checkRollupPage:null"]);
   });
 
-  it("fails closed when both paths are empty", async () => {
+  it("accepts a verified empty GraphQL rollup", async () => {
     const reader = fakeReader({
       fastPath: {
         kind: "unusable",
-        exitCode: 8,
-        stderr: "credential cannot read checks",
+        exitCode: 1,
+        stderr: "no checks reported",
       },
     });
-    await expect(resolveChecks(reader, context)).rejects.toBeInstanceOf(
-      ChecksUnavailable,
-    );
+    expect(await resolveChecks(reader, context)).toEqual({
+      source: "graphql-rollup",
+      checks: [],
+    });
     expect(reader.calls).toEqual(["checksFastPath", "checkRollupPage:null"]);
+  });
+
+  it("propagates GraphQL lookup errors instead of treating them as empty", async () => {
+    const error = new WatcherQueryError({
+      kind: "command-exit",
+      retryable: true,
+      code: 1,
+      detail: "GraphQL request failed",
+    });
+    const reader: GitHubReader = {
+      ...fakeReader({
+        fastPath: { kind: "unusable", exitCode: 1, stderr: "" },
+      }),
+      async checkRollupPage() {
+        throw error;
+      },
+    };
+    await expect(resolveChecks(reader, context)).rejects.toBe(error);
+  });
+
+  it("accepts a null status rollup from a valid GraphQL response", () => {
+    expect(
+      parseCheckRollupPage({
+        data: {
+          repository: {
+            pullRequest: {
+              commits: {
+                nodes: [{ commit: { statusCheckRollup: null } }],
+              },
+            },
+          },
+        },
+      }),
+    ).toEqual({ checks: [], endCursor: null });
+  });
+
+  it("rejects GraphQL data with a missing status rollup", () => {
+    expect(() =>
+      parseCheckRollupPage({
+        data: {
+          repository: {
+            pullRequest: {
+              commits: { nodes: [{ commit: {} }] },
+            },
+          },
+        },
+      }),
+    ).toThrow("missing statusCheckRollup.contexts");
+  });
+
+  it("rejects a GraphQL check response without a commit", () => {
+    expect(() =>
+      parseCheckRollupPage({
+        data: { repository: { pullRequest: { commits: { nodes: [] } } } },
+      }),
+    ).toThrow("missing commits.nodes[0].commit");
   });
 });
 
