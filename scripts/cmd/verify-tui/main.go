@@ -710,7 +710,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		if err := sendKey("Enter"); err != nil {
 			return evidencePath, err
 		}
-		if err := waitFor(ctx, "both stopped results and STOP_DONE", stageTimeout, func() (bool, error) {
+		if err := waitFor(ctx, "both paused results and STOP_DONE", stageTimeout, func() (bool, error) {
 			if err := state.providerFailure(); err != nil {
 				return false, err
 			}
@@ -718,17 +718,17 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		}); err != nil {
 			return evidencePath, err
 		}
-		stopped, err := waitForLayout(ctx, paneSize, readVisible, readScrollback, 100, 32, func(visible string) bool {
-			return widgetShows(visible, "stopped") && strings.Contains(visible, "STOP_DONE")
-		}, "the retained stopped widget")
+		paused, err := waitForLayout(ctx, paneSize, readVisible, readScrollback, 100, 32, func(visible string) bool {
+			return widgetShows(visible, "paused") && strings.Contains(visible, "STOP_DONE")
+		}, "the retained paused widget")
 		if err != nil {
 			return evidencePath, err
 		}
-		if err := saveFrame(evidencePath, "stopped-100", stopped); err != nil {
+		if err := saveFrame(evidencePath, "paused-100", paused); err != nil {
 			return evidencePath, err
 		}
-		if !widgetShows(stopped.visible, "stopped") {
-			return evidencePath, errors.New("stopped frame did not retain both stopped children")
+		if !widgetShows(paused.visible, "paused") {
+			return evidencePath, errors.New("paused frame did not retain both paused children")
 		}
 		if err := pageUpUntilVisible(ctx, readVisible, sendKey, "PARENT_SCROLLBACK_MARKER"); err != nil {
 			return evidencePath, err
@@ -927,8 +927,8 @@ func (state *fixtureState) decide(request openAIRequest) (providerTurn, error) {
 			return providerTurn{}, errors.New("both stop calls did not complete")
 		}
 		for _, stop := range stops {
-			if stop.State != "stopped" {
-				return providerTurn{}, errors.New("both stop calls did not return stopped")
+			if stop.State != "paused" {
+				return providerTurn{}, errors.New("both stop calls did not return paused")
 			}
 		}
 		if len(state.held) != 0 || len(state.aborted) != len(heldNames) {
@@ -1629,7 +1629,7 @@ func latestWidgetLines(frame string) []string {
 func widgetShows(frame, state string) bool {
 	lines := latestWidgetLines(frame)
 	heading := "Litter 2 live 0 kept"
-	if state == "stopped" {
+	if state == "paused" {
 		heading = "Litter 0 live 2 kept"
 	}
 	if len(lines) != 3 || lines[0] != heading {

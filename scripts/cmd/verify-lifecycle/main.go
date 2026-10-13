@@ -349,7 +349,7 @@ func (f *fixture) parent(ctx context.Context, body modelRequest) (string, []call
 		f.stage++
 		return "", []call{{"litter_stop", map[string]string{"id": f.stopped.ID}}}, nil
 	case 11:
-		if err := require(len(tools) == 15 && tools[14].StoppedCount == 1 && tools[14].Outcome.State == "stopped", "independent stop failed"); err != nil {
+		if err := require(len(tools) == 15 && tools[14].StoppedCount == 1 && tools[14].Outcome.State == "paused", "independent stop failed"); err != nil {
 			return "", nil, err
 		}
 		f.done = true
