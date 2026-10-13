@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,13 @@ import (
 	"time"
 
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
+)
+
+type boundaryGateAction string
+
+const (
+	boundaryGateHold     boundaryGateAction = "hold"
+	boundaryGateSDKAbort boundaryGateAction = "sdk_abort"
 )
 
 func (f *fixture) releaseTask(task string) error {
@@ -28,6 +36,11 @@ func (f *fixture) releaseTask(task string) error {
 }
 
 func completionInRequest(body modelRequest, run ref, task string) bool {
+	return completionCopiesInRequest(body, run, task) > 0
+}
+
+func completionCopiesInRequest(body modelRequest, run ref, task string) int {
+	copies := 0
 	for _, message := range body.Messages {
 		if message.Role != "user" {
 			continue
@@ -42,10 +55,10 @@ func completionInRequest(body modelRequest, run ref, task string) bool {
 			Report           string `json:"report"`
 		}
 		if json.Unmarshal([]byte(content(message.Content)), &completion) == nil && completion.Origin == "pig-litter" && completion.Kind == "litter_completion" && completion.ID == run.ID && completion.State == "completed" && completion.Model == "fixture/completion_child" && completion.ReportProvenance == "child_assistant" && strings.HasPrefix(completion.Report, "completed "+task+" ") {
-			return true
+			copies++
 		}
 	}
-	return false
+	return copies
 }
 
 func (f *fixture) parentCompletion(ctx context.Context, w http.ResponseWriter, body modelRequest) (string, []call, error) {
@@ -223,6 +236,68 @@ func (f *fixture) parentCompletion(ctx context.Context, w http.ResponseWriter, b
 		f.markCheck("completionDuringAgentBeforeSettleContinued")
 		f.stage = 15
 		return "BOUNDARY_COMPLETION_PROCESSED", nil, nil
+	case 15:
+		if latest != "BOUNDARY_SDK_ABORT_BEGIN" {
+			return "", nil, fmt.Errorf("unexpected abort-boundary prompt %q", latest)
+		}
+		f.stage = 16
+		return "", []call{{"litter_spawn", map[string]any{"type": "scout", "task": "boundary-sdk-abort-child", "name": "boundary-sdk-abort-child", "model": "fixture/completion_child"}}}, nil
+	case 16:
+		spawned, err := lastToolResult(body)
+		if err != nil || spawned.Child.ID == "" || spawned.Child.Name != "boundary-sdk-abort-child" {
+			return "", nil, fmt.Errorf("abort-boundary child was not admitted: name=%q id=%q err=%v", spawned.Child.Name, spawned.Child.ID, err)
+		}
+		f.mu.Lock()
+		f.runs = append(f.runs, spawned.Child.ref)
+		f.mu.Unlock()
+		if err := f.wait(ctx, func() bool { return f.held["boundary-sdk-abort-child"] != nil }); err != nil {
+			return "", nil, fmt.Errorf("abort-boundary child provider request: %w", err)
+		}
+		f.stage = 17
+		return "BOUNDARY_SDK_ABORT_CHILD_READY", nil, nil
+	case 17:
+		if !strings.Contains(user, "BOUNDARY_SDK_ABORT_RECOVERY_FIRST") || len(runs) != 6 {
+			return "", nil, fmt.Errorf("unexpected first SDK-abort recovery request: prompt_present=%t children=%d", strings.Contains(user, "BOUNDARY_SDK_ABORT_RECOVERY_FIRST"), len(runs))
+		}
+		if copies := completionCopiesInRequest(body, runs[5], "boundary-sdk-abort-child"); copies != 1 {
+			return "", nil, fmt.Errorf("first abort-recovery prompt contained %d matching completion copies, want 1", copies)
+		}
+		f.stage = 18
+		return "", []call{
+			{"litter_inspect", with(runs[5])},
+			{"litter_spawn", map[string]any{"type": "scout", "task": "recovery-capacity-child", "name": "recovery-capacity-child", "model": "fixture/completion_child"}},
+		}, nil
+	case 18:
+		results, err := trailingToolResults(body, 2)
+		if err != nil {
+			return "", nil, err
+		}
+		inspection := results[0]
+		reportMatches := strings.HasPrefix(inspection.Outcome.Text, "completed boundary-sdk-abort-child ")
+		if inspection.Child.ID != runs[5].ID || inspection.Child.State != "completed" || inspection.Outcome.Run != runs[5] || inspection.Outcome.State != "completed" || !reportMatches {
+			return "", nil, fmt.Errorf("SDK abort inspect changed result: child=%s/%s outcome=%s/%s report_matches=%t", inspection.Child.ID, inspection.Child.State, inspection.Outcome.Run.ID, inspection.Outcome.State, reportMatches)
+		}
+		if results[1].Child.ID == "" || results[1].Child.Name != "recovery-capacity-child" {
+			return "", nil, fmt.Errorf("completion capacity stayed reserved after abort recovery: name=%q id=%q", results[1].Child.Name, results[1].Child.ID)
+		}
+		f.mu.Lock()
+		f.runs = append(f.runs, results[1].Child.ref)
+		f.mu.Unlock()
+		if err := f.wait(ctx, func() bool { return f.held["recovery-capacity-child"] != nil }); err != nil {
+			return "", nil, fmt.Errorf("recovery capacity child provider request: %w", err)
+		}
+		f.stage = 19
+		return "BOUNDARY_SDK_ABORT_RECOVERY_FIRST_DONE", nil, nil
+	case 19:
+		if !strings.Contains(user, "BOUNDARY_SDK_ABORT_RECOVERY_SECOND") || len(runs) != 7 {
+			return "", nil, fmt.Errorf("unexpected second abort-recovery request: prompt_present=%t children=%d", strings.Contains(user, "BOUNDARY_SDK_ABORT_RECOVERY_SECOND"), len(runs))
+		}
+		if copies := completionCopiesInRequest(body, runs[5], "boundary-sdk-abort-child"); copies != 1 {
+			return "", nil, fmt.Errorf("following abort-recovery prompt contained %d matching completion copies, want 1", copies)
+		}
+		f.markCheck("completionRecoveryDeduplicatesStoredReceipt")
+		f.stage = 20
+		return "BOUNDARY_SDK_ABORT_RECOVERY_SECOND_DONE", nil, nil
 	}
 	return "", nil, fmt.Errorf("unexpected completion fixture provider request at stage %d", f.stage)
 }
@@ -232,9 +307,13 @@ func (f *fixture) completionChild(ctx context.Context, body modelRequest) (strin
 		if message.Role != "user" {
 			continue
 		}
-		for _, task := range []string{"busy-child", "idle-child", "clear-child", "capacity-after-clear", "boundary-child"} {
+		for _, task := range []string{"busy-child", "idle-child", "clear-child", "capacity-after-clear", "boundary-child", "boundary-sdk-abort-child", "recovery-capacity-child"} {
 			if strings.Contains(content(message.Content), task) {
-				return f.hold(ctx, task), nil, ctx.Err()
+				text := f.hold(ctx, task)
+				if task == "recovery-capacity-child" {
+					return text, nil, nil
+				}
+				return text, nil, ctx.Err()
 			}
 		}
 	}
@@ -336,6 +415,66 @@ func (f *fixture) countCompletionRequests(run ref, task string) int {
 		}
 	}
 	return count
+}
+
+func awaitBoundaryGate(ctx context.Context, ready <-chan boundaryGateConnection) (boundaryGateConnection, error) {
+	select {
+	case gate, open := <-ready:
+		if !open {
+			return boundaryGateConnection{}, errors.New("boundary gate listener closed")
+		}
+		if gate.err != nil {
+			return boundaryGateConnection{}, fmt.Errorf("agent_before_settle gate: %w", gate.err)
+		}
+		if gate.conn == nil {
+			return boundaryGateConnection{}, errors.New("agent_before_settle gate returned no connection")
+		}
+		return gate, nil
+	case <-ctx.Done():
+		return boundaryGateConnection{}, fmt.Errorf("agent_before_settle gate was not reached: %w", ctx.Err())
+	}
+}
+
+func verifyBoundaryGateEvidence(directory string, expectedAction boundaryGateAction) error {
+	data, err := os.ReadFile(filepath.Join(directory, "boundary-gate-entry.json"))
+	if err != nil {
+		return fmt.Errorf("read boundary gate evidence: %w", err)
+	}
+	var evidence struct {
+		Event   string `json:"event"`
+		Outcome string `json:"outcome"`
+		Action  string `json:"action"`
+	}
+	if err := json.Unmarshal(data, &evidence); err != nil || evidence.Event != "agent_before_settle" || evidence.Outcome != "completed" || evidence.Action != string(expectedAction) {
+		return fmt.Errorf("boundary gate evidence = %s/%s/%s, want %s, err=%v", evidence.Event, evidence.Outcome, evidence.Action, expectedAction, err)
+	}
+	return nil
+}
+
+func releaseBoundaryGate(gate boundaryGateConnection) error {
+	if _, err := fmt.Fprintln(gate.conn, "release"); err != nil {
+		_ = gate.conn.Close()
+		return fmt.Errorf("release agent_before_settle gate: %w", err)
+	}
+	return gate.conn.Close()
+}
+
+func requestBoundarySDKAbort(gate boundaryGateConnection) error {
+	if err := gate.conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return fmt.Errorf("bound SDK abort action wait: %w", err)
+	}
+	defer gate.conn.SetDeadline(time.Time{})
+	if _, err := fmt.Fprintln(gate.conn, "abort"); err != nil {
+		return fmt.Errorf("request SDK abort from settle guard: %w", err)
+	}
+	acknowledgment, err := bufio.NewReader(gate.conn).ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("wait for SDK abort action acknowledgment: %w", err)
+	}
+	if acknowledgment != "abort-returned\n" {
+		return fmt.Errorf("SDK abort action acknowledgment = %q, want abort-returned", acknowledgment)
+	}
+	return nil
 }
 
 func (f *fixture) runCompletion(ctx context.Context, directory string, send func(any) error, wait func(string, string) error, waitToolExecution func(string, string) error, events <-chan map[string]any, boundaryGateReady <-chan boundaryGateConnection) error {
@@ -544,7 +683,7 @@ func (f *fixture) runCompletion(ctx context.Context, directory string, send func
 		return fmt.Errorf("successful completion wait caused extra provider requests: before=%d after=%d", requestCount, finalRequestCount)
 	}
 	boundaryArm := filepath.Join(directory, "boundary-gate-arm")
-	if err := os.WriteFile(boundaryArm, []byte("armed"), 0o600); err != nil {
+	if err := os.WriteFile(boundaryArm, []byte(boundaryGateHold), 0o600); err != nil {
 		return err
 	}
 	if err := send(map[string]any{"id": "boundary-completion", "type": "prompt", "message": "BOUNDARY_ARRIVAL_BEGIN"}); err != nil {
@@ -553,32 +692,16 @@ func (f *fixture) runCompletion(ctx context.Context, directory string, send func
 	if err := f.wait(ctx, func() bool { return f.held["boundary-child"] != nil }); err != nil {
 		return fmt.Errorf("boundary child provider request: %w", err)
 	}
-	var gate boundaryGateConnection
-	select {
-	case gate = <-boundaryGateReady:
-		if gate.err != nil {
-			return fmt.Errorf("agent_before_settle gate: %w", gate.err)
-		}
-		if gate.conn == nil {
-			return errors.New("agent_before_settle gate returned no connection")
-		}
-	case <-ctx.Done():
-		return fmt.Errorf("agent_before_settle gate was not reached: %w", ctx.Err())
+	gate, err := awaitBoundaryGate(ctx, boundaryGateReady)
+	if err != nil {
+		return err
 	}
 	runs = f.completionRunRefs()
 	if len(runs) != 5 {
 		return errors.New("boundary child did not retain its native session ID")
 	}
-	var boundaryEvidence struct {
-		Event   string `json:"event"`
-		Outcome string `json:"outcome"`
-	}
-	data, err := os.ReadFile(filepath.Join(directory, "boundary-gate-entry.json"))
-	if err != nil {
-		return fmt.Errorf("read boundary gate evidence: %w", err)
-	}
-	if err := json.Unmarshal(data, &boundaryEvidence); err != nil || boundaryEvidence.Event != "agent_before_settle" || boundaryEvidence.Outcome != "completed" {
-		return fmt.Errorf("boundary gate evidence = %s/%s, err=%v", boundaryEvidence.Event, boundaryEvidence.Outcome, err)
+	if err := verifyBoundaryGateEvidence(directory, boundaryGateHold); err != nil {
+		return err
 	}
 	if err := f.releaseTask("boundary-child"); err != nil {
 		return err
@@ -586,11 +709,7 @@ func (f *fixture) runCompletion(ctx context.Context, directory string, send func
 	if _, err := waitCompletionDelivery(ctx, directory, runs[4]); err != nil {
 		return fmt.Errorf("boundary child completion acknowledgement: %w", err)
 	}
-	if _, err := fmt.Fprintln(gate.conn, "release"); err != nil {
-		_ = gate.conn.Close()
-		return fmt.Errorf("release agent_before_settle gate: %w", err)
-	}
-	if err := gate.conn.Close(); err != nil {
+	if err := releaseBoundaryGate(gate); err != nil {
 		return err
 	}
 	boundaryCtx, boundaryCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -608,7 +727,91 @@ func (f *fixture) runCompletion(ctx context.Context, directory string, send func
 	if err := send(map[string]any{"id": "completion-boundary-final-state", "type": "get_state"}); err != nil {
 		return err
 	}
-	return waitCompletionState(ctx, events, "completion-boundary-final-state")
+	if err := waitCompletionState(ctx, events, "completion-boundary-final-state"); err != nil {
+		return err
+	}
+	return f.runBoundarySDKAbortRecovery(ctx, directory, send, wait, events, boundaryGateReady)
+}
+
+func (f *fixture) runBoundarySDKAbortRecovery(ctx context.Context, directory string, send func(any) error, wait func(string, string) error, events <-chan map[string]any, boundaryGateReady <-chan boundaryGateConnection) error {
+	recoveryCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if err := os.WriteFile(filepath.Join(directory, "boundary-gate-arm"), []byte(boundaryGateSDKAbort), 0o600); err != nil {
+		return err
+	}
+	if err := send(map[string]any{"id": "boundary-sdk-abort-start", "type": "prompt", "message": "BOUNDARY_SDK_ABORT_BEGIN"}); err != nil {
+		return err
+	}
+	if err := wait("BOUNDARY_SDK_ABORT_CHILD_READY", ""); err != nil {
+		return err
+	}
+	if err := f.wait(recoveryCtx, func() bool { return f.held["boundary-sdk-abort-child"] != nil }); err != nil {
+		return fmt.Errorf("abort-boundary child provider request: %w", err)
+	}
+	gate, err := awaitBoundaryGate(recoveryCtx, boundaryGateReady)
+	if err != nil {
+		return err
+	}
+	runs := f.completionRunRefs()
+	if len(runs) != 6 {
+		return errors.New("abort-boundary child did not retain its native session ID")
+	}
+	if err := verifyBoundaryGateEvidence(directory, boundaryGateSDKAbort); err != nil {
+		return err
+	}
+	if err := f.releaseTask("boundary-sdk-abort-child"); err != nil {
+		return err
+	}
+	if _, err := waitCompletionDelivery(recoveryCtx, directory, runs[5]); err != nil {
+		return fmt.Errorf("abort-boundary child completion acknowledgement: %w", err)
+	}
+	if err := requestBoundarySDKAbort(gate); err != nil {
+		return err
+	}
+	if err := writeJSON(filepath.Join(directory, "boundary-sdk-abort-acknowledged.json"), map[string]any{"action": "sdk.Context.Abort", "childID": runs[5].ID, "afterAgentEnd": true, "gateHeld": true, "beforeRelease": true}); err != nil {
+		return err
+	}
+	if err := releaseBoundaryGate(gate); err != nil {
+		return err
+	}
+	if err := writeJSON(filepath.Join(directory, "boundary-sdk-abort-gate-released.json"), map[string]any{"action": "sdk.Context.Abort", "childID": runs[5].ID}); err != nil {
+		return err
+	}
+	if err := send(map[string]any{"id": "boundary-sdk-abort-settled", "type": "get_state"}); err != nil {
+		return err
+	}
+	if err := waitCompletionState(recoveryCtx, events, "boundary-sdk-abort-settled"); err != nil {
+		return err
+	}
+	if count := f.countRequests("parent_completion", "BOUNDARY_SDK_ABORT_BEGIN"); count != 2 {
+		return fmt.Errorf("SDK abort produced %d parent requests before another user prompt, want 2", count)
+	}
+	if count := f.countCompletionRequests(runs[5], "boundary-sdk-abort-child"); count != 0 {
+		return fmt.Errorf("SDK-aborted root made %d provider requests with the child report before a user prompt", count)
+	}
+	baselineRequests := f.countRequests("parent_completion", "BOUNDARY_SDK_ABORT_BEGIN")
+	if err := send(map[string]any{"id": "boundary-sdk-abort-recovery-first", "type": "prompt", "message": "BOUNDARY_SDK_ABORT_RECOVERY_FIRST"}); err != nil {
+		return err
+	}
+	if err := waitCompletionTurn(recoveryCtx, f, events, "BOUNDARY_SDK_ABORT_RECOVERY_FIRST_DONE"); err != nil {
+		return err
+	}
+	if err := send(map[string]any{"id": "boundary-sdk-abort-recovery-second", "type": "prompt", "message": "BOUNDARY_SDK_ABORT_RECOVERY_SECOND"}); err != nil {
+		return err
+	}
+	if err := waitCompletionTurn(recoveryCtx, f, events, "BOUNDARY_SDK_ABORT_RECOVERY_SECOND_DONE"); err != nil {
+		return err
+	}
+	if count := f.countRequests("parent_completion", "BOUNDARY_SDK_ABORT_BEGIN"); count != baselineRequests+3 {
+		return fmt.Errorf("SDK abort recovery made %d parent requests, want three across two prompts and the spawn result", count-baselineRequests)
+	}
+	if err := send(map[string]any{"id": "boundary-sdk-abort-recovery-final-state", "type": "get_state"}); err != nil {
+		return err
+	}
+	if err := waitCompletionState(recoveryCtx, events, "boundary-sdk-abort-recovery-final-state"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func hiddenCompletionOptions(options sdk.SendMessageOptions) bool {

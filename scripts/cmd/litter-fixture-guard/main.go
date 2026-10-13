@@ -21,6 +21,13 @@ const (
 	spawnFailureText = "FIXTURE_FINAL_SPAWN_FAILURE\n"
 )
 
+type boundaryGateAction string
+
+const (
+	boundaryGateHold     boundaryGateAction = "hold"
+	boundaryGateSDKAbort boundaryGateAction = "sdk_abort"
+)
+
 func main() {
 	directory := os.Getenv("LITTER_FIXTURE_EVIDENCE")
 	if directory == "" {
@@ -60,8 +67,8 @@ func main() {
 		return map[string]any{"block": true, "reason": "PARENT_PERMISSION_DENIED_" + name}, nil
 	})
 	if os.Getenv("LITTER_FIXTURE_BOUNDARY_GATE_ARM") != "" {
-		ext.OnEvent("agent_before_settle", func(_ sdk.Context, data map[string]any) (any, error) {
-			return holdBoundaryForFixture(data)
+		ext.OnEvent("agent_before_settle", func(ctx sdk.Context, data map[string]any) (any, error) {
+			return holdBoundaryForFixture(ctx, data)
 		})
 	}
 	ext.OnToolResult(func(_ sdk.Context, data map[string]any) (any, error) {
@@ -73,10 +80,17 @@ func main() {
 	}
 }
 
-func holdBoundaryForFixture(data map[string]any) (any, error) {
+func holdBoundaryForFixture(ctx sdk.Context, data map[string]any) (any, error) {
 	armPath := os.Getenv("LITTER_FIXTURE_BOUNDARY_GATE_ARM")
 	if armPath == "" {
 		return nil, nil
+	}
+	actionBytes, err := os.ReadFile(armPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
 	if err := os.Remove(armPath); err != nil {
 		if os.IsNotExist(err) {
@@ -84,7 +98,11 @@ func holdBoundaryForFixture(data map[string]any) (any, error) {
 		}
 		return nil, err
 	}
-	entry, err := json.Marshal(map[string]any{"event": data["type"], "outcome": data["outcome"]})
+	action := boundaryGateAction(strings.TrimSpace(string(actionBytes)))
+	if action != boundaryGateHold && action != boundaryGateSDKAbort {
+		return nil, fmt.Errorf("unexpected boundary gate action %q", action)
+	}
+	entry, err := json.Marshal(map[string]any{"event": data["type"], "outcome": data["outcome"], "action": action})
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +117,21 @@ func holdBoundaryForFixture(data map[string]any) (any, error) {
 	if _, err := fmt.Fprintln(conn, "entered"); err != nil {
 		return nil, err
 	}
-	release, err := bufio.NewReader(conn).ReadString('\n')
+	reader := bufio.NewReader(conn)
+	if action == boundaryGateSDKAbort {
+		command, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		if command != "abort\n" {
+			return nil, fmt.Errorf("unexpected boundary gate command %q", command)
+		}
+		ctx.Abort()
+		if _, err := fmt.Fprintln(conn, "abort-returned"); err != nil {
+			return nil, err
+		}
+	}
+	release, err := reader.ReadString('\n')
 	if err != nil {
 		return nil, err
 	}

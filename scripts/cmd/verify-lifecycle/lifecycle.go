@@ -328,23 +328,25 @@ func (f *fixture) runLifecycle(ctx context.Context, directory, workspace, agentD
 			_ = boundaryGateListener.Close()
 			_ = os.RemoveAll(boundaryGateDirectory)
 		}()
-		boundaryGateReady = make(chan boundaryGateConnection, 1)
+		boundaryGateReady = make(chan boundaryGateConnection, 2)
 		go func() {
-			conn, err := boundaryGateListener.Accept()
-			if err != nil {
-				boundaryGateReady <- boundaryGateConnection{err: err}
-				return
-			}
-			entered, err := bufio.NewReader(conn).ReadString('\n')
-			if err != nil || entered != "entered\n" {
-				_ = conn.Close()
-				if err == nil {
-					err = fmt.Errorf("unexpected boundary gate signal %q", entered)
+			for range 2 {
+				conn, err := boundaryGateListener.Accept()
+				if err != nil {
+					boundaryGateReady <- boundaryGateConnection{err: err}
+					return
 				}
-				boundaryGateReady <- boundaryGateConnection{err: err}
-				return
+				entered, err := bufio.NewReader(conn).ReadString('\n')
+				if err != nil || entered != "entered\n" {
+					_ = conn.Close()
+					if err == nil {
+						err = fmt.Errorf("unexpected boundary gate signal %q", entered)
+					}
+					boundaryGateReady <- boundaryGateConnection{err: err}
+					return
+				}
+				boundaryGateReady <- boundaryGateConnection{conn: conn}
 			}
-			boundaryGateReady <- boundaryGateConnection{conn: conn}
 		}()
 	}
 	arguments := []string{"--no-extensions", "-e", selectedExtension}
