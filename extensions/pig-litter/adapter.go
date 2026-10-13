@@ -615,6 +615,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 		state.calls = newCallScope()
 		state.mu.Unlock()
 		if o != nil {
+			o.tree.root.markAgentEnded(false)
 			o.retireScope(previous)
 		}
 		return nil, nil
@@ -650,11 +651,22 @@ func newExtension(state *extensionState) *sdk.Extension {
 		}
 		return map[string]any{"messages": o.completionContext(o.tree.root, messages)}, nil
 	})
-	ext.OnEvent("agent_before_settle", func(_ sdk.Context, _ map[string]any) (any, error) {
+	ext.OnEvent("agent_end", func(_ sdk.Context, _ map[string]any) (any, error) {
 		state.mu.Lock()
 		o := state.owner
 		state.mu.Unlock()
-		if o != nil && o.continueForCompletions(o.tree.root) {
+		if o != nil {
+			o.tree.root.markAgentEnded(true)
+		}
+		return nil, nil
+	})
+	ext.OnEvent("agent_before_settle", func(_ sdk.Context, data map[string]any) (any, error) {
+		state.mu.Lock()
+		o := state.owner
+		state.mu.Unlock()
+		preview, _ := data["context"].(map[string]any)
+		pending, _ := preview["pendingMessages"].([]any)
+		if o != nil && o.continueForCompletions(o.tree.root, pending) {
 			return map[string]any{"continue": true}, nil
 		}
 		return nil, nil
@@ -673,6 +685,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 		o := state.owner
 		state.mu.Unlock()
 		if o != nil {
+			o.tree.root.markAgentEnded(false)
 			o.settleRoot()
 			o.retireScope(o.callScope(nil))
 			o.retireReceipts(o.tree.root)

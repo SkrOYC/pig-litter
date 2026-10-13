@@ -87,7 +87,7 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 				t.Fatal(err)
 			}
 			selected := &run{ref: Ref{"child:1"}}
-			tree := &Tree{ctx: context.Background(), pending: map[*run]*reservation{selected: {outcomeObserved: test.observed}}}
+			tree := &Tree{ctx: context.Background(), root: &record{}, pending: map[*run]*reservation{selected: {outcomeObserved: test.observed}}}
 			ext := sdk.New("completion-test")
 			var o *owner
 			ext.OnEvent("session_start", func(ctx sdk.Context, _ map[string]any) (any, error) {
@@ -124,10 +124,15 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 			writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgReady, Ready: &subprocess.ReadyPayload{Cwd: t.TempDir(), Width: 80}})
 			writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgRequest, ID: "complete", Request: &subprocess.RequestPayload{Method: "event", Event: "session_start", HandlerID: 1, Args: json.RawMessage(`{}`)}})
 			idleCalls, sends, sessionReads, audits := 0, 0, 0, 0
-			for {
+			for completed, observed := false, !test.handoff; !completed || !observed; {
 				envelope := readCompletionEnvelope(t, host)
 				if envelope.Type == subprocess.MsgResponse && envelope.ID == "complete" {
-					break
+					completed = true
+					continue
+				}
+				if envelope.Type == subprocess.MsgResponse && envelope.ID == "observe" {
+					observed = true
+					continue
 				}
 				if envelope.Type != subprocess.MsgCall {
 					continue
@@ -380,7 +385,7 @@ func TestCompletionAuditAfterSettlementBetweenObservationAndAckRead(t *testing.T
 	}
 	ref := Ref{"child:1"}
 	selected := &run{ref: ref}
-	tree := &Tree{ctx: context.Background(), pending: map[*run]*reservation{selected: {}}}
+	tree := &Tree{ctx: context.Background(), root: &record{}, pending: map[*run]*reservation{selected: {}}}
 	snapshot, release := make(chan struct{}), make(chan struct{})
 	var gate sync.Once
 	var o *owner
@@ -512,7 +517,7 @@ func TestIdenticalCompletionsRequireNewSDKEntries(t *testing.T) {
 	first := &run{ref: Ref{"child:1"}, noticeID: "first-receipt"}
 	second := &run{ref: first.ref, noticeID: "second-receipt"}
 	child := &record{id: first.ref.ID, run: first}
-	tree := &Tree{ctx: context.Background(), records: map[ChildID]*record{child.id: child}, pending: map[*run]*reservation{first: {nonce: first.noticeID}, second: {nonce: second.noticeID}}}
+	tree := &Tree{ctx: context.Background(), root: &record{}, records: map[ChildID]*record{child.id: child}, pending: map[*run]*reservation{first: {nonce: first.noticeID}, second: {nonce: second.noticeID}}}
 	var o *owner
 	ext := sdk.New("repeated-completion-test")
 	ext.OnEvent("exercise", func(ctx sdk.Context, data map[string]any) (any, error) {

@@ -140,10 +140,10 @@ func TestLateWaitSuppressesStoredNoticeAndConsumedOnlyContinuation(t *testing.T)
 					o.readyOutcomeAck(ticket, true)
 					o.finishCall(ticket, nativeResult("litter_wait", map[string]any{"outcome": selected.outcome}, nil), false)
 				}
-				if got := o.continueForCompletions(tree.root); got == consumed {
+				if got := o.continueForCompletions(tree.root, nil); got == consumed {
 					t.Fatalf("automatic continuation=%t consumed=%t", got, consumed)
 				}
-				if o.continueForCompletions(tree.root) {
+				if o.continueForCompletions(tree.root, nil) {
 					t.Fatal("one stored notice requested a second continuation")
 				}
 				notice := map[string]any{"role": "custom", "customType": "litter_completion", "content": selected.reservation.content, "details": completionDetails{ChildID: child.ID, Receipt: selected.noticeID}}

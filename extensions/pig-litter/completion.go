@@ -456,15 +456,16 @@ func (o *owner) sendCompletion(r *record, selected *run, outcome Outcome) {
 		o.tree.mu.Unlock()
 	}
 	if o.tree.rootID(notice.parent) {
+		parent.deliveryMu.Lock()
 		idle, stateErr := o.context.IsIdle()
 		if stateErr != nil {
+			parent.deliveryMu.Unlock()
 			o.tree.deliveryFailed(selected, stateErr)
 			return
 		}
-		o.tree.mu.Lock()
-		notice.continueTurn = !idle && (parent == nil || !parent.paused)
-		o.tree.mu.Unlock()
-		err = o.storeRetained(notice.parent, details, content, false)
+		options := o.completionOptions(parent, details, !idle)
+		err = o.context.SendCustomMessage(sdk.CustomMessage{CustomType: "litter_completion", Content: content, Display: false, Details: details}, sdk.SendMessageOptions{TriggerTurn: options.TriggerTurn, DeliverAs: string(options.DeliverAs)})
+		parent.deliveryMu.Unlock()
 	} else {
 		err = o.deliverRetained(parent, details, content)
 	}
@@ -482,6 +483,26 @@ func (o *owner) completionOwner(pending *reservation, caller *run) bool {
 	return pending.parent == caller.ref.ID
 }
 
+func (r *record) markAgentEnded(ended bool) {
+	r.deliveryMu.Lock()
+	r.agentEnded = ended
+	r.deliveryMu.Unlock()
+}
+
+func (o *owner) completionOptions(parent *record, details completionDetails, busy bool) extension.SendMessageOptions {
+	o.tree.mu.Lock()
+	defer o.tree.mu.Unlock()
+	active := busy && !parent.paused
+	if notice := parent.notices[details.Receipt]; notice != nil {
+		notice.continueTurn = active
+	}
+	if active && parent.agentEnded {
+		return extension.SendMessageOptions{DeliverAs: extension.DeliverAsSteer}
+	}
+	trigger := false
+	return extension.SendMessageOptions{TriggerTurn: &trigger}
+}
+
 func (o *owner) deliverRetained(parent *record, details completionDetails, content string) error {
 	parent.deliveryMu.Lock()
 	defer parent.deliveryMu.Unlock()
@@ -491,7 +512,6 @@ func (o *owner) deliverRetained(parent *record, details completionDetails, conte
 	o.tree.mu.Lock()
 	current := parent.run
 	manager := parent.history
-	paused := parent.paused
 	o.tree.mu.Unlock()
 	if manager == nil {
 		return reject("unavailable", "parent retained history is unavailable")
@@ -502,13 +522,8 @@ func (o *owner) deliverRetained(parent *record, details completionDetails, conte
 	if session != nil {
 		ctx, cancel := context.WithTimeout(o.tree.ctx, 5*time.Second)
 		defer cancel()
-		o.tree.mu.Lock()
-		if notice := parent.notices[details.Receipt]; notice != nil {
-			notice.continueTurn = !paused && session.IsStreaming()
-		}
-		o.tree.mu.Unlock()
-		trigger := false
-		return session.SendCustomMessage(ctx, extension.CustomMessageRef{CustomType: "litter_completion", Content: content, Display: false, Details: details}, &extension.SendMessageOptions{TriggerTurn: &trigger})
+		options := o.completionOptions(parent, details, session.IsStreaming())
+		return session.SendCustomMessage(ctx, extension.CustomMessageRef{CustomType: "litter_completion", Content: content, Display: false, Details: details}, &options)
 	}
 	return o.appendRetained(parent.id, details, content)
 }
@@ -546,7 +561,7 @@ func (o *owner) completionParentLocked(id ChildID) *record {
 	return o.tree.records[id]
 }
 
-func (o *owner) continueForCompletions(parent *record) bool {
+func (o *owner) continueForCompletions(parent *record, pending []any) bool {
 	parent.receiptMu.Lock()
 	receipts := make([]*completionReceipt, 0, len(parent.receipts))
 	for _, receipt := range parent.receipts {
@@ -555,6 +570,12 @@ func (o *owner) continueForCompletions(parent *record) bool {
 	parent.receiptMu.Unlock()
 	for _, receipt := range receipts {
 		receipt.complete()
+	}
+	queued := map[string]ChildID{}
+	for _, message := range pending {
+		if details, ok := contextCompletion(message); ok {
+			queued[details.Receipt] = details.ChildID
+		}
 	}
 	o.tree.mu.Lock()
 	if o.tree.closed {
@@ -566,7 +587,7 @@ func (o *owner) continueForCompletions(parent *record) bool {
 	for id, notice := range parent.notices {
 		if notice.outcomeObserved {
 			audits = append(audits, notice.selected)
-		} else if !parent.paused && notice.stored && notice.continueTurn {
+		} else if !parent.paused && notice.continueTurn && (notice.stored || queued[id] == notice.selected.ref.ID) {
 			continuation = true
 			notice.continueTurn = false
 			delete(parent.notices, id)
@@ -634,12 +655,25 @@ func (o *owner) completionContext(parent *record, messages []any) []any {
 
 func (o *owner) completionHooks(parent *record) extension.Extension {
 	return extension.Extension{Name: "pig-litter-completions", Handlers: map[string][]extension.HandlerFn{
+		"turn_start": {func(...any) (any, error) {
+			parent.markAgentEnded(false)
+			return nil, nil
+		}},
+		"agent_end": {func(...any) (any, error) {
+			parent.markAgentEnded(true)
+			return nil, nil
+		}},
+		"agent_settled": {func(...any) (any, error) {
+			parent.markAgentEnded(false)
+			return nil, nil
+		}},
 		"context": {func(args ...any) (any, error) {
 			event := args[0].(extension.ContextEvent)
-			return extension.ContextEventResult{Messages: o.completionContext(parent, event.Messages)}, nil
+			return &extension.ContextEventResult{Messages: o.completionContext(parent, event.Messages)}, nil
 		}},
-		"agent_before_settle": {func(...any) (any, error) {
-			if o.continueForCompletions(parent) {
+		"agent_before_settle": {func(args ...any) (any, error) {
+			event := args[0].(*extension.AgentBeforeSettleEvent)
+			if o.continueForCompletions(parent, event.Context.PendingMessages) {
 				continuation := true
 				return extension.BoundaryResult{Continue: &continuation}, nil
 			}
