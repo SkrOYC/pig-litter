@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 )
@@ -56,6 +59,11 @@ func main() {
 		}
 		return map[string]any{"block": true, "reason": "PARENT_PERMISSION_DENIED_" + name}, nil
 	})
+	if os.Getenv("LITTER_FIXTURE_BOUNDARY_GATE_ARM") != "" {
+		ext.OnEvent("agent_before_settle", func(_ sdk.Context, data map[string]any) (any, error) {
+			return holdBoundaryForFixture(data)
+		})
+	}
 	ext.OnToolResult(func(_ sdk.Context, data map[string]any) (any, error) {
 		return finalSpawnResultFailure(data)
 	})
@@ -63,6 +71,42 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func holdBoundaryForFixture(data map[string]any) (any, error) {
+	armPath := os.Getenv("LITTER_FIXTURE_BOUNDARY_GATE_ARM")
+	if armPath == "" {
+		return nil, nil
+	}
+	if err := os.Remove(armPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	entry, err := json.Marshal(map[string]any{"event": data["type"], "outcome": data["outcome"]})
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(os.Getenv("LITTER_FIXTURE_BOUNDARY_GATE_EVIDENCE"), entry, 0o600); err != nil {
+		return nil, err
+	}
+	conn, err := net.DialTimeout("unix", os.Getenv("LITTER_FIXTURE_BOUNDARY_GATE_SOCKET"), 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	if _, err := fmt.Fprintln(conn, "entered"); err != nil {
+		return nil, err
+	}
+	release, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	if release != "release\n" {
+		return nil, fmt.Errorf("unexpected boundary gate command %q", release)
+	}
+	return nil, nil
 }
 
 func finalSpawnResultFailure(data map[string]any) (any, error) {

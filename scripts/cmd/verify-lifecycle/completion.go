@@ -197,6 +197,32 @@ func (f *fixture) parentCompletion(ctx context.Context, w http.ResponseWriter, b
 		f.markCheck("waitSuppressesQueuedCompletionInference")
 		f.stage = 12
 		return "WAIT_AFTER_CLEAR_ABORT_DONE", nil, nil
+	case 12:
+		if latest != "BOUNDARY_ARRIVAL_BEGIN" {
+			return "", nil, fmt.Errorf("unexpected completion boundary prompt %q", latest)
+		}
+		f.stage = 13
+		return "", []call{{"litter_spawn", map[string]any{"type": "scout", "task": "boundary-child", "name": "boundary-child", "model": "fixture/completion_child"}}}, nil
+	case 13:
+		spawned, err := lastToolResult(body)
+		if err != nil || spawned.Child.ID == "" || spawned.Child.Name != "boundary-child" {
+			return "", nil, fmt.Errorf("boundary child was not admitted: name=%q id=%q err=%v", spawned.Child.Name, spawned.Child.ID, err)
+		}
+		f.mu.Lock()
+		f.runs = append(f.runs, spawned.Child.ref)
+		f.mu.Unlock()
+		if err := f.wait(ctx, func() bool { return f.held["boundary-child"] != nil }); err != nil {
+			return "", nil, fmt.Errorf("boundary child provider request: %w", err)
+		}
+		f.stage = 14
+		return "BOUNDARY_CHILD_READY", nil, nil
+	case 14:
+		if len(runs) != 5 || !completionInRequest(body, runs[4], "boundary-child") {
+			return "", nil, errors.New("automatic boundary continuation did not contain the child completion")
+		}
+		f.markCheck("completionDuringAgentBeforeSettleContinued")
+		f.stage = 15
+		return "BOUNDARY_COMPLETION_PROCESSED", nil, nil
 	}
 	return "", nil, fmt.Errorf("unexpected completion fixture provider request at stage %d", f.stage)
 }
@@ -206,7 +232,7 @@ func (f *fixture) completionChild(ctx context.Context, body modelRequest) (strin
 		if message.Role != "user" {
 			continue
 		}
-		for _, task := range []string{"busy-child", "idle-child", "clear-child", "capacity-after-clear"} {
+		for _, task := range []string{"busy-child", "idle-child", "clear-child", "capacity-after-clear", "boundary-child"} {
 			if strings.Contains(content(message.Content), task) {
 				return f.hold(ctx, task), nil, ctx.Err()
 			}
@@ -300,7 +326,19 @@ func (f *fixture) completionRunRefs() []ref {
 	return append([]ref(nil), f.runs...)
 }
 
-func (f *fixture) runCompletion(ctx context.Context, directory string, send func(any) error, wait func(string, string) error, waitToolExecution func(string, string) error, events <-chan map[string]any) error {
+func (f *fixture) countCompletionRequests(run ref, task string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, request := range f.requests {
+		if request.Model == "parent_completion" && completionInRequest(request, run, task) {
+			count++
+		}
+	}
+	return count
+}
+
+func (f *fixture) runCompletion(ctx context.Context, directory string, send func(any) error, wait func(string, string) error, waitToolExecution func(string, string) error, events <-chan map[string]any, boundaryGateReady <-chan boundaryGateConnection) error {
 	if err := send(map[string]any{"id": "busy", "type": "prompt", "message": "BUSY_BEGIN. PARENT_PRIVATE_MARKER"}); err != nil {
 		return err
 	}
@@ -505,7 +543,76 @@ func (f *fixture) runCompletion(ctx context.Context, directory string, send func
 	if finalRequestCount != requestCount+2 {
 		return fmt.Errorf("successful completion wait caused extra provider requests: before=%d after=%d", requestCount, finalRequestCount)
 	}
-	return nil
+	boundaryArm := filepath.Join(directory, "boundary-gate-arm")
+	if err := os.WriteFile(boundaryArm, []byte("armed"), 0o600); err != nil {
+		return err
+	}
+	if err := send(map[string]any{"id": "boundary-completion", "type": "prompt", "message": "BOUNDARY_ARRIVAL_BEGIN"}); err != nil {
+		return err
+	}
+	if err := f.wait(ctx, func() bool { return f.held["boundary-child"] != nil }); err != nil {
+		return fmt.Errorf("boundary child provider request: %w", err)
+	}
+	var gate boundaryGateConnection
+	select {
+	case gate = <-boundaryGateReady:
+		if gate.err != nil {
+			return fmt.Errorf("agent_before_settle gate: %w", gate.err)
+		}
+		if gate.conn == nil {
+			return errors.New("agent_before_settle gate returned no connection")
+		}
+	case <-ctx.Done():
+		return fmt.Errorf("agent_before_settle gate was not reached: %w", ctx.Err())
+	}
+	runs = f.completionRunRefs()
+	if len(runs) != 5 {
+		return errors.New("boundary child did not retain its native session ID")
+	}
+	var boundaryEvidence struct {
+		Event   string `json:"event"`
+		Outcome string `json:"outcome"`
+	}
+	data, err := os.ReadFile(filepath.Join(directory, "boundary-gate-entry.json"))
+	if err != nil {
+		return fmt.Errorf("read boundary gate evidence: %w", err)
+	}
+	if err := json.Unmarshal(data, &boundaryEvidence); err != nil || boundaryEvidence.Event != "agent_before_settle" || boundaryEvidence.Outcome != "completed" {
+		return fmt.Errorf("boundary gate evidence = %s/%s, err=%v", boundaryEvidence.Event, boundaryEvidence.Outcome, err)
+	}
+	if err := f.releaseTask("boundary-child"); err != nil {
+		return err
+	}
+	boundaryDelivery, err := waitCompletionDelivery(ctx, directory, runs[4])
+	if err != nil {
+		return fmt.Errorf("boundary child completion acknowledgement: %w", err)
+	}
+	if !hiddenCompletionOptions(boundaryDelivery.Options) {
+		return fmt.Errorf("boundary completion options = %#v, want hidden native delivery without a turn trigger", boundaryDelivery.Options)
+	}
+	if _, err := fmt.Fprintln(gate.conn, "release"); err != nil {
+		_ = gate.conn.Close()
+		return fmt.Errorf("release agent_before_settle gate: %w", err)
+	}
+	if err := gate.conn.Close(); err != nil {
+		return err
+	}
+	boundaryCtx, boundaryCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer boundaryCancel()
+	if err := waitCompletionTurn(boundaryCtx, f, events, "BOUNDARY_COMPLETION_PROCESSED"); err != nil {
+		return err
+	}
+	if count := f.countRequests("parent_completion", "BOUNDARY_ARRIVAL_BEGIN"); count != 3 {
+		return fmt.Errorf("boundary prompt produced %d parent requests, want the initial call, spawn result, and one continuation", count)
+	}
+	if count := f.countCompletionRequests(runs[4], "boundary-child"); count != 1 {
+		return fmt.Errorf("boundary child report appeared in %d parent requests, want exactly one", count)
+	}
+	f.markCheck("completionDuringAgentBeforeSettleContinuedWithoutPrompt")
+	if err := send(map[string]any{"id": "completion-boundary-final-state", "type": "get_state"}); err != nil {
+		return err
+	}
+	return waitCompletionState(ctx, events, "completion-boundary-final-state")
 }
 
 func hiddenCompletionOptions(options sdk.SendMessageOptions) bool {

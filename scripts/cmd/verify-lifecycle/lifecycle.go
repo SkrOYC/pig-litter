@@ -7,11 +7,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
+
+type boundaryGateConnection struct {
+	conn net.Conn
+	err  error
+}
 
 func (f *fixture) parentLifecycle(ctx context.Context, body modelRequest) (string, []call, error) {
 	tools, err := toolResults(body)
@@ -303,11 +309,59 @@ func (f *fixture) runLifecycle(ctx context.Context, directory, workspace, agentD
 			return err
 		}
 	}
-	command := exec.CommandContext(ctx, pig, "--no-extensions", "-e", selectedExtension, "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--approve", "--offline", "--model", model, "--mode", "rpc")
+	var boundaryGatePath, boundaryGateDirectory string
+	var boundaryGateListener net.Listener
+	var boundaryGateReady chan boundaryGateConnection
+	if f.scenario == "completion" {
+		var err error
+		boundaryGateDirectory, err = os.MkdirTemp("", "litter-boundary-gate-")
+		if err != nil {
+			return err
+		}
+		boundaryGatePath = filepath.Join(boundaryGateDirectory, "gate.sock")
+		boundaryGateListener, err = net.Listen("unix", boundaryGatePath)
+		if err != nil {
+			_ = os.RemoveAll(boundaryGateDirectory)
+			return err
+		}
+		defer func() {
+			_ = boundaryGateListener.Close()
+			_ = os.RemoveAll(boundaryGateDirectory)
+		}()
+		boundaryGateReady = make(chan boundaryGateConnection, 1)
+		go func() {
+			conn, err := boundaryGateListener.Accept()
+			if err != nil {
+				boundaryGateReady <- boundaryGateConnection{err: err}
+				return
+			}
+			entered, err := bufio.NewReader(conn).ReadString('\n')
+			if err != nil || entered != "entered\n" {
+				_ = conn.Close()
+				if err == nil {
+					err = fmt.Errorf("unexpected boundary gate signal %q", entered)
+				}
+				boundaryGateReady <- boundaryGateConnection{err: err}
+				return
+			}
+			boundaryGateReady <- boundaryGateConnection{conn: conn}
+		}()
+	}
+	arguments := []string{"--no-extensions", "-e", selectedExtension}
+	if f.scenario == "completion" {
+		arguments = append(arguments, "-e", filepath.Join(filepath.Dir(extension), "litter-fixture-guard"))
+	}
+	arguments = append(arguments, "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--approve", "--offline", "--model", model, "--mode", "rpc")
+	command := exec.CommandContext(ctx, pig, arguments...)
 	prepareProcess(command)
 	command.Dir, command.Env, command.Stderr = workspace, fixtureEnvironment(pig, f.bashPath, directory, agentDir), stderr
 	if f.scenario == "completion" {
-		command.Env = append(command.Env, "LITTER_FIXTURE_PROXY_TARGET="+extension)
+		command.Env = append(command.Env,
+			"LITTER_FIXTURE_PROXY_TARGET="+extension,
+			"LITTER_FIXTURE_BOUNDARY_GATE_ARM="+filepath.Join(directory, "boundary-gate-arm"),
+			"LITTER_FIXTURE_BOUNDARY_GATE_SOCKET="+boundaryGatePath,
+			"LITTER_FIXTURE_BOUNDARY_GATE_EVIDENCE="+filepath.Join(directory, "boundary-gate-entry.json"),
+		)
 	}
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -403,7 +457,7 @@ func (f *fixture) runLifecycle(ctx context.Context, directory, workspace, agentD
 		}
 	}
 	if f.scenario == "completion" {
-		if err := f.runCompletion(ctx, directory, send, wait, waitToolExecution, events); err != nil {
+		if err := f.runCompletion(ctx, directory, send, wait, waitToolExecution, events, boundaryGateReady); err != nil {
 			return err
 		}
 	} else if f.scenario == "pause" {
