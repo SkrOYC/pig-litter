@@ -27,6 +27,22 @@ func TestWaitReturnsFixtureFailure(t *testing.T) {
 	}
 }
 
+func TestRequirePausedOutcomeRejectsCompletedLatestOutcome(t *testing.T) {
+	childRef := ref{ID: "paused-child"}
+	value := result{
+		Child:   child{ref: childRef, State: "paused"},
+		Outcome: outcome{Run: childRef, State: "paused", Model: "fixture/lifecycle_child"},
+	}
+	if err := requirePausedOutcome(value, childRef); err != nil {
+		t.Fatalf("paused child outcome was rejected: %v", err)
+	}
+
+	value.Outcome.State = "completed"
+	if err := requirePausedOutcome(value, childRef); err == nil {
+		t.Fatal("accepted a completed outcome for an active-abort pause")
+	}
+}
+
 func TestServeValidatesConfiguredInstructionLiteralForEachScout(t *testing.T) {
 	for _, test := range []struct {
 		name, model, prompt, wantPath string

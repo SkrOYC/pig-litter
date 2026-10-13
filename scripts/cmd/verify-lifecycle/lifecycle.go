@@ -234,7 +234,7 @@ func (f *fixture) lifecycleRunRefs() []ref {
 }
 
 func requirePausedOutcome(value result, expected ref) error {
-	if value.Child.ID != expected.ID || value.Child.State != "paused" || value.Outcome.Run != expected || value.Outcome.Model != "fixture/lifecycle_child" {
+	if value.Child.ID != expected.ID || value.Child.State != "paused" || value.Outcome.Run != expected || value.Outcome.State != "paused" || value.Outcome.Model != "fixture/lifecycle_child" {
 		return fmt.Errorf("child/outcome = %#v, want paused ID %q with its retained lifecycle outcome", value, expected.ID)
 	}
 	return nil
