@@ -241,7 +241,7 @@ export async function runCommand(args, { cwd, env, timeoutMs, signal, input, onS
   }
  }
  function members() {
-  const snapshot = Bun.spawnSync(['ps', '-eo', 'pid=,ppid=,pgid=,stat='], { timeout: 100, maxBuffer: 2 * 1024 * 1024 });
+  const snapshot = Bun.spawnSync(['ps', '-eo', 'pid=,ppid=,pgid=,stat='], { timeout: 500, maxBuffer: 2 * 1024 * 1024 });
   ensure(snapshot.exitCode === 0, 'Could not inspect the owned command process group.');
   return snapshot.stdout.toString().trim().split('\n').flatMap(line => {
    const [pid, parent, group, state] = line.trim().split(/\s+/);
