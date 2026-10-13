@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -13,8 +14,8 @@ type childCheck struct {
 }
 
 var childChecks = []childCheck{
-	{"deniedRead", "worker", "denied", "deny-read", "partial", "tool read failed", false},
-	{"deniedWrite", "worker", "denied", "deny-write", "partial", "tool write failed", false},
+	{"nativeRead", "worker", "denied", "native-read", "completed", "", false},
+	{"nativeWrite", "worker", "denied", "native-write", "completed", "", false},
 	{"providerFailure", "scout", "provider_error", "provider-failure", "failed", "intentional provider failure", false},
 	{"toolFailure", "scout", "missing_file", "missing-file", "partial", "tool read failed", false},
 	{"readonlyDelegation", "scout", "roles", "role-ceiling", "completed", "", true},
@@ -24,7 +25,7 @@ var childChecks = []childCheck{
 
 func validScenario(name string) bool {
 	switch name {
-	case "core", "cwd", "nested", "checks", "messages", "lifecycle", "completion", "shadow", "unbounded":
+	case "core", "cwd", "nested", "checks", "messages", "lifecycle", "completion", "shadow", "unbounded", "codemode":
 		return true
 	}
 	return false
@@ -139,20 +140,26 @@ func (f *fixture) checkedChild(ctx context.Context, body modelRequest) (string, 
 	switch body.Model {
 	case "denied":
 		name, path := "read", "denied-read.txt"
-		if strings.Contains(user, "deny-write") {
+		if strings.Contains(user, "native-write") {
 			name, path = "write", "denied-write.txt"
 		}
 		if len(tools) == 0 {
 			args := map[string]string{"path": path}
 			if name == "write" {
-				args["content"] = "must not be written"
+				args["content"] = "native child write marker\n"
 			}
 			return "", []call{{name, args}}, nil
 		}
-		if len(tools) != 1 || !strings.Contains(content(tools[0].Content), "PARENT_PERMISSION_DENIED_"+name) {
-			return "", nil, errors.New("child did not receive the parent's denied tool result")
+		if len(tools) != 1 {
+			return "", nil, errors.New("native child file operation returned an unexpected number of results")
 		}
-		return "assistant finished after denied operation", nil, nil
+		if name == "read" && !strings.Contains(content(tools[0].Content), "native child read marker") {
+			return "", nil, errors.New("native child read was routed through the parent permission hook")
+		}
+		if name == "write" && content(tools[0].Content) != "Successfully wrote to "+filepath.Join(f.expectedCWD, path) {
+			return "", nil, errors.New("native child write was routed through the parent permission hook")
+		}
+		return "native child file operation completed", nil, nil
 	case "missing_file":
 		if len(tools) == 0 {
 			return "", []call{{"read", map[string]string{"path": "missing-file.txt"}}}, nil
@@ -160,21 +167,24 @@ func (f *fixture) checkedChild(ctx context.Context, body modelRequest) (string, 
 		return "assistant finished after failed read", nil, nil
 	case "roles":
 		for _, name := range toolNames(body) {
-			if strings.HasPrefix(name, "litter_") {
-				return "", nil, fmt.Errorf("scout tool inventory unexpectedly exposes %s", name)
+			if strings.HasPrefix(name, "litter_") || name == "write" || name == "edit" || name == "bash" {
+				return "", nil, fmt.Errorf("read-only scout tool inventory unexpectedly exposes %s", name)
 			}
-		}
-		if len(tools) != 0 {
-			return "", nil, errors.New("scout called a tool while checking its delegation ceiling")
 		}
 		checkName := "readonlyDelegation"
 		if strings.Contains(user, "named-role-ceiling") {
 			checkName = "namedScoutCannotDelegate"
 		}
+		if len(tools) == 0 {
+			return "", []call{{"read", map[string]string{"path": "denied-read.txt"}}}, nil
+		}
+		if len(tools) != 1 || !strings.Contains(content(tools[0].Content), "native child read marker") {
+			return "", nil, errors.New("read-only scout could not read the native project file")
+		}
 		f.mu.Lock()
 		f.checks[checkName] = true
 		f.mu.Unlock()
-		return "scout delegation controls absent", nil, nil
+		return "scout native read-only tools verified", nil, nil
 	case "history":
 		return strings.Repeat("large retained history ", 4000), nil, nil
 	case "message_child":

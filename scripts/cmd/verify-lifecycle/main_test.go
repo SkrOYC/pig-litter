@@ -19,7 +19,7 @@ func TestServeValidatesConfiguredInstructionLiteralForEachScout(t *testing.T) {
 		name, model, prompt, wantPath string
 		wantStatus                    int
 	}{
-		{"captured user-only scout", "cwd_nested", "USER_ONLY_SCOUT_INSTRUCTIONS", "cwd-output.txt", http.StatusOK},
+		{"captured user-only scout", "cwd_nested", "USER_ONLY_SCOUT_INSTRUCTIONS", "@cwd-output.txt", http.StatusOK},
 		{"literal project filename", "missing_file", "input.txt", "missing-file.txt", http.StatusOK},
 		{"wrong scout configuration", "cwd_nested", "input.txt", "", http.StatusInternalServerError},
 		{"file contents replaced literal", "missing_file", "stock fixture read marker\n", "", http.StatusInternalServerError},
