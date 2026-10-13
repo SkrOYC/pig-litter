@@ -1029,8 +1029,8 @@ func run(directory, pig, extension, scenario string) error {
 			return errors.New("native child file tools triggered the parent's extension hook")
 		}
 		for path, expected := range map[string]string{
-			filepath.Join(workspace, "denied-read.txt"):  "native child read marker\n",
-			filepath.Join(workspace, "denied-write.txt"): "native child write marker\n",
+			filepath.Join(expectedCWD, "denied-read.txt"):  "native child read marker\n",
+			filepath.Join(expectedCWD, "denied-write.txt"): "native child write marker\n",
 		} {
 			got, err := os.ReadFile(path)
 			if err != nil || string(got) != expected {

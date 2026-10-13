@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 )
 
@@ -154,10 +153,10 @@ func (f *fixture) checkedChild(ctx context.Context, body modelRequest) (string, 
 			return "", nil, errors.New("native child file operation returned an unexpected number of results")
 		}
 		if name == "read" && !strings.Contains(content(tools[0].Content), "native child read marker") {
-			return "", nil, errors.New("native child read was routed through the parent permission hook")
+			return "", nil, errors.New("native child read did not return the expected file contents")
 		}
-		if name == "write" && content(tools[0].Content) != "Successfully wrote to "+filepath.Join(f.expectedCWD, path) {
-			return "", nil, errors.New("native child write was routed through the parent permission hook")
+		if name == "write" && content(tools[0].Content) != "Successfully wrote to "+path {
+			return "", nil, fmt.Errorf("native child write receipt = %q, want original path %q", content(tools[0].Content), path)
 		}
 		return "native child file operation completed", nil, nil
 	case "missing_file":
