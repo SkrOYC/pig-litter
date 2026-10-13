@@ -167,12 +167,15 @@ func TestLifecycleEnvironmentUsesOnlyResolvedExecutableDirectories(t *testing.T)
 	if values["PIG_HOME"] != directory || values["PIG_CODING_AGENT_DIR"] != agentDir {
 		t.Fatalf("explicit fixture roots changed: %#v", values)
 	}
+	if values["HOME"] != filepath.Join(directory, "home") || values["USERPROFILE"] != values["HOME"] {
+		t.Fatalf("fixture user homes are not isolated together: %#v", values)
+	}
 	defaults := make(map[string]string)
 	for _, entry := range fixtureEnvironment(pig, bash, directory, "") {
 		key, value, _ := strings.Cut(entry, "=")
 		defaults[key] = value
 	}
-	if defaults["HOME"] != filepath.Join(directory, "home") || defaults["PIG_USE_PI_DIRS"] != "0" || defaults["PATH"] != wantPath {
+	if defaults["HOME"] != filepath.Join(directory, "home") || defaults["USERPROFILE"] != defaults["HOME"] || defaults["PIG_USE_PI_DIRS"] != "0" || defaults["PATH"] != wantPath {
 		t.Fatalf("default-directory fixture environment changed: %#v", defaults)
 	}
 	for _, key := range []string{"PIG_HOME", "PIG_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR"} {

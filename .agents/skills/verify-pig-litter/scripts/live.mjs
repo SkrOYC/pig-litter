@@ -71,7 +71,7 @@ export function sessionEvidence(text) {
 
 export function sourceIdentity(requested, cwd, source) {
  ensure(source && typeof source.source === 'string' && source.source.length > 0, `Selected Piglet ${requested} did not report its source path.`);
- const localPath = isAbsolute(requested) || requested.includes('/') || requested.endsWith('.yaml');
+ const localPath = isAbsolute(requested) || requested.includes('/') || requested.endsWith('.yaml') || requested.endsWith('.yml');
  const resolved = resolve(cwd, source.source);
  if (localPath) ensure(resolved === resolve(cwd, requested), `PiG resolved ${requested} to a different Piglet source at ${resolved}.`);
  else ensure(source.name === requested, `PiG resolved ${requested} as ${source.name ?? 'an unnamed Piglet'}.`);

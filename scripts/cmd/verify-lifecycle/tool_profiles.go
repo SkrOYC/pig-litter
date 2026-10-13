@@ -22,12 +22,12 @@ var toolInventories = map[string]toolInventory{
 var fixtureModelInventories = map[string]string{
 	"parent": "worker", "parent_cwd": "worker", "parent_unbounded": "worker", "parent_nested": "worker",
 	"parent_checks": "worker", "parent_shadow": "worker", "parent_messages": "worker", "parent_lifecycle": "worker", "parent_completion": "worker",
-	"held": "scout", "lifecycle_child": "scout", "completion_child": "scout", "missing_file": "scout", "roles": "scout", "message_child": "scout", "provider_error": "scout", "cwd_nested": "scout",
+	"held": "scout", "lifecycle_child": "scout", "completion_child": "scout", "missing_file": "scout", "roles": "scout", "history": "scout", "message_child": "scout", "provider_error": "scout", "cwd_nested": "scout",
 	"denied": "worker", "worker": "worker", "cwd_worker": "worker", "unbounded_child": "worker",
 	"nester": "coordinator", "grandchild": "coordinator",
 }
 
-var fixtureModelIDs = []string{"parent", "held", "worker", "parent_cwd", "cwd_worker", "cwd_nested", "parent_unbounded", "unbounded_child", "parent_nested", "nester", "grandchild", "parent_checks", "denied", "provider_error", "missing_file", "roles", "parent_messages", "message_child", "parent_lifecycle", "lifecycle_child", "parent_completion", "completion_child"}
+var fixtureModelIDs = []string{"parent", "held", "worker", "parent_cwd", "cwd_worker", "cwd_nested", "parent_unbounded", "unbounded_child", "parent_nested", "nester", "grandchild", "parent_checks", "denied", "provider_error", "missing_file", "roles", "history", "parent_messages", "message_child", "parent_lifecycle", "lifecycle_child", "parent_completion", "completion_child"}
 
 func requireToolInventory(request modelRequest, inventory toolInventory) error {
 	allowed := make(map[string]bool, len(inventory.required)+len(inventory.optional))

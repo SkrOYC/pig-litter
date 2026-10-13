@@ -19,6 +19,7 @@ var childChecks = []childCheck{
 	{"toolFailure", "scout", "missing_file", "missing-file", "partial", "tool read failed", false},
 	{"readonlyDelegation", "scout", "roles", "role-ceiling", "completed", "", true},
 	{"namedScoutCannotDelegate", "custom_scout", "roles", "named-role-ceiling", "completed", "", true},
+	{"historyRetired", "scout", "history", "oversized-history", "partial", "retained child history exceeded", false},
 }
 
 func validScenario(name string) bool {
@@ -89,6 +90,9 @@ func (f *fixture) parentChecks(body modelRequest) (string, []call, error) {
 		if latest.State != check.state || (check.errorText != "" && !strings.Contains(latest.Outcome.Error, check.errorText)) {
 			return "", nil, fmt.Errorf("%s outcome is %s with %q, want %s and %q", check.name, latest.State, latest.Outcome.Error, check.state, check.errorText)
 		}
+		if check.model == "history" && (latest.Outcome.Run.ID != f.worker.ID || !latest.Outcome.Truncated || len(latest.Outcome.Text) > 256) {
+			return "", nil, errors.New("over-budget history did not return a bounded partial outcome for the same child")
+		}
 		if check.noControlsObserved {
 			f.mu.Lock()
 			observed := f.checks[check.name]
@@ -100,6 +104,20 @@ func (f *fixture) parentChecks(body modelRequest) (string, []call, error) {
 		f.mu.Lock()
 		f.checks[check.name] = true
 		f.mu.Unlock()
+		if check.model == "history" {
+			f.stage = 5
+			return "", []call{{"litter_message", with(f.worker, "resume", true, "text", "must not recreate history")}}, nil
+		}
+		f.runs = append(f.runs, f.worker)
+		f.stage = 2
+		return f.parentChecks(body)
+	}
+	if f.stage == 5 {
+		latest := tools[len(tools)-1]
+		if latest.State != "unavailable" || !strings.Contains(latest.Report, "retained history is unavailable") {
+			return "", nil, errors.New("over-budget history resumed")
+		}
+		f.checks["historyResumeUnavailable"] = true
 		f.runs = append(f.runs, f.worker)
 		f.stage = 2
 		return f.parentChecks(body)
@@ -157,6 +175,8 @@ func (f *fixture) checkedChild(ctx context.Context, body modelRequest) (string, 
 		f.checks[checkName] = true
 		f.mu.Unlock()
 		return "scout delegation controls absent", nil, nil
+	case "history":
+		return strings.Repeat("large retained history ", 4000), nil, nil
 	case "message_child":
 		if strings.Contains(user, "THIRD_OVERFLOW") {
 			return "", nil, errors.New("SDK queued mailbox accepted an overflow message")

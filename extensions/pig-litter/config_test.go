@@ -15,8 +15,12 @@ func isolatedConfigHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	for _, key := range []string{"PIG_HOME", "XDG_CONFIG_HOME", "PIG_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR", "PIG_USE_PI_DIRS"} {
 		t.Setenv(key, "")
+	}
+	if actual, err := os.UserHomeDir(); err != nil || actual != home {
+		t.Fatalf("isolated user home = %q, %v; want %q", actual, err, home)
 	}
 	return home
 }
@@ -108,6 +112,7 @@ func TestLoadConfigExplicitDirectoriesSkipUnrelatedUserDefaults(t *testing.T) {
 }
 
 func TestLoadConfigFollowsExpandedAndSharedAgentDirectory(t *testing.T) {
+	isolatedConfigHome(t)
 	userDir := t.TempDir()
 	project := t.TempDir()
 	if err := os.WriteFile(filepath.Join(userDir, "litter.yaml"), []byte("concurrency: 6\n"), 0o600); err != nil {

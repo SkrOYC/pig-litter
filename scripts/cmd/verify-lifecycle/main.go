@@ -650,7 +650,7 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 				return
 			}
 		}
-		if body.Model == "held" || body.Model == "lifecycle_child" || body.Model == "denied" || body.Model == "missing_file" || body.Model == "roles" || body.Model == "message_child" || body.Model == "completion_child" || body.Model == "cwd_nested" || body.Model == "nester" || body.Model == "grandchild" {
+		if body.Model == "held" || body.Model == "lifecycle_child" || body.Model == "denied" || body.Model == "missing_file" || body.Model == "roles" || body.Model == "history" || body.Model == "message_child" || body.Model == "completion_child" || body.Model == "cwd_nested" || body.Model == "nester" || body.Model == "grandchild" {
 			expected := "input.txt"
 			if body.Model == "cwd_nested" {
 				expected = "USER_ONLY_SCOUT_INSTRUCTIONS"
@@ -687,7 +687,7 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 		text, calls, err = f.completionChild(request.Context(), body)
 	case "lifecycle_child":
 		text, calls, err = f.lifecycleChild(request.Context(), body)
-	case "denied", "missing_file", "roles", "message_child":
+	case "denied", "missing_file", "roles", "history", "message_child":
 		text, calls, err = f.checkedChild(request.Context(), body)
 	case "provider_error":
 		w.Header().Set("Content-Type", "application/json")
@@ -897,7 +897,7 @@ func run(directory, pig, extension, scenario string) error {
 		}
 	} else if scenario == "checks" {
 		model = "fixture/parent_checks"
-		configuration := "concurrency: 2\ndepth: 2\nmax_result_bytes: 256\nagents:\n  scout:\n    instructions: input.txt\n  worker:\n    instructions: input.txt\n  fixed:\n    role: scout\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n    model: fixture/held\n  custom_scout:\n    role: scout\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n"
+		configuration := "concurrency: 2\ndepth: 2\nmax_history_bytes: 65536\nmax_result_bytes: 256\nagents:\n  scout:\n    instructions: input.txt\n  worker:\n    instructions: input.txt\n  fixed:\n    role: scout\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n    model: fixture/held\n  custom_scout:\n    role: scout\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n"
 		if err := os.WriteFile(filepath.Join(workspace, "litter.yaml"), []byte(configuration), 0o600); err != nil {
 			return err
 		}

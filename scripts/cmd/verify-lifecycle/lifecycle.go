@@ -93,7 +93,8 @@ func fixtureEnvironment(pig, bash, directory, agentDir string) []string {
 	if bashDir != filepath.Dir(pig) {
 		searchPath += string(os.PathListSeparator) + bashDir
 	}
-	environment := []string{"PATH=" + searchPath, "HOME=" + filepath.Join(directory, "home"), "PIG_USE_PI_DIRS=0", "PIG_OFFLINE=1", "PI_OFFLINE=1", "PI_SKIP_VERSION_CHECK=1", "GOPROXY=off", "GOENV=off", "TERM=xterm-256color", "LANG=C.UTF-8", "LITTER_FIXTURE_EVIDENCE=" + directory}
+	home := filepath.Join(directory, "home")
+	environment := []string{"PATH=" + searchPath, "HOME=" + home, "USERPROFILE=" + home, "PIG_USE_PI_DIRS=0", "PIG_OFFLINE=1", "PI_OFFLINE=1", "PI_SKIP_VERSION_CHECK=1", "GOPROXY=off", "GOENV=off", "TERM=xterm-256color", "LANG=C.UTF-8", "LITTER_FIXTURE_EVIDENCE=" + directory}
 	if agentDir != "" {
 		environment = append(environment, "PIG_HOME="+directory, "PIG_CODING_AGENT_DIR="+agentDir)
 	}

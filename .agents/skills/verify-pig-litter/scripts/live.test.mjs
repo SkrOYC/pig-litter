@@ -57,6 +57,7 @@ test('runtime inputs preserve inherited configuration and select a local Piglet 
 test('doctor source identity distinguishes the changed checkout from an installed Piglet', () => {
  const root = '/home/oscar/GitHub/pig-litter';
  expect(sourceIdentity(`${root}/piglet.yaml`, '/tmp/scratch', { name: 'pig-litter', source: `${root}/piglet.yaml` }).resolvedPath).toBe(`${root}/piglet.yaml`);
+ expect(sourceIdentity('piglet.yml', '/tmp/scratch', { name: 'pig-litter', source: 'piglet.yml' }).resolvedPath).toBe('/tmp/scratch/piglet.yml');
  expect(sourceIdentity('pig-litter', '/tmp/scratch', { name: 'pig-litter', source: '/home/oscar/.pig/piglets/pig-litter/piglet.yaml' }).name).toBe('pig-litter');
  expect(() => sourceIdentity(`${root}/piglet.yaml`, '/tmp/scratch', { name: 'pig-litter', source: '/home/oscar/.pig/piglets/pig-litter/piglet.yaml' })).toThrow('different Piglet source');
  expect(() => sourceIdentity('pig-litter', '/tmp/scratch', { name: 'other', source: '/home/oscar/.pig/piglets/other/piglet.yaml' })).toThrow('resolved pig-litter as other');
