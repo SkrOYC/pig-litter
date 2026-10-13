@@ -350,7 +350,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	if r.canDelegate {
 		for _, name := range controlNames {
 			tools = append(tools, &nativeTool{name: name, schema: schemas[name], execute: func(ctx context.Context, callID string, raw json.RawMessage) (agent.AgentToolResult, error) {
-				ticket, err := o.callScope(run).begin(run, callID, name, o.config.MaxMailbox)
+				ticket, err := o.callScope(run).begin(run, callID, name)
 				if err != nil {
 					return nativeResult(name, nil, err), nil
 				}
@@ -588,7 +588,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 			if signal == nil {
 				signal = o.tree.ctx
 			}
-			ticket, err := o.callScope(nil).begin(nil, ctx.ToolCallID(), name, o.config.MaxMailbox)
+			ticket, err := o.callScope(nil).begin(nil, ctx.ToolCallID(), name)
 			if err != nil {
 				return sdkResult(name, nil, err), nil
 			}

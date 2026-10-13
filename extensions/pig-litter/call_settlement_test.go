@@ -19,7 +19,7 @@ func testCall(t *testing.T, o *owner, caller *run, id, operation string) *callTi
 	if caller != nil && caller.calls == nil {
 		caller.calls = newCallScope()
 	}
-	ticket, err := o.callScope(caller).begin(caller, id, operation, o.config.MaxMailbox)
+	ticket, err := o.callScope(caller).begin(caller, id, operation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestCapturedCallbackCannotSettleReusedIDInANewTurn(t *testing.T) {
 	oldTicket := testCall(t, o, nil, "same-call-id", "litter_spawn")
 	o.deferActivation(oldTicket, oldRun, nil, func() bool { return false }, "litter_spawn")
 	captured := oldTicket.scope.capture(oldTicket.callID, "litter_spawn")
-	if _, err := oldTicket.scope.begin(nil, oldTicket.callID, "litter_spawn", 16); err == nil {
+	if _, err := oldTicket.scope.begin(nil, oldTicket.callID, "litter_spawn"); err == nil {
 		t.Fatal("duplicate current-scope ID replaced the live ticket")
 	}
 	if oldTicket.scope.capture(oldTicket.callID, "litter_spawn") != captured {

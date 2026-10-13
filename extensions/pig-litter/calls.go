@@ -19,7 +19,7 @@ func newCallScope() *callScope {
 	return &callScope{calls: map[string]*callTicket{}}
 }
 
-func (s *callScope) begin(caller *run, callID, operation string, limit int) (*callTicket, error) {
+func (s *callScope) begin(caller *run, callID, operation string) (*callTicket, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || callID == "" {
@@ -27,9 +27,6 @@ func (s *callScope) begin(caller *run, callID, operation string, limit int) (*ca
 	}
 	if s.calls[callID] != nil {
 		return nil, reject("rejected", "duplicate tool call ID in the current turn")
-	}
-	if len(s.calls) >= limit {
-		return nil, reject("rejected", "pending tool call capacity reached")
 	}
 	ticket := &callTicket{scope: s, caller: caller, callID: callID, operation: operation}
 	s.calls[callID] = ticket
