@@ -109,6 +109,7 @@ devenv shell -- scripts/verify-stock-lifecycle.sh --scenario completion
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario shadow
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario cwd
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario unbounded
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario codemode
 ```
 
 The fixtures record provider requests, stdout, stderr, and results under `.pstack/evidence/go-lifecycle`. They verify native file and terminal operations, tool ceilings, child working directories, concurrency, depth, privacy, results, usage, retained resume, and subtree pause. Additional cases check provider and tool failures, scout leaf enforcement, model restrictions, conversation retention, message ordering, replacement, and live-child exit. The completion case forwards extension protocol frames unchanged to observe delivery acknowledgements. It verifies that a busy parent processes a hidden child completion without another user prompt, and that an idle parent appends it without inference.
