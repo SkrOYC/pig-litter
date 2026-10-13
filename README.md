@@ -18,7 +18,7 @@ Build the prebuilt standalone with the same script, then select it with `pig -e 
 
 ## Configure children
 
-Put `litter.yaml` in `~/.config/pig/agent/` to configure children across projects. Pig Litter uses the active PiG agent directory, including `PIG_HOME` and `PIG_CODING_AGENT_DIR` overrides. Put [litter.yaml](litter.yaml) in a trusted project root to override user settings for that project. Configuration applies in order from bundled defaults to user settings to project settings. Agent fields merge by name, so a project can change one field while retaining the user's other choices.
+Put `litter.yaml` in `~/.config/pig/agent/` to configure children across projects. With no explicit configuration root, Pig Litter loads that file, then any settings in PiG's default `~/.pig/agent/litter.yaml`. Explicit `PIG_HOME`, `XDG_CONFIG_HOME`, agent-directory overrides, or Pi compatibility mode select their own user directory instead. Put [litter.yaml](litter.yaml) in a trusted project root to override user settings for that project. Agent fields merge by name, so a project can change one field while retaining the user's other choices.
 
 Either file can override `scout` or `worker`, including their role, instructions, tools, model, and delegation setting. Additional agent names use the same definition format. Changing a role resets omitted instructions, tools, and delegation to that role's defaults. The model stays inherited unless overridden. The scout role uses `read` by default and cannot delegate. The worker role also uses `write`, `edit`, and `bash` by default. Add `ls` only when the parent has made its canonical builtin callable. Agent tools cannot exceed the selected role or caller's tool ceiling.
 

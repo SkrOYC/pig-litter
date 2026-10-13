@@ -4,7 +4,7 @@ Selecting Pig Litter registers `litter_spawn`, `litter_list`, `litter_inspect`, 
 
 ## Behavior
 
-Use `litter_list` to discover configured agents and retained children. Bundled scout has `read` and cannot delegate. Worker also has `write`, `edit`, and `bash`. User agent-directory `litter.yaml` supplies defaults across projects. Project `litter.yaml` overrides those settings. Either file can override scout or worker by name, or add agents. Agent tools cannot exceed the selected role or caller's ceiling.
+Use `litter_list` to discover configured agents and retained children. Bundled scout has `read` and cannot delegate. Worker also has `write`, `edit`, and `bash`. The default `~/.config/pig/agent/litter.yaml` supplies settings across projects, followed by any legacy `~/.pig/agent/litter.yaml`. Explicit PiG configuration roots and agent-directory overrides select their own user settings instead. Project `litter.yaml` overrides user settings. Either file can override scout or worker by name, or add agents. Agent tools cannot exceed the selected role or caller's ceiling.
 
 Spawn returns a child ID before completion. Its optional `cwd` selects the child's working directory, relative to the caller when necessary. File and terminal operations use that directory. It inherits the caller's exact model unless an allowed explicit model or fixed agent model overrides it. There is no model fallback. Canonical parent tools must remain callable because child operations pass through the parent host and its permission hooks.
 

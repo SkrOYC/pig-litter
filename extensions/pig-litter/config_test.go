@@ -11,6 +11,102 @@ import (
 	"github.com/MichaelKinsy/PiG/coding"
 )
 
+func isolatedConfigHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, key := range []string{"PIG_HOME", "XDG_CONFIG_HOME", "PIG_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR", "PIG_USE_PI_DIRS"} {
+		t.Setenv(key, "")
+	}
+	return home
+}
+
+func TestLoadConfigLayersStandardDefaultActiveAndProjectFiles(t *testing.T) {
+	home := isolatedConfigHome(t)
+	standard := filepath.Join(home, ".config", "pig", "agent")
+	active := filepath.Join(home, ".pig", "agent")
+	project := t.TempDir()
+	for _, directory := range []string{standard, active} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(standard, "litter.yaml"), []byte("concurrency: 3\nagents:\n  personal:\n    role: scout\n    instructions: standard user instructions\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(project)
+	if err != nil || config.Concurrency != 3 || config.Agents["personal"].Instructions != "standard user instructions" {
+		t.Fatalf("standard user defaults %#v: %v", config, err)
+	}
+	if configuredAgentDir() != active {
+		t.Fatal("loading standard litter defaults changed the SDK agent directory")
+	}
+	if err := os.WriteFile(filepath.Join(active, "litter.yaml"), []byte("concurrency: 5\nagents:\n  personal:\n    tools: [read, ls]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err = LoadConfig(project)
+	if err != nil || config.Concurrency != 5 || config.Agents["personal"].Instructions != "standard user instructions" || !reflect.DeepEqual(config.Agents["personal"].Tools, []string{"read", "ls"}) {
+		t.Fatalf("active agent directory overlay %#v: %v", config, err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "litter.yaml"), []byte("concurrency: 2\nagents:\n  personal:\n    instructions: project instructions\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err = LoadConfig(project)
+	if err != nil || config.Concurrency != 2 || config.Agents["personal"].Instructions != "project instructions" || !reflect.DeepEqual(config.Agents["personal"].Tools, []string{"read", "ls"}) {
+		t.Fatalf("project overlay %#v: %v", config, err)
+	}
+	if err := os.WriteFile(filepath.Join(standard, "litter.yaml"), []byte("unknown_setting: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(project); err == nil || !strings.Contains(err.Error(), filepath.Join(standard, "litter.yaml")) {
+		t.Fatalf("malformed standard user file was not rejected with its path: %v", err)
+	}
+}
+
+func TestLoadConfigExplicitDirectoriesSkipUnrelatedUserDefaults(t *testing.T) {
+	for _, selection := range []string{"PIG_HOME", "XDG_CONFIG_HOME", "PIG_CODING_AGENT_DIR", "shared default", "shared override"} {
+		t.Run(selection, func(t *testing.T) {
+			home := isolatedConfigHome(t)
+			for _, directory := range []string{filepath.Join(home, ".config", "pig", "agent"), filepath.Join(home, ".pig", "agent")} {
+				if err := os.MkdirAll(directory, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(directory, "litter.yaml"), []byte("unrelated_invalid_config: true\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			chosen := t.TempDir()
+			active := chosen
+			switch selection {
+			case "PIG_HOME":
+				t.Setenv(selection, chosen)
+				active = filepath.Join(chosen, "agent")
+			case "XDG_CONFIG_HOME":
+				t.Setenv(selection, chosen)
+				active = filepath.Join(chosen, "pig", "agent")
+			case "PIG_CODING_AGENT_DIR":
+				t.Setenv(selection, chosen)
+			case "shared default":
+				t.Setenv("PIG_USE_PI_DIRS", "1")
+				active = filepath.Join(home, ".pi", "agent")
+			case "shared override":
+				t.Setenv("PIG_USE_PI_DIRS", "1")
+				t.Setenv("PI_CODING_AGENT_DIR", chosen)
+			}
+			if err := os.MkdirAll(active, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(active, "litter.yaml"), []byte("concurrency: 6\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			config, err := LoadConfig(t.TempDir())
+			if err != nil || config.Concurrency != 6 {
+				t.Fatalf("explicit directory selection %#v: %v", config, err)
+			}
+		})
+	}
+}
+
 func TestLoadConfigFollowsExpandedAndSharedAgentDirectory(t *testing.T) {
 	userDir := t.TempDir()
 	project := t.TempDir()

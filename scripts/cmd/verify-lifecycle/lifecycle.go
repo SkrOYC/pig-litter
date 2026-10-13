@@ -93,7 +93,11 @@ func fixtureEnvironment(pig, bash, directory, agentDir string) []string {
 	if bashDir != filepath.Dir(pig) {
 		searchPath += string(os.PathListSeparator) + bashDir
 	}
-	return []string{"PATH=" + searchPath, "HOME=" + filepath.Join(directory, "home"), "PIG_HOME=" + directory, "PIG_CODING_AGENT_DIR=" + agentDir, "PIG_USE_PI_DIRS=0", "PIG_OFFLINE=1", "PI_OFFLINE=1", "PI_SKIP_VERSION_CHECK=1", "GOPROXY=off", "GOENV=off", "TERM=xterm-256color", "LANG=C.UTF-8", "LITTER_FIXTURE_EVIDENCE=" + directory}
+	environment := []string{"PATH=" + searchPath, "HOME=" + filepath.Join(directory, "home"), "PIG_USE_PI_DIRS=0", "PIG_OFFLINE=1", "PI_OFFLINE=1", "PI_SKIP_VERSION_CHECK=1", "GOPROXY=off", "GOENV=off", "TERM=xterm-256color", "LANG=C.UTF-8", "LITTER_FIXTURE_EVIDENCE=" + directory}
+	if agentDir != "" {
+		environment = append(environment, "PIG_HOME="+directory, "PIG_CODING_AGENT_DIR="+agentDir)
+	}
+	return environment
 }
 
 func (f *fixture) runLifecycle(ctx context.Context, directory, workspace, agentDir, pig, extension string, stdout, stderr *os.File) error {

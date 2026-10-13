@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +13,71 @@ import (
 
 	piglitter "github.com/SkrOYC/pig-litter/extensions/pig-litter"
 )
+
+func TestServeValidatesConfiguredInstructionLiteralForEachScout(t *testing.T) {
+	for _, test := range []struct {
+		name, model, prompt, wantPath string
+		wantStatus                    int
+	}{
+		{"captured user-only scout", "cwd_nested", "USER_ONLY_SCOUT_INSTRUCTIONS", "cwd-output.txt", http.StatusOK},
+		{"literal project filename", "missing_file", "input.txt", "missing-file.txt", http.StatusOK},
+		{"wrong scout configuration", "cwd_nested", "input.txt", "", http.StatusInternalServerError},
+		{"file contents replaced literal", "missing_file", "stock fixture read marker\n", "", http.StatusInternalServerError},
+		{"file contents appended to literal", "missing_file", "input.txt\nstock fixture read marker", "", http.StatusInternalServerError},
+		{"user-only prompt changed", "cwd_nested", "USER_ONLY_SCOUT_INSTRUCTIONS\nextra", "", http.StatusInternalServerError},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var body modelRequest
+			captured := `{"model":"cwd_nested","messages":[{"role":"system","content":"USER_ONLY_SCOUT_INSTRUCTIONS"},{"role":"user","content":[{"type":"text","text":"Task:\ncwd-nested"}]}],"tools":[{"function":{"name":"read"}}]}`
+			if err := json.Unmarshal([]byte(captured), &body); err != nil {
+				t.Fatal(err)
+			}
+			body.Model = test.model
+			body.Messages[0].Content, _ = json.Marshal(test.prompt)
+			raw, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &fixture{changed: make(chan struct{})}
+			response := httptest.NewRecorder()
+			f.serve(response, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(raw))))
+			if response.Code != test.wantStatus {
+				t.Fatalf("serve returned %d: %s", response.Code, response.Body.String())
+			}
+			if test.wantStatus != http.StatusOK {
+				if f.failure == nil {
+					t.Fatal("invalid instructions did not record the fixture failure")
+				}
+				return
+			}
+			line, _, _ := strings.Cut(response.Body.String(), "\n")
+			payload, ok := strings.CutPrefix(line, "data: ")
+			if !ok {
+				t.Fatalf("serve did not return an SSE completion: %s", response.Body.String())
+			}
+			var chunk struct {
+				Choices []struct {
+					Delta struct {
+						ToolCalls []struct {
+							Function struct{ Name, Arguments string }
+						} `json:"tool_calls"`
+					}
+				}
+			}
+			if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+				t.Fatal(err)
+			}
+			if len(chunk.Choices) != 1 || len(chunk.Choices[0].Delta.ToolCalls) != 1 {
+				t.Fatalf("serve did not dispatch the scout read: %s", payload)
+			}
+			tool := chunk.Choices[0].Delta.ToolCalls[0].Function
+			var args struct{ Path string }
+			if err := json.Unmarshal([]byte(tool.Arguments), &args); err != nil || tool.Name != "read" || args.Path != test.wantPath {
+				t.Fatalf("scout dispatched %#v: %v", tool, err)
+			}
+		})
+	}
+}
 
 func TestUnboundedChildUsesCanonicalWriteReceipt(t *testing.T) {
 	for _, test := range []struct {
@@ -95,6 +162,22 @@ func TestLifecycleEnvironmentUsesOnlyResolvedExecutableDirectories(t *testing.T)
 	for _, key := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NODE_OPTIONS", "NODE_PATH", "CODEX_HOME"} {
 		if _, exists := values[key]; exists {
 			t.Errorf("child environment included %s", key)
+		}
+	}
+	if values["PIG_HOME"] != directory || values["PIG_CODING_AGENT_DIR"] != agentDir {
+		t.Fatalf("explicit fixture roots changed: %#v", values)
+	}
+	defaults := make(map[string]string)
+	for _, entry := range fixtureEnvironment(pig, bash, directory, "") {
+		key, value, _ := strings.Cut(entry, "=")
+		defaults[key] = value
+	}
+	if defaults["HOME"] != filepath.Join(directory, "home") || defaults["PIG_USE_PI_DIRS"] != "0" || defaults["PATH"] != wantPath {
+		t.Fatalf("default-directory fixture environment changed: %#v", defaults)
+	}
+	for _, key := range []string{"PIG_HOME", "PIG_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR"} {
+		if _, exists := defaults[key]; exists {
+			t.Errorf("default-directory fixture set explicit root %s", key)
 		}
 	}
 }
@@ -192,14 +275,15 @@ func TestFixtureConfigurationsExerciseAgentAndProjectLayers(t *testing.T) {
 
 	userOnlyRoot := t.TempDir()
 	workspace = filepath.Join(userOnlyRoot, "workspace")
-	agentDir = filepath.Join(userOnlyRoot, "agent")
+	fixtureHome := filepath.Join(userOnlyRoot, "home")
+	configDir := filepath.Join(fixtureHome, ".config", "pig", "agent")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(agentDir, 0o700); err != nil {
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for path, content := range fixtureConfigFiles(workspace, agentDir, "cwd") {
+	for path, content := range fixtureConfigFiles(workspace, configDir, "cwd") {
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -207,7 +291,10 @@ func TestFixtureConfigurationsExerciseAgentAndProjectLayers(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(workspace, "litter.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("user-only cwd fixture created a project config: %v", err)
 	}
-	t.Setenv("PIG_CODING_AGENT_DIR", agentDir)
+	t.Setenv("HOME", fixtureHome)
+	for _, key := range []string{"PIG_HOME", "PIG_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR"} {
+		t.Setenv(key, "")
+	}
 	cwd, err := piglitter.LoadConfig(workspace)
 	if err != nil {
 		t.Fatal(err)

@@ -295,9 +295,21 @@ func loadConfigLayer(config Config, path string) (Config, error) {
 
 func LoadConfig(cwd string) (Config, error) {
 	config := defaultConfig()
-	if agentDir := configuredAgentDir(); agentDir != "" {
+	agentDir := configuredAgentDir()
+	directories := []string{}
+	if os.Getenv("PIG_HOME") == "" && os.Getenv("XDG_CONFIG_HOME") == "" && os.Getenv("PIG_CODING_AGENT_DIR") == "" && os.Getenv("PIG_USE_PI_DIRS") != "1" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return Config{}, err
+		}
+		directories = append(directories, filepath.Join(home, ".config", "pig", "agent"))
+	}
+	if agentDir != "" && !slices.Contains(directories, agentDir) {
+		directories = append(directories, agentDir)
+	}
+	for _, directory := range directories {
 		var err error
-		config, err = loadConfigLayer(config, filepath.Join(agentDir, "litter.yaml"))
+		config, err = loadConfigLayer(config, filepath.Join(directory, "litter.yaml"))
 		if err != nil {
 			return Config{}, err
 		}

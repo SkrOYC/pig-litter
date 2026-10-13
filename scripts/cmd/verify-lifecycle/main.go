@@ -651,14 +651,12 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 			}
 		}
 		if body.Model == "held" || body.Model == "lifecycle_child" || body.Model == "denied" || body.Model == "missing_file" || body.Model == "roles" || body.Model == "message_child" || body.Model == "completion_child" || body.Model == "cwd_nested" || body.Model == "nester" || body.Model == "grandchild" {
-			prompt := ""
-			for _, message := range body.Messages {
-				if message.Role == "system" {
-					prompt = content(message.Content)
-					break
-				}
+			expected := "input.txt"
+			if body.Model == "cwd_nested" {
+				expected = "USER_ONLY_SCOUT_INSTRUCTIONS"
 			}
-			if !strings.HasPrefix(prompt, "input.txt") || strings.Contains(prompt, "stock fixture read marker") {
+			prompt := systemPrompt(body)
+			if prompt != expected || strings.Contains(prompt, "stock fixture read marker") {
 				f.fail(w, errors.New("named instruction text was interpreted as a file path"))
 				return
 			}
@@ -778,22 +776,28 @@ func writeJSON(path string, value any) error {
 	return os.Rename(path+".tmp", path)
 }
 
-func fixtureConfigFiles(workspace, agentDir, scenario string) map[string]string {
+func fixtureConfigFiles(workspace, configDir, scenario string) map[string]string {
 	files := map[string]string{}
 	if scenario != "cwd" {
 		files[filepath.Join(workspace, "litter.yaml")] = "concurrency: 2\ndepth: 2\nmax_result_bytes: 8192\nagents:\n  scout:\n    instructions: input.txt\n"
 	}
 	if scenario == "core" {
-		files[filepath.Join(agentDir, "litter.yaml")] = "concurrency: 3\nagents:\n  zz_user_only:\n    role: scout\n    instructions: USER_ONLY_SCOUT_INSTRUCTIONS\n    tools: [read]\n    can_delegate: false\n"
+		files[filepath.Join(configDir, "litter.yaml")] = "concurrency: 3\nagents:\n  zz_user_only:\n    role: scout\n    instructions: USER_ONLY_SCOUT_INSTRUCTIONS\n    tools: [read]\n    can_delegate: false\n"
 	} else if scenario == "cwd" {
-		files[filepath.Join(agentDir, "litter.yaml")] = "agents:\n  scout:\n    instructions: USER_ONLY_SCOUT_INSTRUCTIONS\n  worker:\n    instructions: USER_ONLY_WORKER_INSTRUCTIONS\n"
+		files[filepath.Join(configDir, "litter.yaml")] = "agents:\n  scout:\n    instructions: USER_ONLY_SCOUT_INSTRUCTIONS\n  worker:\n    instructions: USER_ONLY_WORKER_INSTRUCTIONS\n"
 	}
 	return files
 }
 
 func run(directory, pig, extension, scenario string) error {
 	workspace, agentDir := filepath.Join(directory, "workspace"), filepath.Join(directory, "agent")
-	for _, dir := range []string{filepath.Join(workspace, ".pig"), agentDir} {
+	configDir := agentDir
+	if scenario == "cwd" {
+		fixtureHome := filepath.Join(directory, "home")
+		agentDir = filepath.Join(fixtureHome, ".pig", "agent")
+		configDir = filepath.Join(fixtureHome, ".config", "pig", "agent")
+	}
+	for _, dir := range []string{filepath.Join(workspace, ".pig"), agentDir, configDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
@@ -811,7 +815,7 @@ func run(directory, pig, extension, scenario string) error {
 		return err
 	}
 	files := map[string]string{filepath.Join(workspace, "input.txt"): "stock fixture read marker\n", filepath.Join(workspace, ".pig", "APPEND_SYSTEM.md"): "PRIVATE_PROJECT_APPEND_MARKER\n", filepath.Join(agentDir, "APPEND_SYSTEM.md"): "PRIVATE_AGENT_APPEND_MARKER\n"}
-	for path, content := range fixtureConfigFiles(workspace, agentDir, scenario) {
+	for path, content := range fixtureConfigFiles(workspace, configDir, scenario) {
 		files[path] = content
 	}
 	relativeCWD := ""
@@ -914,6 +918,9 @@ func run(directory, pig, extension, scenario string) error {
 	defer stopProcess(command)
 	command.Dir = workspace
 	command.Env = fixtureEnvironment(pig, bashPath, directory, agentDir)
+	if scenario == "cwd" {
+		command.Env = fixtureEnvironment(pig, bashPath, directory, "")
+	}
 	if scenario == "shadow" {
 		command.Env = append(command.Env, "LITTER_FIXTURE_SHADOW_BASE=http://"+listener.Addr().String()+"/v1")
 	}
