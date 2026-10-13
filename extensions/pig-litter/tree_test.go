@@ -297,7 +297,7 @@ func TestCompletionReservationWaitsForActualAppend(t *testing.T) {
 	if _, _, err := tree.message(context.Background(), testCaller(selected), selected, "resume", "again"); err == nil || !strings.Contains(err.Error(), "mailbox capacity") {
 		t.Fatalf("unappended completion released capacity %v", err)
 	}
-	if !tree.startCompletion(selected) || tree.startCompletion(selected) {
+	if !tree.startCompletion(selected, "stored report") || tree.startCompletion(selected, "stored report") {
 		t.Fatal("completion claim was not unique")
 	}
 	appended := 0

@@ -188,7 +188,7 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 					if args.Message.CustomType != "litter_completion" || args.Message.Display || args.Message.Details != (completionDetails{ChildID: selected.ref.ID}) {
 						t.Fatalf("completion message changed: %#v", args.Message)
 					}
-					if test.state == `{"idle":false}` && !consumed && (args.Options.TriggerTurn != nil || args.Options.DeliverAs != "followUp") {
+					if test.state == `{"idle":false}` && !consumed && (args.Options.TriggerTurn == nil || *args.Options.TriggerTurn || args.Options.DeliverAs != "") {
 						t.Fatalf("busy completion options: %#v", args.Options)
 					}
 					if test.name == "idle" && (args.Options.TriggerTurn == nil || *args.Options.TriggerTurn || args.Options.DeliverAs != "") {

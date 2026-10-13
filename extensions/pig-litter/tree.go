@@ -16,6 +16,12 @@ type reservation struct {
 	nonce           string
 	sent            bool
 	outcomeObserved bool
+	stored          bool
+	continueTurn    bool
+	content         string
+	selected        *run
+	auditOnce       sync.Once
+	auditErr        error
 }
 
 type Tree struct {
@@ -158,6 +164,9 @@ func (t *Tree) snapshotLocked(r *record) Snapshot {
 		parent = &value
 	}
 	state := r.run.state
+	if state.terminal() && r.latest != nil {
+		state = r.latest.State
+	}
 	if r.paused && state.terminal() {
 		state = Paused
 	}
@@ -256,7 +265,8 @@ func (t *Tree) admit(request admission) (Snapshot, *run, error) {
 	r.run.owner = r
 	t.records[id], t.names[nameKey] = r, id
 	t.order = append(t.order, id)
-	t.pending[r.run] = &reservation{parent: r.parentID(), nonce: r.run.noticeID}
+	r.run.reservation = &reservation{parent: r.parentID(), nonce: r.run.noticeID, selected: r.run}
+	t.pending[r.run] = r.run.reservation
 	t.live++
 	return t.snapshotLocked(r), r.run, nil
 }
@@ -332,6 +342,9 @@ func (t *Tree) finish(r *record, run *run, raw Outcome) {
 		return
 	}
 	raw.Run, raw.Model = run.ref, r.model
+	if run.deliveryError != "" {
+		raw.Error = strings.TrimSpace(raw.Error + " " + run.deliveryError)
+	}
 	if raw.Text != "" {
 		raw.ReportProvenance = "child_assistant"
 	}
@@ -433,15 +446,24 @@ func (t *Tree) wait(ctx context.Context, selected *run, timeout int) (Outcome, e
 	if timeout < 1 || timeout > 300000 {
 		return Outcome{}, reject("rejected", "invalid wait timeout")
 	}
-	t.mu.Lock()
-	closed := t.closed
-	t.mu.Unlock()
-	if closed {
-		return Outcome{}, reject("unavailable", "the owning Session is closed")
-	}
 	if ctx.Err() != nil {
 		return Outcome{}, reject("cancelled", "wait cancelled")
 	}
+	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		return Outcome{}, reject("unavailable", "the owning Session is closed")
+	}
+	if selected.outcome != nil {
+		outcome := selected.outcome
+		if current := t.records[selected.ref.ID]; current != nil && current.run == selected && current.latest != nil {
+			outcome = current.latest
+		}
+		copy := *outcome
+		t.mu.Unlock()
+		return copy, nil
+	}
+	t.mu.Unlock()
 	timer := time.NewTimer(time.Duration(timeout) * time.Millisecond)
 	defer timer.Stop()
 	select {
@@ -582,9 +604,17 @@ func (t *Tree) stop(caller, selected *run) (*Outcome, int, error) {
 		t.mu.Unlock()
 		return nil, 0, err
 	}
+	var settled *Outcome
+	if selected.outcome != nil && target.latest != nil {
+		copy := *target.latest
+		settled = &copy
+	}
 	pending, fresh := t.pauseLocked(target)
 	t.mu.Unlock()
 	t.joinPaused(pending, fresh)
+	if settled != nil {
+		return settled, len(fresh), nil
+	}
 	return selected.outcome, len(fresh), nil
 }
 
@@ -698,20 +728,54 @@ func (t *Tree) close() {
 
 func (t *Tree) acknowledge(selected *run) {
 	t.mu.Lock()
-	if t.pending[selected] != nil {
+	if pending := t.pending[selected]; pending != nil {
+		pending.stored = true
+		selected.reservation = pending
 		delete(t.pending, selected)
 	}
 	t.mu.Unlock()
 	t.notify()
 }
 
-func (t *Tree) startCompletion(selected *run) bool {
+func (t *Tree) startCompletion(selected *run, content string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	reservation := t.pending[selected]
 	if t.closed || reservation == nil || reservation.sent {
 		return false
 	}
+	reservation.content = content
 	reservation.sent = true
+	reservation.selected = selected
+	selected.reservation = reservation
 	return true
+}
+
+func (t *Tree) deliveryFailed(selected *run, failure error) {
+	if failure == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	child := t.records[selected.ref.ID]
+	if child == nil {
+		return
+	}
+	target := child.parent
+	if target == nil || target == t.root {
+		target = child
+	}
+	description, _ := bounded("child completion delivery failed: "+failure.Error(), 1024)
+	if !target.run.state.terminal() {
+		target.run.deliveryError = description
+		return
+	}
+	if target.latest != nil {
+		outcome := *target.latest
+		outcome.Error, _ = bounded(strings.TrimSpace(outcome.Error+" "+description), 1024)
+		if outcome.State == Completed {
+			outcome.State = Partial
+		}
+		target.latest = &outcome
+	}
 }

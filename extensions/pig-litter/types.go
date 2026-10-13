@@ -91,6 +91,7 @@ type record struct {
 	deliveryMu                                 sync.Mutex
 	receiptMu                                  sync.Mutex
 	receipts                                   map[*run]*completionReceipt
+	notices                                    map[string]*reservation
 }
 
 type message struct {
@@ -99,27 +100,28 @@ type message struct {
 }
 
 type run struct {
-	ref                 Ref
-	noticeID            string
-	owner               *record
-	deliveryReceipt     *completionReceipt
-	state               State
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	done                chan struct{}
-	started             bool
-	outcome             *Outcome
-	prompt              string
-	resumePaused        bool
-	mailbox             chan message
-	mu                  sync.Mutex
-	calls               *callScope
-	messageMu           sync.Mutex
-	pendingMessages     int
-	session             *coding.Session
-	disposing           bool
-	ready               chan struct{}
-	completionSendError string
+	ref             Ref
+	noticeID        string
+	owner           *record
+	deliveryReceipt *completionReceipt
+	state           State
+	ctx             context.Context
+	cancel          context.CancelFunc
+	done            chan struct{}
+	started         bool
+	outcome         *Outcome
+	prompt          string
+	resumePaused    bool
+	mailbox         chan message
+	mu              sync.Mutex
+	calls           *callScope
+	messageMu       sync.Mutex
+	pendingMessages int
+	session         *coding.Session
+	disposing       bool
+	ready           chan struct{}
+	deliveryError   string
+	reservation     *reservation
 }
 
 type Inspection struct {

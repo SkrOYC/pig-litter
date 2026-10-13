@@ -13,6 +13,7 @@ import (
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding"
+	"github.com/MichaelKinsy/PiG/coding/extension"
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 )
 
@@ -331,7 +332,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = err.Error()
 		return
 	}
-	runtime, err := coding.NewRuntime(coding.RuntimeOptions{Services: services, AbortContext: run.ctx, NewExtensions: nil})
+	runtime, err := coding.NewRuntime(coding.RuntimeOptions{Services: services, AbortContext: run.ctx, NewExtensions: []extension.Extension{o.completionHooks(r)}})
 	if err != nil {
 		outcome.Error = err.Error()
 		return
@@ -495,16 +496,10 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	r.deliveryMu.Unlock()
 	unsubscribe()
 	o.retireScope(o.callScope(run))
-	o.retireReceipts(run)
+	o.retireReceipts(r)
 	observedMu.Lock()
 	if sendErr != nil && failure == "" {
 		failure = sendErr.Error()
-	}
-	run.mu.Lock()
-	completionError := run.completionSendError
-	run.mu.Unlock()
-	if completionError != "" && failure == "" {
-		failure = "child completion enqueue failed: " + completionError
 	}
 	outcome = outcomeFrom(terminal, baseline, session.GetSessionStats(), failure, run.ctx.Err() != nil, limitHit)
 	observedMu.Unlock()
@@ -642,6 +637,28 @@ func newExtension(state *extensionState) *sdk.Extension {
 		}
 		return nil, nil
 	})
+	ext.OnEvent("context", func(_ sdk.Context, data map[string]any) (any, error) {
+		state.mu.Lock()
+		o := state.owner
+		state.mu.Unlock()
+		if o == nil {
+			return nil, nil
+		}
+		messages, ok := data["messages"].([]any)
+		if !ok {
+			return nil, nil
+		}
+		return map[string]any{"messages": o.completionContext(o.tree.root, messages)}, nil
+	})
+	ext.OnEvent("agent_before_settle", func(_ sdk.Context, _ map[string]any) (any, error) {
+		state.mu.Lock()
+		o := state.owner
+		state.mu.Unlock()
+		if o != nil && o.continueForCompletions(o.tree.root) {
+			return map[string]any{"continue": true}, nil
+		}
+		return nil, nil
+	})
 	ext.OnEvent("agent_start", func(ctx sdk.Context, _ map[string]any) (any, error) {
 		state.mu.Lock()
 		o := state.owner
@@ -658,6 +675,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 		if o != nil {
 			o.settleRoot()
 			o.retireScope(o.callScope(nil))
+			o.retireReceipts(o.tree.root)
 		}
 		return nil, nil
 	})

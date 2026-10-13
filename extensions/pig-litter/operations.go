@@ -183,12 +183,13 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if args.Offset < 0 || args.Offset > 1000000 || args.AgentOffset < 0 || args.AgentOffset > 1000000 || limit < 1 || limit > 50 || agentLimit < 1 || agentLimit > 50 {
 			return nil, reject("rejected", "invalid list page")
 		}
-		config := o.config
+		directory := o.cwd
 		if parent != nil {
-			config, err = LoadConfig(parent.cwd)
-			if err != nil {
-				return nil, err
-			}
+			directory = parent.cwd
+		}
+		config, err := LoadConfig(directory)
+		if err != nil {
+			return nil, err
 		}
 		names := make([]string, 0, len(config.Agents))
 		for name := range config.Agents {
