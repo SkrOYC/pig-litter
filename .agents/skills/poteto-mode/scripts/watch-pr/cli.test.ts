@@ -224,6 +224,43 @@ describe("main", () => {
     });
   });
 
+  it("blocks queued merge when GitHub is blocked and no checks are reported", async () => {
+    const reader = fakeReader({
+      facts: { mergeStateStatus: "BLOCKED" },
+      fastPath: {
+        kind: "unusable",
+        exitCode: 1,
+        stderr: "no checks reported",
+      },
+      commitRollups: [{ oid: "head", state: null }],
+    });
+    const harness = testRuntime(reader);
+    const code = await main(
+      [
+        "--owner",
+        "owner",
+        "--repo",
+        "repo",
+        "--queued-stack",
+        "--stack-prs",
+        "1",
+      ],
+      harness.runtime,
+    );
+    expect(code).toBe(6);
+    expect(
+      JSON.parse(harness.stdout[harness.stdout.length - 1]),
+    ).toMatchObject({
+      kind: "BLOCKER",
+      mode: "queued-stack",
+      exitCode: 6,
+      blocker: {
+        kind: "merge-gate",
+        reason: { kind: "github-merge-state", status: "BLOCKED" },
+      },
+    });
+  });
+
   it("shows an unclean GitHub state instead of a passing empty check set", async () => {
     const reader = fakeReader({
       facts: { mergeStateStatus: "BLOCKED" },

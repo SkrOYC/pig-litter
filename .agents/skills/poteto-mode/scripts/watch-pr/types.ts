@@ -168,7 +168,13 @@ export interface MergedPr {
   readonly mergedAt: string | null;
 }
 export type MergeGateReason =
-  "closed-without-merge" | "draft-pr" | "changes-requested";
+  | "closed-without-merge"
+  | "draft-pr"
+  | "changes-requested"
+  | {
+      readonly kind: "github-merge-state";
+      readonly status: Exclude<MergeStateStatus, "CLEAN">;
+    };
 export type MergeBlocker =
   | {
       readonly kind: "merge-conflicts";
