@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,16 +11,44 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	piglitter "github.com/SkrOYC/pig-litter/extensions/pig-litter"
 )
+
+func TestWaitReturnsFixtureFailure(t *testing.T) {
+	failure := errors.New("fixture provider request failed")
+	f := &fixture{changed: make(chan struct{}), failure: failure}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := f.wait(ctx, func() bool { return false }); !errors.Is(err, failure) {
+		t.Fatalf("wait error = %v, want fixture failure", err)
+	}
+}
+
+func TestRequirePausedOutcomeRejectsCompletedLatestOutcome(t *testing.T) {
+	childRef := ref{ID: "paused-child"}
+	value := result{
+		Child:   child{ref: childRef, State: "paused"},
+		Outcome: outcome{Run: childRef, State: "paused", Model: "fixture/lifecycle_child"},
+	}
+	if err := requirePausedOutcome(value, childRef); err != nil {
+		t.Fatalf("paused child outcome was rejected: %v", err)
+	}
+
+	value.Outcome.State = "completed"
+	if err := requirePausedOutcome(value, childRef); err == nil {
+		t.Fatal("accepted a completed outcome for an active-abort pause")
+	}
+}
 
 func TestServeValidatesConfiguredInstructionLiteralForEachScout(t *testing.T) {
 	for _, test := range []struct {
 		name, model, prompt, wantPath string
 		wantStatus                    int
 	}{
-		{"captured user-only scout", "cwd_nested", "USER_ONLY_SCOUT_INSTRUCTIONS", "cwd-output.txt", http.StatusOK},
+		{"captured user-only scout", "cwd_nested", "USER_ONLY_SCOUT_INSTRUCTIONS", "@cwd-output.txt", http.StatusOK},
 		{"literal project filename", "missing_file", "input.txt", "missing-file.txt", http.StatusOK},
 		{"wrong scout configuration", "cwd_nested", "input.txt", "", http.StatusInternalServerError},
 		{"file contents replaced literal", "missing_file", "stock fixture read marker\n", "", http.StatusInternalServerError},
@@ -79,14 +108,39 @@ func TestServeValidatesConfiguredInstructionLiteralForEachScout(t *testing.T) {
 	}
 }
 
-func TestUnboundedChildUsesCanonicalWriteReceipt(t *testing.T) {
+func TestCWDResourceMarkersMustComeFromSystemMessages(t *testing.T) {
+	system, err := json.Marshal("USER_ONLY_WORKER_INSTRUCTIONS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := json.Marshal("Task: NATIVE_CWD_WORKER_INSTRUCTIONS NATIVE_CWD_CONTEXT_MARKER NATIVE_CWD_APPEND_MARKER")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := append([]string{"read", "write", "edit", "bash"}, controlTools...)
+	body := modelRequestWithTools("cwd_worker", tools...)
+	body.Messages = []message{{Role: "system", Content: system}, {Role: "user", Content: user}}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fixture{scenario: "cwd", changed: make(chan struct{})}
+	response := httptest.NewRecorder()
+	f.serve(response, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(raw))))
+	if response.Code != http.StatusInternalServerError || f.failure == nil {
+		t.Fatalf("user-only resource markers returned %d without a fixture failure: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestUnboundedChildUsesOriginalWritePathReceipt(t *testing.T) {
 	for _, test := range []struct {
 		name, receipt string
 		wantErr       bool
 	}{
-		{"canonical success", "Successfully wrote to /fixture/workspace/unbounded-marker.txt", false},
+		{"original path success", "Successfully wrote to unbounded-marker.txt", false},
 		{"contents are not a receipt", "unbounded marker\n", true},
-		{"different target", "Successfully wrote to /fixture/workspace/other.txt", true},
+		{"different path", "Successfully wrote to other.txt", true},
+		{"rewritten absolute path", "Successfully wrote to /fixture/workspace/unbounded-marker.txt", true},
 		{"denied write", "Error: permission denied", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -94,16 +148,16 @@ func TestUnboundedChildUsesCanonicalWriteReceipt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			f := &fixture{expectedCWD: "/fixture/workspace"}
+			f := &fixture{}
 			text, calls, err := f.unboundedChildRequest(context.Background(), modelRequest{Messages: []message{{Role: "tool", Content: raw}}})
 			if test.wantErr {
 				if err == nil {
-					t.Fatalf("accepted %q as a successful canonical write", test.receipt)
+					t.Fatalf("accepted %q as a successful native write", test.receipt)
 				}
 				return
 			}
 			if err != nil || text != "unbounded child marker recorded" || len(calls) != 0 {
-				t.Fatalf("canonical write returned %q, %#v, %v", text, calls, err)
+				t.Fatalf("native write returned %q, %#v, %v", text, calls, err)
 			}
 		})
 	}

@@ -48,6 +48,7 @@ type child struct {
 	CWD          string  `json:"cwd"`
 }
 type result struct {
+	Delivery            string
 	State               string  `json:"state"`
 	Code                string  `json:"code"`
 	Report              string  `json:"report"`
@@ -81,24 +82,29 @@ type call struct {
 	args any
 }
 type fixture struct {
-	mu                       sync.Mutex
-	changed                  chan struct{}
-	held                     map[string]chan struct{}
-	requests                 []modelRequest
-	failure                  error
-	stage                    int
-	runs                     []ref
-	resumed, worker, stopped ref
-	nestedParent, grandchild ref
-	expectedCWD              string
-	relativeCWD              string
-	bashPath                 string
-	depthRejected            bool
-	done                     bool
-	scenario                 string
-	checks                   map[string]bool
-	aborted                  map[string]bool
-	sequence                 atomic.Uint64
+	mu                                                                      sync.Mutex
+	changed                                                                 chan struct{}
+	held                                                                    map[string]chan struct{}
+	requests                                                                []modelRequest
+	failure                                                                 error
+	stage                                                                   int
+	runs                                                                    []ref
+	resumed, worker, stopped                                                ref
+	nestedParent, grandchild, sibling, admissionProvisional                 ref
+	hostSessionID                                                           string
+	nesterStage, grandchildStage                                            int
+	codemodeResumeTarget, codemodeSurvivor, codemodeStopped, codemodeWaited ref
+	expectedCWD                                                             string
+	relativeCWD                                                             string
+	absoluteTarget                                                          string
+	homeTarget, homeOutput                                                  string
+	bashPath                                                                string
+	depthRejected                                                           bool
+	done                                                                    bool
+	scenario                                                                string
+	checks                                                                  map[string]bool
+	aborted                                                                 map[string]bool
+	sequence                                                                atomic.Uint64
 }
 
 func content(raw json.RawMessage) string {
@@ -148,6 +154,26 @@ func systemPrompt(body modelRequest) string {
 	return ""
 }
 
+func systemMessageText(body modelRequest) string {
+	var text strings.Builder
+	for _, value := range body.Messages {
+		if value.Role == "system" {
+			text.WriteString(content(value.Content))
+			text.WriteByte('\n')
+		}
+	}
+	return text.String()
+}
+
+func messageText(body modelRequest) string {
+	var text strings.Builder
+	for _, value := range body.Messages {
+		text.WriteString(content(value.Content))
+		text.WriteByte('\n')
+	}
+	return text.String()
+}
+
 func require(ok bool, message string) error {
 	if ok {
 		return nil
@@ -160,8 +186,12 @@ func (f *fixture) wait(ctx context.Context, check func() bool) error {
 	defer cancel()
 	for {
 		f.mu.Lock()
+		failure := f.failure
 		ready, changed := check(), f.changed
 		f.mu.Unlock()
+		if failure != nil {
+			return failure
+		}
 		if ready {
 			return nil
 		}
@@ -330,7 +360,7 @@ func (f *fixture) parent(ctx context.Context, body modelRequest) (string, []call
 		f.stage++
 		return "", []call{{"litter_stop", map[string]string{"id": f.stopped.ID}}}, nil
 	case 11:
-		if err := require(len(tools) == 15 && tools[14].StoppedCount == 1 && tools[14].Outcome.State == "stopped", "independent stop failed"); err != nil {
+		if err := require(len(tools) == 15 && tools[14].StoppedCount == 1 && tools[14].Outcome.State == "paused", "independent stop failed"); err != nil {
 			return "", nil, err
 		}
 		f.done = true
@@ -345,62 +375,6 @@ func with(run ref, fields ...any) map[string]any {
 		values[fields[i].(string)] = fields[i+1]
 	}
 	return values
-}
-
-func (f *fixture) parentNested(ctx context.Context, body modelRequest) (string, []call, error) {
-	tools, err := toolResults(body)
-	if err != nil {
-		return "", nil, err
-	}
-	switch f.stage {
-	case 0:
-		f.stage++
-		return "", []call{{"litter_spawn", map[string]any{"type": "coordinator", "task": "Nested parent task.", "name": "nested-parent", "model": "fixture/nester"}}}, nil
-	case 1:
-		if len(tools) != 1 || tools[0].Child.ID == "" || tools[0].Child.Type != "coordinator" || tools[0].Child.CWD != f.expectedCWD {
-			return "", nil, errors.New("nested parent admission failed")
-		}
-		f.nestedParent = tools[0].Child.ref
-		if err := f.wait(ctx, func() bool { return f.grandchild.ID != "" && f.depthRejected && f.held["nested-grandchild"] != nil }); err != nil {
-			return "", nil, fmt.Errorf("model-called grandchild and depth rejection: %w", err)
-		}
-		f.stage++
-		return "", []call{{"litter_wait", with(f.nestedParent, "timeoutMs", 10000)}}, nil
-	case 2:
-		if len(tools) != 2 || tools[1].State != "completed" || tools[1].Outcome.Run != f.nestedParent {
-			return "", nil, errors.New("nested parent did not complete independently")
-		}
-		f.stage++
-		return "", []call{{"litter_list", map[string]any{}}}, nil
-	case 3:
-		if len(tools) != 3 || len(tools[2].Children) != 2 {
-			return "", nil, errors.New("root list omitted nested descendant")
-		}
-		found := false
-		for _, child := range tools[2].Children {
-			if child.ID == f.grandchild.ID && child.Parent != nil && *child.Parent == f.nestedParent.ID && child.Depth == 2 && child.Type == "coordinator" && child.CWD == f.expectedCWD {
-				found = true
-			}
-		}
-		if !found {
-			return "", nil, errors.New("nested child ancestry changed")
-		}
-		f.stage++
-		return "", []call{{"litter_stop", map[string]string{"id": f.nestedParent.ID}}}, nil
-	case 4:
-		if len(tools) != 4 || tools[3].StoppedCount != 1 {
-			return "", nil, errors.New("settled parent subtree stop did not stop its live descendant")
-		}
-		f.stage++
-		return "", []call{{"litter_wait", with(f.grandchild, "timeoutMs", 10000)}}, nil
-	case 5:
-		if len(tools) != 5 || tools[4].State != "stopped" {
-			return "", nil, errors.New("grandchild did not stop")
-		}
-		f.done = true
-		return "nested stock lifecycle complete", nil, nil
-	}
-	return "", nil, errors.New("unexpected nested parent stage")
 }
 
 func toolNames(body modelRequest) []string {
@@ -557,51 +531,73 @@ func (f *fixture) unboundedChildRequest(ctx context.Context, body modelRequest) 
 		}
 		return "", []call{{"write", map[string]string{"path": "unbounded-marker.txt", "content": "unbounded marker\n"}}}, nil
 	}
-	if len(tools) != 1 || content(tools[0].Content) != "Successfully wrote to "+filepath.Join(f.expectedCWD, "unbounded-marker.txt") {
-		return "", nil, errors.New("provider hold completed but the child marker write was not observed")
+	if len(tools) != 1 {
+		return "", nil, fmt.Errorf("unbounded child returned %d write results, want 1", len(tools))
+	}
+	if receipt := content(tools[0].Content); receipt != "Successfully wrote to unbounded-marker.txt" {
+		return "", nil, fmt.Errorf("unbounded child write receipt = %q, want original path %q", receipt, "unbounded-marker.txt")
 	}
 	return "unbounded child marker recorded", nil, nil
 }
 
 func (f *fixture) cwdWorkerRequest(body modelRequest) (string, []call, error) {
-	if got := systemPrompt(body); got != "USER_ONLY_WORKER_INSTRUCTIONS" {
-		return "", nil, fmt.Errorf("user-only worker system prompt = %q", got)
-	}
-	tools := []message{}
-	for _, value := range body.Messages {
-		if value.Role == "tool" {
-			tools = append(tools, value)
-		}
-	}
+	tools := toolMessages(body)
 	switch len(tools) {
 	case 0:
-		return "", []call{{"read", map[string]string{"path": "cwd-input.txt"}}}, nil
+		return "", []call{{"read", map[string]string{"path": "@cwd-input.txt"}}}, nil
 	case 1:
 		if !strings.Contains(content(tools[0].Content), "cwd original marker") {
 			return "", nil, errors.New("cwd worker did not read the sibling input file")
 		}
-		return "", []call{{"edit", map[string]any{"path": "cwd-input.txt", "edits": []any{map[string]string{"oldText": "cwd original marker", "newText": "cwd edited marker"}}}}}, nil
+		return "", []call{{"edit", map[string]any{"path": "@cwd-input.txt", "edits": []any{map[string]string{"oldText": "cwd original marker", "newText": "cwd edited marker"}}}}}, nil
 	case 2:
-		return "", []call{{"read", map[string]string{"path": "cwd-input.txt"}}}, nil
+		return "", []call{{"read", map[string]string{"path": "@cwd-input.txt"}}}, nil
 	case 3:
 		if !strings.Contains(content(tools[2].Content), "cwd edited marker") {
 			return "", nil, errors.New("edit did not change the sibling input file")
 		}
-		return "", []call{{"write", map[string]string{"path": "cwd-output.txt", "content": "cwd output marker\n"}}}, nil
+		return "", []call{{"write", map[string]string{"path": "@cwd-output.txt", "content": "cwd output marker\n"}}}, nil
 	case 4:
 		return "", []call{{"bash", map[string]string{"command": "pwd > cwd-bash.txt"}}}, nil
 	case 5:
-		return "", []call{{"litter_spawn", map[string]any{"type": "scout", "task": "cwd-nested", "name": "cwd-nested", "model": "fixture/cwd_nested"}}}, nil
+		return "", []call{{"read", map[string]string{"path": "@" + f.absoluteTarget}}}, nil
 	case 6:
+		if !strings.Contains(content(tools[5].Content), "cwd absolute marker") {
+			return "", nil, errors.New("absolute @ path did not read its disk target")
+		}
+		return "", []call{{"edit", map[string]any{"path": "@" + f.absoluteTarget, "edits": []any{map[string]string{"oldText": "cwd absolute marker", "newText": "cwd absolute edited marker"}}}}}, nil
+	case 7:
+		return "", []call{{"read", map[string]string{"path": "@" + f.absoluteTarget}}}, nil
+	case 8:
+		if !strings.Contains(content(tools[7].Content), "cwd absolute edited marker") {
+			return "", nil, errors.New("absolute @ edit did not change its disk target")
+		}
+		return "", []call{{"read", map[string]string{"path": "@~/cwd-home-input.txt"}}}, nil
+	case 9:
+		if !strings.Contains(content(tools[8].Content), "cwd home marker") {
+			return "", nil, errors.New("home @ path did not read its disk target")
+		}
+		return "", []call{{"write", map[string]string{"path": "@~/cwd-home-output.txt", "content": "cwd home output marker\n"}}}, nil
+	case 10:
+		if content(tools[9].Content) != "Successfully wrote to @~/cwd-home-output.txt" {
+			return "", nil, fmt.Errorf("home @ write receipt = %q, want original path spelling", content(tools[9].Content))
+		}
+		return "", []call{{"read", map[string]string{"path": "@~/cwd-home-output.txt"}}}, nil
+	case 11:
+		if !strings.Contains(content(tools[10].Content), "cwd home output marker") {
+			return "", nil, errors.New("home @ write did not reach its disk target")
+		}
+		return "", []call{{"litter_spawn", map[string]any{"type": "scout", "task": "cwd-nested", "name": "cwd-nested", "model": "fixture/cwd_nested"}}}, nil
+	case 12:
 		var value result
-		if err := json.Unmarshal([]byte(content(tools[5].Content)), &value); err != nil || value.Child.ID == "" || value.Child.Type != "scout" || value.Child.CWD != f.expectedCWD {
+		if err := json.Unmarshal([]byte(content(tools[11].Content)), &value); err != nil || value.Child.ID == "" || value.Child.Type != "scout" || value.Child.CWD != f.expectedCWD {
 			return "", nil, fmt.Errorf("relative nested child did not inherit its parent's cwd: %#v, %v", value.Child, err)
 		}
 		f.grandchild = value.Child.ref
 		return "", []call{{"litter_wait", with(f.grandchild)}}, nil
-	case 7:
+	case 13:
 		var value result
-		if err := json.Unmarshal([]byte(content(tools[6].Content)), &value); err != nil || value.State != "completed" || value.Outcome.Run != f.grandchild || value.Outcome.Model != "fixture/cwd_nested" || value.Outcome.Text != "nested cwd read marker verified" {
+		if err := json.Unmarshal([]byte(content(tools[12].Content)), &value); err != nil || value.State != "completed" || value.Outcome.Run != f.grandchild || value.Outcome.Model != "fixture/cwd_nested" || value.Outcome.Text != "nested cwd read marker verified" {
 			return "", nil, fmt.Errorf("nested cwd child did not complete with its exact ID and model: %#v, %v", value, err)
 		}
 		return "cwd worker and nested child completed", nil, nil
@@ -610,13 +606,10 @@ func (f *fixture) cwdWorkerRequest(body modelRequest) (string, []call, error) {
 }
 
 func (f *fixture) cwdNestedRequest(body modelRequest) (string, []call, error) {
-	if got := systemPrompt(body); got != "USER_ONLY_SCOUT_INSTRUCTIONS" {
-		return "", nil, fmt.Errorf("user-only scout system prompt = %q", got)
-	}
 	tools := toolMessages(body)
 	switch len(tools) {
 	case 0:
-		return "", []call{{"read", map[string]string{"path": "cwd-output.txt"}}}, nil
+		return "", []call{{"read", map[string]string{"path": "@cwd-output.txt"}}}, nil
 	case 1:
 		if !strings.Contains(content(tools[0].Content), "cwd output marker") {
 			return "", nil, errors.New("nested scout did not read the parent's output from its inherited cwd")
@@ -644,22 +637,77 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 	}
 	if !strings.HasPrefix(body.Model, "parent") {
 		raw, _ := json.Marshal(body.Messages)
-		for _, private := range []string{"PARENT_PRIVATE_MARKER", "PRIVATE_PROJECT_APPEND_MARKER", "PRIVATE_AGENT_APPEND_MARKER"} {
-			if strings.Contains(string(raw), private) {
-				f.fail(w, errors.New("parent context leaked into a child"))
+		if strings.Contains(string(raw), "PARENT_PRIVATE_MARKER") {
+			f.fail(w, errors.New("parent conversation leaked into a child"))
+			return
+		}
+		if f.scenario == "cwd" && (body.Model == "cwd_worker" || body.Model == "cwd_nested") {
+			system := systemMessageText(body)
+			expected := "NATIVE_CWD_WORKER_INSTRUCTIONS"
+			if body.Model == "cwd_nested" {
+				expected = "NATIVE_CWD_SCOUT_INSTRUCTIONS"
+			}
+			if !strings.Contains(system, expected) || !strings.Contains(system, "NATIVE_CWD_CONTEXT_MARKER") || !strings.Contains(system, "NATIVE_CWD_APPEND_MARKER") || strings.Contains(system, "PRIVATE_PROJECT_APPEND_MARKER") {
+				f.fail(w, errors.New("child did not resolve its native directory instructions and resources"))
+				return
+			}
+			if strings.Contains(system, "PRIVATE_AGENT_APPEND_MARKER") {
+				f.fail(w, errors.New("child project resources did not take precedence over agent append text"))
 				return
 			}
 		}
-		if body.Model == "held" || body.Model == "lifecycle_child" || body.Model == "denied" || body.Model == "missing_file" || body.Model == "roles" || body.Model == "history" || body.Model == "message_child" || body.Model == "completion_child" || body.Model == "cwd_nested" || body.Model == "nester" || body.Model == "grandchild" {
+		if body.Model == "held" || body.Model == "lifecycle_child" || body.Model == "denied" || body.Model == "missing_file" || body.Model == "roles" || body.Model == "history" || body.Model == "message_child" || body.Model == "completion_child" || body.Model == "cwd_nested" || body.Model == "codemode_child" || body.Model == "nester" || body.Model == "grandchild" || body.Model == "nested_sibling" {
 			expected := "input.txt"
 			if body.Model == "cwd_nested" {
 				expected = "USER_ONLY_SCOUT_INSTRUCTIONS"
+				if f.scenario == "cwd" {
+					expected = "NATIVE_CWD_SCOUT_INSTRUCTIONS"
+				}
+			} else if body.Model == "denied" && f.scenario == "checks" {
+				expected = "NATIVE_CHECK_WORKER_INSTRUCTIONS"
+			} else if body.Model == "codemode_child" {
+				expected = "CODEMODE_SCOUT_INSTRUCTIONS"
 			}
-			prompt := systemPrompt(body)
-			if prompt != expected || strings.Contains(prompt, "stock fixture read marker") {
+			instructionsPresent := strings.Contains(messageText(body), expected)
+			if f.scenario == "" {
+				instructionsPresent = systemPrompt(body) == expected
+			}
+			if !instructionsPresent || strings.Contains(systemPrompt(body), "stock fixture read marker") {
 				f.fail(w, errors.New("named instruction text was interpreted as a file path"))
 				return
 			}
+		}
+		if body.Model == "cwd_worker" && !strings.Contains(systemMessageText(body), "NATIVE_CWD_WORKER_INSTRUCTIONS") {
+			f.fail(w, errors.New("worker did not resolve the configuration in its target cwd"))
+			return
+		}
+		if body.Model == "cwd_worker" && contains(toolNames(body), "ls") {
+			f.fail(w, errors.New("child inherited the parent tool selection instead of its directory settings"))
+			return
+		}
+		if body.Model == "cwd_worker" && !contains(toolNames(body), "bash") {
+			f.fail(w, errors.New("worker's native directory settings removed bash"))
+			return
+		}
+		if !contains(toolNames(body), "read") && (body.Model == "cwd_worker" || body.Model == "cwd_nested") {
+			f.fail(w, errors.New("native directory settings removed the child read tool"))
+			return
+		}
+		if body.Model == "cwd_worker" && (!contains(toolNames(body), "write") || !contains(toolNames(body), "edit")) {
+			f.fail(w, errors.New("worker's native directory settings removed file tools"))
+			return
+		}
+		if body.Model == "cwd_nested" && (contains(toolNames(body), "bash") || contains(toolNames(body), "ls") || contains(toolNames(body), "write")) {
+			f.fail(w, errors.New("scout tool ceiling exposed a non-read builtin"))
+			return
+		}
+		if body.Model == "cwd_nested" && contains(toolNames(body), "litter_spawn") {
+			f.fail(w, errors.New("scout tool ceiling exposed delegation controls"))
+			return
+		}
+		if body.Model == "cwd_worker" && !contains(toolNames(body), "litter_spawn") {
+			f.fail(w, errors.New("worker tool ceiling lost direct child controls"))
+			return
 		}
 	}
 	var text string
@@ -673,6 +721,12 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 		text, calls, err = f.parentUnbounded(body)
 	case "parent_nested":
 		text, calls, err = f.parentNested(request.Context(), body)
+	case "nester":
+		text, calls, err = f.nesterRequest(request.Context(), body)
+	case "grandchild":
+		text, calls, err = f.grandchildRequest(request.Context(), body)
+	case "nested_sibling":
+		text, calls, err = f.nestedSiblingRequest(request.Context(), body)
 	case "parent_checks":
 		text, calls, err = f.parentChecks(body)
 	case "parent_shadow":
@@ -681,12 +735,20 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 		text, calls, err = f.parentMessages(request.Context(), body)
 	case "parent_lifecycle":
 		text, calls, err = f.parentLifecycle(request.Context(), body)
+	case "parent_pause":
+		text, calls, err = f.parentPause(request.Context(), body)
 	case "parent_completion":
 		text, calls, err = f.parentCompletion(request.Context(), w, body)
+	case "parent_codemode":
+		text, calls, err = f.parentCodemode(request.Context(), body)
+	case "parent_admission":
+		text, calls, err = f.parentAdmission(request.Context(), body)
 	case "completion_child":
 		text, calls, err = f.completionChild(request.Context(), body)
 	case "lifecycle_child":
 		text, calls, err = f.lifecycleChild(request.Context(), body)
+	case "codemode_child":
+		text, calls, err = f.codemodeChild(request.Context(), body)
 	case "denied", "missing_file", "roles", "history", "message_child":
 		text, calls, err = f.checkedChild(request.Context(), body)
 	case "provider_error":
@@ -704,45 +766,6 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 		text, calls, err = f.cwdNestedRequest(body)
 	case "unbounded_child":
 		text, calls, err = f.unboundedChildRequest(request.Context(), body)
-	case "nester":
-		tools, parseErr := toolResults(body)
-		err = parseErr
-		if err == nil && len(tools) == 0 {
-			calls = []call{{"litter_spawn", map[string]any{"type": "coordinator", "task": "Nested grandchild task.", "name": "nested-grandchild", "model": "fixture/grandchild"}}}
-		} else if err == nil {
-			if len(tools) != 1 || tools[0].Child.ID == "" || tools[0].State != "starting" {
-				err = errors.New("nested spawn did not return its frozen admission")
-			} else {
-				f.mu.Lock()
-				f.grandchild = tools[0].Child.ref
-				f.signalLocked()
-				f.mu.Unlock()
-				text = "nested parent complete"
-			}
-		}
-	case "grandchild":
-		tools := toolMessages(body)
-		if len(tools) == 0 {
-			calls = []call{{"read", map[string]string{"path": "input.txt"}}}
-		} else if len(tools) == 1 {
-			if !strings.Contains(content(tools[0].Content), "stock fixture read marker") {
-				err = errors.New("depth-limited coordinator did not read its workspace file")
-			} else {
-				calls = []call{{"litter_spawn", map[string]any{"type": "coordinator", "task": "Forbidden depth three.", "name": "too-deep", "model": "fixture/nester"}}}
-			}
-		} else {
-			var value result
-			err = json.Unmarshal([]byte(content(tools[len(tools)-1].Content)), &value)
-			if err == nil && value.State != "rejected" {
-				err = errors.New("depth-three admission was not rejected")
-			} else if err == nil {
-				f.mu.Lock()
-				f.depthRejected = true
-				f.signalLocked()
-				f.mu.Unlock()
-				text = f.hold(request.Context(), "nested-grandchild")
-			}
-		}
 	default:
 		err = fmt.Errorf("unexpected model %q", body.Model)
 	}
@@ -776,9 +799,30 @@ func writeJSON(path string, value any) error {
 	return os.Rename(path+".tmp", path)
 }
 
+func rejectAtPrefixedPaths(root string) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		path := filepath.Join(root, entry.Name())
+		if strings.HasPrefix(entry.Name(), "@") {
+			return fmt.Errorf("file tool created an @-prefixed path %s", path)
+		}
+		if entry.IsDir() {
+			if err := rejectAtPrefixedPaths(path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func fixtureConfigFiles(workspace, configDir, scenario string) map[string]string {
 	files := map[string]string{}
-	if scenario != "cwd" {
+	if scenario == "completion" {
+		files[filepath.Join(workspace, "litter.yaml")] = "concurrency: 2\ndepth: 2\nmax_mailbox: 1\nmax_result_bytes: 8192\nagents:\n  scout:\n    instructions: input.txt\n"
+	} else if scenario != "cwd" {
 		files[filepath.Join(workspace, "litter.yaml")] = "concurrency: 2\ndepth: 2\nmax_result_bytes: 8192\nagents:\n  scout:\n    instructions: input.txt\n"
 	}
 	if scenario == "core" {
@@ -819,16 +863,31 @@ func run(directory, pig, extension, scenario string) error {
 		files[path] = content
 	}
 	relativeCWD := ""
+	absoluteTarget, homeTarget, homeOutput := "", "", ""
+	trustedProjects := map[string]bool{workspace: true}
 	if scenario == "cwd" {
 		expectedCWD = filepath.Join(directory, "sibling dir's")
-		if err := os.MkdirAll(expectedCWD, 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Join(expectedCWD, ".pig"), 0o700); err != nil {
 			return err
 		}
+		trustedProjects[expectedCWD] = true
 		relativeCWD, err = filepath.Rel(workspace, expectedCWD)
 		if err != nil {
 			return err
 		}
 		files[filepath.Join(expectedCWD, "cwd-input.txt")] = "cwd original marker\n"
+		absoluteTarget = filepath.Join(expectedCWD, "cwd-absolute.txt")
+		homeTarget = filepath.Join(directory, "home", "cwd-home-input.txt")
+		homeOutput = filepath.Join(directory, "home", "cwd-home-output.txt")
+		files[absoluteTarget] = "cwd absolute marker\n"
+		files[homeTarget] = "cwd home marker\n"
+		files[filepath.Join(expectedCWD, "AGENTS.md")] = "NATIVE_CWD_CONTEXT_MARKER\n"
+		files[filepath.Join(expectedCWD, ".pig", "APPEND_SYSTEM.md")] = "NATIVE_CWD_APPEND_MARKER\n"
+		files[filepath.Join(expectedCWD, ".pig", "settings.json")] = "{\"defaultTools\":[\"read\",\"bash\",\"edit\",\"write\"]}"
+		files[filepath.Join(expectedCWD, "litter.yaml")] = "concurrency: 2\ndepth: 2\nagents:\n  scout:\n    role: scout\n    instructions: NATIVE_CWD_SCOUT_INSTRUCTIONS\n    tools: [read, ls]\n    can_delegate: false\n  worker:\n    role: worker\n    instructions: NATIVE_CWD_WORKER_INSTRUCTIONS\n    tools: [read, ls, write, edit, bash]\n    can_delegate: true\n"
+	}
+	if scenario == "checks" {
+		files[filepath.Join(workspace, "denied-read.txt")] = "native child read marker\n"
 	}
 	for path, content := range files {
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -839,7 +898,7 @@ func run(directory, pig, extension, scenario string) error {
 	if err != nil {
 		return err
 	}
-	f := &fixture{scenario: scenario, held: map[string]chan struct{}{}, changed: make(chan struct{}), checks: map[string]bool{}, aborted: map[string]bool{}, expectedCWD: expectedCWD, relativeCWD: relativeCWD, bashPath: bashPath}
+	f := &fixture{scenario: scenario, held: map[string]chan struct{}{}, changed: make(chan struct{}), checks: map[string]bool{}, aborted: map[string]bool{}, expectedCWD: expectedCWD, relativeCWD: relativeCWD, absoluteTarget: absoluteTarget, homeTarget: homeTarget, homeOutput: homeOutput, bashPath: bashPath}
 	server := &http.Server{Handler: http.HandlerFunc(f.serve), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = server.Serve(listener) }()
 	defer func() {
@@ -859,10 +918,16 @@ func run(directory, pig, extension, scenario string) error {
 	if err := writeJSON(filepath.Join(agentDir, "auth.json"), map[string]any{"fixture": map[string]string{"type": "api_key", "key": "local-fixture-only"}}); err != nil {
 		return err
 	}
-	if err := writeJSON(filepath.Join(agentDir, "settings.json"), map[string]any{"cacheWarming": "off", "retry": map[string]bool{"enabled": false}, "compaction": map[string]bool{"enabled": false}}); err != nil {
+	settings := map[string]any{"cacheWarming": "off", "retry": map[string]bool{"enabled": false}, "compaction": map[string]bool{"enabled": false}}
+	if scenario == "codemode" {
+		settings["defaultTools"] = []string{"+codemode"}
+	} else if scenario == "cwd" {
+		settings["defaultTools"] = []string{"+ls"}
+	}
+	if err := writeJSON(filepath.Join(agentDir, "settings.json"), settings); err != nil {
 		return err
 	}
-	if err := writeJSON(filepath.Join(agentDir, "trust.json"), map[string]bool{workspace: true}); err != nil {
+	if err := writeJSON(filepath.Join(agentDir, "trust.json"), trustedProjects); err != nil {
 		return err
 	}
 	stdout, err := os.Create(filepath.Join(directory, "stdout.jsonl"))
@@ -881,7 +946,7 @@ func run(directory, pig, extension, scenario string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if scenario == "lifecycle" || scenario == "completion" {
+	if scenario == "lifecycle" || scenario == "pause" || scenario == "completion" {
 		return f.runLifecycle(ctx, directory, workspace, agentDir, pig, extension, stdout, stderr)
 	}
 	model := "fixture/parent"
@@ -891,13 +956,19 @@ func run(directory, pig, extension, scenario string) error {
 		model = "fixture/parent_cwd"
 	} else if scenario == "nested" {
 		model = "fixture/parent_nested"
-		configuration := "concurrency: 2\ndepth: 2\nagents:\n  scout:\n    instructions: input.txt\n  coordinator:\n    role: worker\n    instructions: input.txt\n    tools: [read]\n    can_delegate: true\n"
+		configuration := "concurrency: 3\ndepth: 2\nagents:\n  scout:\n    instructions: input.txt\n  coordinator:\n    role: worker\n    instructions: input.txt\n    tools: [read]\n    can_delegate: true\n"
 		if err := os.WriteFile(filepath.Join(workspace, "litter.yaml"), []byte(configuration), 0o600); err != nil {
 			return err
 		}
 	} else if scenario == "checks" {
 		model = "fixture/parent_checks"
-		configuration := "concurrency: 2\ndepth: 2\nmax_history_bytes: 65536\nmax_result_bytes: 256\nagents:\n  scout:\n    instructions: input.txt\n  worker:\n    instructions: input.txt\n  fixed:\n    role: scout\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n    model: fixture/held\n  custom_scout:\n    role: scout\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n"
+		configuration := "concurrency: 2\ndepth: 2\nmax_history_bytes: 65536\nmax_result_bytes: 256\nagents:\n  scout:\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n  worker:\n    role: worker\n    instructions: NATIVE_CHECK_WORKER_INSTRUCTIONS\n    tools: [read, write, edit, bash]\n    can_delegate: true\n  fixed:\n    role: scout\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n    model: fixture/held\n  custom_scout:\n    role: scout\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n"
+		if err := os.WriteFile(filepath.Join(workspace, "litter.yaml"), []byte(configuration), 0o600); err != nil {
+			return err
+		}
+	} else if scenario == "admission" {
+		model = "fixture/parent_admission"
+		configuration := "concurrency: 1\ndepth: 1\nagents:\n  scout:\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n"
 		if err := os.WriteFile(filepath.Join(workspace, "litter.yaml"), []byte(configuration), 0o600); err != nil {
 			return err
 		}
@@ -908,9 +979,18 @@ func run(directory, pig, extension, scenario string) error {
 		}
 	} else if scenario == "shadow" {
 		model = "fixture/parent_shadow"
+	} else if scenario == "codemode" {
+		model = "fixture/parent_codemode"
+		configuration := "concurrency: 3\ndepth: 2\nmax_result_bytes: 8192\nagents:\n  scout:\n    instructions: CODEMODE_SCOUT_INSTRUCTIONS\n    tools: [read]\n    can_delegate: false\n"
+		if err := os.WriteFile(filepath.Join(workspace, "litter.yaml"), []byte(configuration), 0o600); err != nil {
+			return err
+		}
 	}
 	arguments := []string{"--no-extensions", "-e", extension, "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--approve", "--offline", "--model", model, "--mode", "json", "--print", "Run the fixture. PARENT_PRIVATE_MARKER"}
-	if scenario == "checks" || scenario == "shadow" {
+	if scenario == "codemode" {
+		arguments = append(arguments, "-e", "builtin:codemode")
+	}
+	if scenario == "checks" || scenario == "shadow" || scenario == "admission" || scenario == "codemode" {
 		arguments = append([]string{"-e", filepath.Join(filepath.Dir(extension), "litter-fixture-guard")}, arguments...)
 	}
 	command := exec.CommandContext(ctx, pig, arguments...)
@@ -918,6 +998,9 @@ func run(directory, pig, extension, scenario string) error {
 	defer stopProcess(command)
 	command.Dir = workspace
 	command.Env = fixtureEnvironment(pig, bashPath, directory, agentDir)
+	if scenario == "codemode" {
+		command.Env = append(command.Env, "LITTER_FIXTURE_REPLACE_DETAILS=1")
+	}
 	if scenario == "cwd" {
 		command.Env = fixtureEnvironment(pig, bashPath, directory, "")
 	}
@@ -944,15 +1027,24 @@ func run(directory, pig, extension, scenario string) error {
 		}
 	}
 	if scenario == "cwd" {
-		for path, expected := range map[string]string{
-			filepath.Join(expectedCWD, "cwd-input.txt"):  "cwd edited marker\n",
-			filepath.Join(expectedCWD, "cwd-output.txt"): "cwd output marker\n",
-			filepath.Join(expectedCWD, "cwd-bash.txt"):   expectedCWD + "\n",
+		for _, target := range []struct{ path, expected string }{
+			{filepath.Join(expectedCWD, "cwd-input.txt"), "cwd edited marker\n"},
+			{filepath.Join(expectedCWD, "cwd-output.txt"), "cwd output marker\n"},
+			{filepath.Join(expectedCWD, "cwd-absolute.txt"), "cwd absolute edited marker\n"},
+			{filepath.Join(expectedCWD, "cwd-bash.txt"), expectedCWD + "\n"},
+			{homeTarget, "cwd home marker\n"},
+			{homeOutput, "cwd home output marker\n"},
 		} {
-			got, err := os.ReadFile(path)
-			if err != nil || string(got) != expected {
-				return fmt.Errorf("cwd tool effect at %s = %q, %v; want %q", filepath.Base(path), got, err, expected)
+			got, err := os.ReadFile(target.path)
+			if err != nil || string(got) != target.expected {
+				return fmt.Errorf("cwd tool effect at %s = %q, %v; want %q", filepath.Base(target.path), got, err, target.expected)
 			}
+		}
+		if err := rejectAtPrefixedPaths(expectedCWD); err != nil {
+			return err
+		}
+		if err := rejectAtPrefixedPaths(filepath.Join(directory, "home")); err != nil {
+			return err
 		}
 	}
 	if scenario == "unbounded" {
@@ -962,22 +1054,17 @@ func run(directory, pig, extension, scenario string) error {
 		}
 	}
 	if scenario == "checks" {
-		data, err := os.ReadFile(filepath.Join(directory, "permission.jsonl"))
-		if err != nil {
-			return err
+		if _, err := os.Stat(filepath.Join(directory, "permission.jsonl")); !os.IsNotExist(err) {
+			return errors.New("native child file tools triggered the parent's extension hook")
 		}
-		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-		if len(lines) != 2 {
-			return fmt.Errorf("parent permission hook recorded %d calls, want 2", len(lines))
-		}
-		for _, line := range lines {
-			var receipt map[string]any
-			if json.Unmarshal([]byte(line), &receipt) != nil || receipt["parentToolCallId"] == nil || receipt["parentToolCallId"] == "" {
-				return errors.New("permission denial lost original parent call provenance")
+		for path, expected := range map[string]string{
+			filepath.Join(expectedCWD, "denied-read.txt"):  "native child read marker\n",
+			filepath.Join(expectedCWD, "denied-write.txt"): "native child write marker\n",
+		} {
+			got, err := os.ReadFile(path)
+			if err != nil || string(got) != expected {
+				return fmt.Errorf("native child file tool effect at %s = %q, %v; want %q", filepath.Base(path), got, err, expected)
 			}
-		}
-		if _, err := os.Stat(filepath.Join(workspace, "denied-write.txt")); !os.IsNotExist(err) {
-			return errors.New("parent-denied write reached disk")
 		}
 	}
 	return writeJSON(filepath.Join(directory, "result.json"), map[string]any{"passed": true, "scenario": scenario, "runs": f.runs, "resumed": f.resumed, "stopped": f.stopped, "nestedParent": f.nestedParent, "grandchild": f.grandchild, "depthRejected": f.depthRejected, "checks": f.checks, "exitCode": command.ProcessState.ExitCode(), "isolatedEnvironment": true})
@@ -998,7 +1085,7 @@ func main() {
 	}
 	pig := flag.String("pig-bin", "", "Released PiG binary")
 	extension := flag.String("extension", filepath.Join(filepath.Dir(self), "pig-litter"), "Built pig-litter standalone")
-	scenario := flag.String("scenario", "core", "core, cwd, unbounded, nested, checks, messages, lifecycle, completion, or shadow")
+	scenario := flag.String("scenario", "core", "core, cwd, unbounded, nested, checks, admission, messages, lifecycle, pause, completion, shadow, or codemode")
 	evidenceRoot := flag.String("evidence-root", filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(self)))), ".pstack", "evidence", "go-lifecycle"), "Evidence directory")
 	flag.Parse()
 	if *pig == "" {

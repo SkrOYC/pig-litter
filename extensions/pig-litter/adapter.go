@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -14,27 +13,15 @@ import (
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding"
+	"github.com/MichaelKinsy/PiG/coding/extension"
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 )
 
-type authority struct {
-	context   sdk.Context
-	sessionID string
-	epoch     uint64
-}
-type canonicalTool struct {
-	source      sdk.SourceInfo
-	parameters  map[string]any
-	description string
-}
-type ackKey struct {
-	caller *run
-	callID string
-}
 type acknowledgement struct {
-	run  *run
-	done chan struct{}
-	once sync.Once
+	run       *run
+	operation string
+	done      chan struct{}
+	once      sync.Once
 }
 
 type extensionState struct {
@@ -42,6 +29,7 @@ type extensionState struct {
 	initialization sync.Mutex
 	epoch          uint64
 	owner          *owner
+	calls          *callScope
 }
 
 type owner struct {
@@ -52,21 +40,14 @@ type owner struct {
 	config                   Config
 	services                 *coding.Services
 	tree                     *Tree
-	canonical                map[string]canonicalTool
 	ackMu                    sync.Mutex
-	acks                     map[ackKey]*acknowledgement
-	outcomeAcks              map[ackKey]*outcomeAcknowledgement
+	acks                     map[*callTicket]*acknowledgement
+	outcomeAcks              map[*callTicket]*outcomeAcknowledgement
 	afterOutcomeSnapshot     func()
 	afterOutcomeReservation  func()
-	beforeParentReadyWait    func()
-}
-
-func memorySettings() (*coding.SettingsManager, error) {
-	manager := coding.NewInMemorySettingsManager(coding.Settings{CacheWarming: "off"})
-	if err := manager.SetRetryEnabled(false); err != nil {
-		return nil, err
-	}
-	return manager, nil
+	rootMu                   sync.Mutex
+	rootSignal               context.Context
+	rootWatch                chan struct{}
 }
 
 func configuredAgentDir() string {
@@ -138,38 +119,13 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		return nil, err
 	}
 	agentDir := configuredAgentDir()
-	settings, err := memorySettings()
+	services, err := coding.NewServices(coding.ServicesOptions{CWD: cwd, AgentDir: agentDir, ProjectTrusted: &trusted})
 	if err != nil {
 		return nil, err
 	}
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: cwd, AgentDir: agentDir, ProjectTrusted: &trusted, SettingsManager: settings})
-	if err != nil {
-		return nil, err
-	}
-	tree, err := newTree(config)
-	if err != nil {
-		services.Close()
-		return nil, err
-	}
-	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, canonical: map[string]canonicalTool{}, acks: map[ackKey]*acknowledgement{}, outcomeAcks: map[ackKey]*outcomeAcknowledgement{}}
-	tools, err := ctx.GetAllTools()
-	if err != nil {
-		tree.close()
-		services.Close()
-		return nil, err
-	}
-	for _, tool := range tools {
-		if !slices.Contains(hostToolNames, tool.Name) || tool.SourceInfo.Source != "builtin" || tool.SourceInfo.Path != "builtin:"+tool.Name {
-			continue
-		}
-		var parameters map[string]any
-		if err := json.Unmarshal(tool.Parameters, &parameters); err != nil {
-			tree.close()
-			services.Close()
-			return nil, err
-		}
-		o.canonical[tool.Name] = canonicalTool{source: tool.SourceInfo, parameters: parameters, description: tool.Description}
-	}
+	tree := newTree(config)
+	tree.root.id = ChildID(id)
+	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 	tree.execute, tree.completion, tree.changed = o.executeRun, o.sendCompletion, o.widget
 	s.mu.Lock()
 	if s.epoch != epoch {
@@ -192,15 +148,16 @@ func (s *extensionState) retire() {
 	s.epoch++
 	previous := s.owner
 	s.owner = nil
+	s.calls = nil
 	s.mu.Unlock()
 	if previous == nil {
 		return
 	}
 	previous.ackMu.Lock()
 	acks := previous.acks
-	previous.acks = map[ackKey]*acknowledgement{}
+	previous.acks = map[*callTicket]*acknowledgement{}
 	outcomeAcks := previous.outcomeAcks
-	previous.outcomeAcks = map[ackKey]*outcomeAcknowledgement{}
+	previous.outcomeAcks = map[*callTicket]*outcomeAcknowledgement{}
 	previous.ackMu.Unlock()
 	for _, ack := range acks {
 		ack.once.Do(func() { close(ack.done); previous.tree.cancelPending(ack.run) })
@@ -213,50 +170,6 @@ func (s *extensionState) retire() {
 	if previous.context.HasUI() {
 		_ = previous.context.SetWidget("pig-litter", []string{})
 	}
-}
-
-func (o *owner) canonicalTool(ctx sdk.Context, name string) (canonicalTool, error) {
-	if err := o.current(); err != nil {
-		return canonicalTool{}, err
-	}
-	callable, err := ctx.Tools()
-	if err != nil {
-		return canonicalTool{}, err
-	}
-	registered, err := ctx.GetAllTools()
-	if err != nil {
-		return canonicalTool{}, err
-	}
-	original, exists := o.canonical[name]
-	if !exists {
-		return canonicalTool{}, reject("permission_denied", "canonical "+name+" is unavailable")
-	}
-	var current *sdk.AgentTool
-	for _, tool := range callable {
-		if tool.Name == name {
-			copy := tool
-			current = &copy
-			break
-		}
-	}
-	var source sdk.SourceInfo
-	for _, tool := range registered {
-		if tool.Name == name {
-			source = tool.SourceInfo
-			break
-		}
-	}
-	if current == nil || source.Source != "builtin" || source.Path != "builtin:"+name || source != original.source {
-		return canonicalTool{}, reject("permission_denied", "canonical "+name+" is unavailable or changed")
-	}
-	var parameters map[string]any
-	if err := json.Unmarshal(current.Parameters, &parameters); err != nil {
-		return canonicalTool{}, err
-	}
-	if !reflect.DeepEqual(parameters, original.parameters) {
-		return canonicalTool{}, reject("permission_denied", "canonical "+name+" changed")
-	}
-	return original, nil
 }
 
 func (o *owner) modelFor(ctx context.Context, name string, runtime *coding.ModelRuntime) (*ai.Model, error) {
@@ -310,8 +223,8 @@ func (o *owner) modelFor(ctx context.Context, name string, runtime *coding.Model
 	return nil, reject("unavailable", "exact model is unavailable to the stock SDK")
 }
 
-func (o *owner) deferActivation(key ackKey, selected *run, done <-chan struct{}, cancelled func() bool) {
-	ack := &acknowledgement{run: selected, done: make(chan struct{})}
+func (o *owner) deferActivation(key *callTicket, selected *run, done <-chan struct{}, cancelled func() bool, operation string) {
+	ack := &acknowledgement{run: selected, operation: operation, done: make(chan struct{})}
 	o.ackMu.Lock()
 	o.acks[key] = ack
 	o.ackMu.Unlock()
@@ -328,7 +241,7 @@ func (o *owner) deferActivation(key ackKey, selected *run, done <-chan struct{},
 	}()
 }
 
-func (o *owner) watchRequest(key ackKey, ctx sdk.Context) {
+func (o *owner) watchRequest(key *callTicket, ctx sdk.Context) {
 	o.ackMu.Lock()
 	ack := o.acks[key]
 	o.ackMu.Unlock()
@@ -348,7 +261,7 @@ func (o *owner) watchRequest(key ackKey, ctx sdk.Context) {
 	}()
 }
 
-func (o *owner) settleAck(key ackKey, failed bool) {
+func (o *owner) settleAck(key *callTicket, failed bool) {
 	o.ackMu.Lock()
 	ack := o.acks[key]
 	delete(o.acks, key)
@@ -369,95 +282,19 @@ func (o *owner) settleAck(key ackKey, failed bool) {
 }
 
 type nativeTool struct {
-	name        string
-	schema      map[string]any
-	description string
-	execute     func(context.Context, string, json.RawMessage) (agent.AgentToolResult, error)
+	name    string
+	schema  map[string]any
+	execute func(context.Context, string, json.RawMessage) (agent.AgentToolResult, error)
 }
 
 func (t *nativeTool) Name() string  { return t.name }
 func (t *nativeTool) Label() string { return t.name }
 func (t *nativeTool) Schema() ai.ToolSchema {
-	description := t.description
-	if description == "" {
-		description = descriptions[t.name]
-	}
-	return ai.ToolSchema{Name: t.name, Description: description, Parameters: t.schema, PromptGuidelines: promptGuidelines[t.name]}
+	return ai.ToolSchema{Name: t.name, Description: descriptions[t.name], Parameters: t.schema, PromptGuidelines: promptGuidelines[t.name]}
 }
 func (t *nativeTool) ExecutionMode() agent.ToolExecutionMode { return agent.ToolModeParallel }
 func (t *nativeTool) Execute(ctx context.Context, id string, params json.RawMessage, _ agent.ToolUpdateCallback) (agent.AgentToolResult, error) {
 	return t.execute(ctx, id, params)
-}
-
-func (o *owner) hostTool(r *record, name string) (agent.AgentTool, error) {
-	metadata, err := o.canonicalTool(r.authority.context, name)
-	if err != nil {
-		return nil, err
-	}
-	encoded, err := json.Marshal(metadata.parameters)
-	if err != nil {
-		return nil, err
-	}
-	var parameters map[string]any
-	if err := json.Unmarshal(encoded, &parameters); err != nil {
-		return nil, err
-	}
-	return &nativeTool{name: name, schema: parameters, description: metadata.description, execute: func(ctx context.Context, _ string, raw json.RawMessage) (agent.AgentToolResult, error) {
-		if r.authority.sessionID != o.sessionID || r.authority.epoch != o.epoch {
-			return agent.AgentToolResult{}, reject("unavailable", "child authority retired")
-		}
-		if err := o.current(); err != nil {
-			return agent.AgentToolResult{}, err
-		}
-		trusted, err := r.authority.context.IsProjectTrusted()
-		if err != nil {
-			return agent.AgentToolResult{}, err
-		}
-		if !trusted {
-			return agent.AgentToolResult{}, reject("permission_denied", "project trust was revoked")
-		}
-		if !slices.Contains(r.tools, name) || ctx.Err() != nil {
-			return agent.AgentToolResult{}, reject("permission_denied", name+" is unavailable to this child")
-		}
-		if _, err := o.canonicalTool(r.authority.context, name); err != nil {
-			return agent.AgentToolResult{}, err
-		}
-		var args map[string]any
-		if err := json.Unmarshal(raw, &args); err != nil {
-			return agent.AgentToolResult{}, err
-		}
-		outcome, err := r.authority.context.ExecuteTool(name, childToolArgs(name, r.cwd, args), &sdk.ExecuteToolOptions{Signal: ctx})
-		if err != nil {
-			return agent.AgentToolResult{}, err
-		}
-		blocks := []ai.ToolResultMessageContent{}
-		for _, block := range outcome.Result.Content {
-			switch block.Type {
-			case "text":
-				blocks = append(blocks, ai.TextContent{Text: block.Text})
-			case "image":
-				blocks = append(blocks, ai.ImageContent{Data: block.Data, MimeType: block.MimeType})
-			}
-		}
-		result := agent.AgentToolResult{Content: blocks, Details: outcome.Result.Details, IsError: outcome.IsError || outcome.Result.IsError, Terminate: outcome.Result.Terminate}
-		if outcome.Result.StructuredContent != nil {
-			encoded, err := json.Marshal(outcome.Result.StructuredContent)
-			if err != nil {
-				return agent.AgentToolResult{}, err
-			}
-			result.StructuredContent = encoded
-		}
-		if outcome.Result.Usage != nil {
-			encoded, err := json.Marshal(outcome.Result.Usage)
-			if err != nil {
-				return agent.AgentToolResult{}, err
-			}
-			if err := json.Unmarshal(encoded, &result.Usage); err != nil {
-				return agent.AgentToolResult{}, err
-			}
-		}
-		return result, nil
-	}}, nil
 }
 
 func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
@@ -483,12 +320,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = "retained child history was retired before construction"
 		return
 	}
-	settings, err := memorySettings()
-	if err != nil {
-		outcome.Error = err.Error()
-		return
-	}
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: r.cwd, AgentDir: o.agentDir, ProjectTrusted: &trusted, SettingsManager: settings})
+	services, err := coding.NewServices(coding.ServicesOptions{CWD: r.cwd, AgentDir: o.agentDir, ProjectTrusted: &trusted})
 	if err != nil {
 		outcome.Error = err.Error()
 		return
@@ -500,7 +332,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = err.Error()
 		return
 	}
-	runtime, err := coding.NewRuntime(coding.RuntimeOptions{Services: services, AbortContext: run.ctx, NewExtensions: nil})
+	runtime, err := coding.NewRuntime(coding.RuntimeOptions{Services: services, AbortContext: run.ctx, NewExtensions: []extension.Extension{o.completionHooks(r)}})
 	if err != nil {
 		outcome.Error = err.Error()
 		return
@@ -513,32 +345,45 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	tools := []agent.AgentTool{}
 	allowed := map[string]struct{}{}
 	for _, name := range r.tools {
-		tool, err := o.hostTool(r, name)
-		if err != nil {
-			outcome.Error = err.Error()
-			return
-		}
-		tools = append(tools, tool)
 		allowed[name] = struct{}{}
 	}
 	if r.canDelegate {
 		for _, name := range controlNames {
 			tools = append(tools, &nativeTool{name: name, schema: schemas[name], execute: func(ctx context.Context, callID string, raw json.RawMessage) (agent.AgentToolResult, error) {
-				value, err := o.operation(ctx, name, raw, run, callID, nil)
+				ticket, err := o.callScope(run).begin(run, callID, name)
+				if err != nil {
+					return nativeResult(name, nil, err), nil
+				}
+				value, err := o.operation(ctx, raw, ticket, nil)
 				return nativeResult(name, value, err), nil
 			}})
 			allowed[name] = struct{}{}
 		}
 	}
-	session, err := runtime.New(coding.SessionStartOptions{SessionManager: manager, Model: model, SystemPrompt: r.instructions, ResourceLoader: coding.NoResources, SkipBuiltinTools: true, ExtraTools: tools, AllowedTools: allowed})
-	if err != nil {
+	loader := coding.NewDefaultResourceLoader(coding.DefaultResourceLoaderOptions{CWD: r.cwd, AgentDir: o.agentDir, SettingsManager: services.SettingsManager(), AppendSystemPromptOverride: func(found []string) []string {
+		return append(found, r.instructions)
+	}})
+	if err := loader.Reload(); err != nil {
 		outcome.Error = err.Error()
 		return
 	}
+	active := services.SettingsManager().ResolvedDefaultTools()
+	if r.canDelegate {
+		active = append(active, controlNames...)
+	}
+	r.deliveryMu.Lock()
+	session, err := runtime.New(coding.SessionStartOptions{SessionManager: manager, Model: model, ResourceLoader: loader, ExtraTools: tools, AllowedTools: allowed})
+	if err != nil {
+		r.deliveryMu.Unlock()
+		outcome.Error = err.Error()
+		return
+	}
+	session.SetActiveToolsByName(active)
 	eventDrain := make(chan struct{})
 	go func() {
 		defer close(eventDrain)
-		for range session.Events() {
+		for event := range session.Events() {
+			coding.AcknowledgeEvent(event)
 		}
 	}()
 	var observedMu sync.Mutex
@@ -546,11 +391,14 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	var failure string
 	var turns int
 	var limitHit bool
-	ended := make(chan struct{})
-	var endedOnce sync.Once
 	unsubscribe := session.Subscribe(func(event agent.AgentEvent) {
 		switch event := event.(type) {
 		case agent.TurnStartEvent:
+			run.mu.Lock()
+			previous := run.calls
+			run.calls = newCallScope()
+			run.mu.Unlock()
+			o.retireScope(previous)
 			observedMu.Lock()
 			turns++
 			exceeded := turns > o.config.MaxTurns
@@ -568,7 +416,10 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			if exceeded {
 				session.RequestAbort()
 			}
+		case agent.TurnEndEvent:
+			o.retireScope(o.callScope(run))
 		case agent.ToolExecutionEndEvent:
+			o.observeCall(run, event.ToolName, event.ToolCallID, event.Result, event.IsError)
 			if event.IsError || event.Result.IsError {
 				observedMu.Lock()
 				if failure == "" {
@@ -581,11 +432,6 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 				observedMu.Lock()
 				terminal = event.Message.Assistant
 				observedMu.Unlock()
-			}
-			if event.Message.ToolResult != nil {
-				result := event.Message.ToolResult
-				o.settleAck(ackKey{run, result.ToolCallID}, result.IsError)
-				o.observeOutcome(run, result.ToolName, result.ToolCallID, result.Text(), result.IsError)
 			}
 			if event.Message.Custom != nil {
 				o.observeCompletion(run, event.Message.Custom)
@@ -600,14 +446,13 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 				observedMu.Unlock()
 				session.RequestAbort()
 			}
-		case agent.AgentEndEvent:
-			endedOnce.Do(func() { close(ended) })
 		}
 	})
 	run.mu.Lock()
 	run.session = session
 	close(run.ready)
 	run.mu.Unlock()
+	r.deliveryMu.Unlock()
 	deliveryContext, stopDelivery := context.WithCancel(run.ctx)
 	deliveryDone := make(chan struct{})
 	go func() {
@@ -633,39 +478,28 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		}
 	}()
 	baseline := session.GetSessionStats()
-	_, sendErr := session.Send(run.ctx, run.prompt)
-	if sendErr == nil {
-		select {
-		case <-ended:
-		case <-run.ctx.Done():
-		}
-	}
+	sendErr := o.tree.sendInput(session, run)
 	stopDelivery()
 	<-deliveryDone
-	run.deliveryMu.Lock()
+	session.ClearQueue()
+	r.deliveryMu.Lock()
 	run.mu.Lock()
 	run.disposing = true
 	run.session = nil
 	run.mu.Unlock()
-	run.deliveryMu.Unlock()
 	if err := session.Close(); err != nil {
 		observedMu.Lock()
 		failure = "child cleanup failed: " + err.Error()
 		observedMu.Unlock()
 	}
 	<-eventDrain
+	r.deliveryMu.Unlock()
 	unsubscribe()
-	o.retireAcks(run)
-	o.retireReceipts(run)
+	o.retireScope(o.callScope(run))
+	o.retireReceipts(r)
 	observedMu.Lock()
 	if sendErr != nil && failure == "" {
 		failure = sendErr.Error()
-	}
-	run.mu.Lock()
-	completionError := run.completionSendError
-	run.mu.Unlock()
-	if completionError != "" && failure == "" {
-		failure = "child completion enqueue failed: " + completionError
 	}
 	outcome = outcomeFrom(terminal, baseline, session.GetSessionStats(), failure, run.ctx.Err() != nil, limitHit)
 	observedMu.Unlock()
@@ -713,20 +547,6 @@ func outcomeFrom(terminal *agent.AssistantMessage, before, after coding.SessionS
 	return outcome
 }
 
-func (o *owner) retireAcks(caller *run) {
-	o.ackMu.Lock()
-	keys := []ackKey{}
-	for key := range o.acks {
-		if key.caller == caller {
-			keys = append(keys, key)
-		}
-	}
-	o.ackMu.Unlock()
-	for _, key := range keys {
-		o.settleAck(key, true)
-	}
-}
-
 func (o *owner) widget() {
 	if !o.context.HasUI() {
 		return
@@ -737,10 +557,7 @@ func (o *owner) widget() {
 	if !active {
 		return
 	}
-	children, err := o.tree.list("")
-	if err != nil {
-		return
-	}
+	children := o.tree.retained()
 	_ = o.context.SetWidget("pig-litter", widgetLines(children, o.context.Width()))
 }
 
@@ -767,10 +584,15 @@ func newExtension(state *extensionState) *sdk.Extension {
 				return sdkResult(name, nil, err), nil
 			}
 			signal := ctx.Signal()
+			o.watchRoot(signal)
 			if signal == nil {
 				signal = o.tree.ctx
 			}
-			value, err := o.operation(signal, name, raw, nil, ctx.ToolCallID(), &ctx)
+			ticket, err := o.callScope(nil).begin(nil, ctx.ToolCallID(), name)
+			if err != nil {
+				return sdkResult(name, nil, err), nil
+			}
+			value, err := o.operation(signal, raw, ticket, &ctx)
 			return sdkResult(name, value, err), nil
 		}})
 	}
@@ -782,24 +604,91 @@ func newExtension(state *extensionState) *sdk.Extension {
 			return nil, nil
 		}
 		message, _ := data["message"].(map[string]any)
-		if message["role"] == "toolResult" {
-			id, _ := message["toolCallId"].(string)
-			failed, _ := message["isError"].(bool)
-			o.settleAck(ackKey{nil, id}, failed)
-			raw, err := json.Marshal(message)
-			var result agent.AgentMessage
-			if err == nil {
-				err = json.Unmarshal(raw, &result)
-			}
-			if err == nil && result.ToolResult != nil {
-				tool := result.ToolResult
-				o.observeOutcome(nil, tool.ToolName, tool.ToolCallID, tool.Text(), tool.IsError)
-			} else {
-				o.settleOutcomeAck(ackKey{nil, id}, false)
-			}
-		}
 		if message["role"] == "custom" {
 			o.observeCompletion(nil, message)
+		}
+		return nil, nil
+	})
+	ext.OnEvent("turn_start", func(_ sdk.Context, _ map[string]any) (any, error) {
+		state.mu.Lock()
+		previous, o := state.calls, state.owner
+		state.calls = newCallScope()
+		state.mu.Unlock()
+		if o != nil {
+			o.tree.root.markAgentEnded(false)
+			o.retireScope(previous)
+		}
+		return nil, nil
+	})
+	ext.OnEvent("turn_end", func(_ sdk.Context, _ map[string]any) (any, error) {
+		state.mu.Lock()
+		scope, o := state.calls, state.owner
+		state.mu.Unlock()
+		if o != nil {
+			o.retireScope(scope)
+		}
+		return nil, nil
+	})
+	ext.OnEvent("tool_execution_end", func(_ sdk.Context, data map[string]any) (any, error) {
+		state.mu.Lock()
+		o := state.owner
+		state.mu.Unlock()
+		if o != nil {
+			o.observeToolEvent(data)
+		}
+		return nil, nil
+	})
+	ext.OnEvent("context", func(_ sdk.Context, data map[string]any) (any, error) {
+		state.mu.Lock()
+		o := state.owner
+		state.mu.Unlock()
+		if o == nil {
+			return nil, nil
+		}
+		messages, ok := data["messages"].([]any)
+		if !ok {
+			return nil, nil
+		}
+		return map[string]any{"messages": o.completionContext(o.tree.root, messages)}, nil
+	})
+	ext.OnEvent("agent_end", func(_ sdk.Context, _ map[string]any) (any, error) {
+		state.mu.Lock()
+		o := state.owner
+		state.mu.Unlock()
+		if o != nil {
+			o.tree.root.markAgentEnded(true)
+		}
+		return nil, nil
+	})
+	ext.OnEvent("agent_before_settle", func(_ sdk.Context, data map[string]any) (any, error) {
+		state.mu.Lock()
+		o := state.owner
+		state.mu.Unlock()
+		preview, _ := data["context"].(map[string]any)
+		pending, _ := preview["pendingMessages"].([]any)
+		if o != nil && o.continueForCompletions(o.tree.root, pending) {
+			return map[string]any{"continue": true}, nil
+		}
+		return nil, nil
+	})
+	ext.OnEvent("agent_start", func(ctx sdk.Context, _ map[string]any) (any, error) {
+		state.mu.Lock()
+		o := state.owner
+		state.mu.Unlock()
+		if o != nil {
+			o.watchRoot(ctx.Signal())
+		}
+		return nil, nil
+	})
+	ext.OnEvent("agent_settled", func(_ sdk.Context, _ map[string]any) (any, error) {
+		state.mu.Lock()
+		o := state.owner
+		state.mu.Unlock()
+		if o != nil {
+			o.tree.root.markAgentEnded(false)
+			o.settleRoot()
+			o.retireScope(o.callScope(nil))
+			o.retireReceipts(o.tree.root)
 		}
 		return nil, nil
 	})
@@ -828,4 +717,103 @@ func toolFailure(tool string, result agent.AgentToolResult) string {
 		message += " [truncated]"
 	}
 	return message
+}
+
+func (o *owner) observeCall(caller *run, operation, callID string, result agent.AgentToolResult, failed bool) {
+	ticket := o.callScope(caller).capture(callID, operation)
+	o.finishCall(ticket, result, failed)
+}
+
+func (o *owner) finishCall(ticket *callTicket, result agent.AgentToolResult, failed bool) {
+	if ticket == nil {
+		return
+	}
+	var content strings.Builder
+	for _, block := range result.Content {
+		if block, ok := block.(ai.TextContent); ok {
+			content.WriteString(block.Text)
+		}
+	}
+	o.settleAck(ticket, failed)
+	o.observeOutcome(ticket, ticket.operation, content.String(), failed)
+	ticket.scope.forget(ticket)
+}
+
+func (o *owner) observeToolEvent(data map[string]any) {
+	raw, err := json.Marshal(data)
+	var event struct {
+		ToolCallID string `json:"toolCallId"`
+		ToolName   string `json:"toolName"`
+		IsError    bool   `json:"isError"`
+		Result     struct {
+			Content []struct{ Type, Text string } `json:"content"`
+			Details any                           `json:"details"`
+			IsError bool                          `json:"isError"`
+		} `json:"result"`
+	}
+	if err != nil || json.Unmarshal(raw, &event) != nil {
+		return
+	}
+	result := agent.AgentToolResult{Details: event.Result.Details}
+	for _, block := range event.Result.Content {
+		if block.Type == "text" {
+			result.Content = append(result.Content, ai.TextContent{Text: block.Text})
+		}
+	}
+	o.observeCall(nil, event.ToolName, event.ToolCallID, result, event.IsError)
+}
+
+func (o *owner) watchRoot(signal context.Context) {
+	if signal == nil {
+		return
+	}
+	o.rootMu.Lock()
+	if o.rootSignal == signal {
+		o.rootMu.Unlock()
+		return
+	}
+	if o.rootWatch != nil {
+		close(o.rootWatch)
+	}
+	done := make(chan struct{})
+	o.rootWatch, o.rootSignal = done, signal
+	o.tree.mu.Lock()
+	if signal.Err() == nil {
+		o.tree.root.paused = false
+	}
+	o.tree.mu.Unlock()
+	o.rootMu.Unlock()
+	go func() {
+		select {
+		case <-signal.Done():
+			o.rootMu.Lock()
+			if o.rootSignal != signal {
+				o.rootMu.Unlock()
+				return
+			}
+			o.tree.mu.Lock()
+			pending, fresh := o.tree.pauseLocked(o.tree.root)
+			o.tree.mu.Unlock()
+			o.rootMu.Unlock()
+			o.tree.joinPaused(pending, fresh)
+		case <-done:
+		case <-o.tree.ctx.Done():
+		}
+	}()
+}
+
+func (o *owner) settleRoot() {
+	o.rootMu.Lock()
+	var pending, fresh []*run
+	if o.rootSignal != nil && o.rootSignal.Err() != nil {
+		o.tree.mu.Lock()
+		pending, fresh = o.tree.pauseLocked(o.tree.root)
+		o.tree.mu.Unlock()
+	}
+	if o.rootWatch != nil {
+		close(o.rootWatch)
+	}
+	o.rootWatch, o.rootSignal = nil, nil
+	o.rootMu.Unlock()
+	o.tree.joinPaused(pending, fresh)
 }

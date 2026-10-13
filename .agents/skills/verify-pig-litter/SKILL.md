@@ -49,13 +49,13 @@ The helper starts each case in fresh scratch with a private tmux socket and pare
 
 Selected startup requires an editor displaying the exact model and scratch path. `/pig-litter` must explain the six background controls. There is no foreground startup status.
 
-The selected proof discovers agents and spawns a scout to read a private token. The scout token exists only in its input file. It also spawns a worker with an explicit `cwd` and requires terminal commands to produce independently checked file effects there. The parent has canonical tools available because children call them through the parent host. The parent prompt restricts its own calls to `litter_*` controls; recorded calls enforce that restriction.
+The selected proof discovers agents and spawns a scout to read a private token. The scout token exists only in its input file. It also spawns a worker with an explicit `cwd` and requires terminal commands to produce independently checked file effects there. Each child is a retained PiG session with one stable UUID across turns, pause, and explicit resume. Child tools and resources load from the spawn directory. The parent prompt restricts its own calls to `litter_*` controls; recorded calls enforce that restriction.
 
 A passing run requires matching spawn admissions and completed outcomes by child ID, inherited exact models, the private scout token, and expected worker file effects. It also requires a live `Litter N live M kept` widget. Parent prose alone cannot pass. `litter_inspect` returns status and the latest result. It exposes no transcript or tool receipts.
 
-The proof removes the scout's input before resuming it through `litter_message`. The resume message must omit the private token. Require recall in a completed result for the same ID, after the resume acknowledgement. Child conversations stay in memory inside the extension's Go SDK sessions. Child OS processes and persisted child sessions aren't expected. Real-provider observations cannot establish every internal tool call. Use deterministic provider requests to verify forbidden tools and exact child configuration.
+The proof removes the scout's input before resuming it through `litter_message`. The resume message must omit the private token. Require recall in a completed result for the same ID, after the resume acknowledgement. `litter_inspect` exposes current status and the latest outcome. It does not expose transcript history or tool receipts. Real-provider observations cannot establish every internal tool call. Use deterministic provider requests to verify forbidden tools and exact child configuration.
 
-## Check cancellation and stopping
+## Check cancellation and pause
 
 Run the optional real-provider cancellation case:
 
@@ -64,9 +64,9 @@ Run the optional real-provider cancellation case:
     --piglet pig-litter --model "$PIG_LITTER_MODEL" --case cancel
 ```
 
-The helper waits for a live child and pending `litter_wait`, then sends **Escape**. It requires a recorded cancellation acknowledgement and a fresh diagnostic notification. Inspection must show that cancelling the wait leaves the child running. An explicit `litter_stop` must then return a stopped outcome. A cancelled wait can return plain tool error text; retain that text without treating it as completion.
+The helper waits for an active child turn and pending `litter_wait`, then sends **Escape**. It requires a recorded cancellation acknowledgement and a fresh diagnostic notification. Inspection must show the same UUID in paused status with a paused outcome before any explicit resume. Then require a `litter_message` call with `resume: true` for that UUID and a completed result containing the private file token after the resume acknowledgement. The resume message must omit the token. A cancelled wait can return plain tool error text; retain that text without treating it as completion.
 
-A wait timeout also leaves the child running. Child runs have no wall-clock deadline. Provider errors, permission checks, scout leaf enforcement, nested workers, resume races, and controlled outcomes belong to deterministic fixtures.
+A wait cancelled in isolation or a wait timeout leaves the child running. Root Escape during an active turn pauses retained child sessions. A parent pause cascades to its children, and an explicit resume acts on the selected node only. Child runs have no wall-clock deadline. Provider errors, permission checks, scout leaf enforcement, nested workers, resume races, and controlled outcomes belong to deterministic fixtures.
 
 ## Retain evidence and clean up
 
@@ -104,9 +104,12 @@ devenv shell -- scripts/verify-stock-lifecycle.sh --scenario completion
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario shadow
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario cwd
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario unbounded
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario codemode
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario pause
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario admission
 ```
 
-The scenarios cover configuration layering, agent overrides, file and terminal authority, child working directories, concurrency, depth, privacy, resume, subtree stopping, history limits, completion delivery, and provider/tool failures. Keep these claims separate from the live proof. Check helper evidence parsing and bounded command teardown without launching PiG:
+The scenarios cover configuration layering, agent overrides, file and terminal authority, child working directories, concurrency, depth, privacy, resume, subtree pausing, history limits, completion delivery, and provider/tool failures. Keep these claims separate from the live proof. Check helper evidence parsing and bounded command teardown without launching PiG:
 
 ```sh
 bun test ./.agents/skills/verify-pig-litter/scripts/live.test.mjs
