@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { configuration, environment, launchArgs, sessionEvidence, sourceIdentity, configuredAgents, currentInspection, stoppedOutcome, completedDelegation, resumedRecall, cancellationAcknowledged, runCommand } from './live.mjs';
+import { configuration, environment, launchArgs, sessionEvidence, sourceIdentity, configuredAgents, currentInspection, pausedOutcome, pausedRetention, completedDelegation, resumedRecall, cancellationAcknowledged, runCommand } from './live.mjs';
 
 const model = 'sample/model';
 const token = 'private-marker-7f4a';
@@ -36,6 +36,36 @@ function completedSession({ state = 'completed', childModel = model, marker = to
   toolResult(waitResult, waitCall, `litter_${operation}`, target),
   assistant('final-entry', [{ type: 'text', text: 'Done' }], 'stop'),
  ].map(value => JSON.stringify(value)).join('\n') + '\n';
+}
+function pausedCancellationSession({ resumeBeforeInspection = false, resumeAfterInspection = false } = {}) {
+ const records = [
+  { type: 'session', id: 'parent', cwd: '/scratch' },
+  ...spawnResult(),
+  assistant('cancel-wait-call-entry', [{ type: 'toolCall', id: 'cancel-wait-call', name: 'litter_wait', arguments: { id: child.id, timeoutMs: 300000 } }]),
+  toolResult('cancel-wait-result-entry', 'cancel-wait-call', 'litter_wait', 'Tool execution aborted', true),
+ ];
+ const resumeRecords = [
+  assistant('resume-message-entry', [{ type: 'toolCall', id: 'resume-message-call', name: 'litter_message', arguments: { id: child.id, resume: true, text: 'Read input.txt and report its token.' } }]),
+  toolResult('resume-message-result', 'resume-message-call', 'litter_message', { delivery: 'resumed', child: { ...child, state: 'running' }, operation: 'litter_message', handbackTruncated: false, state: 'running' }),
+ ];
+ if (resumeBeforeInspection) records.push(...resumeRecords);
+ records.push(
+  assistant('paused-inspection-call-entry', [{ type: 'toolCall', id: 'paused-inspection-call', name: 'litter_inspect', arguments: { id: child.id } }]),
+  toolResult('paused-inspection-result', 'paused-inspection-call', 'litter_inspect', { state: 'paused', child: { ...child, state: 'paused' }, outcome: outcome({ state: 'paused', text: '' }) }),
+ );
+ if (resumeAfterInspection) records.push(
+  ...resumeRecords,
+  assistant('resume-wait-entry', [{ type: 'toolCall', id: 'resume-wait-call', name: 'litter_wait', arguments: { id: child.id, timeoutMs: 120000 } }]),
+  toolResult('resume-wait-result', 'resume-wait-call', 'litter_wait', { state: 'completed', outcome: outcome(), operation: 'litter_wait', handbackTruncated: false }),
+ );
+ records.push(assistant('paused-session-final', [{ type: 'text', text: 'Done' }], 'stop'));
+ return records.map(record => JSON.stringify(record)).join('\n') + '\n';
+}
+
+function pauseResult(evidence, state, stoppedCount) {
+ evidence.calls.push({ id: 'pause-call', name: 'litter_stop', arguments: { id: child.id } });
+ evidence.results.push({ id: 'pause-call', name: 'litter_stop', isError: false, value: { state: 'paused', outcome: outcome({ state, text: '' }), stoppedCount, operation: 'litter_stop', handbackTruncated: false } });
+ return evidence;
 }
 
 test('runtime inputs preserve inherited configuration and select a local Piglet path', () => {
@@ -136,13 +166,27 @@ test('current inspection returns only ID, state, child, and latest outcome', () 
  expect(inspection.outcome.run).toEqual({ id: child.id });
 });
 
-test('stop consumes the SDK operation envelope and an ID-only stopped outcome', () => {
- const evidence = sessionEvidence(completedSession());
- evidence.calls.push({ id: 'stop-call', name: 'litter_stop', arguments: { id: child.id } });
- evidence.results.push({ id: 'stop-call', name: 'litter_stop', isError: false, value: { state: 'stopped', outcome: outcome({ state: 'stopped', text: '' }), stoppedCount: 1, operation: 'litter_stop', handbackTruncated: false } });
- expect(stoppedOutcome(evidence, child.id).outcome).toMatchObject({ run: { id: child.id }, state: 'stopped' });
- evidence.results.at(-1).value.outcome.run.generation = 1;
- expect(() => stoppedOutcome(evidence, child.id)).toThrow('did not match the requested ID');
+test('active stop pauses the retained session and reports one newly paused turn', () => {
+ const pause = pausedOutcome(pauseResult(sessionEvidence(completedSession()), 'paused', 1), child.id);
+ expect(pause.result.value.state).toBe('paused');
+ expect(pause.result.value.stoppedCount).toBe(1);
+ expect(pause.outcome.state).toBe('paused');
+ expect(pause.outcome.run).toEqual({ id: child.id });
+ const generated = pauseResult(sessionEvidence(completedSession()), 'paused', 1);
+ generated.results.at(-1).value.outcome.run.generation = 1;
+ expect(() => pausedOutcome(generated, child.id)).toThrow('did not match the requested ID');
+});
+
+test('pausing a terminal session retains its last outcome without counting a new turn', () => {
+ for (const state of ['completed', 'failed']) {
+  const pause = pausedOutcome(pauseResult(sessionEvidence(completedSession()), state, 0), child.id);
+  expect(pause.result.value.state).toBe('paused');
+  expect(pause.result.value.stoppedCount).toBe(0);
+  expect(pause.outcome.state).toBe(state);
+  expect(pause.outcome.run).toEqual({ id: child.id });
+ }
+ const active = pauseResult(sessionEvidence(completedSession()), 'running', 0);
+ expect(() => pausedOutcome(active, child.id)).toThrow('did not retain a terminal outcome');
 });
 
 test('inspection rejects transcript selectors and history or evidence pages', () => {
@@ -203,6 +247,21 @@ test('retained recall uses the same ID after acknowledgement and excludes the su
  expect(resumedRecall(sessionEvidence(acknowledgedResumeWithoutOutcome()), { child }, model, token)).toBeUndefined();
  expect(() => resumedRecall(sessionEvidence(resumeSession({ leaked: true })), { child }, model, token)).toThrow('supplied the private token');
  expect(resumedRecall(sessionEvidence(resumeSession({ ackAfterOutcome: true })), { child }, model, token)).toBeUndefined();
+});
+
+test('Escape leaves the child paused until the same ID is explicitly resumed', () => {
+ const evidence = sessionEvidence(pausedCancellationSession({ resumeAfterInspection: true }));
+ const pause = pausedRetention(evidence, child.id, 'cancel-wait-call');
+ expect(pause.child.id).toBe(child.id);
+ expect(pause.inspection.result.value.state).toBe('paused');
+ expect(pause.outcome.state).toBe('paused');
+ expect(pause.outcome.run).toEqual({ id: child.id });
+ const resumed = resumedRecall(evidence, { child: pause.child }, model, token, pause.inspection.result.position);
+ expect(resumed.child.id).toBe(child.id);
+ expect(resumed.outcome.state).toBe('completed');
+ expect(resumed.outcome.text).toBe(`Read from file: ${token}`);
+ const resumedBeforeInspection = sessionEvidence(pausedCancellationSession({ resumeBeforeInspection: true }));
+ expect(() => pausedRetention(resumedBeforeInspection, child.id, 'cancel-wait-call')).toThrow('resumed before its paused status was inspected');
 });
 
 test('cancellation acknowledgement is scoped to the pending wait', () => {

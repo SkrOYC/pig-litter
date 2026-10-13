@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 const repository = resolve(import.meta.dir, '../../../..');
 const diagnosticText = 'Use litter_list to discover named agents and children. Use litter_spawn to start a background child, then inspect, message, stop, or wait by ID.';
 const controlTools = ['litter_spawn', 'litter_list', 'litter_inspect', 'litter_message', 'litter_stop', 'litter_wait'];
+const retainedOutcomeStates = new Set(['completed', 'partial', 'failed', 'unavailable', 'stopped', 'paused']);
 
 export function configuration(args, env = process.env) {
  const config = { pigBinary: 'pig', piglet: 'pig-litter', model: undefined, pigHome: env.PIG_HOME, case: 'selected', evidencePath: join(repository, '.pstack/evidence/pig-litter-live'), timeoutMs: 180000, commandTimeoutMs: 120000, doctorOnly: false };
@@ -108,20 +109,36 @@ export function currentInspection(evidence, id) {
  return { result, child: result.value.child, outcome: result.value.outcome };
 }
 
-export function stoppedOutcome(evidence, id) {
+export function pausedOutcome(evidence, id) {
  assertIdOnlyControls(evidence);
  const result = evidence.results.findLast(result => {
   const call = evidence.calls.find(call => call.id === result.id && call.name === 'litter_stop' && call.arguments.id === id);
   return call && result.name === call.name;
  });
  if (!result) return undefined;
- if (result.isError) throw new Error('ID-only stop failed.');
- ensure(Object.keys(result.value ?? {}).sort().join(',') === 'handbackTruncated,operation,outcome,state,stoppedCount', 'Stop handback contains unexpected fields.');
- ensure(result.value.operation === 'litter_stop' && result.value.handbackTruncated === false, 'Stop handback is misidentified or truncated.');
- ensure(Number.isInteger(result.value.stoppedCount), 'Stop handback omitted its stopped child count.');
- ensure(result.value.state === 'stopped' && result.value.outcome?.state === 'stopped', 'Stop did not return a stopped outcome.');
- ensure(result.value.outcome.run?.id === id && Object.keys(result.value.outcome.run).join(',') === 'id', 'Stopped outcome did not match the requested ID.');
+ if (result.isError) throw new Error('ID-only pause failed.');
+ ensure(Object.keys(result.value ?? {}).sort().join(',') === 'handbackTruncated,operation,outcome,state,stoppedCount', 'Pause handback contains unexpected fields.');
+ ensure(result.value.operation === 'litter_stop' && result.value.handbackTruncated === false, 'Pause handback is misidentified or truncated.');
+ ensure(Number.isInteger(result.value.stoppedCount) && result.value.stoppedCount >= 0, 'Pause handback omitted its nonnegative newly paused active-turn count.');
+ ensure(result.value.state === 'paused' && retainedOutcomeStates.has(result.value.outcome?.state), 'Pause did not retain a terminal outcome.');
+ ensure(result.value.outcome.run?.id === id && Object.keys(result.value.outcome.run).join(',') === 'id', 'Paused outcome did not match the requested ID.');
  return { result, outcome: result.value.outcome };
+}
+
+export function pausedRetention(evidence, id, cancelledCallId) {
+ const inspection = currentInspection(evidence, id);
+ if (!inspection) return undefined;
+ const waitCall = evidence.calls.find(call => call.id === cancelledCallId && call.name === 'litter_wait' && call.arguments?.id === id);
+ const cancelled = evidence.results.find(result => result.id === cancelledCallId && result.name === 'litter_wait');
+ if (!waitCall || !cancelled) return undefined;
+ ensure(cancellationAcknowledged(evidence, cancelledCallId), 'Escape did not cancel the pending child wait.');
+ ensure(waitCall.position < cancelled.position && cancelled.position < inspection.result.position, 'Paused inspection did not follow the cancelled wait.');
+ const admission = evidence.results.findLast(result => result.name === 'litter_spawn' && result.value?.child?.id === id);
+ ensure(admission && !admission.isError && admission.value.operation === 'litter_spawn' && admission.value.handbackTruncated === false && evidence.calls.some(call => call.id === admission.id && call.name === 'litter_spawn'), 'Paused inspection did not retain the admitted child ID.');
+ ensure(!evidence.calls.some(call => call.name === 'litter_message' && call.arguments?.id === id && call.arguments.resume === true && call.position < inspection.result.position), 'Child resumed before its paused status was inspected.');
+ ensure(inspection.result.value.state === 'paused' && inspection.child.state === 'paused' && inspection.outcome?.state === 'paused', 'Escape did not retain the active child as paused.');
+ ensure(inspection.outcome.run?.id === id && Object.keys(inspection.outcome.run).join(',') === 'id', 'Paused inspection changed the child session ID.');
+ return { cancelled, inspection, child: inspection.child, outcome: inspection.outcome };
 }
 
 export function configuredAgents(evidence) {
@@ -194,11 +211,12 @@ export function cancellationAcknowledged(evidence, callId) {
  return evidence.results.some(result => result.id === callId && (result.value?.state === 'cancelled' || result.isError && /abort|cancel/i.test(result.errorText ?? result.value?.report ?? '')));
 }
 
-export function resumedRecall(evidence, scout, model, token) {
+export function resumedRecall(evidence, scout, model, token, afterPosition = -1) {
  assertIdOnlyControls(evidence);
  const message = evidence.results.findLast(result => {
+  if (result.position <= afterPosition) return false;
   const call = evidence.calls.find(call => call.id === result.id && call.name === 'litter_message' && call.arguments?.id === scout.child.id && call.arguments.resume === true);
-  if (!call || result.isError || result.value?.delivery !== 'resumed') return false;
+  if (!call || call.position <= afterPosition || result.isError || result.value?.delivery !== 'resumed') return false;
   ensure(typeof call.arguments.text === 'string' && !call.arguments.text.includes(token), 'Resume message supplied the private token instead of testing retained recall.');
   return result.value.child?.id === scout.child.id && !('generation' in result.value.child);
  });
@@ -489,15 +507,16 @@ export async function drive(config) {
     await send(kind, '/pig-litter');
     await wait(async () => (await screen(kind, 'after-cancel')).split(diagnosticText).length - 1 > notificationCount, 'new notification after cancellation', 10000);
     const child = receipt.cancelledChild;
-    await send(kind, `Inspect child ${child.id} by ID to confirm it is still running, then explicitly stop that same ID. Do not spawn. ${onlyControls}`);
-    receipt.cancellation = await progress('explicit-stop', evidence => {
-     const inspection = currentInspection(evidence, child.id);
-     const stopped = stoppedOutcome(evidence, child.id);
-     if (!inspection || !stopped || evidence.assistants.at(-1)?.stopReason !== 'stop') return undefined;
-     ensure(inspection.child.state === 'running', 'Cancelled wait did not leave the child running.');
-     ensure(inspection.result.value.state === 'running', 'ID-only inspection returned an invalid current status.');
-     return { callId: before.call.id, waitCancelled: true, childContinued: true, newNotificationObserved: true, childId: child.id, state: stopped.outcome.state };
+    await send(kind, `Inspect child ${child.id} by ID. Report its current status and latest outcome only. Do not resume, wait, or spawn. ${onlyControls}`);
+    const pause = await progress('paused-retention', evidence => {
+     const retained = pausedRetention(evidence, child.id, before.call.id);
+     return retained && evidence.assistants.at(-1)?.stopReason === 'stop' ? retained : undefined;
     });
+    receipt.cancellation = { callId: before.call.id, waitCancelled: true, childPaused: true, automaticResumeObserved: false, newNotificationObserved: true, childId: child.id, state: pause.inspection.result.value.state, outcomeState: pause.outcome.state, inspectionPosition: pause.inspection.result.position };
+    await send(kind, `Explicitly resume paused child ${child.id} with litter_message resume true and text ${JSON.stringify('Finish the paused task. Read input.txt as needed and report its complete token. Do not delegate or write.')}. Then wait for the same ID with litter_wait timeoutMs 120000. Use only its latest status and outcome. ${onlyControls}`);
+    const resumed = await progress('resume-progress', evidence => resumedRecall(evidence, { child }, receipt.doctor.model, inputToken, receipt.cancellation.inspectionPosition));
+    ensure(resumed.child.id === child.id, 'Explicit resume changed the stable child session ID.');
+    receipt.resume = { childId: resumed.child.id, resumeAcknowledged: true, outcome: { state: resumed.outcome.state, model: resumed.outcome.model, truncated: resumed.outcome.truncated, reportProvenance: resumed.outcome.reportProvenance }, fileTokenReturned: resumed.outcome.text.includes(inputToken) };
     receipt.cancellation.files = await readdir(workspace);
     ensure(receipt.cancellation.files.length === 1 && receipt.cancellation.files[0] === 'input.txt', 'Cancellation task unexpectedly wrote workspace files.');
    } else {
