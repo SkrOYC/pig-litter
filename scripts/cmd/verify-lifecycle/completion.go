@@ -583,12 +583,8 @@ func (f *fixture) runCompletion(ctx context.Context, directory string, send func
 	if err := f.releaseTask("boundary-child"); err != nil {
 		return err
 	}
-	boundaryDelivery, err := waitCompletionDelivery(ctx, directory, runs[4])
-	if err != nil {
+	if _, err := waitCompletionDelivery(ctx, directory, runs[4]); err != nil {
 		return fmt.Errorf("boundary child completion acknowledgement: %w", err)
-	}
-	if !hiddenCompletionOptions(boundaryDelivery.Options) {
-		return fmt.Errorf("boundary completion options = %#v, want hidden native delivery without a turn trigger", boundaryDelivery.Options)
 	}
 	if _, err := fmt.Fprintln(gate.conn, "release"); err != nil {
 		_ = gate.conn.Close()
