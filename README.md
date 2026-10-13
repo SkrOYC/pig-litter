@@ -111,6 +111,7 @@ devenv shell -- scripts/verify-stock-lifecycle.sh --scenario cwd
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario unbounded
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario codemode
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario pause
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario admission
 ```
 
 The fixtures record provider requests, stdout, stderr, and results under `.pstack/evidence/go-lifecycle`. They verify native file and terminal operations, tool ceilings, child working directories, concurrency, depth, privacy, results, usage, retained resume, and subtree pause. Additional cases check provider and tool failures, scout leaf enforcement, model restrictions, conversation retention, message ordering, replacement, and live-child exit. The completion case forwards extension protocol frames unchanged to observe delivery acknowledgements. It verifies that a busy parent processes a hidden child completion without another user prompt, and that an idle parent appends it without inference.
@@ -118,6 +119,8 @@ The fixtures record provider requests, stdout, stderr, and results under `.pstac
 The `unbounded` scenario keeps a child active beyond two minutes and requires successful completion. Fixture deadlines bound the verification process without limiting product child runs.
 
 The `pause` scenario aborts the root during an active wait through PiG RPC. It requires child provider cancellation, retained paused UUIDs, and explicit resume of only the selected child.
+
+The `admission` scenario fails a provisional spawn through a final result hook. It requires rollback, no child provider request, and a successful retry within the same capacity limit. The `codemode` scenario also verifies successful spawn and resume calls survive a later script failure.
 
 Run the terminal driver with `tmux` available. Each case uses a private socket and isolated provider fixture.
 

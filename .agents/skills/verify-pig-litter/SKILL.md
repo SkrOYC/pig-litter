@@ -106,6 +106,7 @@ devenv shell -- scripts/verify-stock-lifecycle.sh --scenario cwd
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario unbounded
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario codemode
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario pause
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario admission
 ```
 
 The scenarios cover configuration layering, agent overrides, file and terminal authority, child working directories, concurrency, depth, privacy, resume, subtree pausing, history limits, completion delivery, and provider/tool failures. Keep these claims separate from the live proof. Check helper evidence parsing and bounded command teardown without launching PiG:
