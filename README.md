@@ -50,7 +50,7 @@ Call `litter_spawn` with a self-contained task. Spawn returns admission before c
 
 Use `litter_inspect` with the child UUID to check its current state and latest result. Use `litter_wait` to wait for its result. Waiting defaults to 30 seconds and accepts an optional `timeoutMs`. A timeout leaves the child running. Cancelling a wait alone cancels only that wait. Pausing the parent also pauses its children. Inspection returns no transcript, tool evidence, mailbox, or entry pages. Result text is the child's report, with state, model, usage, and any error.
 
-Use `litter_message` to steer a live child or explicitly resume a paused or settled child with `resume:true`. Resume retains the conversation and UUID. Use `litter_stop` to pause the selected child and its descendants, then wait for their active work to stop. Nothing resumes automatically. Resuming a parent leaves its children paused until that parent explicitly resumes them.
+Use `litter_message` to steer a live child or explicitly resume a paused or settled child with `resume:true`. Resume retains the conversation and UUID. If setup stops before the first input is stored, resume also carries the original task. Use `litter_stop` to pause the selected child and its descendants, then wait for their active work to stop. Nothing resumes automatically. Resuming a parent leaves its children paused until that parent explicitly resumes them.
 
 Only the immediate parent can inspect, message, wait for, resume, or stop a child. Root follows the same rule. Knowing a sibling, ancestor, or grandchild UUID does not grant access.
 
@@ -86,7 +86,7 @@ Completion JSON identifies `origin:"pig-litter"` and labels the report as child 
 
 Unconsumed outcomes reach their immediate parent through stored custom messages. A busy parent continues only for an unconsumed notice it has not seen. A successful wait suppresses a queued duplicate. Idle or paused parents retain notices without inference. A disposed parent Session uses retained history as the fallback. A provider or tool that ignores cancellation can delay pause and shutdown.
 
-Delivery failures mark the receiving parent's latest result partial with a bounded error. A failure delivering to root marks the child's latest result partial. Fresh inspection and waits reflect that result. Outcomes already returned to a caller remain unchanged.
+Delivery failures add a bounded error to the receiving parent's latest result. A successful result becomes partial; other terminal states are preserved. A failure delivering to root updates the child's latest result. Fresh inspection and waits reflect that result. Outcomes already returned to a caller remain unchanged.
 
 The session model takes inspiration from [Claude Code subagents](https://code.claude.com/docs/en/sub-agents), [directory settings](https://code.claude.com/docs/en/settings), and [project instructions](https://code.claude.com/docs/en/memory). PiG determines native discovery behavior. Pig Litter defines direct-parent controls, nested delegation, and explicit subtree pause without automatic resume.
 

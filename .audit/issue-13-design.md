@@ -20,6 +20,8 @@ Private call tickets bind a native caller, model turn, and tool call before any 
 
 Publish outcomes after native Send settles. Acknowledge PiG event barriers before filtering events. Join message workers and clear deferred inputs on pause so they cannot restart implicitly. Serialize native-session install/disposal and retained-manager delivery. Cleanup uses a live bounded context and joins drains before closing owned resources.
 
+Keep the initial task pending until PiG stores its marked user-input transaction. An awaited Agent subscriber runs after native Session persistence and clears that pending input. Setup pause or failure before storage leaves the task available to explicit resume. Later resumes and compaction cannot replay an already stored task.
+
 ## Arena result
 
 The parent and independent gpt-6-astra judge selected A, scoring it 26 of 30. The judge scored B 23 and C 15. The parent scored B 24 and C 20; both assessments rejected their final-success and consumed-result gaps.
