@@ -241,8 +241,9 @@ func TestLifecycleEnvironmentUsesOnlyResolvedExecutableDirectories(t *testing.T)
 
 func TestFixtureToolProfilesMatchEveryProviderActor(t *testing.T) {
 	scout := []string{"read"}
-	coordinator := []string{"read", "litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
+	coordinator := []string{"read", "ls", "litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
 	worker := []string{"read", "write", "edit", "bash", "litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
+	childWorker := append(append([]string(nil), worker...), "ls", "codemode", "tool_search")
 	for _, test := range []struct {
 		name, model string
 		got         []string
@@ -256,10 +257,10 @@ func TestFixtureToolProfilesMatchEveryProviderActor(t *testing.T) {
 		{"read-only coordinator", "nester", coordinator, false},
 		{"coordinator writer escalation", "nester", append(append([]string(nil), coordinator...), "write"), true},
 		{"coordinator missing stop", "nester", removeTool(coordinator, "litter_stop"), true},
-		{"full worker", "worker", worker, false},
-		{"full worker with ls", "worker", append(append([]string(nil), worker...), "ls"), false},
-		{"worker missing bash", "worker", removeTool(worker, "bash"), true},
-		{"worker missing controls", "worker", removeTool(worker, "litter_spawn"), true},
+		{"full worker", "worker", childWorker, false},
+		{"worker root excludes codemode", "worker", removeTool(childWorker, "codemode"), false},
+		{"worker missing bash", "worker", removeTool(childWorker, "bash"), true},
+		{"worker missing controls", "worker", removeTool(childWorker, "litter_spawn"), true},
 		{"root full worker", "parent", worker, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {

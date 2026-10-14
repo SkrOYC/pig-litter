@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -145,11 +144,11 @@ func TestLoadConfigFollowsExpandedAndSharedAgentDirectory(t *testing.T) {
 }
 
 func TestConfigParsesTypedLimitsAndLiteralAgents(t *testing.T) {
-	config, err := ParseConfig([]byte("concurrency: 3 # active descendants\ndepth: 0\nmax_records: 5\nmax_mailbox: 12\nmax_turns: 37\nagents:\n  reviewer:\n    role: scout\n    tools: [read]\n    instructions: input.txt\n    can_delegate: false\n    model: fixture/reviewer\n"))
+	config, err := ParseConfig([]byte("concurrency: 3 # active descendants\ndepth: 0\nmax_mailbox: 12\nmax_turns: 37\nagents:\n  reviewer:\n    role: scout\n    tools: [read]\n    instructions: input.txt\n    can_delegate: false\n    model: fixture/reviewer\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Concurrency != 3 || config.Depth != 0 || config.MaxRecords != 5 || config.MaxMailbox != 12 || config.MaxTurns != 37 {
+	if config.Concurrency != 3 || config.Depth != 0 || config.MaxMailbox != 12 || config.MaxTurns != 37 {
 		t.Fatalf("parsed limits %#v", config)
 	}
 	if got := config.Agents["reviewer"]; !reflect.DeepEqual(got, AgentDefinition{Role: "scout", Instructions: "input.txt", Tools: []string{"read"}, Model: "fixture/reviewer"}) {
@@ -165,14 +164,15 @@ func TestConfigRoleDefaultsAllowBuiltInRoleChangesAndCustomInheritance(t *testin
 	if got := config.Agents["scout"]; got.Role != "worker" || got.Instructions != "Complete the task with permitted tools. Preserve unrelated changes. Report changes and checks." || !reflect.DeepEqual(got.Tools, []string{"bash"}) || !got.CanDelegate {
 		t.Fatalf("changed built-in scout %#v", got)
 	}
-	if got := config.Agents["worker"]; got.Role != "scout" || got.Instructions != "Inspect files for the task. Do not change files. Report relevant paths and uncertainty." || !reflect.DeepEqual(got.Tools, []string{"read"}) || got.CanDelegate {
+	if got := config.Agents["worker"]; got.Role != "scout" || got.Instructions != "Inspect files for the task. Do not change files. Report relevant paths and uncertainty." || !reflect.DeepEqual(got.Tools, []string{"read", "ls"}) || got.CanDelegate {
 		t.Fatalf("changed built-in worker %#v", got)
 	}
-	if got := config.Agents["reader"]; got.Role != "scout" || !reflect.DeepEqual(got.Tools, []string{"read"}) || got.CanDelegate {
+	if got := config.Agents["reader"]; got.Role != "scout" || !reflect.DeepEqual(got.Tools, []string{"read", "ls"}) || got.CanDelegate {
 		t.Fatalf("custom role defaults %#v", got)
 	}
-	if got := defaultConfig().Agents["worker"]; !slices.Contains(got.Tools, "bash") {
-		t.Fatalf("worker role default did not include bash %#v", got.Tools)
+	defaults, err := ParseConfig([]byte("{}"))
+	if err != nil || defaults.MaxTurns != 50 || !reflect.DeepEqual(defaults.Agents["worker"].Tools, []string{"read", "ls", "write", "edit", "bash", "skill:*", "mcp__*", "codemode", "tool_search"}) {
+		t.Fatalf("parsed role or turn defaults %#v: %v", defaults, err)
 	}
 }
 
@@ -201,7 +201,7 @@ func TestLoadConfigOverlaysAgentDirectoryThenProject(t *testing.T) {
 	if got := config.Agents["analyst"]; got.Role != "worker" || got.Instructions != "project instructions" || !reflect.DeepEqual(got.Tools, []string{"read", "bash"}) || got.CanDelegate || got.Model != "fixture/analyst" {
 		t.Fatalf("project patch did not preserve user definition fields %#v", got)
 	}
-	if got := config.Agents["worker"]; got.Role != "worker" || got.Instructions != "Complete the task with permitted tools. Preserve unrelated changes. Report changes and checks." || !reflect.DeepEqual(got.Tools, []string{"read", "write", "edit", "bash"}) || !got.CanDelegate || got.Model != "fixture/worker" {
+	if got := config.Agents["worker"]; got.Role != "worker" || got.Instructions != "Complete the task with permitted tools. Preserve unrelated changes. Report changes and checks." || !reflect.DeepEqual(got.Tools, []string{"read", "ls", "write", "edit", "bash", "skill:*", "mcp__*", "codemode", "tool_search"}) || !got.CanDelegate || got.Model != "fixture/worker" {
 		t.Fatalf("role change did not reset role defaults and inherit model %#v", got)
 	}
 }
@@ -287,11 +287,22 @@ func TestConfiguredAgentDirectoryResolvesTheParentsExactModel(t *testing.T) {
 
 func TestConfigRejectsAmbiguousOrUnboundedDocuments(t *testing.T) {
 	for _, source := range []string{
-		"", " ", "---", "null", "[]", "{}\n---\n{}", "concurrency: 2\nconcurrency: 3", "worktrees: 1", "max_run_millis: 120000", "depth: NaN", "depth: .inf", "depth: 1.5", "depth: '2'", "depth: true", "concurrency: 9007199254740993", "concurrency: 999999999999999999999999999999", "concurrency: 5\nmax_records: 4", "max_history_bytes: 1024\nmax_result_bytes: 2048", "concurrency: 0", "agents: {scout: {role: scout, role: worker}}", "agents: {scout: {tools: [write]}}", "agents: {scout: {tools: [read, read]}}", "agents: {custom: {}}", "agents: {custom: {can_delegate: true}}", "agents: &a {scout: {role: scout}}\ncopy: *a", "agents: {scout: {model: missing-provider}}", "agents: {scout: {can_delegate: yes}}", "agents: {scout: {instructions: null}}", "agents: {custom: {role: scout, can_delegate: true}}", "agents: {scout: {role: scout, can_delegate: true}}", strings.Repeat("x", 32769),
+		"", " ", "---", "null", "[]", "{}\n---\n{}", "concurrency: 2\nconcurrency: 3", "worktrees: 1", "max_run_millis: 120000", "depth: NaN", "depth: .inf", "depth: 1.5", "depth: '2'", "depth: true", "concurrency: 9007199254740993", "concurrency: 999999999999999999999999999999", "concurrency: 0", "agents: {scout: {role: scout, role: worker}}", "agents: {scout: {tools: [write]}}", "agents: {scout: {tools: [read, read]}}", "agents: {custom: {}}", "agents: {custom: {can_delegate: true}}", "agents: &a {scout: {role: scout}}\ncopy: *a", "agents: {scout: {model: missing-provider}}", "agents: {scout: {can_delegate: yes}}", "agents: {scout: {instructions: null}}", "agents: {custom: {role: scout, can_delegate: true}}", "agents: {scout: {role: scout, can_delegate: true}}", strings.Repeat("x", 32769),
 	} {
 		t.Run(source[:min(len(source), 64)], func(t *testing.T) {
 			if _, err := ParseConfig([]byte(source)); err == nil {
 				t.Fatalf("accepted %q", source)
+			}
+		})
+	}
+}
+
+func TestConfigRejectsRemovedRetentionSettingsAsUnknown(t *testing.T) {
+	for _, setting := range []string{"max_records", "max_history_bytes"} {
+		t.Run(setting, func(t *testing.T) {
+			_, err := ParseConfig([]byte(setting + ": 2048\n"))
+			if err == nil || err.Error() != "litter.yaml has unknown setting "+setting {
+				t.Fatalf("removed setting was not rejected as unknown: %v", err)
 			}
 		})
 	}

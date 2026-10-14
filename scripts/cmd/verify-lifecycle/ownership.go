@@ -182,7 +182,7 @@ func (f *fixture) nesterRequest(ctx context.Context, body modelRequest) (string,
 		return "", []call{{"litter_inspect", map[string]string{"id": root}}}, nil
 	case 1:
 		value, err := lastToolResult(body)
-		if err != nil || value.State != "rejected" {
+		if err != nil || value.State != "unavailable" || value.Code != "unavailable" {
 			return "", nil, fmt.Errorf("child controlled its ancestor: %#v, %v", value, err)
 		}
 		f.markCheck("nesterAncestorDenied")

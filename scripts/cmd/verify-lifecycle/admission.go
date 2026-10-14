@@ -39,7 +39,7 @@ func (f *fixture) parentAdmission(_ context.Context, body modelRequest) (string,
 		return "", []call{{"litter_inspect", with(f.admissionProvisional)}}, nil
 	case 2:
 		inspected, err := lastToolResult(body)
-		if err != nil || inspected.State != "rejected" || !strings.Contains(inspected.Report, "unknown child ID") {
+		if err != nil || inspected.State != "unavailable" || inspected.Code != "unavailable" || !strings.Contains(inspected.Report, "UUID is unavailable") {
 			return "", nil, fmt.Errorf("failed spawn ID remained controllable: %#v, %v", inspected, err)
 		}
 		f.markCheck("toolResultFailureRolledBackID")

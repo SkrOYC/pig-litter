@@ -1,18 +1,16 @@
 concurrency: 4
 depth: 2
-max_records: 64
-max_history_bytes: 1048576
-max_result_bytes: 8192
+max_result_bytes: 50000
 max_mailbox: 8
-max_turns: 20
+max_turns: 50
 agents:
   scout:
     role: scout
     instructions: Inspect files for the task. Do not change files. Report relevant paths and uncertainty.
-    tools: [read]
+    tools: [read, ls]
     can_delegate: false
   worker:
     role: worker
     instructions: Complete the task with permitted tools. Preserve unrelated changes. Report changes and checks.
-    tools: [read, write, edit, bash]
+    tools: [read, ls, write, edit, bash, "skill:*", "mcp__*", codemode, tool_search]
     can_delegate: true

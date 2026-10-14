@@ -10,14 +10,14 @@ func TestSessionNodesUseNativeUUIDsAndImmediateParentAuthority(t *testing.T) {
 	config := defaultConfig()
 	config.Depth = 3
 	tree := testTree(t, config)
-	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read"}, CanDelegate: true}
+	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read", "ls"}, CanDelegate: true}
 	parent := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
 	child := testAdmissionWithAgent(t, tree, parent.Ref, "coordinator", "child", coordinator)
 	grandchild := testAdmission(t, tree, child.Ref, "scout", "grandchild")
 	uuid := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	for _, snapshot := range []Snapshot{parent, child, grandchild} {
 		node := tree.records[snapshot.ID]
-		if !uuid.MatchString(string(snapshot.ID)) || string(snapshot.ID) != node.history.GetSessionId() {
+		if !uuid.MatchString(string(snapshot.ID)) || string(snapshot.ID) != node.activeLog.GetSessionId() {
 			t.Fatalf("child identity is not its native UUID: %#v", snapshot)
 		}
 	}
@@ -65,7 +65,7 @@ func TestSessionNodesUseNativeUUIDsAndImmediateParentAuthority(t *testing.T) {
 
 func TestPauseRetainsCompletedDescendantsAndResumesOnlySelectedNode(t *testing.T) {
 	tree := testTree(t, defaultConfig())
-	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read"}, CanDelegate: true}
+	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read", "ls"}, CanDelegate: true}
 	parent := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
 	child := testAdmission(t, tree, parent.Ref, "scout", "child")
 	parentRun, childRun := testRun(t, tree, parent.Ref), testRun(t, tree, child.Ref)

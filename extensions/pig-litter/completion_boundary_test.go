@@ -81,16 +81,16 @@ func testNativeCompletionBoundary(t *testing.T, phase string, consumed bool) {
 	if err := os.WriteFile(filepath.Join(directory, "models.json"), []byte(models), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: directory, AgentDir: directory})
+	tree := testTree(t, defaultConfig())
+	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read", "ls"}, CanDelegate: true}
+	parentRef := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
+	childRef := testAdmission(t, tree, parentRef.Ref, "scout", "child")
+	parent, child := tree.records[parentRef.ID], tree.records[childRef.ID]
+	services, err := coding.NewServices(coding.ServicesOptions{CWD: parent.activeLog.GetCwd(), AgentDir: directory})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer services.Close()
-	tree := testTree(t, defaultConfig())
-	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read"}, CanDelegate: true}
-	parentRef := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
-	childRef := testAdmission(t, tree, parentRef.Ref, "scout", "child")
-	parent, child := tree.records[parentRef.ID], tree.records[childRef.ID]
 	selected := child.run
 	tree.finish(child, selected, Outcome{State: Completed, Text: "BOUNDARY_COMPLETION_REPORT"})
 	withCompletionHost(t, tree, func(o *owner) {
@@ -149,10 +149,11 @@ func testNativeCompletionBoundary(t *testing.T, phase string, consumed bool) {
 			}})
 			allowed["hold"] = struct{}{}
 		}
-		session, err := runtime.New(coding.SessionStartOptions{SessionManager: parent.history, Model: services.ModelRuntime().GetModel("fixture", "parent"), ResourceLoader: coding.NoResources, ExtraTools: tools, AllowedTools: allowed})
+		session, err := runtime.Resume(string(parent.id), coding.SessionStartOptions{SessionDir: parent.activeLog.GetSessionDir(), Model: services.ModelRuntime().GetModel("fixture", "parent"), ResourceLoader: coding.NoResources, ExtraTools: tools, AllowedTools: allowed})
 		if err != nil {
 			t.Fatal(err)
 		}
+		parent.activeLog = session.SessionManager()
 		defer session.Close()
 		parent.run.session = session
 		go func() {
@@ -227,7 +228,7 @@ func testNativeCompletionBoundary(t *testing.T, phase string, consumed bool) {
 		if reportAfterConsumption.Load() {
 			t.Fatal("a provider request repeated the completion after a successful wait")
 		}
-		entries, _ := rawEntries(parent.history.Entries())
+		entries, _ := rawEntries(parent.activeLog.Entries())
 		details := completionDetails{ChildID: child.id, Receipt: selected.noticeID}
 		if !completionStored(entries, details, selected.reservation.content) {
 			t.Fatal("native delivery did not retain the child completion")

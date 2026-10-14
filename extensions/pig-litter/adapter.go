@@ -13,7 +13,6 @@ import (
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding"
-	"github.com/MichaelKinsy/PiG/coding/extension"
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 )
 
@@ -29,6 +28,7 @@ type extensionState struct {
 	initialization sync.Mutex
 	epoch          uint64
 	owner          *owner
+	retiring       <-chan struct{}
 	calls          *callScope
 }
 
@@ -48,6 +48,7 @@ type owner struct {
 	rootMu                   sync.Mutex
 	rootSignal               context.Context
 	rootWatch                chan struct{}
+	persistMu                sync.Mutex
 }
 
 func configuredAgentDir() string {
@@ -92,8 +93,14 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		return nil, err
 	}
 	s.mu.Lock()
-	existing, epoch := s.owner, s.epoch
+	existing, epoch, retiring := s.owner, s.epoch, s.retiring
 	s.mu.Unlock()
+	if retiring != nil {
+		<-retiring
+		s.mu.Lock()
+		existing, epoch = s.owner, s.epoch
+		s.mu.Unlock()
+	}
 	if existing != nil && existing.sessionID == id {
 		return existing, existing.current()
 	}
@@ -103,13 +110,7 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		epoch = s.epoch
 		s.mu.Unlock()
 	}
-	trusted, err := ctx.IsProjectTrusted()
-	if err != nil {
-		return nil, err
-	}
-	if !trusted {
-		return nil, reject("permission_denied", "Pig Litter requires a trusted project")
-	}
+	trusted := true
 	cwd := ctx.Cwd()
 	if cwd == "" {
 		return nil, reject("unavailable", "the project directory is unavailable")
@@ -127,6 +128,13 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 	tree.root.id = ChildID(id)
 	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 	tree.execute, tree.completion, tree.changed = o.executeRun, o.sendCompletion, o.widget
+	if err := o.restoreChildren(); err != nil {
+		tree.close()
+		services.Close()
+		return nil, err
+	}
+	recovered := o.recoveryBatch()
+	tree.persist = o.saveChild
 	s.mu.Lock()
 	if s.epoch != epoch {
 		s.mu.Unlock()
@@ -140,6 +148,16 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		s.retire()
 		return nil, err
 	}
+	o.widget()
+	tree.mu.Lock()
+	if !tree.closed {
+		tree.completionWG.Add(1)
+		go func() {
+			defer tree.completionWG.Done()
+			o.recoverCompletions(recovered)
+		}()
+	}
+	tree.mu.Unlock()
 	return o, nil
 }
 
@@ -147,6 +165,9 @@ func (s *extensionState) retire() {
 	s.mu.Lock()
 	s.epoch++
 	previous := s.owner
+	if previous != nil {
+		s.retiring = previous.tree.closedDone
+	}
 	s.owner = nil
 	s.calls = nil
 	s.mu.Unlock()
@@ -303,21 +324,10 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = err.Error()
 		return
 	}
-	trusted, err := o.context.IsProjectTrusted()
-	if err != nil || !trusted {
-		outcome.Error = "project trust was revoked"
-		if err != nil {
-			outcome.Error = err.Error()
-		}
-		return
-	}
-	o.tree.mu.Lock()
-	manager := r.history
-	lost := r.historyLost
-	o.tree.mu.Unlock()
-	if manager == nil || lost {
+	trusted := true
+	if err := o.saveChild(r); err != nil {
 		outcome.State = Unavailable
-		outcome.Error = "retained child history was retired before construction"
+		outcome.Error = err.Error()
 		return
 	}
 	services, err := coding.NewServices(coding.ServicesOptions{CWD: r.cwd, AgentDir: o.agentDir, ProjectTrusted: &trusted})
@@ -332,23 +342,23 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = err.Error()
 		return
 	}
-	runtime, err := coding.NewRuntime(coding.RuntimeOptions{Services: services, AbortContext: run.ctx, NewExtensions: []extension.Extension{o.completionHooks(r)}})
+	available, err := o.rootToolNames()
 	if err != nil {
-		outcome.Error = err.Error()
+		outcome.State, outcome.Error = Unavailable, err.Error()
 		return
 	}
-	defer func() {
-		if err := runtime.Close(); err != nil {
-			outcome.State, outcome.Error = Failed, "child cleanup failed: "+err.Error()
-		}
-	}()
 	tools := []agent.AgentTool{}
 	allowed := map[string]struct{}{}
-	for _, name := range r.tools {
-		allowed[name] = struct{}{}
+	for _, name := range expandTools(r.tools, available) {
+		if withinParent(r.parent, o.tree.root, name) {
+			allowed[name] = struct{}{}
+		}
 	}
 	if r.canDelegate {
 		for _, name := range controlNames {
+			if !slices.Contains(available, name) {
+				continue
+			}
 			tools = append(tools, &nativeTool{name: name, schema: schemas[name], execute: func(ctx context.Context, callID string, raw json.RawMessage) (agent.AgentToolResult, error) {
 				ticket, err := o.callScope(run).begin(run, callID, name)
 				if err != nil {
@@ -360,6 +370,21 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			allowed[name] = struct{}{}
 		}
 	}
+	extensions, registrations, err := o.childExtensions(r, allowed)
+	if err != nil {
+		outcome.Error = err.Error()
+		return
+	}
+	runtime, err := coding.NewRuntime(coding.RuntimeOptions{Services: services, AbortContext: run.ctx, NewExtensions: extensions, ExtensionRuntime: registrations})
+	if err != nil {
+		outcome.Error = err.Error()
+		return
+	}
+	defer func() {
+		if err := runtime.Close(); err != nil {
+			outcome.State, outcome.Error = Failed, "child cleanup failed: "+err.Error()
+		}
+	}()
 	loader := coding.NewDefaultResourceLoader(coding.DefaultResourceLoaderOptions{CWD: r.cwd, AgentDir: o.agentDir, SettingsManager: services.SettingsManager(), AppendSystemPromptOverride: func(found []string) []string {
 		return append(found, r.instructions)
 	}})
@@ -367,18 +392,31 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = err.Error()
 		return
 	}
-	active := services.SettingsManager().ResolvedDefaultTools()
-	if r.canDelegate {
-		active = append(active, controlNames...)
-	}
 	r.deliveryMu.Lock()
-	session, err := runtime.New(coding.SessionStartOptions{SessionManager: manager, Model: model, ResourceLoader: loader, ExtraTools: tools, AllowedTools: allowed})
+	options := coding.SessionStartOptions{Model: model, ResourceLoader: loader, ExtraTools: tools, AllowedTools: allowed}
+	var session *coding.Session
+	if run.resume {
+		session, err = runtime.Resume(string(r.id), options)
+		if err == nil {
+			run.prompt = run.continuation
+			o.tree.mu.Lock()
+			r.pendingTask = ""
+			o.tree.mu.Unlock()
+		}
+		if err != nil && r.pendingTask != "" && (len(r.pendingInputs) == 0 || r.pendingInputs[0].After == nil) {
+			options.SessionID = string(r.id)
+			session, err = runtime.New(options)
+		}
+	} else {
+		options.SessionID = string(r.id)
+		session, err = runtime.New(options)
+	}
 	if err != nil {
 		r.deliveryMu.Unlock()
+		outcome.State = Unavailable
 		outcome.Error = err.Error()
 		return
 	}
-	session.SetActiveToolsByName(active)
 	eventDrain := make(chan struct{})
 	go func() {
 		defer close(eventDrain)
@@ -386,6 +424,30 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			coding.AcknowledgeEvent(event)
 		}
 	}()
+	bindErr := session.BindExtensions(run.ctx)
+	var pendingTools []string
+	if bindErr == nil {
+		pendingTools = waitForChildToolStartup(run.ctx, session, allowed)
+		bindErr = run.ctx.Err()
+	}
+	if bindErr != nil {
+		session.EmitSessionShutdown("quit")
+		_ = session.Close()
+		<-eventDrain
+		r.deliveryMu.Unlock()
+		outcome.Error = bindErr.Error()
+		return
+	}
+	active := session.ActiveToolNames()
+	for _, name := range append([]string{"codemode", "tool_search"}, controlNames...) {
+		if _, exists := allowed[name]; exists {
+			active = append(active, name)
+		}
+	}
+	session.SetActiveToolsByName(active)
+	o.tree.mu.Lock()
+	r.activeLog = session.SessionManager()
+	o.tree.mu.Unlock()
 	var observedMu sync.Mutex
 	var terminal *agent.AssistantMessage
 	var failure string
@@ -394,6 +456,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	unsubscribe := session.Subscribe(func(event agent.AgentEvent) {
 		switch event := event.(type) {
 		case agent.TurnStartEvent:
+			o.confirmCompletions(r)
 			run.mu.Lock()
 			previous := run.calls
 			run.calls = newCallScope()
@@ -401,9 +464,8 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			o.retireScope(previous)
 			observedMu.Lock()
 			turns++
-			exceeded := turns > o.config.MaxTurns
-			if exceeded {
-				failure = "child turn limit reached"
+			warn := turns == o.config.MaxTurns
+			if warn {
 				limitHit = true
 			}
 			observedMu.Unlock()
@@ -413,11 +475,12 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			}
 			o.tree.mu.Unlock()
 			o.widget()
-			if exceeded {
-				session.RequestAbort()
+			if warn {
+				session.QueueSteer("<system-notice>\nYou have reached your turn allowance. Return a final response with your partial progress, remaining work, and any request for more turns. Your parent can resume this session to grant a fresh allowance.\n</system-notice>", nil)
 			}
 		case agent.TurnEndEvent:
 			o.retireScope(o.callScope(run))
+			o.confirmCompletions(r)
 		case agent.ToolExecutionEndEvent:
 			o.observeCall(run, event.ToolName, event.ToolCallID, event.Result, event.IsError)
 			if event.IsError || event.Result.IsError {
@@ -435,16 +498,6 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			}
 			if event.Message.Custom != nil {
 				o.observeCompletion(run, event.Message.Custom)
-			}
-			o.tree.mu.Lock()
-			retired := r.history != manager || r.historyLost
-			o.tree.mu.Unlock()
-			if retired || historyBytes(manager) > o.config.MaxHistoryBytes {
-				observedMu.Lock()
-				failure = "child history limit reached"
-				limitHit = true
-				observedMu.Unlock()
-				session.RequestAbort()
 			}
 		}
 	})
@@ -478,6 +531,9 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		}
 	}()
 	baseline := session.GetSessionStats()
+	if len(pendingTools) != 0 {
+		session.QueueSteer("<system-notice>\nSome allowed tools are still connecting: "+strings.Join(pendingTools, ", ")+". They can become available during this run.\n</system-notice>", nil)
+	}
 	sendErr := o.tree.sendInput(session, run)
 	stopDelivery()
 	<-deliveryDone
@@ -487,12 +543,16 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	run.disposing = true
 	run.session = nil
 	run.mu.Unlock()
+	session.EmitSessionShutdown("quit")
 	if err := session.Close(); err != nil {
 		observedMu.Lock()
 		failure = "child cleanup failed: " + err.Error()
 		observedMu.Unlock()
 	}
 	<-eventDrain
+	o.tree.mu.Lock()
+	r.activeLog = nil
+	o.tree.mu.Unlock()
 	r.deliveryMu.Unlock()
 	unsubscribe()
 	o.retireScope(o.callScope(run))
@@ -503,11 +563,6 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	}
 	outcome = outcomeFrom(terminal, baseline, session.GetSessionStats(), failure, run.ctx.Err() != nil, limitHit)
 	observedMu.Unlock()
-	if size := historyBytes(manager); size > o.config.MaxHistoryBytes {
-		o.tree.retireHistory(r)
-		outcome.State = Partial
-		outcome.Error = fmt.Sprintf("retained child history exceeded the configured limit (%d > %d bytes); resume unavailable", size, o.config.MaxHistoryBytes)
-	}
 	return outcome
 }
 
@@ -537,10 +592,9 @@ func outcomeFrom(terminal *agent.AssistantMessage, before, after coding.SessionS
 		outcome.State = Partial
 	}
 	if limit && !stopped {
-		if terminal == nil {
-			outcome.State = Failed
-		} else {
-			outcome.State = Partial
+		outcome.State = Partial
+		if outcome.Error == "" {
+			outcome.Error = "soft turn allowance reached; resume to continue with a fresh allowance"
 		}
 	}
 	outcome.Usage = Usage{Input: max(0, after.Tokens.Input-before.Tokens.Input), Output: max(0, after.Tokens.Output-before.Tokens.Output), CacheRead: max(0, after.Tokens.CacheRead-before.Tokens.CacheRead), CacheWrite: max(0, after.Tokens.CacheWrite-before.Tokens.CacheWrite), TotalTokens: max(0, after.Tokens.Total-before.Tokens.Total), Cost: max(0, after.Cost-before.Cost)}
@@ -615,6 +669,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 		state.calls = newCallScope()
 		state.mu.Unlock()
 		if o != nil {
+			o.confirmCompletions(o.tree.root)
 			o.tree.root.markAgentEnded(false)
 			o.retireScope(previous)
 		}
@@ -626,6 +681,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 		state.mu.Unlock()
 		if o != nil {
 			o.retireScope(scope)
+			o.confirmCompletions(o.tree.root)
 		}
 		return nil, nil
 	})
