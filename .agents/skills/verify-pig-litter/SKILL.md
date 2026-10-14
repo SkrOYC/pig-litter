@@ -89,6 +89,8 @@ devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh
 
 The wrapper checks PiG 0.4.1, Go 1.27.1, and tmux 3.7c. It runs direct, local Piglet, and unselected cases using the maintained product terminal fixture. The fixture uses isolated credentials and a loopback provider, prebuilt Go code, private scratch, and its own tmux server. It exercises tool registration, children, widget, resize, editor, help, stopping, scrollback, and pane and socket cleanup. Evidence stays under `.pstack/evidence/go-tui/`. These checks don't prove real provider readiness or record PiG's exit status.
 
+Run the wrappers with writable build output and `/tmp`. The terminal and lifecycle drivers do not forward `TMPDIR` to their child environments. To keep source read-only during review, build into owned scratch and use copies of the drivers that forward `TMPDIR`. Choose a short physical temporary path for Unix sockets and canonical directory comparisons. Preserve the driver diff and all original assertions.
+
 ## Run deterministic lifecycle checks
 
 Use the pinned Go SDK and loopback lifecycle fixtures:
