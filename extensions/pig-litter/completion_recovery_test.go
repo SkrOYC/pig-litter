@@ -96,6 +96,7 @@ func testRootCompletionRecovery(t *testing.T, clearQueue, consumed bool) {
 			t.Fatal(err)
 		}
 		manager = session.SessionManager()
+		o.sessionID, o.cwd, o.agentDir = manager.ID(), directory, directory
 		defer session.Close()
 		go func() {
 			for event := range session.Events() {
@@ -212,7 +213,16 @@ func testRootCompletionRecovery(t *testing.T, clearQueue, consumed bool) {
 				entries, _ := json.Marshal(manager.Entries())
 				return entries
 			}
-			return json.RawMessage(`"fixture"`)
+			if query.Method == "getSessionFile" {
+				data, _ := json.Marshal(manager.Path())
+				return data
+			}
+			if query.Method == "getSessionDir" {
+				data, _ := json.Marshal(manager.GetSessionDir())
+				return data
+			}
+			if query.Method == "getSessionId" { data, _ := json.Marshal(manager.ID()); return data }
+			return json.RawMessage(`null`)
 		case "isIdle":
 			result, _ := json.Marshal(map[string]bool{"idle": session.IsIdle()})
 			return result

@@ -39,6 +39,12 @@ func (h *runtimeHost) call(t *testing.T, method string, raw json.RawMessage) jso
 		}
 		if request.Method == "getSessionId" {
 			result = "fixture"
+		} else if request.Method == "getSessionFile" {
+			result = nil
+		} else if request.Method == "getLeafId" {
+			if len(h.entries) != 0 {
+				result = h.entries[len(h.entries)-1]["id"]
+			}
 		} else if request.Method == "getEntries" {
 			result = h.entries
 		} else {
@@ -83,7 +89,7 @@ func withRuntimeOwner(t *testing.T, host *runtimeHost, tree *Tree, cwd, agentDir
 			t.Fatal(err)
 		}
 		o.cwd, o.agentDir, o.services = cwd, agentDir, services
-		tree.execute, tree.persist = o.executeRun, o.persistChild
+		tree.execute, tree.persist = o.executeRun, o.saveChild
 		defer o.state.retire()
 		exercise(o)
 	}, func(method string, raw json.RawMessage) json.RawMessage { return host.call(t, method, raw) })
@@ -486,6 +492,9 @@ func TestRetirementJoinsRecoveredCompletionDelivery(t *testing.T) {
 				data, _ := json.Marshal(entries)
 				return data
 			}
+			if request.Method == "getSessionFile" {
+				return json.RawMessage(`null`)
+			}
 		case "isIdle":
 			return json.RawMessage(`{"idle":true}`)
 		case "sendMessage":
@@ -499,6 +508,14 @@ func TestRetirementJoinsRecoveredCompletionDelivery(t *testing.T) {
 			<-release
 			entries = append(entries, map[string]any{"id": "recovered-message", "type": "message", "message": request.Message})
 			stored.Store(true)
+			return json.RawMessage(`{}`)
+		case "appendEntry":
+			var entry map[string]any
+			if err := json.Unmarshal(raw, &entry); err != nil {
+				t.Fatal(err)
+			}
+			entry["id"], entry["type"] = "recovered-snapshot", "custom"
+			entries = append(entries, entry)
 			return json.RawMessage(`{}`)
 		}
 		t.Fatalf("unexpected recovered-delivery host call %s", method)

@@ -28,6 +28,7 @@ type extensionState struct {
 	initialization sync.Mutex
 	epoch          uint64
 	owner          *owner
+	retiring       <-chan struct{}
 	calls          *callScope
 }
 
@@ -92,8 +93,14 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		return nil, err
 	}
 	s.mu.Lock()
-	existing, epoch := s.owner, s.epoch
+	existing, epoch, retiring := s.owner, s.epoch, s.retiring
 	s.mu.Unlock()
+	if retiring != nil {
+		<-retiring
+		s.mu.Lock()
+		existing, epoch = s.owner, s.epoch
+		s.mu.Unlock()
+	}
 	if existing != nil && existing.sessionID == id {
 		return existing, existing.current()
 	}
@@ -126,7 +133,8 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		services.Close()
 		return nil, err
 	}
-	tree.persist = o.persistChild
+	recovered := o.recoveryBatch()
+	tree.persist = o.saveChild
 	s.mu.Lock()
 	if s.epoch != epoch {
 		s.mu.Unlock()
@@ -146,7 +154,7 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		tree.completionWG.Add(1)
 		go func() {
 			defer tree.completionWG.Done()
-			o.recoverCompletions()
+			o.recoverCompletions(recovered)
 		}()
 	}
 	tree.mu.Unlock()
@@ -157,6 +165,9 @@ func (s *extensionState) retire() {
 	s.mu.Lock()
 	s.epoch++
 	previous := s.owner
+	if previous != nil {
+		s.retiring = previous.tree.closedDone
+	}
 	s.owner = nil
 	s.calls = nil
 	s.mu.Unlock()
@@ -388,19 +399,13 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		session, err = runtime.Resume(string(r.id), options)
 		if err == nil {
 			run.prompt = run.continuation
+			o.tree.mu.Lock()
+			r.pendingTask = ""
+			o.tree.mu.Unlock()
 		}
-		if err != nil && r.pendingTask != "" {
-			saved, listErr := runtime.ListSessions()
-			missing := listErr == nil
-			for _, candidate := range saved {
-				if candidate.ID == string(r.id) {
-					missing = false
-				}
-			}
-			if missing {
-				options.SessionID = string(r.id)
-				session, err = runtime.New(options)
-			}
+		if err != nil && r.pendingTask != "" && (len(r.pendingInputs) == 0 || r.pendingInputs[0].After == nil) {
+			options.SessionID = string(r.id)
+			session, err = runtime.New(options)
 		}
 	} else {
 		options.SessionID = string(r.id)
@@ -451,6 +456,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	unsubscribe := session.Subscribe(func(event agent.AgentEvent) {
 		switch event := event.(type) {
 		case agent.TurnStartEvent:
+			o.confirmCompletions(r)
 			run.mu.Lock()
 			previous := run.calls
 			run.calls = newCallScope()
@@ -474,6 +480,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			}
 		case agent.TurnEndEvent:
 			o.retireScope(o.callScope(run))
+			o.confirmCompletions(r)
 		case agent.ToolExecutionEndEvent:
 			o.observeCall(run, event.ToolName, event.ToolCallID, event.Result, event.IsError)
 			if event.IsError || event.Result.IsError {
@@ -662,6 +669,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 		state.calls = newCallScope()
 		state.mu.Unlock()
 		if o != nil {
+			o.confirmCompletions(o.tree.root)
 			o.tree.root.markAgentEnded(false)
 			o.retireScope(previous)
 		}
@@ -673,6 +681,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 		state.mu.Unlock()
 		if o != nil {
 			o.retireScope(scope)
+			o.confirmCompletions(o.tree.root)
 		}
 		return nil, nil
 	})

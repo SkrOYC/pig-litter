@@ -2,7 +2,6 @@ package piglitter
 
 import (
 	"encoding/json"
-	"fmt"
 	"regexp"
 	"slices"
 
@@ -14,37 +13,39 @@ const childEntryType = "litter_child_v1"
 var childUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type savedNotice struct {
-	Nonce    string  `json:"nonce"`
-	Outcome  Outcome `json:"outcome"`
-	Consumed bool    `json:"consumed"`
+	Nonce    string           `json:"nonce"`
+	Outcome  Outcome          `json:"outcome"`
+	Consumed bool             `json:"consumed"`
+	Handback *outcomeHandback `json:"handback,omitempty"`
 }
 
 type savedChild struct {
-	RootID       ChildID       `json:"rootId"`
-	ID           ChildID       `json:"id"`
-	ParentID     ChildID       `json:"parentId"`
-	Name         string        `json:"name"`
-	Kind         string        `json:"kind"`
-	Model        string        `json:"model"`
-	Cwd          string        `json:"cwd"`
-	Instructions string        `json:"instructions"`
-	Tools        []string      `json:"tools"`
-	CanDelegate  bool          `json:"canDelegate"`
-	ReadOnly     bool          `json:"readOnly"`
-	PendingTask  string        `json:"pendingTask"`
-	Admitted     bool          `json:"admitted"`
-	State        State         `json:"state"`
-	Paused       bool          `json:"paused"`
-	NoticeID     string        `json:"noticeId"`
-	Latest       *Outcome      `json:"latest,omitempty"`
-	Notices      []savedNotice `json:"notices,omitempty"`
+	RootID        ChildID        `json:"rootId"`
+	ID            ChildID        `json:"id"`
+	ParentID      ChildID        `json:"parentId"`
+	Name          string         `json:"name"`
+	Kind          string         `json:"kind"`
+	Model         string         `json:"model"`
+	Cwd           string         `json:"cwd"`
+	Instructions  string         `json:"instructions"`
+	Tools         []string       `json:"tools"`
+	CanDelegate   bool           `json:"canDelegate"`
+	ReadOnly      bool           `json:"readOnly"`
+	PendingTask   string         `json:"pendingTask"`
+	PendingInputs []pendingInput `json:"pendingInputs,omitempty"`
+	Admitted      bool           `json:"admitted"`
+	State         State          `json:"state"`
+	Paused        bool           `json:"paused"`
+	NoticeID      string         `json:"noticeId"`
+	Latest        *Outcome       `json:"latest,omitempty"`
+	Notices       []savedNotice  `json:"notices,omitempty"`
 }
 
 func (o *owner) saveChild(r *record) error {
 	o.persistMu.Lock()
 	defer o.persistMu.Unlock()
 	o.tree.mu.Lock()
-	if o.tree.closed || o.tree.records[r.id] != r {
+	if o.tree.records[r.id] != r {
 		o.tree.mu.Unlock()
 		return nil
 	}
@@ -53,55 +54,68 @@ func (o *owner) saveChild(r *record) error {
 		selected, paused = r.previous, selected.resumePaused
 	}
 	saved := savedChild{RootID: o.tree.root.id, ID: r.id, ParentID: r.parentID(), Name: r.name, Kind: r.kind, Model: r.model, Cwd: r.cwd, Instructions: r.instructions, Tools: slices.Clone(r.tools), CanDelegate: r.canDelegate, ReadOnly: r.readOnly, PendingTask: r.pendingTask, Admitted: r.admitted, State: selected.state, Paused: paused, NoticeID: selected.noticeID}
+	saved.PendingInputs = slices.Clone(r.pendingInputs)
 	if r.latest != nil {
 		copy := *r.latest
 		saved.Latest = &copy
 	}
 	for pending, receipt := range o.tree.pending {
 		if pending.owner == r && pending.outcome != nil {
-			saved.Notices = append(saved.Notices, savedNotice{Nonce: receipt.nonce, Outcome: *pending.outcome, Consumed: receipt.outcomeObserved})
+			saved.Notices = append(saved.Notices, savedNotice{Nonce: receipt.nonce, Outcome: *pending.outcome, Consumed: receipt.outcomeObserved, Handback: receipt.handback})
 		}
 	}
 	o.tree.mu.Unlock()
 	return o.context.AppendEntry(childEntryType, saved)
 }
 
-func (o *owner) persistChild(r *record) {
-	if err := o.saveChild(r); err != nil {
-		o.tree.mu.Lock()
-		description, _ := bounded(fmt.Sprintf("child metadata storage failed: %v", err), 1024)
-		r.run.deliveryError = description
-		if r.latest != nil {
-			copy := *r.latest
-			copy.Error = description
-			if copy.State == Completed {
-				copy.State = Partial
-			}
-			r.latest = &copy
-		}
-		o.tree.mu.Unlock()
-	}
+type recoveredCompletion struct {
+	selected *run
+	outcome  Outcome
 }
 
-func (o *owner) recoverCompletions() {
+func (o *owner) recoveryBatch() []recoveredCompletion {
 	o.tree.mu.Lock()
-	pending := make([]*run, 0, len(o.tree.pending))
+	defer o.tree.mu.Unlock()
+	pending := make([]recoveredCompletion, 0, len(o.tree.pending))
 	for selected := range o.tree.pending {
-		pending = append(pending, selected)
+		if selected.outcome != nil {
+			pending = append(pending, recoveredCompletion{selected: selected, outcome: *selected.outcome})
+		}
 	}
-	o.tree.mu.Unlock()
-	for _, selected := range pending {
-		content, err := completionContent(*selected.outcome)
+	return pending
+}
+
+func (o *owner) recoverCompletions(pending []recoveredCompletion) {
+	for _, recovered := range pending {
+		selected := recovered.selected
+		content, err := completionContent(recovered.outcome)
 		if err != nil {
 			o.tree.deliveryFailed(selected, err)
 			continue
 		}
-		entries, err := o.completionEntries(selected.owner.parentID())
+		entries, err := o.persistedCompletionEntries(selected.owner.parentID())
 		if err == nil && completionStored(entries, completionDetails{ChildID: selected.ref.ID, Receipt: selected.noticeID}, content) {
 			o.tree.acknowledge(selected)
 			continue
 		}
-		o.sendCompletion(selected.owner, selected, *selected.outcome)
+		o.tree.mu.Lock()
+		notice := o.tree.pending[selected]
+		consumed := notice != nil && notice.outcomeObserved
+		var handback *outcomeHandback
+		if notice != nil {
+			handback = notice.handback
+		}
+		o.tree.mu.Unlock()
+		if consumed && err == nil && handbackStored(entries, handback, selected.ref.ID) {
+			o.tree.acknowledge(selected)
+			continue
+		}
+		if notice != nil {
+			o.tree.mu.Lock()
+			notice.outcomeObserved = false
+			o.tree.mu.Unlock()
+		}
+		o.sendCompletion(selected.owner, selected, recovered.outcome)
 	}
 }
 
@@ -203,10 +217,12 @@ func (o *owner) restoreChildren() error {
 				return reject("unavailable", "stored child names conflict")
 			}
 			r := &record{id: id, parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest}
+			r.pendingInputs = saved.PendingInputs
 			r.run = o.tree.newRunLocked(Ref{id}, "")
 			r.run.owner, r.run.noticeID, r.run.state = r, saved.NoticeID, saved.State
 			if !saved.State.terminal() {
 				r.run.state, r.paused = Paused, true
+				r.latest = &Outcome{Run: Ref{id}, Model: r.model, State: Paused, Error: "previous execution was interrupted; resume to continue"}
 			}
 			if r.latest == nil {
 				r.latest = &Outcome{Run: Ref{id}, Model: r.model, State: r.run.state, Error: "previous execution ended; resume to continue"}
@@ -226,7 +242,7 @@ func (o *owner) restoreChildren() error {
 				}
 				outcome := notice.Outcome
 				selected.outcome = &outcome
-				selected.reservation = &reservation{parent: parent.id, nonce: notice.Nonce, selected: selected, outcomeObserved: notice.Consumed}
+				selected.reservation = &reservation{parent: parent.id, nonce: notice.Nonce, selected: selected, outcomeObserved: notice.Consumed, handback: notice.Handback}
 				o.tree.pending[selected] = selected.reservation
 			}
 		}

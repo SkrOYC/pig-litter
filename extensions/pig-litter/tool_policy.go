@@ -72,10 +72,14 @@ func (o *owner) rootToolNames() ([]string, error) {
 	return names, nil
 }
 
+func isMCPTool(name string) bool {
+	return strings.HasPrefix(name, "mcp__") || slices.Contains([]string{mcpext.ListMcpResourcesTool, mcpext.ListMcpResourceTemplatesTool, mcpext.ReadMcpResourceTool}, name)
+}
+
 func waitForChildToolStartup(ctx context.Context, session *coding.Session, allowed map[string]struct{}) []string {
 	pending := map[string]struct{}{}
 	for name := range allowed {
-		if strings.HasPrefix(name, "mcp__") {
+		if isMCPTool(name) {
 			pending[name] = struct{}{}
 		}
 	}
@@ -108,14 +112,19 @@ func (o *owner) childExtensions(r *record, allowed map[string]struct{}) ([]exten
 	registrations := extension.CreateExtensionRuntime()
 	mcpAllowed := false
 	for name := range allowed {
-		if strings.HasPrefix(name, "mcp__") || slices.Contains([]string{"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"}, name) {
+		if isMCPTool(name) {
 			mcpAllowed = true
 		}
 	}
-	options := builtin.Options{Mcp: mcpext.Options{AgentDir: o.agentDir, LoadConfig: func(mcpext.EventContext) mcpext.LoadedMcpConfig {
-		return mcpext.LoadMcpConfig(mcpext.LoadOptions{AgentDir: o.agentDir, Cwd: o.cwd, ProjectTrusted: true, ConfigDirName: projectConfigDir()})
-	}, IsCodemodeTool: func(tool extension.ToolInfo) bool { return tool.Name == "codemode" }, IsToolSearchTool: func(tool extension.ToolInfo) bool { return tool.Name == "tool_search" }}}
+	options := builtin.Options{Mcp: mcpext.Options{AgentDir: o.agentDir, IsCodemodeTool: func(tool extension.ToolInfo) bool { return tool.Name == "codemode" }, IsToolSearchTool: func(tool extension.ToolInfo) bool { return tool.Name == "tool_search" }}}
 	if mcpAllowed {
+		trusted, err := o.context.IsProjectTrusted()
+		if err != nil {
+			return nil, nil, err
+		}
+		options.Mcp.LoadConfig = func(mcpext.EventContext) mcpext.LoadedMcpConfig {
+			return mcpext.LoadMcpConfig(mcpext.LoadOptions{AgentDir: o.agentDir, Cwd: o.cwd, ProjectTrusted: trusted, ConfigDirName: projectConfigDir()})
+		}
 		servers, err := o.context.GetMcpServers()
 		if err != nil {
 			return nil, nil, err

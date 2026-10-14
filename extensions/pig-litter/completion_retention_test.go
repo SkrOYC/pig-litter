@@ -16,7 +16,7 @@ import (
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 )
 
-func withCompletionHost(t *testing.T, tree *Tree, exercise func(*owner), hostCall func(string, json.RawMessage) json.RawMessage) {
+func withCompletionHost(t *testing.T, tree *Tree, exercise func(*owner), hostCall func(string, json.RawMessage) json.RawMessage, servers ...extension.RegisteredMcpServer) {
 	t.Helper()
 	host, peer := net.Pipe()
 	defer host.Close()
@@ -37,7 +37,7 @@ func withCompletionHost(t *testing.T, tree *Tree, exercise func(*owner), hostCal
 	if frame := readCompletionEnvelope(t, host); frame.Type != subprocess.MsgRegister {
 		t.Fatal(frame)
 	}
-	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgReady, Ready: &subprocess.ReadyPayload{Cwd: t.TempDir(), Width: 80, State: &subprocess.StatePayload{McpServers: []extension.RegisteredMcpServer{}}}})
+	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgReady, Ready: &subprocess.ReadyPayload{Cwd: t.TempDir(), Width: 80, State: &subprocess.StatePayload{McpServers: append([]extension.RegisteredMcpServer{}, servers...)}}})
 	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgRequest, ID: "exercise", Request: &subprocess.RequestPayload{Method: "event", Event: "exercise", HandlerID: 1, Args: json.RawMessage(`{}`)}})
 	for {
 		frame := readCompletionEnvelope(t, host)
@@ -92,6 +92,9 @@ func TestRootSettlementRecoversDiscardedNoticeBeforeReleasingCapacity(t *testing
 			if query.Method == "getEntries" {
 				data, _ := json.Marshal(entries)
 				return data
+			}
+			if query.Method == "getSessionFile" {
+				return json.RawMessage(`null`)
 			}
 			return json.RawMessage(`"fixture"`)
 		case "isIdle":
@@ -172,6 +175,9 @@ func TestLateWaitSuppressesStoredNoticeAndConsumedOnlyContinuation(t *testing.T)
 						data, _ := json.Marshal(entries)
 						return data
 					}
+					if query.Method == "getSessionFile" {
+						return json.RawMessage(`null`)
+					}
 					return json.RawMessage(`"fixture"`)
 				case "isIdle":
 					return json.RawMessage(`{"idle":false}`)
@@ -215,7 +221,7 @@ func TestLateAuditIsStoredAndPreservesNativeResume(t *testing.T) {
 	withCompletionHost(t, tree, func(o *owner) {
 		o.sendCompletion(child, child.run, *child.run.outcome)
 		inspection, err := tree.inspect(parent.id)
-		if err != nil || inspection.Outcome == nil || inspection.Outcome.State != Completed || inspection.Outcome.Text != "parent settled" || inspection.Outcome.Error != "" || len(tree.pending) != 1 {
+		if err != nil || inspection.Outcome == nil || inspection.Outcome.State != Completed || inspection.Outcome.Text != "parent settled" || inspection.Outcome.Error != "" || len(tree.pending) != 2 {
 			t.Fatalf("late audit changed the parent result or retained child capacity: %#v %v", inspection, err)
 		}
 	}, func(method string, _ json.RawMessage) json.RawMessage {
@@ -248,15 +254,17 @@ func TestLateAuditIsStoredAndPreservesNativeResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	var entries []struct {
-		CustomType string           `json:"customType"`
-		Data       completionNotice `json:"data"`
+		CustomType string          `json:"customType"`
+		Data       completionAudit `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &entries); err != nil {
 		t.Fatal(err)
 	}
 	audits := 0
 	for _, entry := range entries {
-		if entry.CustomType == "litter_completion" && entry.Data.ID == childRef.ID && entry.Data.Report == report {
+		var notice completionNotice
+		_ = json.Unmarshal([]byte(entry.Data.Content), &notice)
+		if entry.CustomType == "litter_completion" && entry.Data.Details.ChildID == childRef.ID && notice.Report == report {
 			audits++
 		}
 	}

@@ -9,13 +9,24 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/MichaelKinsy/PiG/coding"
+	"github.com/MichaelKinsy/PiG/coding/extension"
 )
 
 func TestNativeMCPToolsKeepRootCeilingAcrossCodemodeSearchAndResume(t *testing.T) {
+	t.Run("trusted project", func(t *testing.T) { testNativeMCPRootAuthority(t, false) })
+	t.Run("untrusted registered", func(t *testing.T) { testNativeMCPRootAuthority(t, true) })
+}
+
+func testNativeMCPRootAuthority(t *testing.T, untrusted bool) {
+	t.Helper()
 	t.Setenv("PIG_OFFLINE", "1")
 	t.Setenv("PIG_USE_PI_DIRS", "0")
 	directory := t.TempDir()
@@ -32,7 +43,7 @@ func TestNativeMCPToolsKeepRootCeilingAcrossCodemodeSearchAndResume(t *testing.T
 	var callsMu sync.Mutex
 	calls := map[string]int{}
 	var closed atomic.Int32
-	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+	mcpHandler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.Method == http.MethodDelete {
 			closed.Add(1)
 			w.WriteHeader(http.StatusNoContent)
@@ -81,13 +92,28 @@ func TestNativeMCPToolsKeepRootCeilingAcrossCodemodeSearchAndResume(t *testing.T
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": rpc.ID, "result": result})
+	})
+	var rootRequests atomic.Int32
+	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		rootRequests.Add(1)
+		mcpHandler.ServeHTTP(w, request)
 	}))
 	defer mcpServer.Close()
+	var projectRequests atomic.Int32
+	projectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		projectRequests.Add(1)
+		mcpHandler.ServeHTTP(w, request)
+	}))
+	defer projectServer.Close()
 	rootConfigDir := filepath.Join(directory, ".pig")
 	if err := os.Mkdir(rootConfigDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	config := fmt.Sprintf(`{"mcpServers":{"docs":{"url":%q,"exposure":"deferred"}}}`, mcpServer.URL)
+	projectURL := mcpServer.URL
+	if untrusted {
+		projectURL = projectServer.URL
+	}
+	config := fmt.Sprintf(`{"mcpServers":{"docs":{"url":%q,"exposure":"deferred"}}}`, projectURL)
 	if err := os.WriteFile(filepath.Join(rootConfigDir, "mcp.json"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -169,9 +195,17 @@ func TestNativeMCPToolsKeepRootCeilingAcrossCodemodeSearchAndResume(t *testing.T
 	}))
 	defer server.Close()
 	writeRuntimeModels(t, agentDir, server.URL)
-	host := &runtimeHost{tools: append([]string{"read", "ls", "write", "edit", "bash", "codemode", "tool_search", "mcp__docs__search"}, controlNames...)}
+	host := &runtimeHost{tools: append([]string{"read", "ls", "write", "edit", "bash", "codemode", "tool_search", "mcp__docs__search"}, controlNames...), untrusted: untrusted}
 	tree := testTree(t, defaultConfig())
-	withRuntimeOwner(t, host, tree, directory, agentDir, func(o *owner) {
+	withCompletionHost(t, tree, func(o *owner) {
+		trusted := true
+		services, err := coding.NewServices(coding.ServicesOptions{CWD: directory, AgentDir: agentDir, ProjectTrusted: &trusted})
+		if err != nil {
+			t.Fatal(err)
+		}
+		o.cwd, o.agentDir, o.services = directory, agentDir, services
+		tree.execute, tree.persist = o.executeRun, o.saveChild
+		defer o.state.retire()
 		value, ticket, err := runtimeOperation(t, o, "litter_spawn", "mcp-spawn", map[string]any{"type": "worker", "task": "use the native skill and root MCP tools", "model": "fixture/child", "cwd": childDir})
 		if err != nil {
 			t.Fatal(err)
@@ -198,11 +232,77 @@ func TestNativeMCPToolsKeepRootCeilingAcrossCodemodeSearchAndResume(t *testing.T
 			t.Fatalf("late MCP run failed: %#v %v", outcome, err)
 		}
 		tree.acknowledge(selected)
-	})
+	}, func(method string, raw json.RawMessage) json.RawMessage { return host.call(t, method, raw) }, extension.RegisteredMcpServer{Name: "docs", ExtensionPath: "root-fixture", Config: extension.McpServerConfig{URL: mcpServer.URL, Exposure: extension.McpExposureDeferred}})
+	if projectRequests.Load() != 0 || rootRequests.Load() == 0 {
+		t.Fatalf("root MCP authority changed: registered endpoint requests=%d project override requests=%d", rootRequests.Load(), projectRequests.Load())
+	}
 	if failure := providerFailure.Load(); failure != nil {
 		t.Fatal(*failure)
 	}
 	if !skillSeen.Load() || calls["search"] != 2 || calls["late"] != 1 || calls["blocked"] != 0 || closed.Load() != 2 {
 		t.Fatalf("native skill/MCP behavior changed: skill=%t calls=%v closed=%d", skillSeen.Load(), calls, closed.Load())
+	}
+}
+
+type mcpStartupWaitContext struct {
+	context.Context
+	waiting chan struct{}
+}
+
+func (c mcpStartupWaitContext) Done() <-chan struct{} {
+	select {
+	case c.waiting <- struct{}{}:
+	default:
+	}
+	return c.Context.Done()
+}
+
+func TestNativeMCPResourceToolsWaitForRegistration(t *testing.T) {
+	directory := t.TempDir()
+	trusted := true
+	services, err := coding.NewServices(coding.ServicesOptions{CWD: directory, AgentDir: directory, ProjectTrusted: &trusted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer services.Close()
+	runtime, err := coding.NewRuntime(coding.RuntimeOptions{Services: services})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	allowed := map[string]struct{}{"list_mcp_resources": {}, "list_mcp_resource_templates": {}, "read_mcp_resource": {}}
+	session, err := runtime.New(coding.SessionStartOptions{ResourceLoader: coding.NoResources, AllowedTools: allowed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := waitForChildToolStartup(ctx, session, allowed); !reflect.DeepEqual(got, []string{"list_mcp_resource_templates", "list_mcp_resources", "read_mcp_resource"}) {
+		t.Fatalf("resource registration wait allowed an early first prompt: pending=%v", got)
+	}
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelWait()
+	waiting := make(chan struct{}, 1)
+	finished := make(chan []string, 1)
+	go func() {
+		finished <- waitForChildToolStartup(mcpStartupWaitContext{Context: waitCtx, waiting: waiting}, session, allowed)
+	}()
+	select {
+	case got := <-finished:
+		t.Fatalf("resource registration wait released the first prompt before registration: pending=%v", got)
+	case <-waiting:
+	case <-waitCtx.Done():
+		t.Fatal("resource registration wait did not start")
+	}
+	resources := extension.Extension{Path: "resource-fixture"}
+	for _, name := range []string{"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"} {
+		resources.SetRegisteredTool(extension.RegisteredTool{Definition: extension.ToolDefinition{Name: name, Description: "Fixture resource", Parameters: json.RawMessage(`{"type":"object","properties":{}}`)}})
+	}
+	if _, err := session.ReloadExtensions([]extension.Extension{resources}); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-finished; len(got) != 0 {
+		t.Fatalf("registered resource tools did not release the first prompt: pending=%v", got)
 	}
 }

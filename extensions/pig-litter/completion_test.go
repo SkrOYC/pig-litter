@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/MichaelKinsy/PiG/agent"
+	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding"
 	"github.com/MichaelKinsy/PiG/coding/extension/host/subprocess"
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
@@ -138,6 +139,7 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 					continue
 				}
 				response := &subprocess.CallResultPayload{Result: json.RawMessage(`{}`)}
+				var sessionMethod string
 				switch envelope.Call.Method {
 				case "sessionRead":
 					sessionReads++
@@ -145,6 +147,10 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 					var query struct{ Method string }
 					if err := json.Unmarshal(envelope.Call.Args, &query); err != nil {
 						t.Fatal(err)
+					}
+					sessionMethod = query.Method
+					if query.Method == "getSessionFile" || query.Method == "getLeafId" {
+						response.Result = json.RawMessage(`null`)
 					}
 					if query.Method == "getEntries" {
 						response.Result = json.RawMessage(`[]`)
@@ -159,12 +165,14 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 					audits++
 					var args struct {
 						CustomType string
-						Data       completionNotice
+						Data       completionAudit
 					}
 					if err := json.Unmarshal(envelope.Call.Args, &args); err != nil {
 						t.Fatal(err)
 					}
-					if !consumed || args.CustomType != "litter_completion" || args.Data.ID != selected.ref.ID || args.Data.State != Completed || args.Data.Report != "child report" || args.Data.ReportProvenance != "child_assistant" {
+					var notice completionNotice
+					_ = json.Unmarshal([]byte(args.Data.Content), &notice)
+					if !consumed || args.CustomType != "litter_completion" || args.Data.Details.ChildID != selected.ref.ID || notice.State != Completed || notice.Report != "child report" || notice.ReportProvenance != "child_assistant" {
 						t.Fatalf("consumed completion audit %#v", args)
 					}
 					if pending := tree.pending[selected]; pending == nil || !pending.sent {
@@ -203,7 +211,7 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 					t.Fatalf("unexpected host method %q", envelope.Call.Method)
 				}
 				writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgCallResult, ID: envelope.ID, CallResult: response})
-				if test.handoff && envelope.Call.Method == "sessionRead" && sessionReads == 1 {
+				if test.handoff && sessionMethod == "getSessionId" {
 					writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgRequest, ID: "observe", Request: &subprocess.RequestPayload{Method: "event", Event: "message_end", HandlerID: 2, Args: json.RawMessage(`{}`)}})
 				}
 			}
@@ -219,11 +227,7 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 				t.Fatalf("state queries=%d sends=%d audits=%d", idleCalls, sends, audits)
 			}
 			pending := tree.pending[selected]
-			if consumed && !test.auditFailed {
-				if pending != nil {
-					t.Fatal("successful audit did not release its reservation")
-				}
-			} else if pending == nil || !pending.sent {
+			if pending == nil || !pending.sent {
 				t.Fatal("failed or unobserved delivery released its reservation")
 			}
 			writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgShutdown, Shutdown: &subprocess.ShutdownPayload{Reason: "test complete"}})
@@ -414,16 +418,27 @@ func TestCompletionAuditAfterSettlementBetweenObservationAndAckRead(t *testing.T
 	}
 	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgReady, Ready: &subprocess.ReadyPayload{Cwd: t.TempDir(), Width: 80}})
 	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgRequest, ID: "complete", Request: &subprocess.RequestPayload{Method: "event", Event: "session_start", HandlerID: 1, Args: json.RawMessage(`{}`)}})
-	first := readCompletionEnvelope(t, host)
-	for first.Type != subprocess.MsgCall {
-		first = readCompletionEnvelope(t, host)
-	}
-	if first.Type != subprocess.MsgCall || first.Call.Method != "sessionRead" {
-		t.Fatalf("completion startup %#v", first)
-	}
-	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgCallResult, ID: first.ID, CallResult: &subprocess.CallResultPayload{Result: json.RawMessage(`"fixture"`)}})
-	if envelope := readCompletionEnvelope(t, host); envelope.Type != subprocess.MsgRequestState {
-		t.Fatalf("SDK call state %#v", envelope)
+	for {
+		frame := readCompletionEnvelope(t, host)
+		if frame.Type != subprocess.MsgCall {
+			continue
+		}
+		if frame.Call.Method != "sessionRead" {
+			t.Fatalf("completion startup %#v", frame)
+		}
+		var query struct{ Method string }
+		_ = json.Unmarshal(frame.Call.Args, &query)
+		result := json.RawMessage(`null`)
+		if query.Method == "getSessionId" {
+			result = json.RawMessage(`"fixture"`)
+		}
+		writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgCallResult, ID: frame.ID, CallResult: &subprocess.CallResultPayload{Result: result}})
+		if envelope := readCompletionEnvelope(t, host); envelope.Type != subprocess.MsgRequestState {
+			t.Fatalf("SDK call state %#v", envelope)
+		}
+		if query.Method == "getSessionId" {
+			break
+		}
 	}
 	select {
 	case <-snapshot:
@@ -468,6 +483,14 @@ func TestCompletionAuditAfterSettlementBetweenObservationAndAckRead(t *testing.T
 		switch envelope.Call.Method {
 		case "sessionRead":
 			response.Result = json.RawMessage(`"fixture"`)
+			var query struct{ Method string }
+			_ = json.Unmarshal(envelope.Call.Args, &query)
+			if query.Method == "getSessionFile" || query.Method == "getLeafId" {
+				response.Result = json.RawMessage(`null`)
+			}
+			if query.Method == "getEntries" {
+				response.Result = json.RawMessage(`[]`)
+			}
 		case "isIdle":
 			response.Result = json.RawMessage(`{"idle":false}`)
 		case "sendMessage":
@@ -476,12 +499,14 @@ func TestCompletionAuditAfterSettlementBetweenObservationAndAckRead(t *testing.T
 			audits++
 			var args struct {
 				CustomType string
-				Data       completionNotice
+				Data       completionAudit
 			}
 			if err := json.Unmarshal(envelope.Call.Args, &args); err != nil {
 				t.Fatal(err)
 			}
-			if args.CustomType != "litter_completion" || args.Data.ID != "child:1" || args.Data.State != Completed || args.Data.Report != "verified child report" {
+			var notice completionNotice
+			_ = json.Unmarshal([]byte(args.Data.Content), &notice)
+			if args.CustomType != "litter_completion" || args.Data.Details.ChildID != "child:1" || notice.State != Completed || notice.Report != "verified child report" {
 				t.Fatalf("audit payload %#v", args)
 			}
 			tree.mu.Lock()
@@ -498,7 +523,7 @@ func TestCompletionAuditAfterSettlementBetweenObservationAndAckRead(t *testing.T
 	tree.mu.Lock()
 	pending := tree.pending[selected]
 	tree.mu.Unlock()
-	if audits != 1 || sends != 0 || pending != nil {
+	if audits != 1 || sends != 0 || pending == nil {
 		t.Fatalf("interleaved completion audits=%d sends=%d reservation=%#v", audits, sends, pending)
 	}
 	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgShutdown, Shutdown: &subprocess.ShutdownPayload{Reason: "test complete"}})
@@ -572,6 +597,9 @@ func TestIdenticalCompletionsRequireNewSDKEntries(t *testing.T) {
 					t.Fatal(err)
 				}
 				response.Result = json.RawMessage(`"fixture"`)
+				if query.Method == "getSessionFile" || query.Method == "getLeafId" {
+					response.Result = json.RawMessage(`null`)
+				}
 				if query.Method == "getEntries" {
 					response.Result, _ = json.Marshal(entries)
 				}
@@ -656,6 +684,9 @@ func testNestedCompletion(t *testing.T, parentState string) {
 		t.Fatal(err)
 	}
 	manager := session.SessionManager()
+	if _, err := manager.AppendMessage(agent.AgentMessage{User: &agent.UserMessage{Role: "user", Content: ai.UserContentBlocks{ai.TextContent{Text: "native parent task"}}}}); err != nil {
+		t.Fatal(err)
+	}
 	defer session.Close()
 	go func() {
 		for event := range session.Events() {
@@ -664,7 +695,7 @@ func testNestedCompletion(t *testing.T, parentState string) {
 	}()
 	unrelated := &run{ref: Ref{"other-child"}}
 	unrelatedReceipt := &completionReceipt{}
-	parentRun := &run{ref: Ref{"parent"}, ready: make(chan struct{}), done: make(chan struct{})}
+	parentRun := &run{ref: Ref{ChildID(session.ID())}, ready: make(chan struct{}), done: make(chan struct{})}
 	if parentState == "running" {
 		parentRun.session = session
 		close(parentRun.ready)
@@ -680,11 +711,18 @@ func testNestedCompletion(t *testing.T, parentState string) {
 	treeContext, cancelTree := context.WithCancel(context.Background())
 	defer cancelTree()
 	selected := &run{ref: Ref{"child"}}
-	parent := &record{id: "parent", run: parentRun, activeLog: manager, receipts: map[*run]*completionReceipt{unrelated: unrelatedReceipt}}
+	parent := &record{id: parentRun.ref.ID, cwd: dir, run: parentRun, activeLog: manager, receipts: map[*run]*completionReceipt{unrelated: unrelatedReceipt}}
 	parentRun.owner = parent
 	child := &record{id: "child", parent: parent, run: selected}
 	selected.owner = child
-	tree := &Tree{ctx: treeContext, records: map[ChildID]*record{"child": child, "parent": parent}, pending: map[*run]*reservation{selected: {parent: "parent", outcomeObserved: parentState == "consumed"}}, dirty: map[ChildID]*record{}}
+	tree := &Tree{ctx: treeContext, records: map[ChildID]*record{"child": child, parent.id: parent}, pending: map[*run]*reservation{selected: {parent: parent.id, outcomeObserved: parentState == "consumed"}}, dirty: map[ChildID]*record{}}
+	if parentState == "consumed" {
+		tree.pending[selected].handback = &outcomeHandback{CallID: "stored-parent-wait", Operation: "litter_wait", After: manager.LeafID()}
+		content, _ := resultContent("litter_wait", map[string]any{"outcome": &Outcome{Run: selected.ref, State: Completed, Text: "nested report"}}, nil)
+		if _, err := manager.AppendMessage(agent.AgentMessage{ToolResult: &agent.ToolResultMessage{Role: "toolResult", ToolCallID: "stored-parent-wait", ToolName: "litter_wait", Content: []ai.ToolResultMessageContent{ai.TextContent{Text: content}}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	entered, release := make(chan struct{}), make(chan struct{})
 	var o *owner
 	unsubscribe := session.Subscribe(func(event agent.AgentEvent) {
@@ -788,7 +826,7 @@ func testNestedCompletion(t *testing.T, parentState string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := completionStored(entries, completionDetails{ChildID: child.id}, notice); got != (parentState != "owner cancelled" && parentState != "consumed") {
+	if got := completionStored(entries, completionDetails{ChildID: child.id}, notice); got != (parentState != "owner cancelled") {
 		t.Fatalf("persisted nested completion=%t for parent %s", got, parentState)
 	}
 	if parentState == "consumed" {
@@ -796,9 +834,9 @@ func testNestedCompletion(t *testing.T, parentState string) {
 		for _, raw := range entries {
 			var entry struct {
 				Type, CustomType string
-				Data             completionNotice
+				Data             completionAudit
 			}
-			if json.Unmarshal(raw, &entry) == nil && entry.Type == "custom" && entry.CustomType == "litter_completion" && entry.Data.Report == "nested report" {
+			if json.Unmarshal(raw, &entry) == nil && entry.Type == "custom" && entry.CustomType == "litter_completion" && entry.Data.Content == notice && entry.Data.Details.ChildID == child.id {
 				found = true
 			}
 		}

@@ -16,16 +16,19 @@ type reservation struct {
 	nonce           string
 	sent            bool
 	outcomeObserved bool
+	handback        *outcomeHandback
 	stored          bool
 	continueTurn    bool
 	content         string
 	selected        *run
-	auditOnce       sync.Once
+	auditMu         sync.Mutex
+	auditStored     bool
 	auditErr        error
 }
 
 type Tree struct {
 	mu           sync.Mutex
+	lifecycleMu  sync.Mutex
 	config       Config
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -41,7 +44,7 @@ type Tree struct {
 	execute      func(*record, *run) Outcome
 	completion   func(*record, *run, Outcome)
 	changed      func()
-	persist      func(*record)
+	persist      func(*record) error
 	dirty        map[ChildID]*record
 }
 
@@ -166,11 +169,18 @@ func (t *Tree) snapshotLocked(r *record) Snapshot {
 		parent = &value
 	}
 	state := r.run.state
-	if state.terminal() && r.latest != nil {
-		state = r.latest.State
-	}
-	if r.paused && state.terminal() {
-		state = Paused
+	if r.run.finishing {
+		state = Starting
+		if r.run.started {
+			state = Running
+		}
+	} else {
+		if state.terminal() && r.latest != nil {
+			state = r.latest.State
+		}
+		if r.paused && state.terminal() {
+			state = Paused
+		}
 	}
 	return Snapshot{Ref: r.run.ref, Parent: parent, Depth: r.depth, Name: r.name, DisplayLabel: displayLabel(r.name, r.id), Type: r.kind, Model: r.model, Cwd: r.cwd, State: state}
 }
@@ -270,23 +280,35 @@ func (t *Tree) admit(request admission) (Snapshot, *run, error) {
 }
 
 func (t *Tree) activate(selected *run) error {
+	t.lifecycleMu.Lock()
 	t.mu.Lock()
 	r, err := t.currentLocked(selected)
 	if err != nil {
 		t.mu.Unlock()
+		t.lifecycleMu.Unlock()
 		return err
 	}
 	run := r.run
 	if run.started || run.state != Starting || r.paused {
 		t.mu.Unlock()
+		t.lifecycleMu.Unlock()
 		return reject("rejected", "child activation is no longer pending")
 	}
 	run.started = true
 	r.admitted = true
 	r.previous = nil
+	if run.resume {
+		r.pendingInputs = append(r.pendingInputs, pendingInput{Text: run.continuation})
+	}
 	t.mu.Unlock()
+	err = t.store(r)
+	t.lifecycleMu.Unlock()
 	t.notify()
 	go func() {
+		if err != nil {
+			t.finish(r, run, Outcome{State: Unavailable, Error: "child activation storage failed: " + err.Error()})
+			return
+		}
 		outcome := t.execute(r, run)
 		t.finish(r, run, outcome)
 	}()
@@ -335,9 +357,11 @@ func (t *Tree) cancelPending(selected *run) {
 }
 
 func (t *Tree) finish(r *record, run *run, raw Outcome) {
+	t.lifecycleMu.Lock()
 	t.mu.Lock()
-	if run.outcome != nil {
+	if run.outcome != nil || run.finishing {
 		t.mu.Unlock()
+		t.lifecycleMu.Unlock()
 		return
 	}
 	raw.Run, raw.Model = run.ref, r.model
@@ -361,10 +385,15 @@ func (t *Tree) finish(r *record, run *run, raw Outcome) {
 		raw.State = Stopped
 	}
 	run.state, run.outcome = raw.State, &raw
+	run.finishing = true
 	if r.run == run && r.previous == nil {
 		r.latest = &raw
 	}
-	t.dirty[r.id] = r
+	t.mu.Unlock()
+	_ = t.store(r)
+	t.mu.Lock()
+	raw = *run.outcome
+	run.state, run.finishing = raw.State, false
 	run.cancel()
 	for {
 		select {
@@ -385,6 +414,7 @@ mailboxDrained:
 		t.completionWG.Add(1)
 	}
 	t.mu.Unlock()
+	t.lifecycleMu.Unlock()
 	t.notify()
 	if deliver {
 		go func() {
@@ -394,19 +424,48 @@ mailboxDrained:
 	}
 }
 
-func (t *Tree) notify() {
+func (t *Tree) notify() error {
 	t.mu.Lock()
 	dirty := t.dirty
 	t.dirty = map[ChildID]*record{}
 	t.mu.Unlock()
-	if t.persist != nil {
-		for _, r := range dirty {
-			t.persist(r)
+	var failure error
+	for _, r := range dirty {
+		if err := t.store(r); err != nil && failure == nil {
+			failure = err
 		}
 	}
 	if t.changed != nil {
 		t.changed()
 	}
+	return failure
+}
+
+func (t *Tree) store(r *record) error {
+	if t.persist == nil {
+		return nil
+	}
+	err := t.persist(r)
+	if err == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	description, _ := bounded("child metadata storage failed: "+err.Error(), 1024)
+	r.run.deliveryError = description
+	if r.latest != nil {
+		previous := r.latest
+		copy := *previous
+		copy.Error = description
+		if copy.State == Completed {
+			copy.State = Partial
+		}
+		r.latest = &copy
+		if r.run.outcome == previous {
+			r.run.outcome = r.latest
+		}
+	}
+	return err
 }
 
 func (t *Tree) snapshotsLocked(parent *record, activeOnly bool) []Snapshot {
@@ -444,7 +503,7 @@ func (t *Tree) inspect(id ChildID) (Inspection, error) {
 		return Inspection{}, reject("unavailable", "child is unavailable")
 	}
 	var outcome *Outcome
-	if r.latest != nil {
+	if r.latest != nil && !r.run.finishing {
 		copy := *r.latest
 		outcome = &copy
 	}
@@ -463,7 +522,7 @@ func (t *Tree) wait(ctx context.Context, selected *run, timeout int) (Outcome, e
 		t.mu.Unlock()
 		return Outcome{}, reject("unavailable", "the owning Session is closed")
 	}
-	if selected.outcome != nil {
+	if selected.outcome != nil && !selected.finishing {
 		outcome := selected.outcome
 		if current := t.records[selected.ref.ID]; current != nil && current.run == selected && current.latest != nil {
 			outcome = current.latest
@@ -477,7 +536,14 @@ func (t *Tree) wait(ctx context.Context, selected *run, timeout int) (Outcome, e
 	defer timer.Stop()
 	select {
 	case <-selected.done:
-		return *selected.outcome, nil
+		t.mu.Lock()
+		latest := selected.outcome
+		if current := t.records[selected.ref.ID]; current != nil && current.run == selected && current.latest != nil {
+			latest = current.latest
+		}
+		outcome := *latest
+		t.mu.Unlock()
+		return outcome, nil
 	case <-timer.C:
 		return Outcome{}, reject("wait_timeout", "wait timed out")
 	case <-ctx.Done():
@@ -492,7 +558,7 @@ func (t *Tree) resume(caller, selected *run, text string) (Snapshot, *run, error
 		t.mu.Unlock()
 		return Snapshot{}, nil, err
 	}
-	if !r.run.state.terminal() {
+	if !r.run.state.terminal() || r.run.finishing {
 		t.mu.Unlock()
 		return Snapshot{}, nil, reject("rejected", "resume needs a settled child and text")
 	}
@@ -668,10 +734,12 @@ func (t *Tree) pauseRoot() {
 }
 
 func (t *Tree) close() {
+	t.lifecycleMu.Lock()
 	t.mu.Lock()
 	if t.closed {
 		done := t.closedDone
 		t.mu.Unlock()
+		t.lifecycleMu.Unlock()
 		<-done
 		return
 	}
@@ -685,6 +753,7 @@ func (t *Tree) close() {
 		}
 	}
 	t.mu.Unlock()
+	t.lifecycleMu.Unlock()
 	t.cancel()
 	for _, run := range runs {
 		run.cancel()

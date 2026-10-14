@@ -80,6 +80,7 @@ type record struct {
 	depth                                int
 	name, kind, model, instructions, cwd string
 	pendingTask                          string
+	pendingInputs                        []pendingInput
 	tools                                []string
 	canDelegate, readOnly                bool
 	admitted                             bool
@@ -93,6 +94,11 @@ type record struct {
 	receiptMu                            sync.Mutex
 	receipts                             map[*run]*completionReceipt
 	notices                              map[string]*reservation
+}
+
+type pendingInput struct {
+	Text  string  `json:"text"`
+	After *string `json:"after,omitempty"`
 }
 
 type message struct {
@@ -110,6 +116,7 @@ type run struct {
 	cancel          context.CancelFunc
 	done            chan struct{}
 	started         bool
+	finishing       bool
 	outcome         *Outcome
 	prompt          string
 	continuation    string

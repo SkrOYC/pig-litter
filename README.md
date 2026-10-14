@@ -66,7 +66,9 @@ Call `litter_spawn` with a self-contained task. Spawn returns admission before c
 
 Use `litter_inspect` with the child UUID to check its current state and latest result. Use `litter_wait` to wait for its result. Waiting defaults to 30 seconds and accepts an optional `timeoutMs`. A timeout leaves the child running. Cancelling a wait alone cancels only that wait. Pausing the parent also pauses its children. Inspection returns no transcript, tool evidence, mailbox, or entry pages. Result text is the child's report, with state, model, usage, and any error. Inspect, wait, and stop share the `operation`, `state`, `outcome`, and `handbackTruncated` envelope fields. The outcome's `truncated` flag marks the configured report bound.
 
-Use `litter_message` to steer a live child or explicitly resume a paused or settled child with `resume:true`. Resume opens the native persisted conversation by UUID with the child's working directory and services. If setup stops before the first input is stored, resume also carries the original task. An unknown or missing persisted UUID returns `unavailable`.
+Use `litter_message` to steer a live child or explicitly resume a paused or settled child with `resume:true`. Resume opens the native persisted conversation by UUID with the child's working directory and services. Setup that ends before a native input attempt retains the original task. Accepted continuation instructions remain pending until native storage and survive owner replacement. An unknown or missing persisted UUID returns `unavailable`.
+
+PiG's UUID lookup cannot distinguish a missing file from an unreadable header. After Litter records a native input attempt, failed lookup returns `unavailable`. This also covers interruption between that record and the first native message. Litter preserves the UUID instead of creating a second conversation under it.
 
 Use `litter_stop` to pause the selected child and its descendants, then wait for their active work to stop. Stop returns the actual outcome state. A child that completed before stop retains its completed report. Nothing resumes automatically. Resuming a parent leaves its children paused until that parent explicitly resumes them.
 
@@ -90,7 +92,7 @@ A compact terminal widget shows recent direct children with their names and stat
 
 ## Authority and limits
 
-PiG controls extension loading. Once selected, Pig Litter adds no permission prompts or trust checks. The tool allowlist controls which tools a child can call. Each child uses an exact model available to the independent Go SDK, which resolves configured credentials through native services. Pig Litter does not copy the parent's conversation or credentials into a child. Each child discovers its own directory resources, with literal named-agent instructions appended to its normal prompt. There is no model fallback.
+PiG controls extension loading. Once selected, Pig Litter adds no permission prompts or trust denials. The tool allowlist controls which tools a child can call. Each child uses an exact model available to the independent Go SDK, which resolves configured credentials through native services. Pig Litter does not copy the parent's conversation or credentials into a child. Each child discovers its own directory resources, with literal named-agent instructions appended to its normal prompt. There is no model fallback.
 
 Native file and terminal tools execute in the child's own PiG session. PiG handles relative, absolute, home-relative, and leading-`@` file paths. Terminal commands use the native working directory. Pig Litter does not rewrite file arguments, prefix shell commands, or forward these calls to the parent. Role and inherited tool ceilings restrict callable tools; they do not sandbox filesystem paths.
 
@@ -100,11 +102,11 @@ Root cancellation cascades while PiG exposes an active run's cancellation signal
 
 PiG 0.4.1's public resource loader discovers directory settings, context, skills, templates, and prompt resources. It does not automatically load arbitrary CLI extensions or themes. Parent-only hooks and extension providers are not automatically inherited. Pig Litter loads the native codemode, tool-search, and MCP extensions explicitly. The child uses the embedded SDK's native pipeline and its explicit tool policy.
 
-Delegation authorizes native project settings in the selected child directory. The embedded SDK uses those settings without a separate trust-store prompt. Role and inherited tool ceilings still apply.
+Delegation authorizes native project settings in the selected child directory. The embedded SDK uses those settings without a separate trust-store prompt. MCP configuration follows the root's own trust selection, so a root-untrusted project override cannot replace a root-registered server. Role and inherited tool ceilings still apply.
 
 Every active execution owns a separate Go Runtime, Session, subscription, and cancellation context. Cleanup dispatches native extension shutdown and releases the transcript manager. Failed tools produce partial or failed outcomes with canonical error context. Resume opens the preceding persisted conversation. Report clipping has a separate flag. Inspection retains the latest result even when the persisted conversation becomes unavailable for resume.
 
-Completion JSON identifies `origin:"pig-litter"` and labels the report as child assistant prose. Wait and stop handoffs register before they block. A successful terminal handback consumes its selected outcome. Its completion then appends as an audit entry outside model context, without repeating the report to the model. Delivery capacity releases after the corresponding message or audit entry is stored.
+Completion JSON identifies `origin:"pig-litter"` and labels the report as child assistant prose. Wait and stop handoffs register before they block. A terminal handback has a stable receipt with its call identity and native log boundary. Its hidden audit suppresses repeated delivery after the final tool result is stored. Delivery capacity releases after native storage confirms the corresponding message or handback. Failed writes retain the receipt for retry.
 
 Unconsumed outcomes reach their immediate parent through stored custom messages. A busy parent continues only for an unconsumed notice it has not seen. A successful wait suppresses a queued duplicate. Idle or paused parents retain notices without inference. A disposed parent Session reopens by UUID for completion storage. A provider or tool that ignores cancellation can delay pause and shutdown.
 
