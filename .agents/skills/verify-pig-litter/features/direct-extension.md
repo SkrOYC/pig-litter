@@ -2,7 +2,7 @@
 
 Explicit `pig -e /ABSOLUTE_PATH/extensions/pig-litter` selects the Go Resource through its `Extension()` factory. It registers the six background controls and `/pig-litter`. The factory and command live in `extensions/pig-litter/adapter.go`.
 
-Startup displays the selected extension and normal editor. `/pig-litter` explains discovery, spawn, inspect, message, stop, and wait. Selection and help make no completion request. A successful spawn draws the child widget. Discovery alone does not draw it.
+Startup displays the selected extension and normal editor. `/pig-litter` explains discovery, spawn, inspect, message, stop, and wait. Selection and help make no completion request. The child widget appears when a control initializes ownership. Discovery can draw its initial counts.
 
 ## Drive the repository source
 
