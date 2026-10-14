@@ -18,9 +18,10 @@ import (
 )
 
 type runtimeHost struct {
-	mu      sync.Mutex
-	entries []map[string]any
-	tools   []string
+	mu        sync.Mutex
+	entries   []map[string]any
+	tools     []string
+	untrusted bool
 }
 
 func (h *runtimeHost) call(t *testing.T, method string, raw json.RawMessage) json.RawMessage {
@@ -50,7 +51,7 @@ func (h *runtimeHost) call(t *testing.T, method string, raw json.RawMessage) jso
 		h.entries = append(h.entries, entry)
 		result = map[string]any{}
 	case "isProjectTrusted":
-		result = map[string]any{"trusted": true}
+		result = map[string]any{"trusted": !h.untrusted}
 	case "getModelRegistryState":
 		result = map[string]any{"models": []map[string]any{{"provider": "fixture", "id": "child"}}, "providers": map[string]any{"fixture": map[string]any{"configured": true}}, "registered": []any{}}
 	case "getScopedModels":
@@ -330,5 +331,104 @@ func TestEmptyRootToolInventoryLeavesTheChildWithoutTools(t *testing.T) {
 			t.Fatalf("empty root ceiling admitted child tools: %#v tools=%d %v", outcome, count.Load(), err)
 		}
 		tree.acknowledge(selected)
+	})
+}
+
+func TestAllowedChildToolsRunWhenHostTrustIsFalse(t *testing.T) {
+	t.Setenv("PIG_OFFLINE", "1")
+	directory := t.TempDir()
+	agentDir := filepath.Join(directory, "agent")
+	t.Setenv("PIG_CODING_AGENT_DIR", agentDir)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1)%2 == 1 {
+			runtimeToolAnswer(w, "allowed-write", "write", map[string]any{"path": "allowed.txt", "content": "allowed by the tool list"})
+		} else {
+			runtimeAnswer(w, "ALLOWED_WITH_HOST_TRUST_FALSE")
+		}
+	}))
+	defer server.Close()
+	writeRuntimeModels(t, agentDir, server.URL)
+	host := &runtimeHost{tools: []string{"read", "ls", "write", "edit", "bash"}, untrusted: true}
+	tree := testTree(t, defaultConfig())
+	withCompletionHost(t, tree, func(previous *owner) {
+		state := &extensionState{}
+		o, err := state.ensure(previous.context)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer state.retire()
+		value, ticket, err := runtimeOperation(t, o, "litter_spawn", "allowed-spawn", map[string]any{"type": "worker", "task": "write the allowed file", "model": "fixture/child", "cwd": directory})
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := value["child"].(Snapshot).ID
+		o.settleAck(ticket, false)
+		selected := testRun(t, o.tree, Ref{id})
+		outcome, err := o.tree.wait(context.Background(), selected, 3000)
+		if err != nil || outcome.State != Completed || outcome.Text != "ALLOWED_WITH_HOST_TRUST_FALSE" {
+			t.Fatalf("host trust added a child permission gate: %#v %v", outcome, err)
+		}
+		o.tree.acknowledge(selected)
+		_, ticket, err = runtimeOperation(t, o, "litter_message", "allowed-resume", map[string]any{"id": id, "resume": true, "text": "write again under the same allowed tool set"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		o.settleAck(ticket, false)
+		selected = testRun(t, o.tree, Ref{id})
+		outcome, err = o.tree.wait(context.Background(), selected, 3000)
+		if err != nil || outcome.State != Completed || outcome.Text != "ALLOWED_WITH_HOST_TRUST_FALSE" {
+			t.Fatalf("host trust added a resume permission gate: %#v %v", outcome, err)
+		}
+		o.tree.acknowledge(selected)
+	}, func(method string, raw json.RawMessage) json.RawMessage { return host.call(t, method, raw) })
+	contents, err := os.ReadFile(filepath.Join(directory, "allowed.txt"))
+	if err != nil || string(contents) != "allowed by the tool list" {
+		t.Fatalf("allowed native tool did not execute with host trust false: %q %v", contents, err)
+	}
+}
+
+func TestOwnerRetirementDuringRecoveryCannotPublishAStaleTree(t *testing.T) {
+	t.Setenv("PIG_OFFLINE", "1")
+	t.Setenv("PIG_CODING_AGENT_DIR", t.TempDir())
+	tree := testTree(t, defaultConfig())
+	entered, release := make(chan struct{}), make(chan struct{})
+	withCompletionHost(t, tree, func(previous *owner) {
+		state := &extensionState{}
+		done := make(chan error, 1)
+		go func() { _, err := state.ensure(previous.context); done <- err }()
+		<-entered
+		state.mu.Lock()
+		published := state.owner != nil
+		state.mu.Unlock()
+		state.retire()
+		close(release)
+		err := <-done
+		if published || err == nil || err.(*treeError).code != "unavailable" {
+			t.Fatalf("recovery exposed or published a retired tree: published=%t error=%v", published, err)
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if state.owner != nil {
+			t.Fatal("retired initialization left an owner installed")
+		}
+	}, func(method string, raw json.RawMessage) json.RawMessage {
+		if method != "sessionRead" {
+			t.Fatalf("unexpected recovery host call %s", method)
+		}
+		var request struct{ Method string }
+		if err := json.Unmarshal(raw, &request); err != nil {
+			t.Fatal(err)
+		}
+		if request.Method == "getSessionId" {
+			return json.RawMessage(`"fixture"`)
+		}
+		if request.Method == "getEntries" {
+			close(entered)
+			<-release
+			return json.RawMessage(`[]`)
+		}
+		t.Fatalf("unexpected recovery read %s", request.Method)
+		return nil
 	})
 }

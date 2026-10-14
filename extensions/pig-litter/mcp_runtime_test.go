@@ -31,7 +31,13 @@ func TestNativeMCPToolsKeepRootCeilingAcrossCodemodeSearchAndResume(t *testing.T
 	}
 	var callsMu sync.Mutex
 	calls := map[string]int{}
+	var closed atomic.Int32
 	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodDelete {
+			closed.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if request.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -56,6 +62,7 @@ func TestNativeMCPToolsKeepRootCeilingAcrossCodemodeSearchAndResume(t *testing.T
 		var result any
 		switch rpc.Method {
 		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "native-fixture")
 			result = map[string]any{"protocolVersion": rpc.Params.ProtocolVersion, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "fixture", "version": "1"}}
 		case "tools/list":
 			tools := []map[string]any{}
@@ -101,13 +108,23 @@ func TestNativeMCPToolsKeepRootCeilingAcrossCodemodeSearchAndResume(t *testing.T
 			Tools []struct {
 				Function struct{ Name string } `json:"function"`
 			} `json:"tools"`
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
 		}
 		_ = json.Unmarshal(body, &declared)
+		searchDeclared := false
 		for _, tool := range declared.Tools {
+			searchDeclared = searchDeclared || tool.Function.Name == "mcp__docs__search"
 			if tool.Function.Name == "mcp__docs__blocked" || tool.Function.Name == "mcp__docs__late" {
 				failure := "root-excluded MCP tool was declared before deferred discovery"
 				providerFailure.Store(&failure)
 			}
+		}
+		if number <= 4 && searchDeclared || number == 5 && !searchDeclared {
+			failure := "deferred MCP declaration did not follow tool_search discovery"
+			providerFailure.Store(&failure)
 		}
 		switch number {
 		case 1:
@@ -127,6 +144,12 @@ func TestNativeMCPToolsKeepRootCeilingAcrossCodemodeSearchAndResume(t *testing.T
 		case 4:
 			runtimeToolAnswer(w, "allowed-search", "tool_search", map[string]any{"query": "search"})
 		case 5:
+			var result string
+			last := declared.Messages[len(declared.Messages)-1]
+			if last.Role != "tool" || json.Unmarshal(last.Content, &result) != nil || !strings.Contains(result, "mcp__docs__search") || strings.Contains(result, "mcp__docs__blocked") {
+				failure := "tool_search did not return the allowed deferred MCP tool"
+				providerFailure.Store(&failure)
+			}
 			runtimeToolAnswer(w, "direct", "mcp__docs__search", map[string]any{})
 		case 6:
 			runtimeAnswer(w, "native MCP/codemode/search ceilings verified")
@@ -179,7 +202,7 @@ func TestNativeMCPToolsKeepRootCeilingAcrossCodemodeSearchAndResume(t *testing.T
 	if failure := providerFailure.Load(); failure != nil {
 		t.Fatal(*failure)
 	}
-	if !skillSeen.Load() || calls["search"] != 2 || calls["late"] != 1 || calls["blocked"] != 0 {
-		t.Fatalf("native skill/MCP behavior changed: skill=%t calls=%v", skillSeen.Load(), calls)
+	if !skillSeen.Load() || calls["search"] != 2 || calls["late"] != 1 || calls["blocked"] != 0 || closed.Load() != 2 {
+		t.Fatalf("native skill/MCP behavior changed: skill=%t calls=%v closed=%d", skillSeen.Load(), calls, closed.Load())
 	}
 }

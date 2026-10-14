@@ -108,13 +108,6 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		}
 	}
 	if name == "litter_spawn" {
-		trusted, err := o.context.IsProjectTrusted()
-		if err != nil {
-			return nil, err
-		}
-		if !trusted {
-			return nil, reject("permission_denied", "project trust was revoked")
-		}
 		base := o.cwd
 		if parent != nil {
 			base = parent.cwd
@@ -242,13 +235,6 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		}
 		if args.Resume {
 			mode = "resume"
-			trusted, err := o.context.IsProjectTrusted()
-			if err != nil {
-				return nil, err
-			}
-			if !trusted {
-				return nil, reject("permission_denied", "project trust was revoked")
-			}
 			o.tree.mu.Lock()
 			target, err := o.tree.currentLocked(selected)
 			var model string

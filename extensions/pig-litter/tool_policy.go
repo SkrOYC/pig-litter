@@ -3,6 +3,7 @@ package piglitter
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path"
 	"slices"
@@ -71,7 +72,7 @@ func (o *owner) rootToolNames() ([]string, error) {
 	return names, nil
 }
 
-func waitForChildTools(ctx context.Context, session *coding.Session, allowed map[string]struct{}) error {
+func waitForChildToolStartup(ctx context.Context, session *coding.Session, allowed map[string]struct{}) []string {
 	pending := map[string]struct{}{}
 	for name := range allowed {
 		if strings.HasPrefix(name, "mcp__") {
@@ -94,9 +95,9 @@ func waitForChildTools(ctx context.Context, session *coding.Session, allowed map
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return slices.Sorted(maps.Keys(pending))
 		case <-timer.C:
-			return nil
+			return slices.Sorted(maps.Keys(pending))
 		case <-ticker.C:
 		}
 	}

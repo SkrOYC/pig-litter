@@ -103,13 +103,7 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		epoch = s.epoch
 		s.mu.Unlock()
 	}
-	trusted, err := ctx.IsProjectTrusted()
-	if err != nil {
-		return nil, err
-	}
-	if !trusted {
-		return nil, reject("permission_denied", "Pig Litter requires a trusted project")
-	}
+	trusted := true
 	cwd := ctx.Cwd()
 	if cwd == "" {
 		return nil, reject("unavailable", "the project directory is unavailable")
@@ -127,6 +121,12 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 	tree.root.id = ChildID(id)
 	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 	tree.execute, tree.completion, tree.changed = o.executeRun, o.sendCompletion, o.widget
+	if err := o.restoreChildren(); err != nil {
+		tree.close()
+		services.Close()
+		return nil, err
+	}
+	tree.persist = o.persistChild
 	s.mu.Lock()
 	if s.epoch != epoch {
 		s.mu.Unlock()
@@ -140,11 +140,7 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		s.retire()
 		return nil, err
 	}
-	if err := o.restoreChildren(); err != nil {
-		s.retire()
-		return nil, err
-	}
-	tree.persist = o.persistChild
+	o.widget()
 	go o.recoverCompletions()
 	return o, nil
 }
@@ -309,14 +305,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = err.Error()
 		return
 	}
-	trusted, err := o.context.IsProjectTrusted()
-	if err != nil || !trusted {
-		outcome.Error = "project trust was revoked"
-		if err != nil {
-			outcome.Error = err.Error()
-		}
-		return
-	}
+	trusted := true
 	if err := o.saveChild(r); err != nil {
 		outcome.State = Unavailable
 		outcome.Error = err.Error()
@@ -423,10 +412,13 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		}
 	}()
 	bindErr := session.BindExtensions(run.ctx)
+	var pendingTools []string
 	if bindErr == nil {
-		bindErr = waitForChildTools(run.ctx, session, allowed)
+		pendingTools = waitForChildToolStartup(run.ctx, session, allowed)
+		bindErr = run.ctx.Err()
 	}
 	if bindErr != nil {
+		session.EmitSessionShutdown("quit")
 		_ = session.Close()
 		<-eventDrain
 		r.deliveryMu.Unlock()
@@ -524,6 +516,9 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		}
 	}()
 	baseline := session.GetSessionStats()
+	if len(pendingTools) != 0 {
+		session.QueueSteer("<system-notice>\nSome allowed tools are still connecting: "+strings.Join(pendingTools, ", ")+". They can become available during this run.\n</system-notice>", nil)
+	}
 	sendErr := o.tree.sendInput(session, run)
 	stopDelivery()
 	<-deliveryDone
@@ -533,6 +528,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	run.disposing = true
 	run.session = nil
 	run.mu.Unlock()
+	session.EmitSessionShutdown("quit")
 	if err := session.Close(); err != nil {
 		observedMu.Lock()
 		failure = "child cleanup failed: " + err.Error()
