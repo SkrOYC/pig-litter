@@ -141,7 +141,15 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		return nil, err
 	}
 	o.widget()
-	go o.recoverCompletions()
+	tree.mu.Lock()
+	if !tree.closed {
+		tree.completionWG.Add(1)
+		go func() {
+			defer tree.completionWG.Done()
+			o.recoverCompletions()
+		}()
+	}
+	tree.mu.Unlock()
 	return o, nil
 }
 

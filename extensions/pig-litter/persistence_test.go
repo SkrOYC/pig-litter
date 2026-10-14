@@ -13,7 +13,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding"
 )
 
@@ -429,6 +431,77 @@ func TestOwnerRetirementDuringRecoveryCannotPublishAStaleTree(t *testing.T) {
 			return json.RawMessage(`[]`)
 		}
 		t.Fatalf("unexpected recovery read %s", request.Method)
+		return nil
+	})
+}
+
+func TestRetirementJoinsRecoveredCompletionDelivery(t *testing.T) {
+	t.Setenv("PIG_OFFLINE", "1")
+	t.Setenv("PIG_CODING_AGENT_DIR", t.TempDir())
+	id, err := ai.UUIDv7(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome := Outcome{Run: Ref{ChildID(id)}, State: Completed, Model: "fixture/child", Text: "RECOVERED_NOTICE"}
+	saved := savedChild{RootID: "fixture", ID: ChildID(id), ParentID: "fixture", Name: "recovered", Kind: "scout", Model: "fixture/child", Cwd: t.TempDir(), Tools: []string{"read", "ls"}, ReadOnly: true, Admitted: true, State: Completed, NoticeID: "recovered-receipt", Latest: &outcome, Notices: []savedNotice{{Nonce: "recovered-receipt", Outcome: outcome}}}
+	entries := []map[string]any{{"id": "metadata", "type": "custom", "customType": childEntryType, "data": saved}}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var stored atomic.Bool
+	tree := testTree(t, defaultConfig())
+	withCompletionHost(t, tree, func(previous *owner) {
+		state := &extensionState{}
+		o, err := state.ensure(previous.context)
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-entered
+		retired := make(chan struct{})
+		go func() { state.retire(); close(retired) }()
+		select {
+		case <-retired:
+			t.Error("owner retired before recovered completion storage finished")
+		case <-time.After(20 * time.Millisecond):
+		}
+		close(release)
+		<-retired
+		if !stored.Load() {
+			t.Fatal("owner retirement lost recovered completion storage")
+		}
+		o.tree.mu.Lock()
+		defer o.tree.mu.Unlock()
+		if len(o.tree.pending) != 0 {
+			t.Fatal("owner retirement retained an unresolved delivery")
+		}
+	}, func(method string, raw json.RawMessage) json.RawMessage {
+		switch method {
+		case "sessionRead":
+			var request struct{ Method string }
+			if err := json.Unmarshal(raw, &request); err != nil {
+				t.Fatal(err)
+			}
+			if request.Method == "getSessionId" {
+				return json.RawMessage(`"fixture"`)
+			}
+			if request.Method == "getEntries" {
+				data, _ := json.Marshal(entries)
+				return data
+			}
+		case "isIdle":
+			return json.RawMessage(`{"idle":true}`)
+		case "sendMessage":
+			var request struct {
+				Message map[string]any `json:"message"`
+			}
+			if err := json.Unmarshal(raw, &request); err != nil {
+				t.Fatal(err)
+			}
+			close(entered)
+			<-release
+			entries = append(entries, map[string]any{"id": "recovered-message", "type": "message", "message": request.Message})
+			stored.Store(true)
+			return json.RawMessage(`{}`)
+		}
+		t.Fatalf("unexpected recovered-delivery host call %s", method)
 		return nil
 	})
 }
