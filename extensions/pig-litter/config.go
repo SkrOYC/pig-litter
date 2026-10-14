@@ -52,7 +52,7 @@ func agentDefaults(role string) (AgentDefinition, bool) {
 func defaultConfig() Config {
 	scout, _ := agentDefaults("scout")
 	worker, _ := agentDefaults("worker")
-	return Config{Concurrency: 4, Depth: 2, MaxRecords: 64, MaxHistoryBytes: 1024 * 1024, MaxResultBytes: 8192, MaxMailbox: 8, MaxTurns: 20,
+	return Config{Concurrency: 4, Depth: 2, MaxRecords: 64, MaxHistoryBytes: 1024 * 1024, MaxResultBytes: 50000, MaxMailbox: 8, MaxTurns: 20,
 		Agents: map[string]AgentDefinition{"scout": scout, "worker": worker},
 	}
 }

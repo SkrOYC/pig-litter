@@ -16,7 +16,6 @@ import (
 	"github.com/MichaelKinsy/PiG/tui/widthx"
 )
 
-var hostToolNames = []string{"read", "ls", "write", "edit", "bash"}
 var controlNames = []string{"litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
 var descriptions = map[string]string{
 	"litter_spawn":   "Start a background child. Use litter_list to discover named agent types.",
@@ -231,8 +230,10 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		o.beginOutcomeAck(key, selected, name, toolContext)
 		outcome, count, err := o.tree.stop(caller, selected)
 		o.readyOutcomeAck(key, err == nil && outcome != nil && outcome.State.terminal())
-		state := Paused
-		return map[string]any{"state": state, "outcome": outcome, "stoppedCount": count}, err
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"state": outcome.State, "outcome": outcome, "stoppedCount": count}, nil
 	}
 	if name == "litter_message" {
 		mode := args.Mode
@@ -306,27 +307,21 @@ func resultContent(operation string, value map[string]any, err error) (string, b
 	if value == nil {
 		value = map[string]any{}
 	}
-	if operation != "litter_inspect" || err != nil {
-		value["operation"] = operation
-	}
+	value["operation"] = operation
 	clipped := false
 	if outcome, ok := value["outcome"].(*Outcome); ok && outcome != nil {
-		copy := *outcome
-		copy.Text, clipped = bounded(copy.Text, 8192)
-		copy.HandbackTruncated = copy.HandbackTruncated || clipped
-		value["outcome"] = &copy
+		clipped = outcome.HandbackTruncated
 	}
 	if report, ok := value["report"].(string); ok {
 		var truncated bool
 		value["report"], truncated = bounded(report, 1024)
 		clipped = clipped || truncated
 	}
-	if operation != "litter_inspect" || err != nil {
-		value["handbackTruncated"] = clipped
-	}
+	value["handbackTruncated"] = clipped
 	data, marshalErr := json.Marshal(value)
 	if marshalErr != nil {
-		return `{"state":"failed","code":"failed","report":"cannot encode child result","handbackTruncated":false}`, true
+		fallback, _ := json.Marshal(map[string]any{"operation": operation, "state": "failed", "code": "failed", "report": "cannot encode child result", "handbackTruncated": false})
+		return string(fallback), true
 	}
 	return string(data), failed
 }
