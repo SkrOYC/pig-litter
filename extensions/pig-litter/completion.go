@@ -272,15 +272,26 @@ func (o *owner) completionEntries(parent ChildID) ([]json.RawMessage, error) {
 	}
 	o.tree.mu.Lock()
 	r := o.tree.records[parent]
-	var manager *coding.SessionManager
+	var active *coding.SessionManager
 	if r != nil {
-		manager = r.history
+		active = r.activeLog
 	}
 	o.tree.mu.Unlock()
-	if manager == nil {
-		return nil, reject("unavailable", "parent retained history is unavailable")
+	if r == nil {
+		return nil, reject("unavailable", "parent UUID is unavailable")
 	}
-	return rawEntries(manager.Entries())
+	if active != nil {
+		return rawEntries(active.Entries())
+	}
+	r.deliveryMu.Lock()
+	defer r.deliveryMu.Unlock()
+	var entries []json.RawMessage
+	err := o.withChildLogLocked(r, func(log *coding.SessionManager) error {
+		var err error
+		entries, err = rawEntries(log.Entries())
+		return err
+	})
+	return entries, err
 }
 
 func rawEntries(entries any) ([]json.RawMessage, error) {
@@ -326,28 +337,19 @@ func (o *owner) storeRetained(parentID ChildID, details completionDetails, conte
 	}
 	o.tree.mu.Lock()
 	parent := o.tree.records[parentID]
-	var manager *coding.SessionManager
-	if parent != nil {
-		manager = parent.history
-	}
 	o.tree.mu.Unlock()
-	if manager == nil {
-		return reject("unavailable", "parent retained history is unavailable")
+	if parent == nil {
+		return reject("unavailable", "parent UUID is unavailable")
 	}
-	var err error
-	if audit {
-		_, err = manager.AppendCustomEntry("litter_completion", json.RawMessage(content))
-	} else {
-		_, err = manager.AppendCustomMessage("litter_completion", content, false, details)
-	}
-	if err != nil {
+	return o.withChildLogLocked(parent, func(log *coding.SessionManager) error {
+		var err error
+		if audit {
+			_, err = log.AppendCustomEntry("litter_completion", json.RawMessage(content))
+		} else {
+			_, err = log.AppendCustomMessage("litter_completion", content, false, details)
+		}
 		return err
-	}
-	if historyBytes(manager) > o.config.MaxHistoryBytes {
-		o.tree.retireHistory(parent)
-		return reject("unavailable", "parent retained history cannot fit the child completion")
-	}
-	return nil
+	})
 }
 
 func (o *owner) auditCompletion(selected *run) error {
@@ -511,11 +513,7 @@ func (o *owner) deliverRetained(parent *record, details completionDetails, conte
 	}
 	o.tree.mu.Lock()
 	current := parent.run
-	manager := parent.history
 	o.tree.mu.Unlock()
-	if manager == nil {
-		return reject("unavailable", "parent retained history is unavailable")
-	}
 	current.mu.Lock()
 	session := current.session
 	current.mu.Unlock()

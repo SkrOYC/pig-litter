@@ -18,8 +18,10 @@ func (t *Tree) sendInput(session *coding.Session, selected *run) error {
 		t.mu.Lock()
 		if node := t.records[selected.ref.ID]; node != nil && node.run == selected {
 			node.pendingTask = ""
+			t.dirty[node.id] = node
 		}
 		t.mu.Unlock()
+		t.notify()
 		return nil
 	})
 	defer unsubscribe()

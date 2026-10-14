@@ -24,3 +24,15 @@ func TestEveryResultOperationReturnsEnvelopeAndFiftyKBReport(t *testing.T) {
 		}
 	}
 }
+
+func TestLongSoftTurnBudgetAndRemovedLimits(t *testing.T) {
+	config, err := ParseConfig([]byte("depth: 3\nconcurrency: 6\nmax_turns: 1000000\nmax_result_bytes: 50000\n"))
+	if err != nil || config.Depth != 3 || config.Concurrency != 6 || config.MaxTurns != 1000000 || config.MaxResultBytes != 50000 {
+		t.Errorf("long soft budget rejected or settings lost: %#v %v", config, err)
+	}
+	for _, key := range []string{"max_records", "max_history_bytes"} {
+		if _, err := ParseConfig([]byte(key + ": 1024\n")); err == nil {
+			t.Errorf("accepted removed setting %s", key)
+		}
+	}
+}

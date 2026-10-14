@@ -54,10 +54,7 @@ func testRootCompletionRecovery(t *testing.T, clearQueue, consumed bool) {
 		t.Fatal(err)
 	}
 	defer services.Close()
-	manager, err := coding.NewInMemorySessionManager(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
+	var manager *coding.SessionManager
 	config := defaultConfig()
 	config.MaxMailbox = 1
 	tree := testTree(t, config)
@@ -94,10 +91,11 @@ func testRootCompletionRecovery(t *testing.T, clearQueue, consumed bool) {
 			t.Fatal(err)
 		}
 		defer runtime.Close()
-		session, err = runtime.New(coding.SessionStartOptions{SessionManager: manager, Model: services.ModelRuntime().GetModel("fixture", "parent"), ResourceLoader: coding.NoResources, AllowedTools: map[string]struct{}{}})
+		session, err = runtime.New(coding.SessionStartOptions{SessionDir: filepath.Join(directory, "sessions"), Model: services.ModelRuntime().GetModel("fixture", "parent"), ResourceLoader: coding.NoResources, AllowedTools: map[string]struct{}{}})
 		if err != nil {
 			t.Fatal(err)
 		}
+		manager = session.SessionManager()
 		defer session.Close()
 		go func() {
 			for event := range session.Events() {

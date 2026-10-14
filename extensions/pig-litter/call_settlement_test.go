@@ -103,7 +103,7 @@ func TestCapturedCallbackCannotSettleReusedIDInANewTurn(t *testing.T) {
 
 func TestNestedHandbackConsumptionUsesCapturedTicketAndFinalContent(t *testing.T) {
 	tree := testTree(t, defaultConfig())
-	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read"}, CanDelegate: true}
+	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read", "ls"}, CanDelegate: true}
 	parent := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
 	child := testAdmission(t, tree, parent.Ref, "scout", "child")
 	caller, selected := testRun(t, tree, parent.Ref), testRun(t, tree, child.Ref)
@@ -174,7 +174,7 @@ func TestRootRunSettlementAndAbortHaveDifferentEffects(t *testing.T) {
 
 func TestFailedAdmissionReleasesNameRecordAndMailbox(t *testing.T) {
 	config := defaultConfig()
-	config.Concurrency, config.MaxRecords, config.MaxMailbox = 1, 1, 1
+	config.Concurrency, config.MaxMailbox = 1, 1
 	tree := testTree(t, config)
 	o := testCallOwner(tree)
 	for range 3 {

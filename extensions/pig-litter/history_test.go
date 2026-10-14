@@ -15,7 +15,7 @@ import (
 	"github.com/MichaelKinsy/PiG/coding"
 )
 
-func TestNativeSessionConstructionHistoryFitsTheDefaultBudget(t *testing.T) {
+func TestNativeSessionResourcesAndTranscriptSurviveResume(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PIG_OFFLINE", "1")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -44,10 +44,6 @@ func TestNativeSessionConstructionHistoryFitsTheDefaultBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer runtime.Close()
-	manager, err := coding.NewInMemorySessionManager(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
 	tools := []agent.AgentTool{}
 	for _, name := range controlNames {
 		tools = append(tools, &nativeTool{name: name, schema: schemas[name], execute: func(context.Context, string, json.RawMessage) (agent.AgentToolResult, error) {
@@ -58,7 +54,8 @@ func TestNativeSessionConstructionHistoryFitsTheDefaultBudget(t *testing.T) {
 	if err := loader.Reload(); err != nil {
 		t.Fatal(err)
 	}
-	session, err := runtime.New(coding.SessionStartOptions{SessionManager: manager, Model: services.ModelRuntime().GetModel("fixture", "child"), ResourceLoader: loader, ExtraTools: tools, AllowedTools: map[string]struct{}{"read": {}}})
+	options := coding.SessionStartOptions{SessionDir: filepath.Join(dir, "sessions"), Model: services.ModelRuntime().GetModel("fixture", "child"), ResourceLoader: loader, ExtraTools: tools, AllowedTools: map[string]struct{}{"read": {}}}
+	session, err := runtime.New(options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,17 +69,29 @@ func TestNativeSessionConstructionHistoryFitsTheDefaultBudget(t *testing.T) {
 	if !strings.Contains(prompt, "CHILD_DIRECTORY_CONTEXT") || !strings.Contains(prompt, "input.txt") || strings.Contains(prompt, "DO_NOT_USE_THIS_FILE_AS_INSTRUCTIONS") {
 		t.Fatalf("native prompt lost directory context or literal role instructions: %s", prompt)
 	}
-	size := historyBytes(manager)
-	if size == 0 || size > defaultConfig().MaxHistoryBytes {
-		t.Fatalf("native construction history exceeded the default budget: %d bytes", size)
-	}
 	if _, err := session.Send(context.Background(), "short task"); err != nil {
 		t.Fatal(err)
 	}
 	if report := session.LastAssistantText(); report == nil || *report != "short response" {
 		t.Fatalf("native Send did not settle: %v", report)
 	}
-	if size := historyBytes(manager); size > defaultConfig().MaxHistoryBytes {
-		t.Fatalf("short native turn exceeded the default budget: %d", size)
+	id := session.ID()
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := runtime.Resume(id, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	entries, err := json.Marshal(resumed.SessionManager().Entries())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.ID() != id || !strings.Contains(string(entries), "short task") || !strings.Contains(string(entries), "short response") {
+		t.Fatalf("native UUID resume lost its transcript: id=%q entries=%s", resumed.ID(), entries)
+	}
+	if prompt := resumed.SystemPrompt(); !strings.Contains(prompt, "CHILD_DIRECTORY_CONTEXT") || !strings.Contains(prompt, "input.txt") || strings.Contains(prompt, "DO_NOT_USE_THIS_FILE_AS_INSTRUCTIONS") {
+		t.Fatalf("native resume lost directory context or literal role instructions: %s", prompt)
 	}
 }

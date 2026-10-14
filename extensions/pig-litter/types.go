@@ -2,7 +2,6 @@ package piglitter
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 
 	"github.com/MichaelKinsy/PiG/coding"
@@ -83,8 +82,8 @@ type record struct {
 	pendingTask                          string
 	tools                                []string
 	canDelegate, readOnly                bool
-	history                              *coding.SessionManager
-	historyLost                          bool
+	admitted                             bool
+	activeLog                            *coding.SessionManager
 	run                                  *run
 	previous                             *run
 	paused                               bool
@@ -113,7 +112,9 @@ type run struct {
 	started         bool
 	outcome         *Outcome
 	prompt          string
+	continuation    string
 	resumePaused    bool
+	resume          bool
 	mailbox         chan message
 	mu              sync.Mutex
 	calls           *callScope
@@ -140,17 +141,6 @@ func bounded(text string, maximum int) (string, bool) {
 		end--
 	}
 	return text[:end], true
-}
-
-func historyBytes(manager *coding.SessionManager) int {
-	if manager == nil {
-		return 0
-	}
-	data, err := json.Marshal(manager.Entries())
-	if err != nil {
-		return int(^uint(0) >> 1)
-	}
-	return len(data)
 }
 
 func (r Ref) String() string { return string(r.ID) }

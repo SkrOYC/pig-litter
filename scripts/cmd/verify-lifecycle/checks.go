@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -19,12 +20,12 @@ var childChecks = []childCheck{
 	{"toolFailure", "scout", "missing_file", "missing-file", "partial", "tool read failed", false},
 	{"readonlyDelegation", "scout", "roles", "role-ceiling", "completed", "", true},
 	{"namedScoutCannotDelegate", "custom_scout", "roles", "named-role-ceiling", "completed", "", true},
-	{"historyRetired", "scout", "history", "oversized-history", "partial", "retained child history exceeded", false},
+	{"nativeHistoryRetained", "scout", "history", "oversized-history", "completed", "", false},
 }
 
 func validScenario(name string) bool {
 	switch name {
-	case "core", "cwd", "nested", "checks", "admission", "messages", "lifecycle", "pause", "completion", "shadow", "unbounded", "codemode":
+	case "core", "cwd", "nested", "checks", "admission", "messages", "lifecycle", "pause", "completion", "shadow", "unbounded", "codemode", "persistence":
 		return true
 	}
 	return false
@@ -91,7 +92,7 @@ func (f *fixture) parentChecks(body modelRequest) (string, []call, error) {
 			return "", nil, fmt.Errorf("%s outcome is %s with %q, want %s and %q", check.name, latest.State, latest.Outcome.Error, check.state, check.errorText)
 		}
 		if check.model == "history" && (latest.Outcome.Run.ID != f.worker.ID || !latest.Outcome.Truncated || len(latest.Outcome.Text) > 256) {
-			return "", nil, errors.New("over-budget history did not return a bounded partial outcome for the same child")
+			return "", nil, errors.New("large native history did not return a bounded completed outcome for the same child")
 		}
 		if check.noControlsObserved {
 			f.mu.Lock()
@@ -106,7 +107,7 @@ func (f *fixture) parentChecks(body modelRequest) (string, []call, error) {
 		f.mu.Unlock()
 		if check.model == "history" {
 			f.stage = 5
-			return "", []call{{"litter_message", with(f.worker, "resume", true, "text", "must not recreate history")}}, nil
+			return "", []call{{"litter_message", with(f.worker, "resume", true, "text", "CONTINUE_NATIVE_HISTORY")}}, nil
 		}
 		f.runs = append(f.runs, f.worker)
 		f.stage = 2
@@ -114,10 +115,27 @@ func (f *fixture) parentChecks(body modelRequest) (string, []call, error) {
 	}
 	if f.stage == 5 {
 		latest := tools[len(tools)-1]
-		if latest.State != "unavailable" || !strings.Contains(latest.Report, "retained history is unavailable") {
-			return "", nil, errors.New("over-budget history resumed")
+		if latest.State != "starting" || latest.Child.ID != f.worker.ID || latest.Delivery != "resumed" {
+			return "", nil, errors.New("large native conversation did not resume by UUID")
 		}
-		f.checks["historyResumeUnavailable"] = true
+		f.stage = 6
+		return "", []call{{"litter_wait", with(f.worker, "timeoutMs", 10000)}}, nil
+	}
+	if f.stage == 6 {
+		latest := tools[len(tools)-1]
+		if latest.State != "completed" || latest.Outcome.Run.ID != f.worker.ID || latest.Outcome.Text != "persisted conversation resumed after a large result" {
+			return "", nil, errors.New("native conversation resume lost its result")
+		}
+		f.checks["nativeHistoryResumed"] = true
+		f.stage = 7
+		return "", []call{{"litter_stop", with(f.worker)}}, nil
+	}
+	if f.stage == 7 {
+		latest := tools[len(tools)-1]
+		if latest.State != "completed" || latest.Outcome.State != "completed" || latest.StoppedCount != 0 || latest.Outcome.Run.ID != f.worker.ID {
+			return "", nil, errors.New("stop changed an already completed native outcome")
+		}
+		f.checks["completedStopOutcome"] = true
 		f.runs = append(f.runs, f.worker)
 		f.stage = 2
 		return f.parentChecks(body)
@@ -185,6 +203,13 @@ func (f *fixture) checkedChild(ctx context.Context, body modelRequest) (string, 
 		f.mu.Unlock()
 		return "scout native read-only tools verified", nil, nil
 	case "history":
+		if strings.Contains(user, "CONTINUE_NATIVE_HISTORY") {
+			encoded, _ := json.Marshal(body.Messages)
+			if !strings.Contains(string(encoded), "large retained history") {
+				return "", nil, errors.New("native resume lost the previous large assistant message")
+			}
+			return "persisted conversation resumed after a large result", nil, nil
+		}
 		return strings.Repeat("large retained history ", 4000), nil, nil
 	case "message_child":
 		if strings.Contains(user, "THIRD_OVERFLOW") {

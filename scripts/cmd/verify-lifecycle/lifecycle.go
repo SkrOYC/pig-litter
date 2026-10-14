@@ -53,7 +53,7 @@ func (f *fixture) parentLifecycle(ctx context.Context, body modelRequest) (strin
 			f.stage = 1
 			return "", []call{{"litter_list", map[string]any{}}, {"litter_inspect", map[string]any{"id": f.runs[0].ID}}}, nil
 		}
-		if f.stage != 1 || len(tools) != 2 || len(tools[0].Children) != 0 || tools[1].State != "rejected" {
+		if f.stage != 1 || len(tools) != 2 || len(tools[0].Children) != 0 || tools[1].State != "unavailable" {
 			return "", nil, errors.New("replacement retained old children or retargeted an old ID")
 		}
 		f.stage = 2

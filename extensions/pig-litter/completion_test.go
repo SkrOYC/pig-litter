@@ -517,7 +517,7 @@ func TestIdenticalCompletionsRequireNewSDKEntries(t *testing.T) {
 	first := &run{ref: Ref{"child:1"}, noticeID: "first-receipt"}
 	second := &run{ref: first.ref, noticeID: "second-receipt"}
 	child := &record{id: first.ref.ID, run: first}
-	tree := &Tree{ctx: context.Background(), root: &record{}, records: map[ChildID]*record{child.id: child}, pending: map[*run]*reservation{first: {nonce: first.noticeID}, second: {nonce: second.noticeID}}}
+	tree := &Tree{ctx: context.Background(), root: &record{}, records: map[ChildID]*record{child.id: child}, pending: map[*run]*reservation{first: {nonce: first.noticeID}, second: {nonce: second.noticeID}}, dirty: map[ChildID]*record{}}
 	var o *owner
 	ext := sdk.New("repeated-completion-test")
 	ext.OnEvent("exercise", func(ctx sdk.Context, data map[string]any) (any, error) {
@@ -651,14 +651,11 @@ func testNestedCompletion(t *testing.T, parentState string) {
 		t.Fatal(err)
 	}
 	defer runtime.Close()
-	manager, err := coding.NewInMemorySessionManager(dir)
+	session, err := runtime.New(coding.SessionStartOptions{SessionDir: filepath.Join(dir, "sessions"), Model: services.ModelRuntime().GetModel("fixture", "child"), SystemPrompt: "fixture", ResourceLoader: coding.NoResources, SkipBuiltinTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := runtime.New(coding.SessionStartOptions{SessionManager: manager, Model: services.ModelRuntime().GetModel("fixture", "child"), SystemPrompt: "fixture", ResourceLoader: coding.NoResources, SkipBuiltinTools: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	manager := session.SessionManager()
 	defer session.Close()
 	go func() {
 		for event := range session.Events() {
@@ -683,11 +680,11 @@ func testNestedCompletion(t *testing.T, parentState string) {
 	treeContext, cancelTree := context.WithCancel(context.Background())
 	defer cancelTree()
 	selected := &run{ref: Ref{"child"}}
-	parent := &record{id: "parent", run: parentRun, history: manager, receipts: map[*run]*completionReceipt{unrelated: unrelatedReceipt}}
+	parent := &record{id: "parent", run: parentRun, activeLog: manager, receipts: map[*run]*completionReceipt{unrelated: unrelatedReceipt}}
 	parentRun.owner = parent
 	child := &record{id: "child", parent: parent, run: selected}
 	selected.owner = child
-	tree := &Tree{ctx: treeContext, records: map[ChildID]*record{"child": child, "parent": parent}, pending: map[*run]*reservation{selected: {parent: "parent", outcomeObserved: parentState == "consumed"}}}
+	tree := &Tree{ctx: treeContext, records: map[ChildID]*record{"child": child, "parent": parent}, pending: map[*run]*reservation{selected: {parent: "parent", outcomeObserved: parentState == "consumed"}}, dirty: map[ChildID]*record{}}
 	entered, release := make(chan struct{}), make(chan struct{})
 	var o *owner
 	unsubscribe := session.Subscribe(func(event agent.AgentEvent) {

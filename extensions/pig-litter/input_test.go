@@ -49,13 +49,10 @@ func testPendingInitialTask(t *testing.T, interruption string) {
 		t.Fatal(err)
 	}
 	defer services.Close()
-	manager, err := coding.NewInMemorySessionManager(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
+	var manager *coding.SessionManager
 	tree := testTree(t, defaultConfig())
 	task := "Inspect ORIGINAL_TASK_BEFORE_NATIVE_SEND and report its contents."
-	snapshot, initial, err := tree.admit(admission{kind: "scout", name: "retained task", model: "fixture/child", cwd: directory, task: task, agent: tree.config.Agents["scout"], history: manager})
+	snapshot, initial, err := tree.admit(admission{kind: "scout", name: "retained task", model: "fixture/child", cwd: directory, task: task, agent: tree.config.Agents["scout"]})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,10 +71,24 @@ func testPendingInitialTask(t *testing.T, interruption string) {
 			return Outcome{State: Failed, Error: err.Error()}
 		}
 		defer runtime.Close()
-		session, err := runtime.New(coding.SessionStartOptions{SessionManager: node.history, Model: services.ModelRuntime().GetModel("fixture", "child"), SystemPrompt: "Probe retained session.", ResourceLoader: coding.NoResources, AllowedTools: map[string]struct{}{}})
+		options := coding.SessionStartOptions{SessionDir: filepath.Join(directory, "sessions"), Model: services.ModelRuntime().GetModel("fixture", "child"), SystemPrompt: "Probe retained session.", ResourceLoader: coding.NoResources, AllowedTools: map[string]struct{}{}}
+		var session *coding.Session
+		if execution.resume {
+			session, err = runtime.Resume(string(node.id), options)
+			if err == nil {
+				execution.prompt = execution.continuation
+			} else if node.pendingTask != "" {
+				options.SessionID = string(node.id)
+				session, err = runtime.New(options)
+			}
+		} else {
+			options.SessionID = string(node.id)
+			session, err = runtime.New(options)
+		}
 		if err != nil {
 			return Outcome{State: Failed, Error: err.Error()}
 		}
+		manager = session.SessionManager()
 		drained := make(chan struct{})
 		go func() {
 			defer close(drained)

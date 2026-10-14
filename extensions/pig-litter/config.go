@@ -24,22 +24,19 @@ type AgentDefinition struct {
 }
 
 type Config struct {
-	Concurrency     int
-	Depth           int
-	MaxRecords      int
-	MaxHistoryBytes int
-	MaxResultBytes  int
-	MaxMailbox      int
-	MaxTurns        int
-	Agents          map[string]AgentDefinition
+	Concurrency    int
+	Depth          int
+	MaxResultBytes int
+	MaxMailbox     int
+	MaxTurns       int
+	Agents         map[string]AgentDefinition
 }
 
 var roleDefaults = map[string]AgentDefinition{
-	"scout":  {Role: "scout", Instructions: "Inspect files for the task. Do not change files. Report relevant paths and uncertainty.", Tools: []string{"read"}},
-	"worker": {Role: "worker", Instructions: "Complete the task with permitted tools. Preserve unrelated changes. Report changes and checks.", Tools: []string{"read", "write", "edit", "bash"}, CanDelegate: true},
+	"scout":  {Role: "scout", Instructions: "Inspect files for the task. Do not change files. Report relevant paths and uncertainty.", Tools: []string{"read", "ls"}},
+	"worker": {Role: "worker", Instructions: "Complete the task with permitted tools. Preserve unrelated changes. Report changes and checks.", Tools: []string{"read", "ls", "write", "edit", "bash", "skill:*", "mcp__*", "codemode", "tool_search"}, CanDelegate: true},
 }
 
-var roleTools = map[string][]string{"scout": {"read", "ls"}, "worker": {"read", "ls", "write", "edit", "bash"}}
 var agentName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 var exactModel = regexp.MustCompile(`^[^/\s]+/[^\s]+$`)
 
@@ -52,7 +49,7 @@ func agentDefaults(role string) (AgentDefinition, bool) {
 func defaultConfig() Config {
 	scout, _ := agentDefaults("scout")
 	worker, _ := agentDefaults("worker")
-	return Config{Concurrency: 4, Depth: 2, MaxRecords: 64, MaxHistoryBytes: 1024 * 1024, MaxResultBytes: 50000, MaxMailbox: 8, MaxTurns: 20,
+	return Config{Concurrency: 4, Depth: 2, MaxResultBytes: 50000, MaxMailbox: 8, MaxTurns: 50,
 		Agents: map[string]AgentDefinition{"scout": scout, "worker": worker},
 	}
 }
@@ -135,9 +132,8 @@ func parseConfig(base Config, source []byte) (Config, error) {
 		min, max int
 	}{
 		"concurrency": {&config.Concurrency, 1, 16}, "depth": {&config.Depth, 0, 8},
-		"max_records": {&config.MaxRecords, 1, 4096}, "max_history_bytes": {&config.MaxHistoryBytes, 1024, 64 * 1024 * 1024},
 		"max_result_bytes": {&config.MaxResultBytes, 1, 1024 * 1024}, "max_mailbox": {&config.MaxMailbox, 1, 1024},
-		"max_turns": {&config.MaxTurns, 1, 128},
+		"max_turns": {&config.MaxTurns, 1, int(^uint(0) >> 1)},
 	}
 	for name, node := range raw {
 		if name == "agents" {
@@ -152,12 +148,6 @@ func parseConfig(base Config, source []byte) (Config, error) {
 			return Config{}, fmt.Errorf("litter.yaml %s must be an integer from %d to %d", name, limit.min, limit.max)
 		}
 		*limit.value = int(number)
-	}
-	if config.MaxRecords < config.Concurrency {
-		return Config{}, fmt.Errorf("max_records must be at least concurrency")
-	}
-	if config.MaxHistoryBytes < config.MaxResultBytes {
-		return Config{}, fmt.Errorf("max_history_bytes must be at least max_result_bytes")
 	}
 	if node := raw["agents"]; node != nil {
 		agents, err := mapping(node, "agents")
@@ -238,8 +228,8 @@ func parseConfig(base Config, source []byte) (Config, error) {
 				}
 				definition.Tools = []string{}
 				for _, tool := range node.Content {
-					if tool.Tag != "!!str" || !slices.Contains(roleTools[definition.Role], tool.Value) || slices.Contains(definition.Tools, tool.Value) {
-						return Config{}, fmt.Errorf("agents.%s tools must be distinct %s file tools", name, definition.Role)
+					if tool.Tag != "!!str" || !validToolPattern(tool.Value) || definition.Role == "scout" && tool.Value != "read" && tool.Value != "ls" || slices.Contains(definition.Tools, tool.Value) {
+						return Config{}, fmt.Errorf("agents.%s tools must be distinct named tool patterns; scouts allow only read and ls", name)
 					}
 					definition.Tools = append(definition.Tools, tool.Value)
 				}

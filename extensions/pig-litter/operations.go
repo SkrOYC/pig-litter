@@ -11,7 +11,6 @@ import (
 
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
-	"github.com/MichaelKinsy/PiG/coding"
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 	"github.com/MichaelKinsy/PiG/tui/widthx"
 )
@@ -132,9 +131,6 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if !exists || strings.TrimSpace(args.Task) == "" || len(args.Task) > 16384 {
 			return nil, reject("rejected", "choose a named agent and a bounded task")
 		}
-		if len(args.Task)+len(agent.Instructions)+512 > o.config.MaxHistoryBytes {
-			return nil, reject("rejected", "task would exceed the retained history limit")
-		}
 		if agent.Model != "" && args.Model != "" && args.Model != agent.Model {
 			return nil, reject("permission_denied", "the named agent has a fixed model")
 		}
@@ -158,12 +154,16 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 				return nil, err
 			}
 		}
-		manager, err := coding.NewInMemorySessionManager(cwd)
+		available, err := o.rootToolNames()
 		if err != nil {
 			return nil, err
 		}
-		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, history: manager})
+		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, available: available})
 		if err != nil {
+			return nil, err
+		}
+		if err := o.saveChild(execution.owner); err != nil {
+			o.tree.cancelPending(execution)
 			return nil, err
 		}
 		o.deferActivation(key, execution, ctx.Done(), func() bool { return ctx.Err() != nil }, name)
@@ -260,6 +260,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 				return nil, err
 			}
 			if _, err := o.modelFor(ctx, model, o.services.ModelRuntime()); err != nil {
+				return nil, err
+			}
+			if _, err := o.rootToolNames(); err != nil {
 				return nil, err
 			}
 		}
