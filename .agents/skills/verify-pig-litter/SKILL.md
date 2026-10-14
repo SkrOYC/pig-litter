@@ -1,6 +1,6 @@
 ---
 name: verify-pig-litter
-description: "Verify Pig Litter's direct and Piglet selection, background children, retained resume, child working directories, terminal tools, diagnostic command, and unselected startup through the terminal UI. Use real providers or isolated deterministic fixtures."
+description: "Verify Pig Litter's direct and Piglet selection, background children, persisted UUID resume, child working directories, terminal tools, diagnostic command, and unselected startup through the terminal UI. Use real providers or isolated deterministic fixtures."
 ---
 
 # Verify Pig Litter
@@ -49,7 +49,7 @@ The helper starts each case in fresh scratch with a private tmux socket and pare
 
 Selected startup requires an editor displaying the exact model and scratch path. `/pig-litter` must explain the six background controls. There is no foreground startup status.
 
-The selected proof discovers agents and spawns a scout to read a private token. The scout token exists only in its input file. It also spawns a worker with an explicit `cwd` and requires terminal commands to produce independently checked file effects there. Each child is a retained PiG session with one stable UUID across turns, pause, and explicit resume. Child tools and resources load from the spawn directory. The parent prompt restricts its own calls to `litter_*` controls; recorded calls enforce that restriction.
+The selected proof discovers agents and spawns a scout to read a private token. The scout token exists only in its input file. It also spawns a worker with an explicit `cwd` and requires terminal commands to produce independently checked file effects there. Each child is a persisted PiG session with one stable UUID across turns, pause, and explicit resume. File tools and resources use the spawn directory. Role patterns expand against refreshed root tool enumeration; nested children cannot widen their parent's ceiling. MCP uses root configuration. The parent prompt restricts its own calls to `litter_*` controls; recorded calls enforce that restriction.
 
 A passing run requires matching spawn admissions and completed outcomes by child ID, inherited exact models, the private scout token, and expected worker file effects. It also requires a live `Litter N live M kept` widget. Parent prose alone cannot pass. `litter_inspect` returns status and the latest result. It exposes no transcript or tool receipts.
 
@@ -66,7 +66,7 @@ Run the optional real-provider cancellation case:
 
 The helper waits for an active child turn and pending `litter_wait`, then sends **Escape**. It requires a recorded cancellation acknowledgement and a fresh diagnostic notification. Inspection must show the same UUID in paused status with a paused outcome before any explicit resume. Then require a `litter_message` call with `resume: true` for that UUID and a completed result containing the private file token after the resume acknowledgement. The resume message must omit the token. A cancelled wait can return plain tool error text; retain that text without treating it as completion.
 
-A wait cancelled in isolation or a wait timeout leaves the child running. Root Escape during an active turn pauses retained child sessions. A parent pause cascades to its children, and an explicit resume acts on the selected node only. Child runs have no wall-clock deadline. Provider errors, permission checks, scout leaf enforcement, nested workers, resume races, and controlled outcomes belong to deterministic fixtures.
+A wait cancelled in isolation or a wait timeout leaves the child running. Root Escape during an active turn pauses retained child sessions. A parent pause cascades to its children, and an explicit resume acts on the selected node only. Child runs have no wall-clock deadline. Provider errors, tool-ceiling checks, scout leaf enforcement, nested workers, resume races, and controlled outcomes belong to deterministic fixtures.
 
 ## Retain evidence and clean up
 
@@ -87,7 +87,7 @@ devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh doctor
 devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh
 ```
 
-The wrapper checks PiG 0.4.1, Go 1.27.1, and tmux 3.7c. It runs direct, local Piglet, and unselected cases using the maintained product terminal fixture. The fixture uses isolated credentials and a loopback provider, prebuilt Go code, private scratch, and its own tmux server. It exercises tool registration, children, widget, resize, editor, help, stopping, scrollback, and clean exit. Evidence stays under `.pstack/evidence/go-tui/`. These checks don't prove real provider readiness.
+The wrapper checks PiG 0.4.1, Go 1.27.1, and tmux 3.7c. It runs direct, local Piglet, and unselected cases using the maintained product terminal fixture. The fixture uses isolated credentials and a loopback provider, prebuilt Go code, private scratch, and its own tmux server. It exercises tool registration, children, widget, resize, editor, help, stopping, scrollback, and pane and socket cleanup. Evidence stays under `.pstack/evidence/go-tui/`. These checks don't prove real provider readiness or record PiG's exit status.
 
 ## Run deterministic lifecycle checks
 
@@ -107,18 +107,19 @@ devenv shell -- scripts/verify-stock-lifecycle.sh --scenario unbounded
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario codemode
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario pause
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario admission
+devenv shell -- scripts/verify-stock-lifecycle.sh --scenario persistence
 ```
 
-The scenarios cover configuration layering, agent overrides, file and terminal authority, child working directories, concurrency, depth, privacy, resume, subtree pausing, history limits, completion delivery, and provider/tool failures. Keep these claims separate from the live proof. Check helper evidence parsing and bounded command teardown without launching PiG:
+The scenarios cover configuration layering, agent overrides, file and terminal authority, child working directories, concurrency, depth, privacy, persisted UUID resume, subtree pausing, large native histories, completion delivery, and provider/tool failures. The `persistence` case reopens the same root in a second stock PiG process and checks retained child identity, directory, conversation, names, and actual stop outcome. It covers orderly restart. Go runtime tests cover soft turn allowances, root glob ceilings, native skills, HTTP MCP, codemode, deferred search, and late root tools on resume. Keep these claims separate from real-provider proof. Check helper evidence parsing and bounded command teardown without launching PiG:
 
 ```sh
 bun test ./.agents/skills/verify-pig-litter/scripts/live.test.mjs
 ```
 
-Replay actual inspect and stop handbacks from a completed `core` lifecycle fixture:
+Replay actual inspect and stop handbacks from a completed `core` or `persistence` lifecycle fixture:
 
 ```sh
-bun .agents/skills/verify-pig-litter/scripts/replay.mjs PATH_TO_STDOUT_JSONL
+bun .agents/skills/verify-pig-litter/scripts/replay.mjs "PATH_TO_STDOUT_JSONL"
 ```
 
 Replace `PATH_TO_STDOUT_JSONL` with `stdout.jsonl` in the fixture's printed evidence directory. The replay requires successful inspect and stop results and applies the live helper's envelope and outcome checks. It makes no model request and does not establish real-provider readiness.
