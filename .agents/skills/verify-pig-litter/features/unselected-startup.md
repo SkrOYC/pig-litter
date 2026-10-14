@@ -1,6 +1,6 @@
 # Unselected startup
 
-Plain PiG supplies no extension or Piglet flag. The helper clears ambient Piglet selectors and preserves ordinary resource discovery and configured readiness. Its plain argument and environment construction live in the live helper.
+Plain PiG supplies no extension or Piglet flag. The helper clears ambient Piglet selectors and preserves ordinary resource discovery and configured readiness. It runs in disposable scratch, so project-local discovery belongs to that scratch directory. Its plain argument and environment construction live in the live helper.
 
 ## Drive configured discovery
 
@@ -19,4 +19,4 @@ If ordinary user discovery loads Pig Litter, the helper fails the unselected ass
 
 Run the pinned wrapper. Its unselected case uses private configuration and a loopback model, verifies actual provider tool inventory, and requires no `litter_*` tools or child widget. It uses configured fixture readiness rather than an empty-model warning. Evidence stays under `.pstack/evidence/go-tui/`.
 
-Both paths require a live pane, status-zero exit without a signal, and termination of observed owned processes.
+The configured live helper requires a live pane, status-zero exit without a signal, and termination of observed owned processes. It also requires an available exact model and ready authentication, although this case makes no completion request. The isolated fixture checks pane exit and tmux socket cleanup. It does not record PiG's exit status or inspect every descendant process.
