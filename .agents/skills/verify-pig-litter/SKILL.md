@@ -115,6 +115,14 @@ The scenarios cover configuration layering, agent overrides, file and terminal a
 bun test ./.agents/skills/verify-pig-litter/scripts/live.test.mjs
 ```
 
+Replay actual inspect and stop handbacks from a completed `core` lifecycle fixture:
+
+```sh
+bun .agents/skills/verify-pig-litter/scripts/replay.mjs PATH_TO_STDOUT_JSONL
+```
+
+Replace `PATH_TO_STDOUT_JSONL` with `stdout.jsonl` in the fixture's printed evidence directory. The replay requires successful inspect and stop results and applies the live helper's envelope and outcome checks. It makes no model request and does not establish real-provider readiness.
+
 The `cwd` scenario checks relative file operations and terminal effects in the selected directory, including nested children. The `unbounded` scenario keeps a child active beyond the preceding two-minute deadline and requires its completed result. Its outer fixture deadline bounds verification teardown. It does not impose a product run deadline.
 
 Keep the [verification feature map](features/README.md) aligned with source and observed drives.

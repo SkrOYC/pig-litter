@@ -24,3 +24,5 @@ Pass `--piglet /ABSOLUTE_PATH/piglet.yaml --case selected` to drive the reposito
 ## Configuration
 
 The helper preserves credentials and clears only ambient Piglet selectors. Supply `--pig-home PATH` to choose another existing root. An inherited agent-directory override remains active. Identify both checked paths before changing authentication. Trust applies only to owned scratch for the process.
+
+The selected proof requires a leaf scout with `read`, a worker with `bash`, and profiles that inherit the parent's model. Valid profile overrides can prevent that proof without breaking Piglet selection. The doctor requires an available exact model and ready authentication. Named selection also requires the Piglet to exist in the checked search paths.

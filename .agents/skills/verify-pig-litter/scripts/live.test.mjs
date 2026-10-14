@@ -28,7 +28,7 @@ function completedSession({ state = 'completed', childModel = model, marker = to
  const waitResult = `${operation}-result`;
  const target = operation === 'wait'
   ? { state, outcome: outcome({ state, text: `Read from file: ${marker}`, model: childModel, truncated, reportProvenance }), operation: 'litter_wait', handbackTruncated: false }
-  : { state, child: snapshot, outcome: outcome({ state, text: `Read from file: ${marker}`, model: childModel, truncated, reportProvenance }) };
+  : { state, child: snapshot, outcome: outcome({ state, text: `Read from file: ${marker}`, model: childModel, truncated, reportProvenance }), operation: 'litter_inspect', handbackTruncated: false };
  return [
   { type: 'session', id: 'parent', cwd: '/scratch' },
   ...spawnResult({ cwd, childModel, type, task }),
@@ -51,7 +51,7 @@ function pausedCancellationSession({ resumeBeforeInspection = false, resumeAfter
  if (resumeBeforeInspection) records.push(...resumeRecords);
  records.push(
   assistant('paused-inspection-call-entry', [{ type: 'toolCall', id: 'paused-inspection-call', name: 'litter_inspect', arguments: { id: child.id } }]),
-  toolResult('paused-inspection-result', 'paused-inspection-call', 'litter_inspect', { state: 'paused', child: { ...child, state: 'paused' }, outcome: outcome({ state: 'paused', text: '' }) }),
+  toolResult('paused-inspection-result', 'paused-inspection-call', 'litter_inspect', { state: 'paused', child: { ...child, state: 'paused' }, outcome: outcome({ state: 'paused', text: '' }), operation: 'litter_inspect', handbackTruncated: false }),
  );
  if (resumeAfterInspection) records.push(
   ...resumeRecords,
@@ -64,7 +64,7 @@ function pausedCancellationSession({ resumeBeforeInspection = false, resumeAfter
 
 function pauseResult(evidence, state, stoppedCount) {
  evidence.calls.push({ id: 'pause-call', name: 'litter_stop', arguments: { id: child.id } });
- evidence.results.push({ id: 'pause-call', name: 'litter_stop', isError: false, value: { state: 'paused', outcome: outcome({ state, text: '' }), stoppedCount, operation: 'litter_stop', handbackTruncated: false } });
+ evidence.results.push({ id: 'pause-call', name: 'litter_stop', isError: false, value: { state, outcome: outcome({ state, text: '' }), stoppedCount, operation: 'litter_stop', handbackTruncated: false } });
  return evidence;
 }
 
@@ -159,11 +159,32 @@ test('child admission and final outcome cannot carry a generation selector', () 
  expect(() => completedDelegation(guarded, 'scout', model, token)).toThrow('unsupported control field');
 });
 
-test('current inspection returns only ID, state, child, and latest outcome', () => {
+test('current inspection returns the common envelope, child, and latest outcome', () => {
  const evidence = sessionEvidence(completedSession({ operation: 'inspect' }));
  const inspection = currentInspection(evidence, child.id);
  expect(inspection.result.value.state).toBe('completed');
  expect(inspection.outcome.run).toEqual({ id: child.id });
+ expect(inspection.result.value.operation).toBe('litter_inspect');
+ expect(inspection.result.value.handbackTruncated).toBe(false);
+ for (const field of ['operation', 'handbackTruncated']) {
+  const missing = sessionEvidence(completedSession({ operation: 'inspect' }));
+  delete missing.results.at(-1).value[field];
+  expect(() => currentInspection(missing, child.id)).toThrow('beyond current status');
+ }
+ const truncated = sessionEvidence(completedSession({ operation: 'inspect' }));
+ truncated.results.at(-1).value.handbackTruncated = true;
+ expect(() => currentInspection(truncated, child.id)).toThrow('misidentified or truncated');
+ const misidentified = sessionEvidence(completedSession({ operation: 'inspect' }));
+ misidentified.results.at(-1).value.operation = 'litter_wait';
+ expect(() => completedDelegation(misidentified, 'scout', model, token, { operation: 'inspect' })).toThrow('misidentified or truncated');
+});
+
+test('a valid report above eight kilobytes passes within the fifty-kilobyte default', () => {
+ const marker = token + 'x'.repeat(9000);
+ const result = completedDelegation(sessionEvidence(completedSession({ marker })), 'scout', model, token);
+ expect(result.outcome.text).toBe(`Read from file: ${marker}`);
+ const oversized = sessionEvidence(completedSession({ marker: token + 'x'.repeat(50001) }));
+ expect(() => completedDelegation(oversized, 'scout', model, token)).toThrow('exceeds the report limit');
 });
 
 test('active stop pauses the retained session and reports one newly paused turn', () => {
@@ -178,15 +199,18 @@ test('active stop pauses the retained session and reports one newly paused turn'
 });
 
 test('pausing a terminal session retains its last outcome without counting a new turn', () => {
- for (const state of ['completed', 'failed']) {
+ for (const state of ['completed', 'failed', 'partial', 'unavailable']) {
   const pause = pausedOutcome(pauseResult(sessionEvidence(completedSession()), state, 0), child.id);
-  expect(pause.result.value.state).toBe('paused');
+  expect(pause.result.value.state).toBe(state);
   expect(pause.result.value.stoppedCount).toBe(0);
   expect(pause.outcome.state).toBe(state);
   expect(pause.outcome.run).toEqual({ id: child.id });
  }
  const active = pauseResult(sessionEvidence(completedSession()), 'running', 0);
  expect(() => pausedOutcome(active, child.id)).toThrow('did not retain a terminal outcome');
+ const mismatched = pauseResult(sessionEvidence(completedSession()), 'completed', 0);
+ mismatched.results.at(-1).value.state = 'paused';
+ expect(() => pausedOutcome(mismatched, child.id)).toThrow('status and latest outcome disagree');
 });
 
 test('inspection rejects transcript selectors and history or evidence pages', () => {

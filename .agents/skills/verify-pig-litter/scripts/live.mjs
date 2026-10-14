@@ -103,7 +103,8 @@ export function currentInspection(evidence, id) {
  });
  if (!result) return undefined;
  if (result.isError) throw new Error('ID-only inspection failed.');
- ensure(Object.keys(result.value ?? {}).sort().join(',') === 'child,outcome,state', 'Inspection exposed fields beyond current status, child, and latest outcome.');
+ ensure(Object.keys(result.value ?? {}).sort().join(',') === 'child,handbackTruncated,operation,outcome,state', 'Inspection exposed fields beyond current status, child, and latest outcome.');
+ ensure(result.value.operation === 'litter_inspect' && result.value.handbackTruncated === false, 'Inspection handback is misidentified or truncated.');
  ensure(result.value.child?.id === id && !('generation' in result.value.child), 'Inspection did not return the requested ID-only child.');
  if (result.value.outcome) ensure(result.value.outcome.run?.id === id && Object.keys(result.value.outcome.run).join(',') === 'id', 'Inspection outcome did not match the requested ID.');
  return { result, child: result.value.child, outcome: result.value.outcome };
@@ -120,7 +121,8 @@ export function pausedOutcome(evidence, id) {
  ensure(Object.keys(result.value ?? {}).sort().join(',') === 'handbackTruncated,operation,outcome,state,stoppedCount', 'Pause handback contains unexpected fields.');
  ensure(result.value.operation === 'litter_stop' && result.value.handbackTruncated === false, 'Pause handback is misidentified or truncated.');
  ensure(Number.isInteger(result.value.stoppedCount) && result.value.stoppedCount >= 0, 'Pause handback omitted its nonnegative newly paused active-turn count.');
- ensure(result.value.state === 'paused' && retainedOutcomeStates.has(result.value.outcome?.state), 'Pause did not retain a terminal outcome.');
+ ensure(retainedOutcomeStates.has(result.value.outcome?.state), 'Pause did not retain a terminal outcome.');
+ ensure(result.value.state === result.value.outcome.state, 'Pause status and latest outcome disagree.');
  ensure(result.value.outcome.run?.id === id && Object.keys(result.value.outcome.run).join(',') === 'id', 'Paused outcome did not match the requested ID.');
  return { result, outcome: result.value.outcome };
 }
@@ -193,10 +195,13 @@ export function completedDelegation(evidence, type, model, token, { cwd, operati
   ensure(Object.keys(result.value).sort().join(',') === 'handbackTruncated,operation,outcome,state', 'Wait handback contains unexpected fields.');
   ensure(result.value.operation === 'litter_wait' && result.value.handbackTruncated === false, 'Wait handback is misidentified or truncated.');
  }
- if (operation === 'inspect' && Object.keys(result.value).sort().join(',') !== 'child,outcome,state') throw new Error('Inspection returned fields beyond current status, child, and latest outcome.');
+ if (operation === 'inspect') {
+  ensure(Object.keys(result.value).sort().join(',') === 'child,handbackTruncated,operation,outcome,state', 'Inspection returned fields beyond current status, child, and latest outcome.');
+  ensure(result.value.operation === 'litter_inspect' && result.value.handbackTruncated === false, 'Inspection handback is misidentified or truncated.');
+ }
  if (result.value.state !== outcome.state) throw new Error('Child status and latest outcome disagree.');
  if (outcome.model !== model) throw new Error('Child outcome model does not match the selected run.');
- if (Buffer.byteLength(outcome.text ?? '') > 8192 || !outcome.text?.includes(token)) throw new Error('Child handback lacks the expected file token or exceeds the report limit.');
+ if (Buffer.byteLength(outcome.text ?? '') > 50000 || !outcome.text?.includes(token)) throw new Error('Child handback lacks the expected file token or exceeds the report limit.');
  if (typeof outcome.truncated !== 'boolean' || outcome.truncated) throw new Error('Child handback was truncated or omitted its truncation status.');
  if (!outcome.usage || typeof outcome.usage !== 'object') throw new Error('Child outcome omitted usage.');
  if (outcome.error) throw new Error('Child outcome reported an error.');
