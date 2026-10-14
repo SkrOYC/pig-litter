@@ -55,11 +55,32 @@ type outcomeAcknowledgement struct {
 	done      chan struct{}
 	once      sync.Once
 	ready     bool
+	handback  outcomeHandback
 }
 
 func (o *owner) beginOutcomeAck(key *callTicket, selected *run, operation string, request *sdk.Context) {
 	if key.callID == "" {
 		return
+	}
+	handback := outcomeHandback{CallID: key.callID, Operation: operation}
+	if request != nil {
+		if leaf, err := request.SessionManager().GetLeafID(); err == nil {
+			if leaf == nil {
+				leaf = new(string)
+			}
+			handback.After = leaf
+		}
+	} else if key.caller != nil {
+		o.tree.mu.Lock()
+		active := key.caller.owner.activeLog
+		o.tree.mu.Unlock()
+		if active != nil {
+			leaf := active.LeafID()
+			if leaf == nil {
+				leaf = new(string)
+			}
+			handback.After = leaf
+		}
 	}
 	o.tree.mu.Lock()
 	pending := o.tree.pending[selected]
@@ -74,7 +95,7 @@ func (o *owner) beginOutcomeAck(key *callTicket, selected *run, operation string
 	if o.afterOutcomeReservation != nil {
 		o.afterOutcomeReservation()
 	}
-	ack := &outcomeAcknowledgement{run: selected, operation: operation, done: make(chan struct{})}
+	ack := &outcomeAcknowledgement{run: selected, operation: operation, done: make(chan struct{}), handback: handback}
 	o.ackMu.Lock()
 	o.outcomeAcks[key] = ack
 	o.ackMu.Unlock()
@@ -140,6 +161,10 @@ func (o *owner) settleOutcomeAck(key *callTicket, received bool) {
 			}
 			if pending != nil && o.completionOwner(pending, key.caller) {
 				pending.outcomeObserved = true
+				pending.handback = &ack.handback
+				if child := o.tree.records[ack.run.ref.ID]; child != nil {
+					o.tree.dirty[child.id] = child
+				}
 				ack.run.reservation = pending
 				if parent := o.completionParentLocked(pending.parent); parent != nil && pending.sent {
 					if parent.notices == nil {
@@ -155,6 +180,7 @@ func (o *owner) settleOutcomeAck(key *callTicket, received bool) {
 		o.ackMu.Unlock()
 		o.tree.mu.Unlock()
 		close(ack.done)
+		o.tree.notify()
 	})
 }
 
@@ -195,18 +221,19 @@ func (r *completionReceipt) complete() {
 	r.mu.Lock()
 	failed := r.failed
 	r.mu.Unlock()
-	if r.observed != nil && r.observed() || r.observed == nil && !failed {
+	if !failed && (r.observed == nil || r.observed()) {
 		r.once.Do(r.appended)
 	}
 }
 
 func (r *completionReceipt) retire() {
 	r.mu.Lock()
-	if r.retired {
+	if r.retired && !r.failed {
 		r.mu.Unlock()
 		return
 	}
 	r.retired = true
+	r.failed = false
 	r.mu.Unlock()
 	err := r.fallback()
 	r.mu.Lock()
@@ -250,18 +277,6 @@ func (o *owner) observeCompletion(caller *run, message map[string]any) {
 	}
 }
 
-type completionEntry struct {
-	ID         string            `json:"id"`
-	CustomType string            `json:"customType"`
-	Content    string            `json:"content"`
-	Details    completionDetails `json:"details"`
-	Message    *struct {
-		CustomType string            `json:"customType"`
-		Content    string            `json:"content"`
-		Details    completionDetails `json:"details"`
-	} `json:"message"`
-}
-
 func (o *owner) completionEntries(parent ChildID) ([]json.RawMessage, error) {
 	if o.tree.rootID(parent) {
 		entries, err := o.context.SessionManager().GetEntries()
@@ -272,15 +287,26 @@ func (o *owner) completionEntries(parent ChildID) ([]json.RawMessage, error) {
 	}
 	o.tree.mu.Lock()
 	r := o.tree.records[parent]
-	var manager *coding.SessionManager
+	var active *coding.SessionManager
 	if r != nil {
-		manager = r.history
+		active = r.activeLog
 	}
 	o.tree.mu.Unlock()
-	if manager == nil {
-		return nil, reject("unavailable", "parent retained history is unavailable")
+	if r == nil {
+		return nil, reject("unavailable", "parent UUID is unavailable")
 	}
-	return rawEntries(manager.Entries())
+	if active != nil {
+		return rawEntries(active.Entries())
+	}
+	r.deliveryMu.Lock()
+	defer r.deliveryMu.Unlock()
+	var entries []json.RawMessage
+	err := o.withChildLogLocked(r, func(log *coding.SessionManager) error {
+		var err error
+		entries, err = rawEntries(log.Entries())
+		return err
+	})
+	return entries, err
 }
 
 func rawEntries(entries any) ([]json.RawMessage, error) {
@@ -293,87 +319,80 @@ func rawEntries(entries any) ([]json.RawMessage, error) {
 	return raw, err
 }
 
-func completionStored(entries []json.RawMessage, details completionDetails, content string) bool {
-	for _, raw := range entries {
-		var entry completionEntry
-		if json.Unmarshal(raw, &entry) != nil || entry.ID == "" {
-			continue
-		}
-		if entry.CustomType == "litter_completion" && entry.Details == details && entry.Content == content {
-			return true
-		}
-		if entry.Message != nil && entry.Message.CustomType == "litter_completion" && entry.Message.Details == details && entry.Message.Content == content {
-			return true
-		}
-	}
-	return false
-}
-
 func (o *owner) appendRetained(parentID ChildID, details completionDetails, content string) error {
-	return o.storeRetained(parentID, details, content, false)
+	return o.storeRetained(parentID, details, content, nil)
 }
 
-func (o *owner) storeRetained(parentID ChildID, details completionDetails, content string, audit bool) error {
+func (o *owner) storeRetained(parentID ChildID, details completionDetails, content string, audit *completionAudit) error {
 	if err := o.current(); err != nil {
 		return err
 	}
 	if o.tree.rootID(parentID) {
-		if audit {
-			return o.context.AppendEntry("litter_completion", json.RawMessage(content))
+		if audit != nil {
+			return o.context.AppendEntry("litter_completion", audit)
 		}
 		trigger := false
 		return o.context.SendCustomMessage(sdk.CustomMessage{CustomType: "litter_completion", Content: content, Display: false, Details: details}, sdk.SendMessageOptions{TriggerTurn: &trigger})
 	}
 	o.tree.mu.Lock()
 	parent := o.tree.records[parentID]
-	var manager *coding.SessionManager
-	if parent != nil {
-		manager = parent.history
-	}
 	o.tree.mu.Unlock()
-	if manager == nil {
-		return reject("unavailable", "parent retained history is unavailable")
+	if parent == nil {
+		return reject("unavailable", "parent UUID is unavailable")
 	}
-	var err error
-	if audit {
-		_, err = manager.AppendCustomEntry("litter_completion", json.RawMessage(content))
-	} else {
-		_, err = manager.AppendCustomMessage("litter_completion", content, false, details)
-	}
-	if err != nil {
+	return o.withChildLogLocked(parent, func(log *coding.SessionManager) error {
+		var err error
+		if audit != nil {
+			_, err = log.AppendCustomEntry("litter_completion", audit)
+		} else {
+			_, err = log.AppendCustomMessage("litter_completion", content, false, details)
+		}
 		return err
-	}
-	if historyBytes(manager) > o.config.MaxHistoryBytes {
-		o.tree.retireHistory(parent)
-		return reject("unavailable", "parent retained history cannot fit the child completion")
-	}
-	return nil
+	})
 }
 
 func (o *owner) auditCompletion(selected *run) error {
 	o.tree.mu.Lock()
 	notice := selected.reservation
 	var parent *record
+	var handback *outcomeHandback
 	if notice != nil {
+		handback = notice.handback
 		parent = o.completionParentLocked(notice.parent)
+		if parent != nil {
+			if parent.notices == nil {
+				parent.notices = map[string]*reservation{}
+			}
+			parent.notices[notice.nonce] = notice
+		}
 	}
 	o.tree.mu.Unlock()
 	if notice == nil {
 		return nil
 	}
-	notice.auditOnce.Do(func() {
+	notice.auditMu.Lock()
+	if !notice.auditStored {
 		if parent != nil {
 			parent.deliveryMu.Lock()
-			defer parent.deliveryMu.Unlock()
 		}
 		details := completionDetails{ChildID: selected.ref.ID, Receipt: notice.nonce}
-		notice.auditErr = o.storeRetained(notice.parent, details, notice.content, true)
-		if notice.auditErr == nil {
+		notice.auditErr = o.storeRetained(notice.parent, details, notice.content, &completionAudit{Content: notice.content, Details: details, Handback: handback})
+		notice.auditStored = notice.auditErr == nil
+		if parent != nil {
+			parent.deliveryMu.Unlock()
+		}
+	}
+	err := notice.auditErr
+	notice.auditMu.Unlock()
+	o.tree.deliveryFailed(selected, err)
+	if err == nil {
+		entries, err := o.persistedCompletionEntries(notice.parent)
+		details := completionDetails{ChildID: selected.ref.ID, Receipt: notice.nonce}
+		if err == nil && completionStored(entries, details, notice.content) {
 			o.tree.acknowledge(selected)
 		}
-	})
-	o.tree.deliveryFailed(selected, notice.auditErr)
-	return notice.auditErr
+	}
+	return err
 }
 
 func (o *owner) sendCompletion(r *record, selected *run, outcome Outcome) {
@@ -404,7 +423,7 @@ func (o *owner) sendCompletion(r *record, selected *run, outcome Outcome) {
 		if stored {
 			return true
 		}
-		entries, err := o.completionEntries(notice.parent)
+		entries, err := o.persistedCompletionEntries(notice.parent)
 		return err == nil && completionStored(entries, details, content)
 	}
 	var receipt *completionReceipt
@@ -433,7 +452,7 @@ func (o *owner) sendCompletion(r *record, selected *run, outcome Outcome) {
 				return nil
 			}
 			if o.tree.rootID(notice.parent) {
-				return o.storeRetained(notice.parent, details, content, false)
+				return o.storeRetained(notice.parent, details, content, nil)
 			}
 			return o.deliverRetained(parent, details, content)
 		},
@@ -470,6 +489,9 @@ func (o *owner) sendCompletion(r *record, selected *run, outcome Outcome) {
 		err = o.deliverRetained(parent, details, content)
 	}
 	if err != nil {
+		receipt.mu.Lock()
+		receipt.failed = true
+		receipt.mu.Unlock()
 		o.tree.deliveryFailed(selected, err)
 		return
 	}
@@ -511,11 +533,7 @@ func (o *owner) deliverRetained(parent *record, details completionDetails, conte
 	}
 	o.tree.mu.Lock()
 	current := parent.run
-	manager := parent.history
 	o.tree.mu.Unlock()
-	if manager == nil {
-		return reject("unavailable", "parent retained history is unavailable")
-	}
 	current.mu.Lock()
 	session := current.session
 	current.mu.Unlock()
@@ -546,6 +564,52 @@ func (o *owner) retireReceipts(parent *record) {
 	for _, notice := range parent.notices {
 		if notice.outcomeObserved {
 			audits = append(audits, notice.selected)
+		}
+	}
+	o.tree.mu.Unlock()
+	for _, selected := range audits {
+		_ = o.auditCompletion(selected)
+		o.tree.mu.Lock()
+		notice := o.tree.pending[selected]
+		if notice != nil {
+			notice.outcomeObserved = false
+		}
+		o.tree.mu.Unlock()
+		if notice == nil {
+			continue
+		}
+		details := completionDetails{ChildID: selected.ref.ID, Receipt: notice.nonce}
+		var err error
+		if o.tree.rootID(notice.parent) {
+			err = o.storeRetained(notice.parent, details, notice.content, nil)
+		} else {
+			err = o.deliverRetained(parent, details, notice.content)
+		}
+		if err == nil {
+			entries, readErr := o.persistedCompletionEntries(notice.parent)
+			if readErr == nil && completionStored(entries, details, notice.content) {
+				o.tree.acknowledge(selected)
+			}
+		}
+		o.tree.deliveryFailed(selected, err)
+	}
+}
+
+func (o *owner) confirmCompletions(parent *record) {
+	parent.receiptMu.Lock()
+	receipts := make([]*completionReceipt, 0, len(parent.receipts))
+	for _, receipt := range parent.receipts {
+		receipts = append(receipts, receipt)
+	}
+	parent.receiptMu.Unlock()
+	for _, receipt := range receipts {
+		receipt.complete()
+	}
+	o.tree.mu.Lock()
+	var audits []*run
+	for selected, notice := range o.tree.pending {
+		if notice.parent == parent.id && notice.outcomeObserved && notice.sent {
+			audits = append(audits, selected)
 		}
 	}
 	o.tree.mu.Unlock()

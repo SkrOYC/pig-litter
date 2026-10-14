@@ -54,10 +54,7 @@ func testRootCompletionRecovery(t *testing.T, clearQueue, consumed bool) {
 		t.Fatal(err)
 	}
 	defer services.Close()
-	manager, err := coding.NewInMemorySessionManager(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
+	var manager *coding.SessionManager
 	config := defaultConfig()
 	config.MaxMailbox = 1
 	tree := testTree(t, config)
@@ -94,10 +91,12 @@ func testRootCompletionRecovery(t *testing.T, clearQueue, consumed bool) {
 			t.Fatal(err)
 		}
 		defer runtime.Close()
-		session, err = runtime.New(coding.SessionStartOptions{SessionManager: manager, Model: services.ModelRuntime().GetModel("fixture", "parent"), ResourceLoader: coding.NoResources, AllowedTools: map[string]struct{}{}})
+		session, err = runtime.New(coding.SessionStartOptions{SessionDir: filepath.Join(directory, "sessions"), Model: services.ModelRuntime().GetModel("fixture", "parent"), ResourceLoader: coding.NoResources, AllowedTools: map[string]struct{}{}})
 		if err != nil {
 			t.Fatal(err)
 		}
+		manager = session.SessionManager()
+		o.sessionID, o.cwd, o.agentDir = manager.ID(), directory, directory
 		defer session.Close()
 		go func() {
 			for event := range session.Events() {
@@ -214,7 +213,16 @@ func testRootCompletionRecovery(t *testing.T, clearQueue, consumed bool) {
 				entries, _ := json.Marshal(manager.Entries())
 				return entries
 			}
-			return json.RawMessage(`"fixture"`)
+			if query.Method == "getSessionFile" {
+				data, _ := json.Marshal(manager.Path())
+				return data
+			}
+			if query.Method == "getSessionDir" {
+				data, _ := json.Marshal(manager.GetSessionDir())
+				return data
+			}
+			if query.Method == "getSessionId" { data, _ := json.Marshal(manager.ID()); return data }
+			return json.RawMessage(`null`)
 		case "isIdle":
 			result, _ := json.Marshal(map[string]bool{"idle": session.IsIdle()})
 			return result

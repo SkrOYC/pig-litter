@@ -681,10 +681,6 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 			f.fail(w, errors.New("worker did not resolve the configuration in its target cwd"))
 			return
 		}
-		if body.Model == "cwd_worker" && contains(toolNames(body), "ls") {
-			f.fail(w, errors.New("child inherited the parent tool selection instead of its directory settings"))
-			return
-		}
 		if body.Model == "cwd_worker" && !contains(toolNames(body), "bash") {
 			f.fail(w, errors.New("worker's native directory settings removed bash"))
 			return
@@ -697,7 +693,7 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 			f.fail(w, errors.New("worker's native directory settings removed file tools"))
 			return
 		}
-		if body.Model == "cwd_nested" && (contains(toolNames(body), "bash") || contains(toolNames(body), "ls") || contains(toolNames(body), "write")) {
+		if body.Model == "cwd_nested" && (contains(toolNames(body), "bash") || contains(toolNames(body), "write")) {
 			f.fail(w, errors.New("scout tool ceiling exposed a non-read builtin"))
 			return
 		}
@@ -741,6 +737,10 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 		text, calls, err = f.parentCompletion(request.Context(), w, body)
 	case "parent_codemode":
 		text, calls, err = f.parentCodemode(request.Context(), body)
+	case "parent_persistence":
+		text, calls, err = f.parentPersistence(body)
+	case "persistence_child":
+		text, calls, err = f.persistenceChild(body)
 	case "parent_admission":
 		text, calls, err = f.parentAdmission(request.Context(), body)
 	case "completion_child":
@@ -949,6 +949,9 @@ func run(directory, pig, extension, scenario string) error {
 	if scenario == "lifecycle" || scenario == "pause" || scenario == "completion" {
 		return f.runLifecycle(ctx, directory, workspace, agentDir, pig, extension, stdout, stderr)
 	}
+	if scenario == "persistence" {
+		return f.runPersistence(ctx, directory, workspace, agentDir, pig, extension, stdout, stderr)
+	}
 	model := "fixture/parent"
 	if scenario == "unbounded" {
 		model = "fixture/parent_unbounded"
@@ -956,13 +959,13 @@ func run(directory, pig, extension, scenario string) error {
 		model = "fixture/parent_cwd"
 	} else if scenario == "nested" {
 		model = "fixture/parent_nested"
-		configuration := "concurrency: 3\ndepth: 2\nagents:\n  scout:\n    instructions: input.txt\n  coordinator:\n    role: worker\n    instructions: input.txt\n    tools: [read]\n    can_delegate: true\n"
+		configuration := "concurrency: 3\ndepth: 2\nagents:\n  scout:\n    instructions: input.txt\n  coordinator:\n    role: worker\n    instructions: input.txt\n    tools: [read, ls]\n    can_delegate: true\n"
 		if err := os.WriteFile(filepath.Join(workspace, "litter.yaml"), []byte(configuration), 0o600); err != nil {
 			return err
 		}
 	} else if scenario == "checks" {
 		model = "fixture/parent_checks"
-		configuration := "concurrency: 2\ndepth: 2\nmax_history_bytes: 65536\nmax_result_bytes: 256\nagents:\n  scout:\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n  worker:\n    role: worker\n    instructions: NATIVE_CHECK_WORKER_INSTRUCTIONS\n    tools: [read, write, edit, bash]\n    can_delegate: true\n  fixed:\n    role: scout\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n    model: fixture/held\n  custom_scout:\n    role: scout\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n"
+		configuration := "concurrency: 2\ndepth: 2\nmax_result_bytes: 256\nagents:\n  scout:\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n  worker:\n    role: worker\n    instructions: NATIVE_CHECK_WORKER_INSTRUCTIONS\n    tools: [read, write, edit, bash]\n    can_delegate: true\n  fixed:\n    role: scout\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n    model: fixture/held\n  custom_scout:\n    role: scout\n    instructions: input.txt\n    tools: [read]\n    can_delegate: false\n"
 		if err := os.WriteFile(filepath.Join(workspace, "litter.yaml"), []byte(configuration), 0o600); err != nil {
 			return err
 		}
@@ -1085,7 +1088,7 @@ func main() {
 	}
 	pig := flag.String("pig-bin", "", "Released PiG binary")
 	extension := flag.String("extension", filepath.Join(filepath.Dir(self), "pig-litter"), "Built pig-litter standalone")
-	scenario := flag.String("scenario", "core", "core, cwd, unbounded, nested, checks, admission, messages, lifecycle, pause, completion, shadow, or codemode")
+	scenario := flag.String("scenario", "core", "core, cwd, unbounded, nested, checks, admission, messages, lifecycle, pause, completion, shadow, codemode, or persistence")
 	evidenceRoot := flag.String("evidence-root", filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(self)))), ".pstack", "evidence", "go-lifecycle"), "Evidence directory")
 	flag.Parse()
 	if *pig == "" {

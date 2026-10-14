@@ -11,12 +11,10 @@ import (
 
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
-	"github.com/MichaelKinsy/PiG/coding"
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 	"github.com/MichaelKinsy/PiG/tui/widthx"
 )
 
-var hostToolNames = []string{"read", "ls", "write", "edit", "bash"}
 var controlNames = []string{"litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
 var descriptions = map[string]string{
 	"litter_spawn":   "Start a background child. Use litter_list to discover named agent types.",
@@ -110,13 +108,6 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		}
 	}
 	if name == "litter_spawn" {
-		trusted, err := o.context.IsProjectTrusted()
-		if err != nil {
-			return nil, err
-		}
-		if !trusted {
-			return nil, reject("permission_denied", "project trust was revoked")
-		}
 		base := o.cwd
 		if parent != nil {
 			base = parent.cwd
@@ -132,9 +123,6 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		agent, exists := config.Agents[args.Type]
 		if !exists || strings.TrimSpace(args.Task) == "" || len(args.Task) > 16384 {
 			return nil, reject("rejected", "choose a named agent and a bounded task")
-		}
-		if len(args.Task)+len(agent.Instructions)+512 > o.config.MaxHistoryBytes {
-			return nil, reject("rejected", "task would exceed the retained history limit")
 		}
 		if agent.Model != "" && args.Model != "" && args.Model != agent.Model {
 			return nil, reject("permission_denied", "the named agent has a fixed model")
@@ -159,12 +147,16 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 				return nil, err
 			}
 		}
-		manager, err := coding.NewInMemorySessionManager(cwd)
+		available, err := o.rootToolNames()
 		if err != nil {
 			return nil, err
 		}
-		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, history: manager})
+		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, available: available})
 		if err != nil {
+			return nil, err
+		}
+		if err := o.saveChild(execution.owner); err != nil {
+			o.tree.cancelPending(execution)
 			return nil, err
 		}
 		o.deferActivation(key, execution, ctx.Done(), func() bool { return ctx.Err() != nil }, name)
@@ -231,8 +223,10 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		o.beginOutcomeAck(key, selected, name, toolContext)
 		outcome, count, err := o.tree.stop(caller, selected)
 		o.readyOutcomeAck(key, err == nil && outcome != nil && outcome.State.terminal())
-		state := Paused
-		return map[string]any{"state": state, "outcome": outcome, "stoppedCount": count}, err
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"state": outcome.State, "outcome": outcome, "stoppedCount": count}, nil
 	}
 	if name == "litter_message" {
 		mode := args.Mode
@@ -241,13 +235,6 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		}
 		if args.Resume {
 			mode = "resume"
-			trusted, err := o.context.IsProjectTrusted()
-			if err != nil {
-				return nil, err
-			}
-			if !trusted {
-				return nil, reject("permission_denied", "project trust was revoked")
-			}
 			o.tree.mu.Lock()
 			target, err := o.tree.currentLocked(selected)
 			var model string
@@ -259,6 +246,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 				return nil, err
 			}
 			if _, err := o.modelFor(ctx, model, o.services.ModelRuntime()); err != nil {
+				return nil, err
+			}
+			if _, err := o.rootToolNames(); err != nil {
 				return nil, err
 			}
 		}
@@ -306,27 +296,21 @@ func resultContent(operation string, value map[string]any, err error) (string, b
 	if value == nil {
 		value = map[string]any{}
 	}
-	if operation != "litter_inspect" || err != nil {
-		value["operation"] = operation
-	}
+	value["operation"] = operation
 	clipped := false
 	if outcome, ok := value["outcome"].(*Outcome); ok && outcome != nil {
-		copy := *outcome
-		copy.Text, clipped = bounded(copy.Text, 8192)
-		copy.HandbackTruncated = copy.HandbackTruncated || clipped
-		value["outcome"] = &copy
+		clipped = outcome.HandbackTruncated
 	}
 	if report, ok := value["report"].(string); ok {
 		var truncated bool
 		value["report"], truncated = bounded(report, 1024)
 		clipped = clipped || truncated
 	}
-	if operation != "litter_inspect" || err != nil {
-		value["handbackTruncated"] = clipped
-	}
+	value["handbackTruncated"] = clipped
 	data, marshalErr := json.Marshal(value)
 	if marshalErr != nil {
-		return `{"state":"failed","code":"failed","report":"cannot encode child result","handbackTruncated":false}`, true
+		fallback, _ := json.Marshal(map[string]any{"operation": operation, "state": "failed", "code": "failed", "report": "cannot encode child result", "handbackTruncated": false})
+		return string(fallback), true
 	}
 	return string(data), failed
 }

@@ -1,6 +1,7 @@
 package piglitter
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -9,7 +10,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-func TestOutcomeHandbackClippingPreservesRetainedReportAndWireFields(t *testing.T) {
+func TestOutcomeHandbackPreservesRetainedReportAndWireFields(t *testing.T) {
 	outcome := &Outcome{Run: Ref{ID: "child:1"}, State: Partial, Model: "fixture/child", Text: strings.Repeat("é", 5000), Error: "tool read failed", Usage: Usage{TotalTokens: 15}}
 	for _, operation := range []string{"litter_wait", "litter_stop"} {
 		encoded, failed := resultContent(operation, map[string]any{"state": outcome.State, "outcome": outcome}, nil)
@@ -25,7 +26,7 @@ func TestOutcomeHandbackClippingPreservesRetainedReportAndWireFields(t *testing.
 		if err := json.Unmarshal([]byte(encoded), &wire); err != nil {
 			t.Fatal(err)
 		}
-		if wire.Operation != operation || wire.State != Partial || wire.Outcome.Run != (Ref{ID: "child:1"}) || wire.Outcome.Usage.TotalTokens != 15 || len(wire.Outcome.Text) != 8192 || !wire.HandbackTruncated {
+		if wire.Operation != operation || wire.State != Partial || wire.Outcome.Run != (Ref{ID: "child:1"}) || wire.Outcome.Usage.TotalTokens != 15 || wire.Outcome.Text != strings.Repeat("é", 5000) || wire.HandbackTruncated {
 			t.Fatalf("%s wire changed %#v", operation, wire)
 		}
 	}
@@ -34,7 +35,7 @@ func TestOutcomeHandbackClippingPreservesRetainedReportAndWireFields(t *testing.
 	}
 }
 
-func TestInspectHandbackHasOnlyCurrentStateChildAndOutcome(t *testing.T) {
+func TestInspectHandbackIncludesCommonResultMetadata(t *testing.T) {
 	outcome := &Outcome{Run: Ref{ID: "child-1"}, State: Completed, Text: strings.Repeat("é", 5000)}
 	child := Snapshot{Ref: Ref{ID: "child-1"}, State: Completed, Name: "reviewer"}
 	encoded, failed := resultContent("litter_inspect", map[string]any{"state": child.State, "child": child, "outcome": outcome}, nil)
@@ -45,7 +46,7 @@ func TestInspectHandbackHasOnlyCurrentStateChildAndOutcome(t *testing.T) {
 	if err := json.Unmarshal([]byte(encoded), &wire); err != nil {
 		t.Fatal(err)
 	}
-	if len(wire) != 3 {
+	if len(wire) != 5 {
 		t.Fatalf("inspect returned extra top-level fields: %s", encoded)
 	}
 	var state State
@@ -60,14 +61,36 @@ func TestInspectHandbackHasOnlyCurrentStateChildAndOutcome(t *testing.T) {
 	if err := json.Unmarshal(wire["outcome"], &gotOutcome); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := wire["operation"]; ok {
-		t.Fatalf("inspect included operation metadata: %s", encoded)
+	if string(wire["operation"]) != `"litter_inspect"` {
+		t.Fatalf("inspect lost operation metadata: %s", encoded)
 	}
-	if _, ok := wire["handbackTruncated"]; ok {
-		t.Fatalf("inspect included top-level truncation metadata: %s", encoded)
+	if string(wire["handbackTruncated"]) != "false" {
+		t.Fatalf("inspect lost top-level truncation metadata: %s", encoded)
 	}
-	if state != Completed || gotChild.ID != child.ID || gotOutcome.Run.ID != outcome.Run.ID || len(gotOutcome.Text) != 8192 || !gotOutcome.HandbackTruncated {
+	if state != Completed || gotChild.ID != child.ID || gotOutcome.Run.ID != outcome.Run.ID || gotOutcome.Text != strings.Repeat("é", 5000) || gotOutcome.HandbackTruncated {
 		t.Fatalf("inspect handback changed %#v %#v %#v", state, gotChild, gotOutcome)
+	}
+}
+
+func TestStopReportsAnAlreadySettledOutcome(t *testing.T) {
+	for _, state := range []State{Completed, Failed, Partial, Stopped} {
+		t.Run(string(state), func(t *testing.T) {
+			tree := testTree(t, defaultConfig())
+			child := testAdmission(t, tree, Ref{}, "scout", "settled")
+			selected := testRun(t, tree, child.Ref)
+			tree.finish(selected.owner, selected, Outcome{State: state, Text: "retained report"})
+			withCompletionHost(t, tree, func(o *owner) {
+				ticket, err := o.callScope(nil).begin(nil, "stop", "litter_stop")
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw, _ := json.Marshal(map[string]any{"id": child.ID})
+				value, err := o.operation(context.Background(), raw, ticket, nil)
+				if err != nil || value["state"] != state || value["outcome"].(*Outcome).Text != "retained report" || value["stoppedCount"] != 0 {
+					t.Fatalf("stop lost the settled outcome: %#v %v", value, err)
+				}
+			}, func(string, json.RawMessage) json.RawMessage { return json.RawMessage(`"fixture"`) })
+		})
 	}
 }
 

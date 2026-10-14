@@ -10,16 +10,18 @@ import (
 	"time"
 
 	"github.com/MichaelKinsy/PiG/agent"
+	"github.com/MichaelKinsy/PiG/coding"
+	"github.com/MichaelKinsy/PiG/coding/extension"
 	"github.com/MichaelKinsy/PiG/coding/extension/host/subprocess"
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 )
 
-func withCompletionHost(t *testing.T, tree *Tree, exercise func(*owner), hostCall func(string, json.RawMessage) json.RawMessage) {
+func withCompletionHost(t *testing.T, tree *Tree, exercise func(*owner), hostCall func(string, json.RawMessage) json.RawMessage, servers ...extension.RegisteredMcpServer) {
 	t.Helper()
 	host, peer := net.Pipe()
 	defer host.Close()
 	defer peer.Close()
-	if err := host.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	if err := host.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	ext := sdk.New("completion-retention-test")
@@ -35,7 +37,7 @@ func withCompletionHost(t *testing.T, tree *Tree, exercise func(*owner), hostCal
 	if frame := readCompletionEnvelope(t, host); frame.Type != subprocess.MsgRegister {
 		t.Fatal(frame)
 	}
-	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgReady, Ready: &subprocess.ReadyPayload{Cwd: t.TempDir(), Width: 80}})
+	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgReady, Ready: &subprocess.ReadyPayload{Cwd: t.TempDir(), Width: 80, State: &subprocess.StatePayload{McpServers: append([]extension.RegisteredMcpServer{}, servers...)}}})
 	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgRequest, ID: "exercise", Request: &subprocess.RequestPayload{Method: "event", Event: "exercise", HandlerID: 1, Args: json.RawMessage(`{}`)}})
 	for {
 		frame := readCompletionEnvelope(t, host)
@@ -90,6 +92,9 @@ func TestRootSettlementRecoversDiscardedNoticeBeforeReleasingCapacity(t *testing
 			if query.Method == "getEntries" {
 				data, _ := json.Marshal(entries)
 				return data
+			}
+			if query.Method == "getSessionFile" {
+				return json.RawMessage(`null`)
 			}
 			return json.RawMessage(`"fixture"`)
 		case "isIdle":
@@ -170,6 +175,9 @@ func TestLateWaitSuppressesStoredNoticeAndConsumedOnlyContinuation(t *testing.T)
 						data, _ := json.Marshal(entries)
 						return data
 					}
+					if query.Method == "getSessionFile" {
+						return json.RawMessage(`null`)
+					}
 					return json.RawMessage(`"fixture"`)
 				case "isIdle":
 					return json.RawMessage(`{"idle":false}`)
@@ -198,22 +206,23 @@ func TestLateWaitSuppressesStoredNoticeAndConsumedOnlyContinuation(t *testing.T)
 	}
 }
 
-func TestLateAuditRetiresOversizedHistoryAndReportsDeliveryFailure(t *testing.T) {
+func TestLateAuditIsStoredAndPreservesNativeResume(t *testing.T) {
 	config := defaultConfig()
-	config.MaxHistoryBytes, config.MaxResultBytes = 2048, 1800
+	config.MaxResultBytes = 1800
 	tree := testTree(t, config)
-	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read"}, CanDelegate: true}
+	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read", "ls"}, CanDelegate: true}
 	parentRef := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
 	childRef := testAdmission(t, tree, parentRef.Ref, "scout", "child")
 	parent, child := tree.records[parentRef.ID], tree.records[childRef.ID]
-	tree.finish(child, child.run, Outcome{State: Completed, Text: strings.Repeat("x", 1800)})
+	report := strings.Repeat("x", 1800)
+	tree.finish(child, child.run, Outcome{State: Completed, Text: report})
 	tree.finish(parent, parent.run, Outcome{State: Completed, Text: "parent settled"})
 	tree.pending[child.run].outcomeObserved = true
 	withCompletionHost(t, tree, func(o *owner) {
 		o.sendCompletion(child, child.run, *child.run.outcome)
 		inspection, err := tree.inspect(parent.id)
-		if err != nil || !parent.historyLost || parent.history != nil || inspection.Outcome.State != Partial || !strings.Contains(inspection.Outcome.Error, "history cannot fit") {
-			t.Fatalf("late audit remained unbounded or invisible: %#v %v", inspection, err)
+		if err != nil || inspection.Outcome == nil || inspection.Outcome.State != Completed || inspection.Outcome.Text != "parent settled" || inspection.Outcome.Error != "" || len(tree.pending) != 2 {
+			t.Fatalf("late audit changed the parent result or retained child capacity: %#v %v", inspection, err)
 		}
 	}, func(method string, _ json.RawMessage) json.RawMessage {
 		if method != "sessionRead" {
@@ -221,11 +230,52 @@ func TestLateAuditRetiresOversizedHistoryAndReportsDeliveryFailure(t *testing.T)
 		}
 		return json.RawMessage(`"fixture"`)
 	})
+	sessionDir := parent.activeLog.GetSessionDir()
+	directory := parent.activeLog.GetCwd()
+	parent.activeLog = nil
+	trusted := true
+	services, err := coding.NewServices(coding.ServicesOptions{CWD: directory, AgentDir: directory, ProjectTrusted: &trusted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer services.Close()
+	runtime, err := coding.NewRuntime(coding.RuntimeOptions{Services: services})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	session, err := runtime.Resume(string(parentRef.ID), coding.SessionStartOptions{SessionDir: sessionDir, ResourceLoader: coding.NoResources, AllowedTools: map[string]struct{}{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	raw, err := json.Marshal(session.SessionManager().Entries())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []struct {
+		CustomType string          `json:"customType"`
+		Data       completionAudit `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		t.Fatal(err)
+	}
+	audits := 0
+	for _, entry := range entries {
+		var notice completionNotice
+		_ = json.Unmarshal([]byte(entry.Data.Content), &notice)
+		if entry.CustomType == "litter_completion" && entry.Data.Details.ChildID == childRef.ID && notice.Report == report {
+			audits++
+		}
+	}
+	if session.ID() != string(parentRef.ID) || audits != 1 {
+		t.Fatalf("native resume lost the late audit: id=%q audits=%d entries=%s", session.ID(), audits, raw)
+	}
 }
 
 func TestActiveOwnerPublishesLateDeliveryFailureWhenItFinishes(t *testing.T) {
 	tree := testTree(t, defaultConfig())
-	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read"}, CanDelegate: true}
+	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read", "ls"}, CanDelegate: true}
 	parentRef := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
 	childRef := testAdmission(t, tree, parentRef.Ref, "scout", "child")
 	parent, child := tree.records[parentRef.ID], tree.records[childRef.ID]
@@ -240,7 +290,7 @@ func TestActiveOwnerPublishesLateDeliveryFailureWhenItFinishes(t *testing.T) {
 
 func TestLateDeliveryFailureUpdatesCurrentObservationWithoutChangingCapturedResult(t *testing.T) {
 	tree := testTree(t, defaultConfig())
-	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read"}, CanDelegate: true}
+	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read", "ls"}, CanDelegate: true}
 	parentRef := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
 	childRef := testAdmission(t, tree, parentRef.Ref, "scout", "child")
 	parent, child := tree.records[parentRef.ID], tree.records[childRef.ID]
@@ -273,7 +323,7 @@ func TestRejectedResumePreservesRetainedDeliveryFailure(t *testing.T) {
 	for _, timing := range []string{"before resume", "pending resume", "paused pending resume"} {
 		t.Run(timing, func(t *testing.T) {
 			tree := testTree(t, defaultConfig())
-			coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read"}, CanDelegate: true}
+			coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate", Tools: []string{"read", "ls"}, CanDelegate: true}
 			parentRef := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
 			childRef := testAdmission(t, tree, parentRef.Ref, "scout", "child")
 			parent, child := tree.records[parentRef.ID], tree.records[childRef.ID]

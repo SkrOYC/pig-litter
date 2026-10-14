@@ -15,6 +15,7 @@ import (
 func testTree(t *testing.T, config Config) *Tree {
 	t.Helper()
 	tree := newTree(config)
+	tree.root.tools = append([]string{"read", "ls", "write", "edit", "bash", "codemode", "tool_search"}, controlNames...)
 	t.Cleanup(tree.close)
 	return tree
 }
@@ -42,21 +43,15 @@ func testAdmission(t *testing.T, tree *Tree, parent Ref, kind, name string) Snap
 
 func testAdmissionWithAgent(t *testing.T, tree *Tree, parent Ref, kind, name string, definition AgentDefinition) Snapshot {
 	t.Helper()
-	manager, err := coding.NewInMemorySessionManager(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.AppendCustomMessage("fixture", "retained marker", false, nil); err != nil {
-		t.Fatal(err)
-	}
 	var parentRun *run
 	if parent.ID != "" {
 		parentRun = testRun(t, tree, parent)
 	}
-	snapshot, _, err := tree.admit(admission{parentRun: parentRun, kind: kind, name: name, model: "fixture/child", cwd: "/fixture", task: "task", agent: definition, history: manager})
+	snapshot, _, err := tree.admit(admission{parentRun: parentRun, kind: kind, name: name, model: "fixture/child", cwd: "/fixture", task: "task", agent: definition})
 	if err != nil {
 		t.Fatal(err)
 	}
+	tree.records[snapshot.ID].activeLog = nativeTestManager(t, t.TempDir(), string(snapshot.ID))
 	return snapshot
 }
 
@@ -64,7 +59,7 @@ func TestAdmissionCountsDescendantsAndRejectsDepthWritersAndNames(t *testing.T) 
 	config := defaultConfig()
 	config.Concurrency = 2
 	tree := testTree(t, config)
-	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate child tasks", Tools: []string{"read"}, CanDelegate: true}
+	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate child tasks", Tools: []string{"read", "ls"}, CanDelegate: true}
 	parent := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
 	child := testAdmissionWithAgent(t, tree, parent.Ref, "coordinator", "child", coordinator)
 	if child.Depth != 2 || child.Parent == nil || *child.Parent != parent.ID {
@@ -91,13 +86,13 @@ func TestAdmissionCountsDescendantsAndRejectsDepthWritersAndNames(t *testing.T) 
 
 func TestAdmissionUsesEffectiveRoleForDelegationAndBashForWriterConflict(t *testing.T) {
 	tree := testTree(t, defaultConfig())
-	scoutNameWorker := AgentDefinition{Role: "worker", Instructions: "delegate within the read ceiling", Tools: []string{"read"}, CanDelegate: true}
+	scoutNameWorker := AgentDefinition{Role: "worker", Instructions: "delegate within the read ceiling", Tools: []string{"read", "ls"}, CanDelegate: true}
 	parent := testAdmissionWithAgent(t, tree, Ref{}, "scout", "coordinator", scoutNameWorker)
 	if _, _, err := tree.admit(admission{parentRun: testRun(t, tree, parent.Ref), agent: tree.config.Agents["scout"]}); err != nil {
 		t.Fatalf("worker role named scout could not delegate: %v", err)
 	}
 
-	leaf := testAdmissionWithAgent(t, tree, Ref{}, "worker", "leaf", AgentDefinition{Role: "scout", Instructions: "inspect only", Tools: []string{"read"}, CanDelegate: true})
+	leaf := testAdmissionWithAgent(t, tree, Ref{}, "worker", "leaf", AgentDefinition{Role: "scout", Instructions: "inspect only", Tools: []string{"read", "ls"}, CanDelegate: true})
 	if _, _, err := tree.admit(admission{parentRun: testRun(t, tree, leaf.Ref), agent: tree.config.Agents["scout"]}); err == nil || !strings.Contains(err.Error(), "cannot delegate") {
 		t.Fatalf("scout role delegated under a different name: %v", err)
 	}
@@ -135,19 +130,15 @@ func TestWaitCancellationAndTimeoutLeaveChildRunning(t *testing.T) {
 	}
 }
 
-func TestResumeRetainsHistoryAndStaleRunCallbacksCannotAffectReplacement(t *testing.T) {
+func TestResumeRetainsUUIDAndStaleRunCallbacksCannotAffectReplacement(t *testing.T) {
 	tree := testTree(t, defaultConfig())
 	child := testAdmission(t, tree, Ref{}, "scout", "retained")
 	original := testRun(t, tree, child.Ref)
-	manager := tree.records[child.ID].history
 	tree.finish(tree.records[child.ID], original, Outcome{State: Completed, Text: "before resume"})
 	tree.acknowledge(original)
 	inspection, err := tree.inspect(child.ID)
 	if err != nil || inspection.Child.State != Completed || inspection.Outcome == nil || inspection.Outcome.Text != "before resume" {
 		t.Fatalf("inspect did not return current result %#v %v", inspection, err)
-	}
-	if tree.records[child.ID].history != manager {
-		t.Fatal("initial completion replaced retained history")
 	}
 
 	started := make(chan struct{})
@@ -182,9 +173,6 @@ func TestResumeRetainsHistoryAndStaleRunCallbacksCannotAffectReplacement(t *test
 	}
 	if successes != 1 || failures != 1 || resumed.ID != child.ID || replacement == nil || replacement == original {
 		t.Fatalf("concurrent resume results successes=%d failures=%d snapshot=%#v", successes, failures, resumed)
-	}
-	if tree.records[child.ID].history != manager {
-		t.Fatal("resume replaced the retained manager")
 	}
 	if err := tree.activate(original); err == nil {
 		t.Fatal("stale run activated its replacement")
@@ -241,7 +229,7 @@ func TestCleanupKeepsCapacityUntilItJoins(t *testing.T) {
 
 func TestSubtreeOwnershipAndStopAreScopedToSelectedRun(t *testing.T) {
 	tree := testTree(t, defaultConfig())
-	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate child tasks", Tools: []string{"read"}, CanDelegate: true}
+	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate child tasks", Tools: []string{"read", "ls"}, CanDelegate: true}
 	parent := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
 	child := testAdmissionWithAgent(t, tree, parent.Ref, "coordinator", "child", coordinator)
 	sibling := testAdmission(t, tree, Ref{}, "scout", "sibling")
@@ -289,7 +277,7 @@ func TestCompletionReservationWaitsForActualAppend(t *testing.T) {
 	config := defaultConfig()
 	config.MaxMailbox = 1
 	tree := testTree(t, config)
-	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate child tasks", Tools: []string{"read"}, CanDelegate: true}
+	coordinator := AgentDefinition{Role: "worker", Instructions: "coordinate child tasks", Tools: []string{"read", "ls"}, CanDelegate: true}
 	parent := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
 	child := testAdmission(t, tree, parent.Ref, "scout", "child")
 	selected := testRun(t, tree, child.Ref)
