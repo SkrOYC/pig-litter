@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -112,6 +113,8 @@ type fixtureState struct {
 	refs                  []childRef
 	parentMarker          bool
 	stopDone              bool
+	quick                 childRef
+	quickDone             bool
 	providerError         []string
 	providerErrorsOmitted int
 	failedSpawns          []failedSpawn
@@ -168,6 +171,7 @@ type evidenceReport struct {
 	PigletResource    string            `json:"pigletResource,omitempty"`
 	SelectedToolNames []string          `json:"selectedToolNames,omitempty"`
 	ChildRefs         []childRef        `json:"childRefs,omitempty"`
+	QuickChild        childRef          `json:"newerCompletedChild"`
 	AbortedStreams    []string          `json:"abortedStreams,omitempty"`
 	ChildReads        []string          `json:"childReads,omitempty"`
 	FailedSpawns      []failedSpawn     `json:"failedSpawns,omitempty"`
@@ -448,6 +452,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		report.PigletResource = resourceDestination
 		report.SelectedToolNames = state.selectedTools()
 		report.ChildRefs = state.childReferences()
+		report.QuickChild = state.quickReference()
 		report.AbortedStreams = state.names(state.aborted)
 		report.ChildReads = state.names(state.childReads)
 		report.FailedSpawns = state.spawnFailures()
@@ -626,11 +631,42 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		if _, err := frame("tool-cards-recollapsed-100"); err != nil {
 			return evidencePath, err
 		}
+		if err := sendText("QUICK_WIDGET"); err != nil {
+			return evidencePath, err
+		}
+		if err := sendKey("Enter"); err != nil {
+			return evidencePath, err
+		}
+		if err := waitFor(ctx, "newer quick child completed with older children held", stageTimeout, func() (bool, error) {
+			if err := state.providerFailure(); err != nil {
+				return false, err
+			}
+			visible, err := readVisible()
+			if err != nil {
+				return false, nil
+			}
+			return state.quickReady() && strings.Contains(visible, "QUICK_DONE") && !strings.Contains(visible, "Working"), nil
+		}); err != nil {
+			return evidencePath, err
+		}
+		activeBeforeResize, err := frame("newer-completed-active-first-100")
+		if err != nil {
+			return evidencePath, err
+		}
+		if !widgetShows(activeBeforeResize.visible, "running") {
+			return evidencePath, errors.New("newer completed child displaced older active widget rows")
+		}
+		requestsBeforeResize := len(state.requestEvidence())
+		widgetBeforeResize := latestWidgetLines(activeBeforeResize.visible)
+		if !strings.Contains(widgetBeforeResize[0], "2 active") || !strings.Contains(widgetBeforeResize[0], "1 settled") || !strings.Contains(widgetBeforeResize[3], "/pig-litter | +1 more") {
+			return evidencePath, errors.New("widget did not retain completed counts and command discovery")
+		}
 		if _, err := tmuxCall("resize-window", "-t", session, "-x", "32", "-y", "32"); err != nil {
 			return evidencePath, err
 		}
 		narrow, err := waitForLayout(ctx, paneSize, readVisible, readScrollback, 32, 32, func(visible string) bool {
-			return widgetShows(visible, "running") && strings.Contains(visible, "PARENT_SCROLLBACK_MARKER")
+			rows := latestWidgetLines(visible)
+			return widgetShows(visible, "running") && strings.Contains(visible, "PARENT_SCROLLBACK_MARKER") && len(rows) == 4 && rows[0] == "Litter 2 live 1 done" && strings.Contains(rows[3], "/pig-litter")
 		}, "the rendered 32-column live widget")
 		if err != nil {
 			return evidencePath, err
@@ -642,10 +678,13 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			return evidencePath, err
 		}
 		wide, err := waitForLayout(ctx, paneSize, readVisible, readScrollback, 100, 32, func(visible string) bool {
-			return widgetShows(visible, "running") && strings.Contains(visible, "PARENT_SCROLLBACK_MARKER")
+			return widgetShows(visible, "running") && strings.Contains(visible, "PARENT_SCROLLBACK_MARKER") && slices.Equal(latestWidgetLines(visible), widgetBeforeResize)
 		}, "the restored 100-column live widget")
 		if err != nil {
 			return evidencePath, err
+		}
+		if len(state.requestEvidence()) != requestsBeforeResize {
+			return evidencePath, errors.New("resize unexpectedly started inference")
 		}
 		if err := saveFrame(evidencePath, "live-100-after-resize", wide); err != nil {
 			return evidencePath, err
@@ -757,7 +796,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			return evidencePath, err
 		}
 		paused, err := waitForLayout(ctx, paneSize, readVisible, readScrollback, 100, 32, func(visible string) bool {
-			return widgetShows(visible, "paused") && strings.Contains(visible, "STOP_DONE")
+			return widgetShows(visible, "paused") && strings.Contains(visible, "STOP_DONE") && !strings.Contains(visible, "Working")
 		}, "the retained paused widget")
 		if err != nil {
 			return evidencePath, err
@@ -766,7 +805,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			return evidencePath, err
 		}
 		if !widgetShows(paused.visible, "paused") {
-			return evidencePath, errors.New("paused frame did not retain both paused children")
+			return evidencePath, errors.New("paused frame did not show paused and recent completed results")
 		}
 		if err := pageUpUntilVisible(ctx, readVisible, sendKey, "PARENT_SCROLLBACK_MARKER"); err != nil {
 			return evidencePath, err
@@ -862,6 +901,12 @@ func (state *fixtureState) decide(request openAIRequest) (providerTurn, error) {
 		state.childReads[name] = struct{}{}
 		return providerTurn{kind: "hold", name: name}, nil
 	}
+	if request.Model == "quick" {
+		if err := requireToolInventory(tools, []string{"read"}, []string{"ls"}, "quick scout leaf"); err != nil {
+			return providerTurn{}, err
+		}
+		return providerTurn{kind: "text", text: "QUICK_REPORT"}, nil
+	}
 	if request.Model != "parent" {
 		return providerTurn{}, fmt.Errorf("unexpected fixture model %q", request.Model)
 	}
@@ -935,6 +980,33 @@ func (state *fixtureState) decide(request openAIRequest) (providerTurn, error) {
 		}
 		state.parentMarker = true
 		return providerTurn{kind: "text", text: "PARENT_SCROLLBACK_MARKER"}, nil
+	case "QUICK_WIDGET":
+		results, err := spawnToolResults(request.Messages)
+		if err != nil {
+			return providerTurn{}, err
+		}
+		for _, result := range results {
+			if result.Child.Name == "quick-newer" {
+				state.quick = childRef{ID: result.Child.ID, Name: result.Child.Name}
+			}
+		}
+		if state.quick.ID == "" {
+			return providerTurn{kind: "tools", calls: []toolCall{{name: "litter_spawn", args: map[string]string{"type": "scout", "name": "quick-newer", "model": "fixture/quick", "task": "Return QUICK_REPORT immediately."}}}}, nil
+		}
+		values, err := toolResultValues(request.Messages)
+		if err != nil {
+			return providerTurn{}, err
+		}
+		for _, value := range values {
+			if value.Operation == "litter_wait" {
+				if value.State != "completed" {
+					return providerTurn{}, fmt.Errorf("quick child did not complete: %s %s", value.State, value.Report)
+				}
+				state.quickDone = true
+				return providerTurn{kind: "text", text: "PARENT_SCROLLBACK_MARKER QUICK_DONE"}, nil
+			}
+		}
+		return providerTurn{kind: "tools", calls: []toolCall{{name: "litter_wait", args: map[string]any{"id": state.quick.ID, "timeoutMs": 30000}}}}, nil
 	case "STOP_WIDGET":
 		ids := strings.Fields(marker.text)
 		if len(ids) != 3 || len(state.refs) != 2 {
@@ -1068,6 +1140,18 @@ func (state *fixtureState) selectedTools() []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func (state *fixtureState) quickReference() childRef {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.quick
+}
+
+func (state *fixtureState) quickReady() bool {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.quickDone && state.quick.ID != "" && len(state.held) == 2
 }
 
 func (state *fixtureState) childReferences() []childRef {
@@ -1300,7 +1384,7 @@ func makeFixtureFiles(workspace, home, pigHome, agentDir string, port int) error
 	files := map[string][]byte{
 		filepath.Join(workspace, "litter.yaml"):           []byte("concurrency: 4\ndepth: 2\n"),
 		filepath.Join(workspace, "fixture-read.txt"):      []byte("TUI_READ_MARKER\n"),
-		filepath.Join(agentDir, "models.json"):            []byte(fmt.Sprintf(`{"providers":{"fixture":{"api":"openai-completions","baseUrl":"http://127.0.0.1:%d/v1","apiKey":%q,"models":[{"id":"parent","name":"parent","contextWindow":32000,"maxTokens":2048},{"id":"held","name":"held","contextWindow":32000,"maxTokens":2048}]}}}`, port, fixtureAPIKey)),
+		filepath.Join(agentDir, "models.json"):            []byte(fmt.Sprintf(`{"providers":{"fixture":{"api":"openai-completions","baseUrl":"http://127.0.0.1:%d/v1","apiKey":%q,"models":[{"id":"parent","name":"parent","contextWindow":32000,"maxTokens":2048},{"id":"held","name":"held","contextWindow":32000,"maxTokens":2048},{"id":"quick","name":"quick","contextWindow":32000,"maxTokens":2048}]}}}`, port, fixtureAPIKey)),
 		filepath.Join(agentDir, "auth.json"):              []byte(fmt.Sprintf(`{"fixture":{"type":"api_key","key":%q}}`, fixtureAPIKey)),
 		filepath.Join(agentDir, "trust.json"):             []byte(`{}`),
 		filepath.Join(agentDir, "settings.json"):          []byte(`{}`),
@@ -1478,7 +1562,7 @@ func latestRootPrompt(messages []openAIMessage) (marker struct{ marker, text str
 		lines := strings.Split(strings.ReplaceAll(contentText(messages[index].Content), "\r\n", "\n"), "\n")
 		for lineIndex := len(lines) - 1; lineIndex >= 0; lineIndex-- {
 			line := strings.TrimSpace(lines[lineIndex])
-			if line == "START_WIDGET" || line == "UNSELECTED_WIDGET" {
+			if line == "START_WIDGET" || line == "UNSELECTED_WIDGET" || line == "QUICK_WIDGET" {
 				return struct{ marker, text string }{marker: line, text: line}
 			}
 			if strings.HasPrefix(line, "STOP_WIDGET ") {
@@ -1653,7 +1737,7 @@ func latestWidgetLines(frame string) []string {
 	if heading < 0 {
 		return nil
 	}
-	end := heading + 3
+	end := heading + 4
 	if end > len(lines) {
 		end = len(lines)
 	}
@@ -1666,14 +1750,13 @@ func latestWidgetLines(frame string) []string {
 
 func widgetShows(frame, state string) bool {
 	lines := latestWidgetLines(frame)
-	heading := "Litter 2 live 0 kept"
-	if state == "paused" {
-		heading = "Litter 0 live 2 kept"
-	}
-	if len(lines) != 3 || lines[0] != heading {
+	if len(lines) < 3 {
 		return false
 	}
-	return contains(lines, "held-a "+state) && contains(lines, "held-b "+state)
+	if state == "paused" {
+		return (contains(lines[:3], "held-a paused") || contains(lines[:3], "held-b paused")) && contains(lines[:3], "quick-newer completed") && strings.Contains(lines[0], "2 paused") && strings.Contains(lines[0], "1 settled")
+	}
+	return contains(lines[:3], "held-a "+state) && contains(lines[:3], "held-b "+state)
 }
 
 func parsePaneGeometry(value string) (paneGeometry, error) {
