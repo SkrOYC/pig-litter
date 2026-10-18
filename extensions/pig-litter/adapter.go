@@ -628,7 +628,7 @@ func Run() error {
 func newExtension(state *extensionState) *sdk.Extension {
 	ext := sdk.New("pig-litter")
 	for _, name := range controlNames {
-		ext.RegisterTool(sdk.ToolDefinition{Name: name, Label: name, Description: descriptions[name], PromptSnippet: descriptions[name], PromptGuidelines: promptGuidelines[name], Parameters: schemas[name], ExecutionMode: "parallel", Execute: func(ctx sdk.Context, params map[string]any) (any, error) {
+		ext.RegisterTool(sdk.ToolDefinition{Name: name, Label: name, Description: descriptions[name], PromptSnippet: descriptions[name], PromptGuidelines: promptGuidelines[name], Parameters: schemas[name], RenderShell: sdk.ToolRenderShellDefault, RenderCall: toolCallRenderer(name), RenderResult: toolResultRenderer(name), ExecutionMode: "parallel", Execute: func(ctx sdk.Context, params map[string]any) (any, error) {
 			o, err := state.ensure(ctx)
 			if err != nil {
 				return sdkResult(name, nil, err), nil
