@@ -49,6 +49,9 @@ type owner struct {
 	rootSignal               context.Context
 	rootWatch                chan struct{}
 	persistMu                sync.Mutex
+	widgetMu                 sync.Mutex
+	widgetStopped            bool
+	widgetUnsubscribe        func()
 }
 
 func configuredAgentDir() string {
@@ -148,6 +151,10 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		s.retire()
 		return nil, err
 	}
+	if err := o.startWidget(); err != nil {
+		s.retire()
+		return nil, err
+	}
 	o.widget()
 	tree.mu.Lock()
 	if !tree.closed {
@@ -165,15 +172,22 @@ func (s *extensionState) retire() {
 	s.mu.Lock()
 	s.epoch++
 	previous := s.owner
+	var retirement chan struct{}
 	if previous != nil {
-		s.retiring = previous.tree.closedDone
+		retirement = make(chan struct{})
+		s.retiring = retirement
 	}
 	s.owner = nil
 	s.calls = nil
+	retiring := s.retiring
 	s.mu.Unlock()
 	if previous == nil {
+		if retiring != nil {
+			<-retiring
+		}
 		return
 	}
+	previous.stopWidget()
 	previous.ackMu.Lock()
 	acks := previous.acks
 	previous.acks = map[*callTicket]*acknowledgement{}
@@ -188,9 +202,7 @@ func (s *extensionState) retire() {
 	}
 	previous.tree.close()
 	previous.services.Close()
-	if previous.context.HasUI() {
-		_ = previous.context.SetWidget("pig-litter", []string{})
-	}
+	close(retirement)
 }
 
 func (o *owner) modelFor(ctx context.Context, name string, runtime *coding.ModelRuntime) (*ai.Model, error) {
@@ -601,12 +613,47 @@ func outcomeFrom(terminal *agent.AssistantMessage, before, after coding.SessionS
 	return outcome
 }
 
+func (o *owner) startWidget() error {
+	if !o.context.HasUI() {
+		return nil
+	}
+	o.widgetMu.Lock()
+	defer o.widgetMu.Unlock()
+	if o.widgetStopped {
+		return reject("unavailable", "the root Session retired")
+	}
+	unsubscribe, err := o.context.OnWidthChange(func(_ sdk.Context, _ int) { o.widget() })
+	if err != nil {
+		return err
+	}
+	o.widgetUnsubscribe = unsubscribe
+	return nil
+}
+
+func (o *owner) stopWidget() {
+	o.widgetMu.Lock()
+	defer o.widgetMu.Unlock()
+	o.widgetStopped = true
+	if o.widgetUnsubscribe != nil {
+		o.widgetUnsubscribe()
+		o.widgetUnsubscribe = nil
+	}
+	if o.context.HasUI() {
+		_ = o.context.SetWidget("pig-litter", []string{})
+	}
+}
+
 func (o *owner) widget() {
+	o.widgetMu.Lock()
+	defer o.widgetMu.Unlock()
+	if o.widgetStopped {
+		return
+	}
 	if !o.context.HasUI() {
 		return
 	}
 	o.state.mu.Lock()
-	active := o.state.owner == o
+	active := o.state.owner == o && o.state.epoch == o.epoch
 	o.state.mu.Unlock()
 	if !active {
 		return
