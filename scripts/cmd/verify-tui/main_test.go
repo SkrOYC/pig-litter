@@ -265,7 +265,7 @@ func TestPigletOriginRejectsJavaScriptAndNonLocalResources(t *testing.T) {
 
 func TestWidgetGeometryStartupAndEditorPredicates(t *testing.T) {
 	live := strings.Join([]string{"Litter 2 live 0 kept", "held-a running", "held-b running"}, "\n")
-	paused := strings.Join([]string{"Litter 0 live 2 kept", "held-a paused", "held-b paused"}, "\n")
+	paused := strings.Join([]string{"Litter 0 active 0 errors 2 paused 1 settled", "held-b paused", "quick-newer completed", "/pig-litter | +1 more"}, "\n")
 	if !widgetShows(live, "running") || !widgetShows(paused, "paused") || widgetShows(live, "paused") {
 		t.Fatal("widget state predicate did not distinguish live and retained children")
 	}
@@ -376,4 +376,40 @@ func removeName(values []string, name string) []string {
 		}
 	}
 	return result
+}
+
+func TestProviderCompletesNewerChildAndKeepsHeldChildren(t *testing.T) {
+	state := newFixtureState(caseDirect)
+	for _, name := range heldNames {
+		if err := state.beginHold(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tools := providerTools(append(append([]string(nil), fileTools...), controlTools...)...)
+	request := openAIRequest{Model: "parent", Tools: tools, Messages: []openAIMessage{{Role: "user", Content: rawJSON(t, "QUICK_WIDGET")}}}
+	turn, err := state.decide(request)
+	if err != nil || turn.kind != "tools" || len(turn.calls) != 1 || turn.calls[0].name != "litter_spawn" {
+		t.Fatalf("quick spawn = %#v %v", turn, err)
+	}
+	request.Messages = append(request.Messages, openAIMessage{Role: "tool", Content: rawJSON(t, `{"operation":"litter_spawn","child":{"id":"quick:1","name":"quick-newer"}}`)})
+	turn, err = state.decide(request)
+	if err != nil || turn.kind != "tools" || len(turn.calls) != 1 || turn.calls[0].name != "litter_wait" {
+		t.Fatalf("quick wait = %#v %v", turn, err)
+	}
+	child, err := state.decide(openAIRequest{Model: "quick", Tools: providerTools("read"), Messages: []openAIMessage{{Role: "user", Content: rawJSON(t, "Return QUICK_REPORT immediately.")}}})
+	if err != nil || child.kind != "text" || child.text != "QUICK_REPORT" {
+		t.Fatalf("quick child = %#v %v", child, err)
+	}
+	request.Messages = append(request.Messages, openAIMessage{Role: "tool", Content: rawJSON(t, `{"operation":"litter_wait","state":"completed"}`)})
+	turn, err = state.decide(request)
+	if err != nil || turn.kind != "text" || turn.text != "PARENT_SCROLLBACK_MARKER QUICK_DONE" || !state.quickReady() || state.quickReference().ID != "quick:1" {
+		t.Fatalf("quick completion = %#v %v", turn, err)
+	}
+}
+
+func TestWidgetPredicateRejectsNewerCompletedDisplacement(t *testing.T) {
+	frame := "Litter 2 live 1 kept\nheld-b running\nquick-newer completed\n/pig-litter"
+	if widgetShows(frame, "running") {
+		t.Fatal("newer completed child hid older active work")
+	}
 }
