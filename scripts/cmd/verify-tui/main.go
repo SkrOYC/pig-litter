@@ -588,6 +588,44 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		if !widgetShows(initial.visible, "running") {
 			return evidencePath, errors.New("initial live frame did not show both children")
 		}
+		if err := waitFor(ctx, "compact litter tool cards", stageTimeout, func() (bool, error) {
+			return visibleContains(readVisible, "starting held-a") && visibleContains(readVisible, "starting held-b"), nil
+		}); err != nil {
+			return evidencePath, err
+		}
+		if _, err := frame("tool-cards-collapsed-100"); err != nil {
+			return evidencePath, err
+		}
+		if err := sendKey("C-o"); err != nil {
+			return evidencePath, err
+		}
+		if err := waitFor(ctx, "native expanded litter tool cards", stageTimeout, func() (bool, error) {
+			visible, err := readVisible()
+			if err != nil {
+				return false, nil
+			}
+			return strings.Contains(visible, "UUID ") && strings.Contains(visible, "Model fixture/held") && strings.Contains(visible, "Cwd "), nil
+		}); err != nil {
+			return evidencePath, err
+		}
+		if _, err := frame("tool-cards-expanded-100"); err != nil {
+			return evidencePath, err
+		}
+		if err := sendKey("C-o"); err != nil {
+			return evidencePath, err
+		}
+		if err := waitFor(ctx, "native collapsed litter tool cards", stageTimeout, func() (bool, error) {
+			visible, err := readVisible()
+			if err != nil {
+				return false, nil
+			}
+			return strings.Contains(visible, "starting held-a") && strings.Contains(visible, "starting held-b") && !strings.Contains(visible, "UUID ") && strings.Contains(visible, "PARENT_SCROLLBACK_MARKER"), nil
+		}); err != nil {
+			return evidencePath, err
+		}
+		if _, err := frame("tool-cards-recollapsed-100"); err != nil {
+			return evidencePath, err
+		}
 		if _, err := tmuxCall("resize-window", "-t", session, "-x", "32", "-y", "32"); err != nil {
 			return evidencePath, err
 		}
