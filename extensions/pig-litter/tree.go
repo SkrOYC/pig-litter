@@ -55,6 +55,11 @@ type admission struct {
 	available                    []string
 }
 
+type controlAuthority struct {
+	caller *run
+	human  func() error
+}
+
 func newTree(config Config) *Tree {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Tree{config: config, root: &record{id: "root", name: "root"}, ctx: ctx, cancel: cancel, records: map[ChildID]*record{}, names: map[string]ChildID{}, pending: map[*run]*reservation{}, dirty: map[ChildID]*record{}, closedDone: make(chan struct{})}
@@ -136,8 +141,14 @@ func (t *Tree) selectOwned(caller *run, id ChildID) (*run, error) {
 	return r.run, nil
 }
 
-func (t *Tree) controlLocked(caller, selected *run) (*record, error) {
-	parent, err := t.callerLocked(caller)
+func (t *Tree) controlAsLocked(authority controlAuthority, selected *run) (*record, error) {
+	parent := t.root
+	var err error
+	if authority.human != nil {
+		err = authority.human()
+	} else {
+		parent, err = t.callerLocked(authority.caller)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +158,9 @@ func (t *Tree) controlLocked(caller, selected *run) (*record, error) {
 	}
 	if r.parent != parent {
 		return nil, reject("permission_denied", "only the immediate parent can control this child")
+	}
+	if authority.human != nil && selected.admission != admissionReady {
+		return nil, reject("rejected", "child admission is pending its model tool acknowledgement or storage")
 	}
 	return r, nil
 }
@@ -280,6 +294,10 @@ func (t *Tree) admit(request admission) (Snapshot, *run, error) {
 }
 
 func (t *Tree) activate(selected *run) error {
+	return t.activateChecked(selected, nil)
+}
+
+func (t *Tree) activateChecked(selected *run, accept func() error) error {
 	t.lifecycleMu.Lock()
 	t.mu.Lock()
 	r, err := t.currentLocked(selected)
@@ -295,20 +313,34 @@ func (t *Tree) activate(selected *run) error {
 		return reject("rejected", "child activation is no longer pending")
 	}
 	run.started = true
+	run.admission = admissionStoring
 	r.admitted = true
 	r.previous = nil
+	previousInputs := slices.Clone(r.pendingInputs)
 	if run.resume {
 		r.pendingInputs = append(r.pendingInputs, pendingInput{Text: run.continuation})
 	}
 	t.mu.Unlock()
 	err = t.store(r)
+	activated := time.Now()
+	if err == nil && accept != nil {
+		err = accept()
+	}
+	t.mu.Lock()
+	if err != nil {
+		r.pendingInputs = previousInputs
+	} else {
+		run.admission = admissionReady
+		run.progress.activated = activated
+	}
+	t.mu.Unlock()
 	t.lifecycleMu.Unlock()
 	t.notify()
+	if err != nil {
+		t.finish(r, run, Outcome{State: Unavailable, Error: "child activation storage failed: " + err.Error()})
+		return err
+	}
 	go func() {
-		if err != nil {
-			t.finish(r, run, Outcome{State: Unavailable, Error: "child activation storage failed: " + err.Error()})
-			return
-		}
 		outcome := t.execute(r, run)
 		t.finish(r, run, outcome)
 	}()
@@ -394,6 +426,14 @@ func (t *Tree) finish(r *record, run *run, raw Outcome) {
 	t.mu.Lock()
 	raw = *run.outcome
 	run.state, run.finishing = raw.State, false
+	if run.started {
+		run.admission = admissionReady
+	}
+	if !run.progress.activated.IsZero() {
+		run.progress.settled = time.Now()
+	}
+	run.progress.activeTools = nil
+	run.progress.toolsClipped = false
 	run.cancel()
 	for {
 		select {
@@ -552,8 +592,12 @@ func (t *Tree) wait(ctx context.Context, selected *run, timeout int) (Outcome, e
 }
 
 func (t *Tree) resume(caller, selected *run, text string) (Snapshot, *run, error) {
+	return t.resumeAs(controlAuthority{caller: caller}, selected, text)
+}
+
+func (t *Tree) resumeAs(authority controlAuthority, selected *run, text string) (Snapshot, *run, error) {
 	t.mu.Lock()
-	r, err := t.controlLocked(caller, selected)
+	r, err := t.controlAsLocked(authority, selected)
 	if err != nil {
 		t.mu.Unlock()
 		return Snapshot{}, nil, err
@@ -570,11 +614,6 @@ func (t *Tree) resume(caller, selected *run, text string) (Snapshot, *run, error
 	if err := t.roomLocked(r.parentID(), !r.readOnly, r.cwd, r.id); err != nil {
 		return Snapshot{}, nil, err
 	}
-	for parent := r.parent; parent != nil; parent = parent.parent {
-		if parent.paused {
-			return Snapshot{}, nil, reject("rejected", "the parent is paused")
-		}
-	}
 	r.previous = r.run
 	r.run = t.newRunLocked(Ref{r.id}, prompt)
 	r.run.owner = r
@@ -588,17 +627,24 @@ func (t *Tree) resume(caller, selected *run, text string) (Snapshot, *run, error
 }
 
 func (t *Tree) message(ctx context.Context, caller, selected *run, mode, text string) (Snapshot, *run, error) {
+	return t.messageAs(ctx, controlAuthority{caller: caller}, selected, mode, text)
+}
+
+func (t *Tree) messageAs(ctx context.Context, authority controlAuthority, selected *run, mode, text string) (Snapshot, *run, error) {
+	if ctx.Err() != nil {
+		return Snapshot{}, nil, reject("cancelled", "message caller cancelled")
+	}
 	if len(text) > 16384 || len(strings.TrimSpace(text)) == 0 {
 		return Snapshot{}, nil, reject("rejected", "invalid child message or message byte bound reached")
 	}
 	if mode == "resume" {
-		return t.resume(caller, selected, text)
+		return t.resumeAs(authority, selected, text)
 	}
 	if mode != "steer" && mode != "follow_up" {
 		return Snapshot{}, nil, reject("rejected", "invalid child message")
 	}
 	t.mu.Lock()
-	r, err := t.controlLocked(caller, selected)
+	r, err := t.controlAsLocked(authority, selected)
 	if err != nil {
 		t.mu.Unlock()
 		return Snapshot{}, nil, err
@@ -617,7 +663,7 @@ func (t *Tree) message(ctx context.Context, caller, selected *run, mode, text st
 		return Snapshot{}, nil, reject("rejected", "child is settling and cannot accept a message")
 	}
 	t.mu.Lock()
-	if _, err := t.controlLocked(caller, selected); err != nil || r.paused || run.state != Starting && run.state != Running {
+	if _, err := t.controlAsLocked(authority, selected); err != nil || ctx.Err() != nil || r.paused || run.state != Starting && run.state != Running {
 		t.mu.Unlock()
 		return Snapshot{}, nil, reject("rejected", "child is no longer active")
 	}
@@ -662,8 +708,12 @@ func (t *Tree) message(ctx context.Context, caller, selected *run, mode, text st
 }
 
 func (t *Tree) stop(caller, selected *run) (*Outcome, int, error) {
+	return t.stopAs(controlAuthority{caller: caller}, selected)
+}
+
+func (t *Tree) stopAs(authority controlAuthority, selected *run) (*Outcome, int, error) {
 	t.mu.Lock()
-	target, err := t.controlLocked(caller, selected)
+	target, err := t.controlAsLocked(authority, selected)
 	if err != nil {
 		t.mu.Unlock()
 		return nil, 0, err
@@ -813,6 +863,9 @@ func (t *Tree) deliveryFailed(selected *run, failure error) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if selected.reservation != nil && selected.reservation.stored {
+		return
+	}
 	child := t.records[selected.ref.ID]
 	if child == nil {
 		return

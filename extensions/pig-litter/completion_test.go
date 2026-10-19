@@ -125,6 +125,7 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 			writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgReady, Ready: &subprocess.ReadyPayload{Cwd: t.TempDir(), Width: 80}})
 			writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgRequest, ID: "complete", Request: &subprocess.RequestPayload{Method: "event", Event: "session_start", HandlerID: 1, Args: json.RawMessage(`{}`)}})
 			idleCalls, sends, sessionReads, audits := 0, 0, 0, 0
+			observationSent := false
 			for completed, observed := false, !test.handoff; !completed || !observed; {
 				envelope := readCompletionEnvelope(t, host)
 				if envelope.Type == subprocess.MsgResponse && envelope.ID == "complete" {
@@ -211,7 +212,8 @@ func TestRootCompletionDeliveryUsesLiveStateAndPreservesReservation(t *testing.T
 					t.Fatalf("unexpected host method %q", envelope.Call.Method)
 				}
 				writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgCallResult, ID: envelope.ID, CallResult: response})
-				if test.handoff && sessionMethod == "getSessionId" {
+				if test.handoff && sessionMethod == "getSessionId" && !observationSent {
+					observationSent = true
 					writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgRequest, ID: "observe", Request: &subprocess.RequestPayload{Method: "event", Event: "message_end", HandlerID: 2, Args: json.RawMessage(`{}`)}})
 				}
 			}

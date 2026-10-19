@@ -36,13 +36,17 @@ type completionEntry struct {
 }
 
 func handbackStored(entries []json.RawMessage, handback *outcomeHandback, child ChildID) bool {
-	if handback == nil || handback.After == nil {
-		return false
+	return storedHandback(entries, handback, child) != nil
+}
+
+func storedHandback(entries []json.RawMessage, handback *outcomeHandback, child ChildID) *Outcome {
+	if handback == nil || handback.After == nil || handback.CallID == "" || handback.Operation != "litter_wait" && handback.Operation != "litter_stop" {
+		return nil
 	}
 	after := *handback.After == ""
 	for _, raw := range entries {
 		var entry completionEntry
-		if json.Unmarshal(raw, &entry) != nil {
+		if json.Unmarshal(raw, &entry) != nil || entry.ID == "" {
 			continue
 		}
 		if entry.ID == *handback.After {
@@ -63,11 +67,20 @@ func handbackStored(entries []json.RawMessage, handback *outcomeHandback, child 
 				Outcome   *Outcome `json:"outcome"`
 			}
 			if block.Type == "text" && json.Unmarshal([]byte(block.Text), &result) == nil && result.Operation == handback.Operation && result.Outcome != nil && result.Outcome.Run.ID == child && result.Outcome.State.terminal() {
-				return true
+				return result.Outcome
 			}
 		}
 	}
-	return false
+	return nil
+}
+
+func handbackMatches(entries []json.RawMessage, handback *outcomeHandback, details completionDetails, content string) bool {
+	outcome := storedHandback(entries, handback, details.ChildID)
+	if outcome == nil {
+		return false
+	}
+	stored, err := completionContent(*outcome)
+	return err == nil && stored == content
 }
 
 func completionStored(entries []json.RawMessage, details completionDetails, content string) bool {
@@ -86,11 +99,43 @@ func completionStored(entries []json.RawMessage, details completionDetails, cont
 			}
 		}
 		var audit completionAudit
-		if entry.CustomType == "litter_completion" && json.Unmarshal(entry.Data, &audit) == nil && audit.Details == details && audit.Content == content && handbackStored(entries, audit.Handback, details.ChildID) {
+		if entry.CustomType == "litter_completion" && json.Unmarshal(entry.Data, &audit) == nil && audit.Details == details && audit.Content == content && handbackMatches(entries, audit.Handback, details, content) {
 			return true
 		}
 	}
 	return false
+}
+
+func consumedCompletions(entries []json.RawMessage, root ChildID) map[completionDetails]string {
+	authority := map[completionDetails]string{}
+	for _, raw := range entries {
+		var entry completionEntry
+		var child savedChild
+		if json.Unmarshal(raw, &entry) != nil || entry.ID == "" || entry.CustomType != childEntryType || json.Unmarshal(entry.Data, &child) != nil || child.RootID != root || child.ParentID != root || !childUUID.MatchString(string(child.ID)) || !child.Admitted && !spawnStored(entries, child.ID) {
+			continue
+		}
+		for _, notice := range child.Notices {
+			if notice.Nonce == "" || notice.Outcome.Run.ID != child.ID || !notice.Outcome.State.terminal() {
+				continue
+			}
+			content, err := completionContent(notice.Outcome)
+			if err == nil {
+				authority[completionDetails{ChildID: child.ID, Receipt: notice.Nonce}] = content
+			}
+		}
+	}
+	consumed := map[completionDetails]string{}
+	for _, raw := range entries {
+		var entry completionEntry
+		var audit completionAudit
+		if json.Unmarshal(raw, &entry) != nil || entry.ID == "" || entry.CustomType != "litter_completion" || json.Unmarshal(entry.Data, &audit) != nil || audit.Content == "" || authority[audit.Details] != audit.Content {
+			continue
+		}
+		if handbackMatches(entries, audit.Handback, audit.Details, audit.Content) {
+			consumed[audit.Details] = audit.Content
+		}
+	}
+	return consumed
 }
 
 func (o *owner) persistedCompletionEntries(parentID ChildID) ([]json.RawMessage, error) {

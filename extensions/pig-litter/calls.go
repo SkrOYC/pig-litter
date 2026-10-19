@@ -61,10 +61,13 @@ func (o *owner) callScope(caller *run) *callScope {
 	if caller == nil {
 		o.state.mu.Lock()
 		defer o.state.mu.Unlock()
-		if o.state.calls == nil {
-			o.state.calls = newCallScope()
+		if o.rootCalls == nil {
+			o.rootCalls = newCallScope()
+			if o.state.owner != o || o.state.epoch != o.epoch {
+				o.rootCalls.closed = true
+			}
 		}
-		return o.state.calls
+		return o.rootCalls
 	}
 	caller.mu.Lock()
 	defer caller.mu.Unlock()
