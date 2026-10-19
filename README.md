@@ -88,7 +88,20 @@ Only the immediate parent can inspect, message, wait for, resume, or stop a chil
 
 Children use PiG's native persisted sessions. The root's native log stores child definitions, parent ownership, names, and latest bounded outcomes. Reloading or reopening the same root UUID recovers those records. A different root has its own children. The root's persistence setting also applies to its metadata. An ephemeral root can recover during its live host lifetime, but its metadata does not survive process exit. Child conversations remain native persisted sessions in either case.
 
-A compact terminal widget shows recent direct children with their names and states. `/pig-litter` explains the controls.
+A compact terminal widget prioritizes active direct children, then recent settled children. It shows state counts, names, and the `/pig-litter` command. Tool cards show compact summaries. Press **Ctrl+O** to expand their identity, report, error, usage, and truncation details.
+
+Run `/pig-litter` to open the retained direct-child panel. Run `/pig-litter help` for the six model-tool instructions. The panel uses these keys:
+
+- **Up** and **Down** select a child. **Enter** opens its identity and status.
+- **v** opens the latest report, including retained reports from paused children. **Up** and **Down** scroll. **[** and **]** page.
+- **m** opens a message draft. **Tab** switches between `steer` and `follow_up`. **Enter** sends the draft.
+- **p** pauses the selected child and its descendants.
+- **r** opens a resume draft. **Enter** explicitly resumes that child with the same UUID.
+- **Escape** cancels a draft, returns to the previous view, or closes the list.
+
+Opening the panel after root Escape leaves children paused. Resuming one child leaves its siblings and descendants paused. Accepted work continues after the panel closes. The panel shows only the root's direct children.
+
+Elapsed time covers the current execution, including startup and final cleanup. Tool starts count native tool calls in that execution. Active tools can overlap. Timing is unknown after restoring retained children.
 
 ## Authority and limits
 
@@ -108,7 +121,7 @@ Every active execution owns a separate Go Runtime, Session, subscription, and ca
 
 Completion JSON identifies `origin:"pig-litter"` and labels the report as child assistant prose. Wait and stop handoffs register before they block. A terminal handback has a stable receipt with its call identity and native log boundary. Its hidden audit suppresses repeated delivery after the final tool result is stored. Delivery capacity releases after native storage confirms the corresponding message or handback. Failed writes retain the receipt for retry.
 
-Unconsumed outcomes reach their immediate parent through stored custom messages. A busy parent continues only for an unconsumed notice it has not seen. A successful wait suppresses a queued duplicate. Idle or paused parents retain notices without inference. A disposed parent Session reopens by UUID for completion storage. A provider or tool that ignores cancellation can delay pause and shutdown.
+Unconsumed outcomes reach their immediate parent through native custom messages. In the terminal UI, automatic root notices wait for a new explicit root turn after the previous turn settles. Steering into the active turn does not promote these notices. Opening the panel, pressing Escape, and reloading start no inference and consume no notice. After a full process restart, a missing notice can take one additional explicit root turn to arrive. Inspection and wait results remain available immediately. RPC roots and child parents keep their native completion behavior. A successful wait suppresses a queued duplicate. Idle or paused parents retain notices without inference. A provider or tool that ignores cancellation can delay pause and shutdown.
 
 Delivery failures add a bounded error to the receiving parent's latest result. A successful result becomes partial; other terminal states are preserved. A failure delivering to root updates the child's latest result. Fresh inspection and waits reflect that result. Outcomes already returned to a caller remain unchanged.
 
@@ -143,7 +156,7 @@ devenv shell -- scripts/verify-stock-lifecycle.sh --scenario admission
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario persistence
 ```
 
-The fixtures record provider requests, stdout, stderr, and results under `.pstack/evidence/go-lifecycle`. They verify native file and terminal operations, tool ceilings, child working directories, concurrency, depth, privacy, results, usage, retained resume, and subtree pause. Additional cases check provider and tool failures, scout leaf enforcement, model restrictions, conversation retention, message ordering, replacement, and live-child exit. The completion case forwards extension protocol frames unchanged to observe delivery acknowledgements. It verifies that a busy parent processes a hidden child completion without another user prompt, and that an idle parent appends it without inference.
+The fixtures record provider requests, stdout, stderr, and results under `.pstack/evidence/go-lifecycle`. They verify native file and terminal operations, tool ceilings, child working directories, concurrency, depth, privacy, results, usage, retained resume, and subtree pause. Additional cases check provider and tool failures, scout leaf enforcement, model restrictions, conversation retention, message ordering, replacement, and live-child exit. The RPC completion case forwards extension protocol frames unchanged to observe delivery acknowledgements. It verifies that a busy RPC parent processes a hidden child completion without another user prompt, and that an idle parent appends it without inference.
 
 The `unbounded` scenario keeps a child active beyond two minutes and requires successful completion. Fixture deadlines bound the verification process without limiting product child runs.
 
@@ -153,7 +166,7 @@ The `admission` scenario fails a provisional spawn through a final result hook. 
 
 The `persistence` scenario runs two stock PiG processes with a private parent session directory. The second opens the first root UUID with `--session ROOT_UUID`. It verifies recovered child ownership, names, working directory, native conversation recall, UUID resume, and the outcome of stopping a completed child. Unit fixtures also exercise native skills, deferred MCP discovery, codemode filtering, late root registration, an empty root ceiling, and fresh soft-turn allowances.
 
-Run the terminal driver with `tmux` available. Each case uses a private socket and isolated provider fixture.
+Run the terminal driver on Linux with `/proc` and `tmux` available. Each case uses a private socket and isolated provider fixture.
 
 ```sh
 devenv shell -- scripts/verify-terminal-ui.sh --case direct
@@ -161,7 +174,9 @@ devenv shell -- scripts/verify-terminal-ui.sh --case piglet
 devenv shell -- scripts/verify-terminal-ui.sh --case unselected
 ```
 
-The driver checks two live children, widget state, resizing, editor input, help, stop, actual parent scrollback, and clean quit. The unselected case verifies plain PiG has no litter tools or widget.
+The driver checks tool cards, active-first widget rows, retained child controls, native history, messages, pause, resume, and live reports. It also checks passive receipt preservation, reload, full host restart, deferred delivery, root isolation, resizing, keyboard input, raw terminal output, and clean exit. Native logs and loopback requests prove effects. The unselected case verifies plain PiG has no litter tools or widget.
+
+Selected terminal fixtures also load a private idle observer built by the wrapper. Before each root notice promotion prompt, its terminal command joins the previous full root turn through the public SDK and records the root UUID and request nonce. This proves deferred notices reach a new root turn after settlement. The observer adds no model tools or native messages and is absent from unselected startup. When invoking the prebuilt driver directly, pass its matching `--idle-observer` executable for selected cases.
 
 ## License
 
