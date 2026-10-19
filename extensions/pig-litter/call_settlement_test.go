@@ -11,7 +11,10 @@ import (
 )
 
 func testCallOwner(tree *Tree) *owner {
-	return &owner{tree: tree, config: tree.config, state: &extensionState{calls: newCallScope()}, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
+	state := &extensionState{calls: newCallScope()}
+	o := &owner{tree: tree, config: tree.config, state: state, rootCalls: state.calls, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
+	state.owner = o
+	return o
 }
 
 func testCall(t *testing.T, o *owner, caller *run, id, operation string) *callTicket {
@@ -83,7 +86,7 @@ func TestCapturedCallbackCannotSettleReusedIDInANewTurn(t *testing.T) {
 		t.Fatal("duplicate changed the captured invocation")
 	}
 	o.retireScope(oldTicket.scope)
-	o.state.calls = newCallScope()
+	o.rootCalls = newCallScope()
 	newChild := testAdmission(t, tree, Ref{}, "scout", "new")
 	newRun := testRun(t, tree, newChild.Ref)
 	newTicket := testCall(t, o, nil, "same-call-id", "litter_spawn")
@@ -180,7 +183,7 @@ func TestFailedAdmissionReleasesNameRecordAndMailbox(t *testing.T) {
 	for range 3 {
 		child := testAdmission(t, tree, Ref{}, "scout", "same name")
 		selected := testRun(t, tree, child.Ref)
-		o.state.calls = newCallScope()
+		o.rootCalls = newCallScope()
 		ticket := testCall(t, o, nil, "spawn", "litter_spawn")
 		o.deferActivation(ticket, selected, nil, func() bool { return false }, "litter_spawn")
 		o.observeCall(nil, "litter_spawn", ticket.callID, agent.AgentToolResult{}, true)

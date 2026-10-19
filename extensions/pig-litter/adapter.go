@@ -30,6 +30,7 @@ type extensionState struct {
 	owner          *owner
 	retiring       <-chan struct{}
 	calls          *callScope
+	sessionContext *sdk.Context
 }
 
 type owner struct {
@@ -40,14 +41,25 @@ type owner struct {
 	config                   Config
 	services                 *coding.Services
 	tree                     *Tree
+	rootCalls                *callScope
 	ackMu                    sync.Mutex
+	ackWG                    sync.WaitGroup
 	acks                     map[*callTicket]*acknowledgement
 	outcomeAcks              map[*callTicket]*outcomeAcknowledgement
 	afterOutcomeSnapshot     func()
 	afterOutcomeReservation  func()
 	rootMu                   sync.Mutex
-	rootSignal               context.Context
-	rootWatch                chan struct{}
+	root                     *rootGeneration
+	rootClosed               bool
+	rootWG                   sync.WaitGroup
+	recoveryMu               sync.Mutex
+	recovered                []recoveredCompletion
+	recoveryParents          map[ChildID]bool
+	actionMu                 sync.Mutex
+	actionWG                 sync.WaitGroup
+	actionContext            context.Context
+	actionCancel             context.CancelFunc
+	actionsClosed            bool
 	persistMu                sync.Mutex
 	widgetMu                 sync.Mutex
 	widgetStopped            bool
@@ -89,6 +101,10 @@ func (o *owner) current() error {
 }
 
 func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
+	return s.acquire(ctx, true)
+}
+
+func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) {
 	s.initialization.Lock()
 	defer s.initialization.Unlock()
 	id, err := ctx.SessionManager().GetSessionID()
@@ -96,7 +112,7 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		return nil, err
 	}
 	s.mu.Lock()
-	existing, epoch, retiring := s.owner, s.epoch, s.retiring
+	existing, epoch, retiring, sessionContext := s.owner, s.epoch, s.retiring, s.sessionContext
 	s.mu.Unlock()
 	if retiring != nil {
 		<-retiring
@@ -105,13 +121,26 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		s.mu.Unlock()
 	}
 	if existing != nil && existing.sessionID == id {
-		return existing, existing.current()
+		if err := existing.current(); err != nil {
+			return nil, err
+		}
+		if recover {
+			existing.startRecovery(nil)
+		}
+		return existing, nil
 	}
 	if existing != nil {
 		s.retire()
 		s.mu.Lock()
 		epoch = s.epoch
 		s.mu.Unlock()
+	}
+	if sessionContext != nil {
+		stableID, err := sessionContext.SessionManager().GetSessionID()
+		if err != nil || stableID != id {
+			return nil, reject("unavailable", "the root Session changed during initialization")
+		}
+		ctx = *sessionContext
 	}
 	trusted := true
 	cwd := ctx.Cwd()
@@ -129,6 +158,7 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 	}
 	tree := newTree(config)
 	tree.root.id = ChildID(id)
+	tree.root.paused = !recover
 	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 	tree.execute, tree.completion, tree.changed = o.executeRun, o.sendCompletion, o.widget
 	if err := o.restoreChildren(); err != nil {
@@ -136,7 +166,7 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		services.Close()
 		return nil, err
 	}
-	recovered := o.recoveryBatch()
+	o.recovered = o.recoveryBatch()
 	tree.persist = o.saveChild
 	s.mu.Lock()
 	if s.epoch != epoch {
@@ -146,6 +176,10 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		return nil, reject("unavailable", "the root Session changed during initialization")
 	}
 	s.owner = o
+	if s.calls == nil {
+		s.calls = newCallScope()
+	}
+	o.rootCalls = s.calls
 	s.mu.Unlock()
 	if err := o.current(); err != nil {
 		s.retire()
@@ -156,16 +190,60 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 		return nil, err
 	}
 	o.widget()
-	tree.mu.Lock()
-	if !tree.closed {
-		tree.completionWG.Add(1)
-		go func() {
-			defer tree.completionWG.Done()
-			o.recoverCompletions(recovered)
-		}()
+	if recover {
+		o.startRecovery(nil)
 	}
-	tree.mu.Unlock()
 	return o, nil
+}
+
+func (o *owner) startRecovery(caller *run) {
+	o.recoveryMu.Lock()
+	defer o.recoveryMu.Unlock()
+	o.tree.mu.Lock()
+	defer o.tree.mu.Unlock()
+	if o.tree.closed {
+		return
+	}
+	var parent *record
+	if caller != nil {
+		var err error
+		parent, err = o.tree.callerLocked(caller)
+		if err != nil || caller.admission != admissionReady || caller.ctx.Err() != nil {
+			return
+		}
+		o.state.mu.Lock()
+		current := o.state.owner == o && o.state.epoch == o.epoch
+		o.state.mu.Unlock()
+		if !current {
+			return
+		}
+	}
+	if o.recoveryParents == nil {
+		o.recoveryParents = map[ChildID]bool{}
+	}
+	var pending []recoveredCompletion
+	parents := map[ChildID]bool{}
+	for _, recovered := range o.recovered {
+		id := recovered.selected.owner.parentID()
+		if o.context.Mode() == "tui" && o.tree.rootID(id) {
+			continue
+		}
+		if !o.recoveryParents[id] && (parent == nil || id == parent.id) {
+			pending = append(pending, recovered)
+			parents[id] = true
+		}
+	}
+	for id := range parents {
+		o.recoveryParents[id] = true
+	}
+	if len(pending) == 0 {
+		return
+	}
+	o.tree.completionWG.Add(1)
+	go func() {
+		defer o.tree.completionWG.Done()
+		o.recoverCompletions(pending)
+	}()
 }
 
 func (s *extensionState) retire() {
@@ -188,6 +266,14 @@ func (s *extensionState) retire() {
 		return
 	}
 	previous.stopWidget()
+	previous.actionMu.Lock()
+	previous.actionsClosed = true
+	if previous.actionCancel != nil {
+		previous.actionCancel()
+	}
+	previous.actionMu.Unlock()
+	previous.actionWG.Wait()
+	previous.retireScope(previous.rootCalls)
 	previous.ackMu.Lock()
 	acks := previous.acks
 	previous.acks = map[*callTicket]*acknowledgement{}
@@ -200,7 +286,17 @@ func (s *extensionState) retire() {
 	for _, ack := range outcomeAcks {
 		ack.once.Do(func() { close(ack.done) })
 	}
+	previous.rootMu.Lock()
+	previous.rootClosed = true
+	root := previous.root
+	if root != nil && root.watch != nil {
+		close(root.watch)
+		root.watch = nil
+	}
+	previous.rootMu.Unlock()
 	previous.tree.close()
+	previous.rootWG.Wait()
+	previous.ackWG.Wait()
 	previous.services.Close()
 	close(retirement)
 }
@@ -261,7 +357,9 @@ func (o *owner) deferActivation(key *callTicket, selected *run, done <-chan stru
 	o.ackMu.Lock()
 	o.acks[key] = ack
 	o.ackMu.Unlock()
+	o.ackWG.Add(1)
 	go func() {
+		defer o.ackWG.Done()
 		select {
 		case <-done:
 			if cancelled() {
@@ -282,7 +380,9 @@ func (o *owner) watchRequest(key *callTicket, ctx sdk.Context) {
 		return
 	}
 	done := ctx.Done()
+	o.ackWG.Add(1)
 	go func() {
+		defer o.ackWG.Done()
 		select {
 		case <-done:
 			if ctx.Err() != nil {
@@ -466,8 +566,10 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	var turns int
 	var limitHit bool
 	unsubscribe := session.Subscribe(func(event agent.AgentEvent) {
+		o.tree.observeProgress(run, event)
 		switch event := event.(type) {
 		case agent.TurnStartEvent:
+			o.startRecovery(run)
 			o.confirmCompletions(r)
 			run.mu.Lock()
 			previous := run.calls
@@ -680,127 +782,109 @@ func newExtension(state *extensionState) *sdk.Extension {
 			if err != nil {
 				return sdkResult(name, nil, err), nil
 			}
+			signal := ctx.Signal()
+			if signal == nil {
+				signal = o.tree.ctx
+			}
+			action, err := o.beginAction(signal)
+			if err != nil {
+				return sdkResult(name, nil, err), nil
+			}
+			defer action.finish()
 			raw, err := json.Marshal(params)
 			if err != nil {
 				return sdkResult(name, nil, err), nil
 			}
-			signal := ctx.Signal()
 			o.watchRoot(signal)
-			if signal == nil {
-				signal = o.tree.ctx
-			}
-			ticket, err := o.callScope(nil).begin(nil, ctx.ToolCallID(), name)
+			ticket, err := action.scope.begin(nil, ctx.ToolCallID(), name)
 			if err != nil {
 				return sdkResult(name, nil, err), nil
 			}
-			value, err := o.operation(signal, raw, ticket, &ctx)
+			value, err := o.operation(action.ctx, raw, ticket, &ctx)
 			return sdkResult(name, value, err), nil
 		}})
 	}
-	ext.OnEvent("message_end", func(_ sdk.Context, data map[string]any) (any, error) {
-		state.mu.Lock()
-		o := state.owner
-		state.mu.Unlock()
-		if o == nil {
+	ext.OnEvent("message_end", func(ctx sdk.Context, data map[string]any) (any, error) {
+		return state.observe(ctx, func(o *owner) (any, error) {
+			message, _ := data["message"].(map[string]any)
+			if message["role"] == "custom" {
+				o.observeCompletion(nil, message)
+			}
 			return nil, nil
-		}
-		message, _ := data["message"].(map[string]any)
-		if message["role"] == "custom" {
-			o.observeCompletion(nil, message)
-		}
-		return nil, nil
+		})
 	})
-	ext.OnEvent("turn_start", func(_ sdk.Context, _ map[string]any) (any, error) {
-		state.mu.Lock()
-		previous, o := state.calls, state.owner
-		state.calls = newCallScope()
-		state.mu.Unlock()
-		if o != nil {
+	ext.OnEvent("turn_start", func(ctx sdk.Context, _ map[string]any) (any, error) {
+		return state.observe(ctx, func(o *owner) (any, error) {
+			state.mu.Lock()
+			if state.owner != o || state.epoch != o.epoch {
+				state.mu.Unlock()
+				return nil, nil
+			}
+			previous := o.rootCalls
+			state.calls = newCallScope()
+			o.rootCalls = state.calls
+			state.mu.Unlock()
 			o.confirmCompletions(o.tree.root)
 			o.tree.root.markAgentEnded(false)
 			o.retireScope(previous)
-		}
-		return nil, nil
+			return nil, nil
+		})
 	})
-	ext.OnEvent("turn_end", func(_ sdk.Context, _ map[string]any) (any, error) {
-		state.mu.Lock()
-		scope, o := state.calls, state.owner
-		state.mu.Unlock()
-		if o != nil {
-			o.retireScope(scope)
+	ext.OnEvent("turn_end", func(ctx sdk.Context, _ map[string]any) (any, error) {
+		return state.observe(ctx, func(o *owner) (any, error) {
+			o.retireScope(o.callScope(nil))
 			o.confirmCompletions(o.tree.root)
-		}
-		return nil, nil
+			return nil, nil
+		})
 	})
-	ext.OnEvent("tool_execution_end", func(_ sdk.Context, data map[string]any) (any, error) {
-		state.mu.Lock()
-		o := state.owner
-		state.mu.Unlock()
-		if o != nil {
+	ext.OnEvent("tool_execution_end", func(ctx sdk.Context, data map[string]any) (any, error) {
+		return state.observe(ctx, func(o *owner) (any, error) {
 			o.observeToolEvent(data)
-		}
-		return nil, nil
-	})
-	ext.OnEvent("context", func(_ sdk.Context, data map[string]any) (any, error) {
-		state.mu.Lock()
-		o := state.owner
-		state.mu.Unlock()
-		if o == nil {
 			return nil, nil
-		}
-		messages, ok := data["messages"].([]any)
-		if !ok {
-			return nil, nil
-		}
-		return map[string]any{"messages": o.completionContext(o.tree.root, messages)}, nil
+		})
 	})
-	ext.OnEvent("agent_end", func(_ sdk.Context, _ map[string]any) (any, error) {
-		state.mu.Lock()
-		o := state.owner
-		state.mu.Unlock()
-		if o != nil {
+	ext.OnEvent("context", state.rootContext)
+	ext.OnEvent("agent_end", func(ctx sdk.Context, _ map[string]any) (any, error) {
+		return state.observe(ctx, func(o *owner) (any, error) {
 			o.tree.root.markAgentEnded(true)
-		}
-		return nil, nil
+			return nil, nil
+		})
 	})
-	ext.OnEvent("agent_before_settle", func(_ sdk.Context, data map[string]any) (any, error) {
-		state.mu.Lock()
-		o := state.owner
-		state.mu.Unlock()
-		preview, _ := data["context"].(map[string]any)
-		pending, _ := preview["pendingMessages"].([]any)
-		if o != nil && o.continueForCompletions(o.tree.root, pending) {
-			return map[string]any{"continue": true}, nil
-		}
-		return nil, nil
+	ext.OnEvent("agent_before_settle", func(ctx sdk.Context, data map[string]any) (any, error) {
+		return state.observe(ctx, func(o *owner) (any, error) {
+			preview, _ := data["context"].(map[string]any)
+			pending, _ := preview["pendingMessages"].([]any)
+			if o.continueForCompletions(o.tree.root, pending) {
+				return map[string]any{"continue": true}, nil
+			}
+			return nil, nil
+		})
 	})
 	ext.OnEvent("agent_start", func(ctx sdk.Context, _ map[string]any) (any, error) {
-		state.mu.Lock()
-		o := state.owner
-		state.mu.Unlock()
-		if o != nil {
+		return state.observe(ctx, func(o *owner) (any, error) {
 			o.watchRoot(ctx.Signal())
-		}
-		return nil, nil
+			o.startRecovery(nil)
+			return nil, nil
+		})
 	})
-	ext.OnEvent("agent_settled", func(_ sdk.Context, _ map[string]any) (any, error) {
-		state.mu.Lock()
-		o := state.owner
-		state.mu.Unlock()
-		if o != nil {
+	ext.OnEvent("agent_settled", func(ctx sdk.Context, _ map[string]any) (any, error) {
+		return state.observe(ctx, func(o *owner) (any, error) {
 			o.tree.root.markAgentEnded(false)
 			o.settleRoot()
 			o.retireScope(o.callScope(nil))
 			o.retireReceipts(o.tree.root)
-		}
+			return nil, nil
+		})
+	})
+	ext.OnSessionStart(func(ctx sdk.Context, _ map[string]any) (any, error) {
+		state.retire()
+		state.mu.Lock()
+		state.sessionContext = &ctx
+		state.mu.Unlock()
 		return nil, nil
 	})
-	ext.OnSessionStart(func(_ sdk.Context, _ map[string]any) (any, error) { state.retire(); return nil, nil })
 	ext.OnSessionShutdown(func(_ sdk.Context, _ map[string]any) (any, error) { state.retire(); return nil, nil })
-	ext.Command("pig-litter", "Show Pig Litter child controls", func(ctx sdk.Context, _ string) error {
-		ctx.Notify("Use litter_list to discover named agents and children. Use litter_spawn to start a background child, then inspect, message, stop, or wait by ID.", "info")
-		return nil
-	})
+	ext.Command("pig-litter", "Show Pig Litter child controls", state.openPanel)
 	return ext
 }
 
@@ -864,59 +948,4 @@ func (o *owner) observeToolEvent(data map[string]any) {
 		}
 	}
 	o.observeCall(nil, event.ToolName, event.ToolCallID, result, event.IsError)
-}
-
-func (o *owner) watchRoot(signal context.Context) {
-	if signal == nil {
-		return
-	}
-	o.rootMu.Lock()
-	if o.rootSignal == signal {
-		o.rootMu.Unlock()
-		return
-	}
-	if o.rootWatch != nil {
-		close(o.rootWatch)
-	}
-	done := make(chan struct{})
-	o.rootWatch, o.rootSignal = done, signal
-	o.tree.mu.Lock()
-	if signal.Err() == nil {
-		o.tree.root.paused = false
-	}
-	o.tree.mu.Unlock()
-	o.rootMu.Unlock()
-	go func() {
-		select {
-		case <-signal.Done():
-			o.rootMu.Lock()
-			if o.rootSignal != signal {
-				o.rootMu.Unlock()
-				return
-			}
-			o.tree.mu.Lock()
-			pending, fresh := o.tree.pauseLocked(o.tree.root)
-			o.tree.mu.Unlock()
-			o.rootMu.Unlock()
-			o.tree.joinPaused(pending, fresh)
-		case <-done:
-		case <-o.tree.ctx.Done():
-		}
-	}()
-}
-
-func (o *owner) settleRoot() {
-	o.rootMu.Lock()
-	var pending, fresh []*run
-	if o.rootSignal != nil && o.rootSignal.Err() != nil {
-		o.tree.mu.Lock()
-		pending, fresh = o.tree.pauseLocked(o.tree.root)
-		o.tree.mu.Unlock()
-	}
-	if o.rootWatch != nil {
-		close(o.rootWatch)
-	}
-	o.rootWatch, o.rootSignal = nil, nil
-	o.rootMu.Unlock()
-	o.tree.joinPaused(pending, fresh)
 }

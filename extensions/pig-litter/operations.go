@@ -97,6 +97,13 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		return nil, reject("rejected", "invalid tool arguments")
 	}
 	name, caller := key.operation, key.caller
+	activationContext := ctx
+	if toolContext != nil {
+		activationContext = toolContext.Signal()
+		if activationContext == nil {
+			activationContext = o.tree.ctx
+		}
+	}
 	var parent *record
 	if caller != nil {
 		o.tree.mu.Lock()
@@ -159,7 +166,7 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			o.tree.cancelPending(execution)
 			return nil, err
 		}
-		o.deferActivation(key, execution, ctx.Done(), func() bool { return ctx.Err() != nil }, name)
+		o.deferActivation(key, execution, activationContext.Done(), func() bool { return activationContext.Err() != nil }, name)
 		if toolContext != nil {
 			o.watchRequest(key, *toolContext)
 		}
@@ -259,7 +266,7 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		delivery := "queued"
 		if mode == "resume" {
 			delivery = "resumed"
-			o.deferActivation(key, execution, ctx.Done(), func() bool { return ctx.Err() != nil }, name)
+			o.deferActivation(key, execution, activationContext.Done(), func() bool { return activationContext.Err() != nil }, name)
 			if toolContext != nil {
 				o.watchRequest(key, *toolContext)
 			}
