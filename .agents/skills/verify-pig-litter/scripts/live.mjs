@@ -1,11 +1,14 @@
 #!/usr/bin/env bun
-import { access, mkdtemp, mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, writeFile, readdir, rename, rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 const repository = resolve(import.meta.dir, '../../../..');
 const diagnosticText = 'Use litter_list to discover named agents and children. Use litter_spawn to start a background child, then inspect, message, stop, or wait by ID.';
+export const liveWidgetPattern = /^ *Litter [1-9]\d* (?:active|live)\b/m;
 const controlTools = ['litter_spawn', 'litter_list', 'litter_inspect', 'litter_message', 'litter_stop', 'litter_wait'];
 const retainedOutcomeStates = new Set(['completed', 'partial', 'failed', 'unavailable', 'stopped', 'paused']);
 
@@ -239,8 +242,127 @@ export function resumedRecall(evidence, scout, model, token, afterPosition = -1)
 function ensure(condition, message) { if (!condition) throw new Error(message); }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+export function parseProcessStat(text) {
+ const match = text.match(/^(\d+) \(([\s\S]*)\) ([\s\S]*)$/);
+ const fields = match?.[3].trim().split(/\s+/);
+ ensure(fields?.length >= 20 && /^\d+$/.test(fields[19]), 'Malformed Linux process identity.');
+ return { pid: Number(match[1]), parent: Number(fields[1]), group: Number(fields[2]), state: fields[0], startTicks: fields[19], command: match[2] };
+}
+
+export function readOwnedProcess(pid) {
+ try { return parseProcessStat(readFileSync(`/proc/${pid}/stat`, 'utf8')); }
+ catch (error) { if (['ENOENT', 'ESRCH'].includes(error.code)) return undefined; throw error; }
+}
+
+function sameProcess(owner, current) { return current?.pid === owner.pid && current.startTicks === owner.startTicks; }
+
+export function signalOwnedProcess(owner, signal, { read = readOwnedProcess, send = process.kill } = {}) {
+ if (!sameProcess(owner, read(owner.pid))) return false;
+ try { send(owner.pid, signal); return true; }
+ catch (error) { if (error.code === 'ESRCH' && !sameProcess(owner, read(owner.pid))) return false; throw error; }
+}
+
+async function processRows() {
+ const pids = (await readdir('/proc')).filter(name => /^\d+$/.test(name));
+ return pids.flatMap(pid => { const row = readOwnedProcess(Number(pid)); return row ? [row] : []; });
+}
+
+function socketListening(socket) {
+ return new Promise((resolve, reject) => {
+  const connection = createConnection(socket);
+  connection.once('connect', () => { connection.destroy(); resolve(true); });
+  connection.once('error', error => { if (['ENOENT', 'ECONNREFUSED'].includes(error.code)) resolve(false); else reject(error); });
+  connection.setTimeout(100, () => { connection.destroy(); reject(new Error('Private tmux socket inspection timed out.')); });
+ });
+}
+
+export async function launchTmuxSession({ launch, create, read = readOwnedProcess }) {
+ launch.attempted = true;
+ const response = (await create()).trim();
+ ensure(/^[1-9]\d*\|[1-9]\d*$/.test(response), 'Private tmux launch did not return server and pane PIDs.');
+ [launch.serverPID, launch.panePID] = response.split('|').map(Number);
+ launch.server = read(launch.serverPID);
+ ensure(launch.server, 'Private tmux server exited before its process identity was captured.');
+ launch.process = read(launch.panePID);
+ ensure(launch.process, 'PiG exited before its process identity was captured.');
+ return launch;
+}
+
+export async function cleanupOwnedProcesses({ processes = [], server, launchAttempted = Boolean(server), socket, killServer, read = readOwnedProcess, send = process.kill, socketAlive = () => socketListening(socket), timeoutMs = 2000 }) {
+ const rows = [...new Map([...processes, ...(server ? [server] : [])].map(row => [`${row.pid}:${row.startTicks}`, row])).values()];
+ const failures = new Set();
+ const result = { remaining: rows, serverExited: server ? false : launchAttempted ? null : true, socketClosed: false, failures: [], killServer: undefined };
+ if (launchAttempted && !server) failures.add('Private tmux server identity was not captured after a launch attempt.');
+ function alive(row) {
+  try { return sameProcess(row, read(row.pid)); }
+  catch (error) { failures.add(`process ${row.pid}: ${error.message}`); return true; }
+ }
+ async function inspect() {
+  result.remaining = rows.filter(alive);
+  result.serverExited = server ? !alive(server) : launchAttempted ? null : true;
+  try { result.socketClosed = !await socketAlive(); }
+  catch (error) { failures.add(`tmux socket: ${error.message}`); result.socketClosed = false; }
+ }
+ await inspect();
+ if (launchAttempted && (!server || !result.serverExited || !result.socketClosed)) {
+  try { await killServer(); }
+  catch (error) {
+   await inspect();
+   const benignPriorExit = result.serverExited === true && result.socketClosed;
+   result.killServer = { error: error.message, benignPriorExit };
+   if (!benignPriorExit) failures.add(`kill-server: ${error.message}`);
+  }
+ } else if (!result.socketClosed) failures.add('Private tmux socket is live without its captured server identity.');
+ for (const signal of ['SIGTERM', 'SIGKILL']) {
+  for (const row of rows) {
+   try { signalOwnedProcess(row, signal, { read, send }); }
+   catch (error) { failures.add(`${signal} ${row.pid}: ${error.message}`); }
+  }
+  if (signal === 'SIGTERM') await sleep(75);
+ }
+ const deadline = Date.now() + timeoutMs;
+ do {
+  await inspect();
+  if (!result.remaining.length && result.socketClosed) break;
+  await sleep(20);
+ } while (Date.now() < deadline);
+ if (result.remaining.length) failures.add(`Owned processes still running: ${result.remaining.map(row => row.pid).join(', ')}.`);
+ if (!result.socketClosed) failures.add('Private tmux socket is still live.');
+ result.failures = [...failures];
+ return result;
+}
+
+export async function saveFailureArtifacts({ name, sessionDir, evidencePath, capture, list = readdir, read = readFile, save = writeFile }) {
+ const failures = [];
+ try { await capture(); } catch (error) { failures.push(`failure screen: ${error.message}`); }
+ let paths;
+ try { paths = (await list(sessionDir, { recursive: true })).filter(path => path.endsWith('.jsonl')); }
+ catch (error) { failures.push(`native log listing: ${error.message}`); return failures; }
+ for (const [index, path] of paths.entries()) {
+  try { await save(join(evidencePath, `${name}.failure-${index}.session.jsonl`), await read(join(sessionDir, path))); }
+  catch (error) { failures.push(`${path}: ${error.message}`); }
+ }
+ return failures;
+}
+
+export async function finalizeArtifacts(report, { scratch, evidencePath, save = writeFile, remove = rm }) {
+ report.cleanup.retainedScratchPath = `${scratch}.retained`;
+ report.cleanup.retainedScratchRemoved = false;
+ if (report.cleanup.remaining.length || report.cleanup.failures.length || report.cleanup.evidenceFailures.length) report.status = 'failed';
+ const persist = async (value = report) => {
+  try { await save(join(evidencePath, 'run.json'), JSON.stringify(value, null, 2)); return true; }
+  catch (error) { report.cleanup.evidenceFailures.push(`run.json: ${error.message}`); report.status = 'failed'; return false; }
+ };
+ if (!await persist(report.status === 'passed' ? { ...report, status: 'finalizing' } : report) || report.status !== 'passed') return;
+ try { await rename(scratch, report.cleanup.retainedScratchPath); report.cleanup.scratchRemoved = true; }
+ catch (error) { report.cleanup.failures.push(`scratch retention: ${error.message}`); report.status = 'failed'; await persist(); return; }
+ if (!await persist()) return;
+ try { await remove(report.cleanup.retainedScratchPath, { recursive: true, force: true }); report.cleanup.retainedScratchRemoved = true; }
+ catch (error) { report.cleanup.failures.push(`retained scratch removal: ${error.message}`); report.status = 'failed'; await persist(); }
+}
+
 export async function runCommand(args, { cwd, env, timeoutMs, signal, input, onStdout, onStart, maxOutputBytes = 2 * 1024 * 1024 } = {}) {
- ensure(process.platform !== 'win32', 'The live driver requires POSIX process groups.');
+ ensure(process.platform === 'linux', 'The live driver requires Linux /proc process identities.');
  const child = Bun.spawn(args, { cwd, env, detached: true, stdin: input ? 'pipe' : 'ignore', stdout: 'pipe', stderr: 'pipe' });
  onStart?.(child);
  const readers = [child.stdout.getReader(), child.stderr.getReader()];
@@ -267,11 +389,12 @@ export async function runCommand(args, { cwd, env, timeoutMs, signal, input, onS
   const snapshot = Bun.spawnSync(['ps', '-eo', 'pid=,ppid=,pgid=,stat='], { timeout: 500, maxBuffer: 2 * 1024 * 1024 });
   ensure(snapshot.exitCode === 0, 'Could not inspect the owned command process group.');
   return snapshot.stdout.toString().trim().split('\n').flatMap(line => {
-   const [pid, parent, group, state] = line.trim().split(/\s+/);
-   return Number(group) === child.pid ? [{ pid: Number(pid), parent: Number(parent), state }] : [];
+   const [pid, , group] = line.trim().split(/\s+/);
+   if (Number(group) !== child.pid) return [];
+   const row = readOwnedProcess(Number(pid));
+   return row?.group === child.pid ? [row] : [];
   });
  }
- function kill(pid, signal) { try { process.kill(pid, signal); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
  async function teardown() {
   try {
   for (let round = 0; round < 3; round++) {
@@ -279,12 +402,13 @@ export async function runCommand(args, { cwd, env, timeoutMs, signal, input, onS
    if (!tree.length) break;
    const leaves = tree.filter(row => row.pid !== child.pid && !tree.some(other => other.parent === row.pid));
    if (!leaves.length) break;
-   for (const row of leaves) kill(row.pid, round === 0 ? 'SIGTERM' : 'SIGKILL');
+   for (const row of leaves) signalOwnedProcess(row, round === 0 ? 'SIGTERM' : 'SIGKILL');
    await sleep(75);
   }
-  if (members().length) { kill(-child.pid, 'SIGTERM'); await sleep(75); }
+  for (const row of members()) signalOwnedProcess(row, 'SIGTERM');
+  if (members().length) await sleep(75);
   } finally {
-   kill(-child.pid, 'SIGKILL');
+   for (const row of members()) signalOwnedProcess(row, 'SIGKILL');
    await Promise.race([Promise.allSettled([child.exited, ...readers.map(reader => reader.cancel())]), sleep(500)]);
   }
   const remaining = members();
@@ -313,8 +437,8 @@ export async function drive(config) {
  const env = environment(config, process.env);
  const socket = join(scratch, 'tmux.sock');
  const owned = new Map();
- const panes = [];
- const report = { status: 'running', configuration: { ...config, model: config.model ?? 'inherited' }, evidencePath, cases: [], cleanup: { remaining: [], scratchRemoved: false } };
+ let launch = { attempted: false };
+ const report = { status: 'running', configuration: { ...config, model: config.model ?? 'inherited' }, evidencePath, cases: [], cleanup: { remaining: [], failures: [], evidenceFailures: [], attempts: [], scratchRemoved: false } };
  let active;
  let interrupted;
  const pendingCommands = new Set();
@@ -333,29 +457,24 @@ export async function drive(config) {
  }
  const tmux = (...args) => command(['tmux', '-S', socket, '-f', '/dev/null', ...args]);
  async function processes(root) {
-  const output = await command(['ps', '-eo', 'pid=,ppid=,lstart=,args=']);
-  const rows = output.split('\n').flatMap(line => {
-   const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+(.*)$/);
-   return match ? [{ pid: Number(match[1]), parent: Number(match[2]), started: match[3], command: match[4] }] : [];
-  });
-  const selected = new Set([root]);
+  if (!alive(root)) return [];
+  const rows = await processRows();
+  if (!alive(root)) return [];
+  const selected = new Set([root.pid]);
   let changed = true;
   while (changed) { changed = false; for (const row of rows) if (selected.has(row.parent) && !selected.has(row.pid)) { selected.add(row.pid); changed = true; } }
   const tree = rows.filter(row => selected.has(row.pid));
-  for (const row of tree) owned.set(`${row.pid}:${row.started}`, row);
+  for (const row of tree) owned.set(`${row.pid}:${row.startTicks}`, row);
   return tree;
  }
- async function alive(row) {
-  const text = await command(['ps', '-eo', 'pid=,lstart=']);
-  return text.split('\n').some(line => line.trim().replace(/\s+/g, ' ') === `${row.pid} ${row.started}`.replace(/\s+/g, ' '));
- }
+ function alive(row) { return sameProcess(row, readOwnedProcess(row.pid)); }
  async function wait(check, label, timeout = config.timeoutMs) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
    ensure(!interrupted, `Drive interrupted by ${interrupted}.`);
    if (active) {
-    const tree = await processes(active.pid);
-    active.processes = [...new Map([...active.processes, ...tree].map(row => [`${row.pid}:${row.started}`, row])).values()];
+    const tree = await processes(active.process);
+    active.processes = [...new Map([...active.processes, ...tree].map(row => [`${row.pid}:${row.startTicks}`, row])).values()];
    }
    const value = await check();
    if (value) return value;
@@ -389,16 +508,18 @@ export async function drive(config) {
   }
  }
  async function cleanup() {
-  for (const pane of panes) {
-   const pid = Number(await tmux('display-message', '-pt', pane, '#{pane_pid}').catch(() => '0'));
-   if (pid) await processes(pid).catch(() => {});
+  for (const receipt of report.cases) {
+   const root = receipt.process;
+   try { if (root && alive(root)) await processes(root); }
+   catch (error) { report.cleanup.failures.push(`process snapshot: ${error.message}`); }
   }
-  await tmux('kill-server').catch(() => {});
-  for (const row of owned.values()) if (await alive(row)) { try { process.kill(row.pid, 'SIGTERM'); } catch {} }
-  await sleep(300);
-  for (const row of owned.values()) if (await alive(row)) { try { process.kill(row.pid, 'SIGKILL'); } catch {} }
-  await sleep(100);
-  report.cleanup.remaining = (await Promise.all([...owned.values()].map(async row => await alive(row) ? row : undefined))).filter(Boolean);
+  const result = await cleanupOwnedProcesses({ processes: [...owned.values()], server: launch.server, launchAttempted: launch.attempted, socket, killServer: () => tmux('kill-server') });
+  report.cleanup.attempts.push(result);
+  report.cleanup.launch = { ...launch };
+  report.cleanup.remaining = result.remaining;
+  report.cleanup.serverExited = result.serverExited;
+  report.cleanup.socketClosed = result.socketClosed;
+  report.cleanup.failures.push(...result.failures);
  }
  async function doctor(kind, workspace, sessions) {
   const version = (await command([config.pigBinary, '--version'], workspace)).trim();
@@ -452,10 +573,13 @@ export async function drive(config) {
   if (config.doctorOnly) { receipt.status = 'passed'; return; }
   const args = launchArgs(config, kind, sessions);
   receipt.arguments = args;
-  await tmux('new-session', '-d', '-s', kind, '-c', workspace, '-x', '180', '-y', '50', '--', config.pigBinary, ...args);
-  panes.push(kind);
+  launch = { attempted: false };
+  await launchTmuxSession({ launch, create: () => tmux('new-session', '-d', '-P', '-F', '#{pid}|#{pane_pid}', '-s', kind, '-c', workspace, '-x', '180', '-y', '50', '--', config.pigBinary, ...args) });
+  owned.set(`${launch.server.pid}:${launch.server.startTicks}`, launch.server);
   await tmux('set-option', '-t', kind, 'remain-on-exit', 'on');
-  receipt.pid = Number((await tmux('display-message', '-pt', kind, '#{pane_pid}')).trim());
+  receipt.pid = launch.panePID;
+  receipt.process = launch.process;
+  receipt.processes = await processes(receipt.process);
   active = receipt;
   await wait(async () => {
    ensure((await tmux('display-message', '-pt', kind, '#{pane_dead}')).trim() === '0', 'PiG exited during startup.');
@@ -465,10 +589,10 @@ export async function drive(config) {
   if (kind === 'plain') {
    const text = await screen(kind, 'plain');
    receipt.ambientSelection = receipt.doctor.commands.includes('pig-litter');
-   ensure(!receipt.ambientSelection && !text.includes(diagnosticText) && !/Litter \d+ live/.test(text), 'Plain PiG selected Pig Litter through ordinary discovery; inspect the recorded configuration and command inventory.');
+   ensure(!receipt.ambientSelection && !text.includes(diagnosticText) && !/Litter \d+ (?:active|live|children)\b/.test(text), 'Plain PiG selected Pig Litter through ordinary discovery; inspect the recorded configuration and command inventory.');
   } else {
-   await send(kind, '/pig-litter');
-   await wait(async () => (await screen(kind, 'diagnostic')).includes(diagnosticText), '/pig-litter notification', 10000);
+   await send(kind, '/pig-litter help');
+   await wait(async () => (await screen(kind, 'diagnostic')).includes(diagnosticText), '/pig-litter help notification', 10000);
   }
   if (kind === 'selected' || kind === 'cancel') {
    const inputToken = `scout-${randomUUID()}`;
@@ -477,7 +601,7 @@ export async function drive(config) {
    async function progress(label, check) {
     return await wait(async () => {
      const text = await screen(kind, label);
-     if (/Litter [1-9]\d* live/.test(text)) {
+     if (liveWidgetPattern.test(text)) {
       receipt.liveWidgetObserved = true;
       await writeFile(join(evidencePath, `${kind}.live-widget.txt`), text);
      }
@@ -509,7 +633,7 @@ export async function drive(config) {
     await progress('cancel-acknowledgement', evidence => cancellationAcknowledged(evidence, before.call.id));
     const beforeDiagnostic = await screen(kind, 'before-responsiveness');
     const notificationCount = beforeDiagnostic.split(diagnosticText).length - 1;
-    await send(kind, '/pig-litter');
+    await send(kind, '/pig-litter help');
     await wait(async () => (await screen(kind, 'after-cancel')).split(diagnosticText).length - 1 > notificationCount, 'new notification after cancellation', 10000);
     const child = receipt.cancelledChild;
     await send(kind, `Inspect child ${child.id} by ID. Report its current status and latest outcome only. Do not resume, wait, or spawn. ${onlyControls}`);
@@ -580,26 +704,17 @@ export async function drive(config) {
   if (report.cases.length) report.cases.at(-1).status = report.status;
   report.failure = String(error.message);
   if (active) {
-   await screen(active.name, 'failure').catch(() => {});
-   const paths = (await readdir(active.sessionDir, { recursive: true }).catch(() => [])).filter(path => path.endsWith('.jsonl'));
-   for (let index = 0; index < paths.length; index++) await writeFile(join(evidencePath, `${active.name}.failure-${index}.session.jsonl`), await readFile(join(active.sessionDir, paths[index])));
-   const projection = await sessionProjection(active.sessionDir).catch(() => undefined);
-   if (projection) await writeFile(join(evidencePath, `${active.name}.failure.session.jsonl`), projection.text);
-   await cleanup().catch(error => { report.cleanup.failure = error.message; });
+   report.cleanup.evidenceFailures.push(...await saveFailureArtifacts({ name: active.name, sessionDir: active.sessionDir, evidencePath, capture: () => screen(active.name, 'failure') }));
+   await cleanup().catch(error => { report.cleanup.failures.push(error.message); });
    active = undefined;
    const failed = report.cases.at(-1);
-   if (!interrupted && !report.cleanup.remaining.length) {
+   if (!interrupted && !report.cleanup.remaining.length && !report.cleanup.failures.length && !report.cleanup.evidenceFailures.length) {
     try { report.doctorAfterFailure = await doctor(failed.name, failed.workspace, join(scratch, 'failure-doctor')); } catch (error) { report.doctorAfterFailure = { status: 'failed', reason: error.message }; }
    }
   }
  } finally {
-  await cleanup().catch(error => { report.cleanup.failure = error.message; report.status = 'failed'; });
-  if (report.cleanup.remaining.length) report.status = 'failed';
-  if (!report.cleanup.remaining.length && !report.cleanup.failure) {
-   await rm(scratch, { recursive: true, force: true });
-   report.cleanup.scratchRemoved = true;
-  }
-  await writeFile(join(evidencePath, 'run.json'), JSON.stringify(report, null, 2));
+  await cleanup().catch(error => { report.cleanup.failures.push(error.message); });
+  await finalizeArtifacts(report, { scratch, evidencePath });
   process.off('SIGINT', interruptHandler);
   process.off('SIGTERM', terminateHandler);
  }
