@@ -1,0 +1,13 @@
+• Running devenv:files:cleanup
+✓ Running devenv:files:cleanup in 14.4ms
+• Running devenv:enterShell
+✓ Running devenv:enterShell in 15.9ms
+goos: linux
+goarch: amd64
+pkg: github.com/SkrOYC/pig-litter/extensions/pig-litter
+cpu: AMD Ryzen 7 PRO 4750U with Radeon Graphics
+BenchmarkWidgetLargeRetainedHistory 	    2467	    140593 ns/op	     648 B/op	      34 allocs/op
+BenchmarkWidgetLargeRetainedHistory 	    2706	    137555 ns/op	     648 B/op	      34 allocs/op
+BenchmarkWidgetLargeRetainedHistory 	    2708	    137380 ns/op	     648 B/op	      34 allocs/op
+PASS
+ok  	github.com/SkrOYC/pig-litter/extensions/pig-litter	1.117s

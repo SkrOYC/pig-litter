@@ -1,0 +1,32 @@
+
+ START_WIDGET
+
+
+
+ litter_spawn model="fixture/held" name="held-a" task="Hold widget child A until the parent
+ explicitly stops it...
+ {"child":{"id":"01a150c0-8bb0-773b-aa8a-f8d5978651fd","parent":"01a150c0-8996-73ba-bb31-04d4d9f7d2
+ 16","depth":1,"name":"held-a","displayLabel":"held-a","type":"scout","model":"fixture/held","cwd":
+ "/tmp/litter-tui-proof-504597335/workspace","state":"starting"},"handbackTruncated":false,"operati
+ on":"litter_spawn","state":"starting"}
+
+
+
+ litter_spawn model="fixture/held" name="held-b" task="Hold widget child B until the parent
+ explicitly stops it...
+ {"child":{"id":"01a150c0-8bfa-773b-aa8a-f8d78f3e8660","parent":"01a150c0-8996-73ba-bb31-04d4d9f7d2
+ 16","depth":1,"name":"held-b","displayLabel":"held-b","type":"scout","model":"fixture/held","cwd":
+ "/tmp/litter-tui-proof-504597335/workspace","state":"starting"},"handbackTruncated":false,"operati
+ on":"litter_spawn","state":"starting"}
+
+
+ PARENT_SCROLLBACK_MARKER
+
+ Litter 2 live 0 kept
+ held-a running
+ held-b running
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/tmp/litter-tui-proof-504597335/workspace
+↑2 ↓2 0.0%/32k (auto)                                                                         parent

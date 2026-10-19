@@ -1,0 +1,32 @@
+ Reloaded keybindings, extensions, skills, prompts, themes, and context files
+
+ Litter 0 active 0 errors 3 paused 0 settled
+ held-b paused
+ quick-newer paused
+ /pig-litter | +1 more
+Pig Litter | list (1/3)
+> paused held-a #bc95fbac
+  paused held-b #d799155c
+  paused quick-newer #7bf98f84
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Up/Down move  Enter inspect  v result  m message  p pause subtree  r resume  [ ] page  Home/End
+first/last  Esc back/close
+/tmp/litter-tui-proof-1034039390/workspace
+↑8 ↓8 3.9%/32k (auto)                                                                         parent

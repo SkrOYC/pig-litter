@@ -1,0 +1,32 @@
+ PARENT_SCROLLBACK_MARKER QUICK_DONE
+
+ Litter 2 active 0 errors 0 paused 1 settled
+ held-a starting
+ held-b running
+ /pig-litter | +1 more
+Pig Litter | list (1/3)
+> starting held-a #bc95fbac
+  running held-b #d799155c
+  completed quick-newer #7bf98f84
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Resumed
+Up/Down move  Enter inspect  v result  m message  p pause subtree  r resume  [ ] page  Home/End
+first/last  Esc back/close
+/tmp/litter-tui-proof-1034039390/workspace
+↑6 ↓6 0.0%/32k (auto)                                                                         parent

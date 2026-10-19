@@ -1,0 +1,78 @@
+{
+  "observedAt": "2026-10-19 02:58:18 UTC",
+  "status": "VERIFIED_FRESH_INDEPENDENT_INTEGRATED_DIRECT_ALL_AND_NARROW_VISUAL",
+  "rootThread": "01a1508d-cbff-70e0-ba51-2488dda216cf",
+  "evidence": "/home/oscar/GitHub/pig-litter/.pstack/tui-ux-coordinator/final/integrated-v2/native-all/2026-10-19T02-57-13.830Z-direct-2",
+  "artifacts": {
+    "product": "e8307eab1dbc15f1c264232c2c20edb4fcc98cab7c7e33c5d08d48b13c62bac2",
+    "verifier": "db0b1f58609fdc04047f775d7c28a7a50b4912faf7016a78ae1434fdef404beb",
+    "observer": "5b0ceb4a038d8ea5bde8cfac48f0fa0542e45619a5417b560fc8b161f40d287d"
+  },
+  "build": {
+    "independent": true,
+    "go": "go1.27.1",
+    "cgo": 1,
+    "flags": [
+      "-mod=readonly",
+      "-buildvcs=false"
+    ],
+    "verifierSourceManifestEntries": 27,
+    "productSourceManifestEntries": 54,
+    "checksBeforeAfterPassed": true
+  },
+  "native": {
+    "exitCode": 0,
+    "hostExitCodes": [
+      0,
+      0
+    ],
+    "panelChecks": 19,
+    "idleRecords": 5,
+    "retainedRequests": 39,
+    "totalRequests": 39,
+    "omissions": 0,
+    "ownedProcessIdentities": 18,
+    "observerProcessIdentities": 5,
+    "allOwnedProcessesExited": true,
+    "providerJoined": true,
+    "paneJoined": true,
+    "socketClosed": true,
+    "tmuxAlive": false,
+    "tmuxFailures": 0
+  },
+  "visual": {
+    "file": "panel-32x24-visible.txt",
+    "personallyInspected": true,
+    "completeNarrowLegend": [
+      "↑↓ move Enter detail v result",
+      "m msg p pause subtree r resume",
+      "[ ] page Home/End first/last",
+      "Esc back/close"
+    ],
+    "allFourVisibleInActualHintRegion": true,
+    "render32Milliseconds": 252.179609,
+    "render80Milliseconds": 13.936859,
+    "render100Milliseconds": 212.026915,
+    "timedActions": 160,
+    "maxActionMilliseconds": 527.732453,
+    "budgetMilliseconds": 2000,
+    "productChangedToResolve": false,
+    "priorV1CaptureRetained": true
+  },
+  "coldReceipt": {
+    "counts": [
+      0,
+      1,
+      1
+    ],
+    "sameNativeEntryId": "2e4627be",
+    "receipt": "7LTHVWC7GMDMKDDVSDBZDQOKCM",
+    "childId": "01a15217-8528-77a8-87ad-3e8d7bf98f84",
+    "storedAt": "2026-10-19T02:57:29.428Z",
+    "display": false,
+    "actualNativeSnapshotsRead": true
+  },
+  "root": "01a15217-7f2e-7094-98c3-0af6feb0c323",
+  "newRoot": "01a15217-ccc6-704e-8c23-b75e437b290f",
+  "remaining": "Full lead selected/Piglet/unselected/control matrix, default factory/full repository checks, final exact-thread suffix review, commits/push/ready PR. No merge."
+}

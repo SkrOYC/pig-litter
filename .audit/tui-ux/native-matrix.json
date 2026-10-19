@@ -1,0 +1,403 @@
+{
+  "ok": true,
+  "scope": "Deterministic isolated released-PiG v0.4.1 native terminal matrix. This does not claim real-provider readiness or a baseline/head performance ratio.",
+  "createdAt": "2026-10-19T03:44:07.185Z",
+  "aggregateSHA256": "e46e93251c798b7c97e4b48f961107f1b9ff03e116f53f5ea6440aaa468c437a",
+  "binaries": {
+    "product": "e8307eab1dbc15f1c264232c2c20edb4fcc98cab7c7e33c5d08d48b13c62bac2",
+    "driver": "188f7e30376ffbe09ece0d1af379b186a6b91c0e636a9ceae57dbf3bad8af73d",
+    "observer": "5b0ceb4a038d8ea5bde8cfac48f0fa0542e45619a5417b560fc8b161f40d287d"
+  },
+  "sources": {
+    "verifierFiles": 27,
+    "productFiles": 54,
+    "beforeAfterMatch": true
+  },
+  "cases": [
+    {
+      "label": "direct",
+      "ok": true,
+      "evidence": "/home/oscar/GitHub/pig-litter/.pstack/worktrees/tui-child-controls/.pstack/tui-ux/phase3/terminal/final-acceptance-v3/direct/2026-10-19T03-39-48.419Z-direct-77",
+      "totalRequests": 39,
+      "omittedRequests": 0,
+      "omittedErrors": 0,
+      "checks": [
+        "cold-context-only-one-request-no-tools",
+        "passive-and-cancelled-draft-inert",
+        "human-pause-same-uuid-resume",
+        "native-steer-follow-up-once",
+        "busy-root-outstanding-receipt",
+        "root-escape-passive",
+        "fresh-owner-passive-receipts",
+        "root_notice_first-native-entry-once",
+        "root_notice_second-native-entry-once",
+        "before-full-host-restart-queue-loss",
+        "full-host-restart-passive",
+        "root_restart_first-receipt-proof",
+        "root_restart_second-receipt-proof",
+        "root_restart_third-receipt-proof",
+        "selected-worker-only-grandchild-still-paused",
+        "parent-owned-grandchild-resume-under-paused-root",
+        "new-root-identity-observed-through-public-session-command",
+        "new-root-passive-isolation-then-explicit-native-header",
+        "native-command-error-sanitized-and-retry"
+      ],
+      "messageDrainStage": 3,
+      "hostExitStatuses": [
+        0,
+        0
+      ],
+      "cleanup": {
+        "observedProcessCount": 18,
+        "observerProcessCount": 5,
+        "allExactIdentitiesExited": true,
+        "providerJoined": true,
+        "paneJoined": true,
+        "socketClosed": true,
+        "tmuxServerAlive": false,
+        "tmuxFailureCount": 0
+      },
+      "timings": {
+        "scope": "Successful local key-to-visible actions only; no total-duration ratio.",
+        "successfulActions": 160,
+        "maxMS": 610.781504,
+        "resizes": [
+          {
+            "action": "panel-80x24",
+            "milliseconds": 17.35632,
+            "width": 80,
+            "height": 24
+          },
+          {
+            "action": "panel-32x24",
+            "milliseconds": 255.512394,
+            "width": 32,
+            "height": 24
+          },
+          {
+            "action": "panel-100x32",
+            "milliseconds": 213.520126,
+            "width": 100,
+            "height": 32
+          }
+        ]
+      },
+      "nativeInputs": {
+        "child": "01a1523e-7d15-760c-950f-04b91d838608",
+        "counts": {
+          "KITTY_INPUT_MARKER": 1,
+          "STEER_MARKER": 1,
+          "FOLLOWUP_MARKER": 1,
+          "KITTY_CANCELLED_MARKER": 0,
+          "CANCELLED_UI_DRAFT": 0,
+          "CANCELLED_RESUME_DRAFT": 0
+        },
+        "emptyUserMessages": 0,
+        "source": "/home/oscar/GitHub/pig-litter/.pstack/worktrees/tui-child-controls/.pstack/tui-ux/phase3/terminal/final-acceptance-v3/direct/2026-10-19T03-39-48.419Z-direct-77/native-final/01a1523e-7d15-760c-950f-04b91d838608.jsonl"
+      },
+      "workerInventory": {
+        "requests": 5,
+        "exactTools": [
+          "bash",
+          "edit",
+          "litter_inspect",
+          "litter_list",
+          "litter_message",
+          "litter_spawn",
+          "litter_stop",
+          "litter_wait",
+          "ls",
+          "read",
+          "write"
+        ],
+        "providerRequestIndexes": [
+          29,
+          31,
+          34,
+          35,
+          37
+        ]
+      },
+      "idleRecords": 5,
+      "coldNotice": [
+        {
+          "root": "01a1523e-7a2f-7213-9441-03f32157f080",
+          "child": "01a1523e-804c-760c-950f-04bdbae6631c",
+          "receipt": "ZTEA76BC5UM6YPBOXPUMJMRWVS",
+          "count": 0,
+          "entryId": null,
+          "display": null,
+          "fullContentSHA256": null
+        },
+        {
+          "root": "01a1523e-7a2f-7213-9441-03f32157f080",
+          "child": "01a1523e-804c-760c-950f-04bdbae6631c",
+          "receipt": "ZTEA76BC5UM6YPBOXPUMJMRWVS",
+          "count": 1,
+          "entryId": "189ba321",
+          "display": false,
+          "fullContentSHA256": "2198f8a32aeca7903d76759cc882dbcf045aaffdfc022d2d645f2ca522886ed4"
+        },
+        {
+          "root": "01a1523e-7a2f-7213-9441-03f32157f080",
+          "child": "01a1523e-804c-760c-950f-04bdbae6631c",
+          "receipt": "ZTEA76BC5UM6YPBOXPUMJMRWVS",
+          "count": 1,
+          "entryId": "189ba321",
+          "display": false,
+          "fullContentSHA256": "2198f8a32aeca7903d76759cc882dbcf045aaffdfc022d2d645f2ca522886ed4"
+        }
+      ],
+      "stockTools": null,
+      "quietWindowSeconds": null,
+      "result": "/home/oscar/GitHub/pig-litter/.pstack/worktrees/tui-child-controls/.pstack/tui-ux/phase3/terminal/final-acceptance-v3/direct/2026-10-19T03-39-48.419Z-direct-77/result.json",
+      "ptySHA256": "e478b576098b5e50f6531abe0d27193f3da2c89b1799b0a8638f68006c4064b3"
+    },
+    {
+      "label": "piglet",
+      "ok": true,
+      "evidence": "/home/oscar/GitHub/pig-litter/.pstack/worktrees/tui-child-controls/.pstack/tui-ux/phase3/terminal/final-acceptance-v3/piglet/2026-10-19T03-39-49.014Z-piglet-76",
+      "totalRequests": 39,
+      "omittedRequests": 0,
+      "omittedErrors": 0,
+      "checks": [
+        "cold-context-only-one-request-no-tools",
+        "passive-and-cancelled-draft-inert",
+        "human-pause-same-uuid-resume",
+        "native-steer-follow-up-once",
+        "busy-root-outstanding-receipt",
+        "root-escape-passive",
+        "fresh-owner-passive-receipts",
+        "root_notice_first-native-entry-once",
+        "root_notice_second-native-entry-once",
+        "before-full-host-restart-queue-loss",
+        "full-host-restart-passive",
+        "root_restart_first-receipt-proof",
+        "root_restart_second-receipt-proof",
+        "root_restart_third-receipt-proof",
+        "selected-worker-only-grandchild-still-paused",
+        "parent-owned-grandchild-resume-under-paused-root",
+        "new-root-identity-observed-through-public-session-command",
+        "new-root-passive-isolation-then-explicit-native-header",
+        "native-command-error-sanitized-and-retry"
+      ],
+      "messageDrainStage": 3,
+      "hostExitStatuses": [
+        0,
+        0
+      ],
+      "cleanup": {
+        "observedProcessCount": 18,
+        "observerProcessCount": 5,
+        "allExactIdentitiesExited": true,
+        "providerJoined": true,
+        "paneJoined": true,
+        "socketClosed": true,
+        "tmuxServerAlive": false,
+        "tmuxFailureCount": 0
+      },
+      "timings": {
+        "scope": "Successful local key-to-visible actions only; no total-duration ratio.",
+        "successfulActions": 160,
+        "maxMS": 570.279806,
+        "resizes": [
+          {
+            "action": "panel-80x24",
+            "milliseconds": 50.986492,
+            "width": 80,
+            "height": 24
+          },
+          {
+            "action": "panel-32x24",
+            "milliseconds": 215.327856,
+            "width": 32,
+            "height": 24
+          },
+          {
+            "action": "panel-100x32",
+            "milliseconds": 212.000366,
+            "width": 100,
+            "height": 32
+          }
+        ]
+      },
+      "nativeInputs": {
+        "child": "01a1523e-7ffc-7428-b90e-1361a3d57fbd",
+        "counts": {
+          "KITTY_INPUT_MARKER": 1,
+          "STEER_MARKER": 1,
+          "FOLLOWUP_MARKER": 1,
+          "KITTY_CANCELLED_MARKER": 0,
+          "CANCELLED_UI_DRAFT": 0,
+          "CANCELLED_RESUME_DRAFT": 0
+        },
+        "emptyUserMessages": 0,
+        "source": "/home/oscar/GitHub/pig-litter/.pstack/worktrees/tui-child-controls/.pstack/tui-ux/phase3/terminal/final-acceptance-v3/piglet/2026-10-19T03-39-49.014Z-piglet-76/native-final/01a1523e-7ffc-7428-b90e-1361a3d57fbd.jsonl"
+      },
+      "workerInventory": {
+        "requests": 5,
+        "exactTools": [
+          "bash",
+          "codemode",
+          "edit",
+          "litter_inspect",
+          "litter_list",
+          "litter_message",
+          "litter_spawn",
+          "litter_stop",
+          "litter_wait",
+          "ls",
+          "read",
+          "tool_search",
+          "write"
+        ],
+        "providerRequestIndexes": [
+          30,
+          31,
+          34,
+          35,
+          37
+        ]
+      },
+      "idleRecords": 5,
+      "coldNotice": [
+        {
+          "root": "01a1523e-7ccd-71a8-a030-444a46b81a5a",
+          "child": "01a1523e-8411-7428-b90e-1364cb909b0f",
+          "receipt": "7ZKRNPMI5HKI67YQPISVCY6KRA",
+          "count": 0,
+          "entryId": null,
+          "display": null,
+          "fullContentSHA256": null
+        },
+        {
+          "root": "01a1523e-7ccd-71a8-a030-444a46b81a5a",
+          "child": "01a1523e-8411-7428-b90e-1364cb909b0f",
+          "receipt": "7ZKRNPMI5HKI67YQPISVCY6KRA",
+          "count": 1,
+          "entryId": "fb607a1f",
+          "display": false,
+          "fullContentSHA256": "b46c03df3067070741d07af7801ec5576e87dcb9a0c03c0888c487dbd3f53acb"
+        },
+        {
+          "root": "01a1523e-7ccd-71a8-a030-444a46b81a5a",
+          "child": "01a1523e-8411-7428-b90e-1364cb909b0f",
+          "receipt": "7ZKRNPMI5HKI67YQPISVCY6KRA",
+          "count": 1,
+          "entryId": "fb607a1f",
+          "display": false,
+          "fullContentSHA256": "b46c03df3067070741d07af7801ec5576e87dcb9a0c03c0888c487dbd3f53acb"
+        }
+      ],
+      "stockTools": null,
+      "quietWindowSeconds": null,
+      "result": "/home/oscar/GitHub/pig-litter/.pstack/worktrees/tui-child-controls/.pstack/tui-ux/phase3/terminal/final-acceptance-v3/piglet/2026-10-19T03-39-49.014Z-piglet-76/result.json",
+      "ptySHA256": "5bf35729cba3c3964d62d1b13d710038bf8fa6881f3db77615895f865377a391"
+    },
+    {
+      "label": "unselected",
+      "ok": true,
+      "evidence": "/home/oscar/GitHub/pig-litter/.pstack/worktrees/tui-child-controls/.pstack/tui-ux/phase3/terminal/final-acceptance-v3/unselected/2026-10-19T03-41-05.805Z-unselected-76",
+      "totalRequests": 1,
+      "omittedRequests": 0,
+      "omittedErrors": 0,
+      "checks": [],
+      "messageDrainStage": null,
+      "hostExitStatuses": [
+        0
+      ],
+      "cleanup": {
+        "observedProcessCount": 5,
+        "observerProcessCount": 0,
+        "allExactIdentitiesExited": true,
+        "providerJoined": true,
+        "paneJoined": true,
+        "socketClosed": true,
+        "tmuxServerAlive": false,
+        "tmuxFailureCount": 0
+      },
+      "timings": {
+        "scope": "Successful local key-to-visible actions only; no total-duration ratio.",
+        "successfulActions": 0,
+        "maxMS": null,
+        "resizes": []
+      },
+      "nativeInputs": null,
+      "workerInventory": null,
+      "idleRecords": 0,
+      "coldNotice": [],
+      "stockTools": [
+        "bash",
+        "edit",
+        "read",
+        "write"
+      ],
+      "quietWindowSeconds": null,
+      "result": "/home/oscar/GitHub/pig-litter/.pstack/worktrees/tui-child-controls/.pstack/tui-ux/phase3/terminal/final-acceptance-v3/unselected/2026-10-19T03-41-05.805Z-unselected-76/result.json",
+      "ptySHA256": "26463d3ad328eb4cfe048e79e845615bbf2c77c4395b185a62bd9c79de2c2c59"
+    },
+    {
+      "label": "receipt-control",
+      "ok": true,
+      "evidence": "/home/oscar/GitHub/pig-litter/.pstack/worktrees/tui-child-controls/.pstack/tui-ux/phase3/terminal/final-acceptance-v3/receipt-control/2026-10-19T03-41-05.881Z-direct-76",
+      "totalRequests": 20,
+      "omittedRequests": 0,
+      "omittedErrors": 0,
+      "checks": [
+        "cold-context-only-one-request-no-tools",
+        "passive-and-cancelled-draft-inert",
+        "human-pause-same-uuid-resume",
+        "native-steer-follow-up-once",
+        "busy-root-outstanding-receipt",
+        "no-panel-control-after-escape",
+        "no-panel-control-quiet-two-seconds"
+      ],
+      "messageDrainStage": 3,
+      "hostExitStatuses": [
+        0
+      ],
+      "cleanup": {
+        "observedProcessCount": 7,
+        "observerProcessCount": 1,
+        "allExactIdentitiesExited": true,
+        "providerJoined": true,
+        "paneJoined": true,
+        "socketClosed": true,
+        "tmuxServerAlive": false,
+        "tmuxFailureCount": 0
+      },
+      "timings": {
+        "scope": "Successful local key-to-visible actions only; no total-duration ratio.",
+        "successfulActions": 85,
+        "maxMS": 531.999439,
+        "resizes": []
+      },
+      "nativeInputs": {
+        "child": "01a1523f-abef-70e7-a1a4-c7184e37b2a9",
+        "counts": {
+          "KITTY_INPUT_MARKER": 1,
+          "STEER_MARKER": 1,
+          "FOLLOWUP_MARKER": 1,
+          "KITTY_CANCELLED_MARKER": 0,
+          "CANCELLED_UI_DRAFT": 0,
+          "CANCELLED_RESUME_DRAFT": 0
+        },
+        "emptyUserMessages": 0,
+        "source": "/home/oscar/GitHub/pig-litter/.pstack/worktrees/tui-child-controls/.pstack/tui-ux/phase3/terminal/final-acceptance-v3/receipt-control/2026-10-19T03-41-05.881Z-direct-76/native-final/01a1523f-abef-70e7-a1a4-c7184e37b2a9.jsonl"
+      },
+      "workerInventory": null,
+      "idleRecords": 0,
+      "coldNotice": [],
+      "stockTools": null,
+      "quietWindowSeconds": 2,
+      "result": "/home/oscar/GitHub/pig-litter/.pstack/worktrees/tui-child-controls/.pstack/tui-ux/phase3/terminal/final-acceptance-v3/receipt-control/2026-10-19T03-41-05.881Z-direct-76/result.json",
+      "ptySHA256": "d3552de20ce4d5a0ac32818c3b54274fabc73fdb700f9695147cc809dd2e23af"
+    }
+  ],
+  "independentInlineComplement": {
+    "scope": "Separate parent-run native evidence; supplements the actor wrapped-layout proof, not a substitute for assigned matrix cases.",
+    "result": "/home/oscar/GitHub/pig-litter/.pstack/tui-ux-coordinator/final/integrated-v3/native-all/2026-10-19T03-39-01.522Z-piglet-2/result.json",
+    "frame": "/home/oscar/GitHub/pig-litter/.pstack/tui-ux-coordinator/final/integrated-v3/native-all/2026-10-19T03-39-01.522Z-piglet-2/hostile-config-command-error-visible.txt",
+    "frameSHA256": "9a9a564df6a03144373bd66774f673bd9288b6084c6d822ba02ae44e4b2e957b"
+  }
+}

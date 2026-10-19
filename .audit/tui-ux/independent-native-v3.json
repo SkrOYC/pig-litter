@@ -1,0 +1,82 @@
+{
+  "observedAt": "2026-10-19 03:41:06 UTC",
+  "status": "VERIFIED_FRESH_INDEPENDENT_FINAL_ALL_PIGLET",
+  "rootThread": "01a1508d-cbff-70e0-ba51-2488dda216cf",
+  "evidence": "/home/oscar/GitHub/pig-litter/.pstack/tui-ux-coordinator/final/integrated-v3/native-all/2026-10-19T03-39-01.522Z-piglet-2",
+  "artifacts": {
+    "product": "e8307eab1dbc15f1c264232c2c20edb4fcc98cab7c7e33c5d08d48b13c62bac2",
+    "verifier": "188f7e30376ffbe09ece0d1af379b186a6b91c0e636a9ceae57dbf3bad8af73d",
+    "observer": "5b0ceb4a038d8ea5bde8cfac48f0fa0542e45619a5417b560fc8b161f40d287d"
+  },
+  "build": {
+    "independent": true,
+    "sourceWorktree": "/home/oscar/GitHub/pig-litter/.pstack/worktrees/tui-child-controls",
+    "go": "go1.27.1",
+    "cgo": 1,
+    "flags": [
+      "-mod=readonly",
+      "-buildvcs=false"
+    ],
+    "verifierManifest": "f7a8ec3eed284c5496d18e01efcf91ab04cfe55147f4a697ecc02f08a706dde1",
+    "verifierEntries": 27,
+    "productEntries": 54,
+    "checksBeforeAfterPassed": true,
+    "leadBinaryEqual": true,
+    "homeOverride": false
+  },
+  "native": {
+    "scenario": "all",
+    "case": "piglet",
+    "exitCode": 0,
+    "hostExits": [
+      0,
+      0
+    ],
+    "checks": 19,
+    "idleRecords": 5,
+    "requests": 39,
+    "retainedRequests": 39,
+    "omissions": 0,
+    "ownedIdentities": 18,
+    "observerIdentities": 5,
+    "allExited": true,
+    "providerJoined": true,
+    "paneJoined": true,
+    "socketClosed": true,
+    "tmuxAlive": false,
+    "tmuxFailures": 0
+  },
+  "actualArtifactInspection": [
+    "All19panelcheck names and five same-root error-free idle records",
+    "Actual complete four-row32-column legend",
+    "Actual genuine inline-header sanitized command-error saved transport frame",
+    "Five actual chain_worker requests with exact13declared tools includingcodemode andtool_search",
+    "Actual cold first/second/third native snapshots with0/1/1ofsameentry",
+    "Normal Piglet startup visible builtin:piglet,pig-litter and test-only observer",
+    "Retained39request count exactlymatches uncapped per-model totals"
+  ],
+  "cold": {
+    "counts": [
+      0,
+      1,
+      1
+    ],
+    "nativeEntry": "f1df019d",
+    "receipt": "BV4EW2ETWS5K6BG5IYF6OZDJMD",
+    "child": "01a1523d-cabc-756d-bd7d-cce6315e6241",
+    "storedAt": "2026-10-19T03:39:20.294Z"
+  },
+  "root": "01a1523d-c349-7612-b9c3-ebadfad09ddc",
+  "newRoot": "01a1523e-2040-768a-beb7-245f46f0a294",
+  "timing": {
+    "actions": 160,
+    "narrowMilliseconds": 256.982367,
+    "width80Milliseconds": 17.606815,
+    "width100Milliseconds": 217.02116,
+    "maxMilliseconds": 538.969751,
+    "budgetMilliseconds": 2000,
+    "scope": "Fixed isolated deterministic fixture, not real provider latency"
+  },
+  "scope": "Product remains exact committed4dc348b/candidate3 publicAPI source. Independent root normalPiglet/all gate verified. Priorv1/v2 artifacts/failures and source-review corrections preserved. No host/SDK fork or productcompanion.",
+  "remaining": "Collect full lead fourcase matrix, final exactthreadsuffix/trail verdict, verifier/docs/audit commits andreadyPR. No merge."
+}
