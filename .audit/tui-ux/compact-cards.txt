@@ -1,0 +1,32 @@
+
+
+ Warning: fd not found. Offline mode enabled, skipping download.
+ Warning: ripgrep not found. Offline mode enabled, skipping download.
+
+ Warning: tmux extended-keys is off. Modified Enter keys may not work. Add `set -g extended-keys
+ on` to ~/.tmux.conf and restart tmux.
+
+
+ START_WIDGET
+
+
+
+ litter_spawn scout as held-a | Hold widget child A until the parent explicitly stops it.
+ starting held-a #04d06008
+
+
+
+ litter_spawn scout as held-b | Hold widget child B until the parent explicitly stops it.
+ starting held-b #33fa05ab
+
+
+ PARENT_SCROLLBACK_MARKER
+
+ Litter 2 live 0 kept
+ held-a running
+ held-b running
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/tmp/litter-tui-proof-2628607427/workspace
+↑2 ↓2 0.0%/32k (auto)                                                                         parent

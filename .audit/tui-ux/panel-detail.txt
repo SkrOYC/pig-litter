@@ -1,0 +1,32 @@
+ PARENT_SCROLLBACK_MARKER QUICK_DONE
+
+ Litter 2 active 0 errors 0 paused 1 settled
+ held-a running
+ held-b running
+ /pig-litter | +1 more
+Pig Litter | detail
+UUID 01a15217-81e8-77a8-87ad-3e89bc95fbac
+Name held-a
+Type scout
+Model fixture/held
+Cwd /tmp/litter-tui-proof-1034039390/workspace
+State running
+Admission ready
+Elapsed 2s
+Tool starts 1
+Active tools none
+
+
+
+
+
+
+
+
+
+
+
+Up/Down scroll  v result  m message  p pause subtree  r resume  [ ] page  Home/End first/last  Esc
+back/close
+/tmp/litter-tui-proof-1034039390/workspace
+↑6 ↓6 0.0%/32k (auto)                                                                         parent

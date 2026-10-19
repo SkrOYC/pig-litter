@@ -1,0 +1,24 @@
+ themes, and context files
+
+ Litter 3 paused
+ held-b paused
+ quick-newer paused
+ /pig-litter | +1 more
+Pig Litter | list (1/3)
+> paused held-a #1106c038
+  paused held-b #a849bebb
+  paused quick-newer #315e6241
+
+
+
+
+
+
+
+
+↑↓ move Enter detail v result
+m msg p pause subtree r resume
+[ ] page Home/End first/last
+Esc back/close
+/tmp/litter-tui-proof-3639607...
+↑8 ↓8 3.9%/32k (auto)     parent

@@ -1,0 +1,32 @@
+ starting held-a #04d06008
+ UUID 01a150d6-6d3e-70cf-be20-c14e04d06008
+ Name held-a
+ Type scout
+ Model fixture/held
+ Cwd /tmp/litter-tui-proof-2628607427/workspace
+
+
+
+ litter_spawn scout as held-b
+ Model fixture/held
+ Hold widget child B until the parent explicitly stops it.
+ starting held-b #33fa05ab
+ UUID 01a150d6-6d9d-70cf-be20-c15133fa05ab
+ Name held-b
+ Type scout
+ Model fixture/held
+ Cwd /tmp/litter-tui-proof-2628607427/workspace
+
+
+ PARENT_SCROLLBACK_MARKER
+
+ Tool output: expanded
+
+ Litter 2 live 0 kept
+ held-a running
+ held-b running
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/tmp/litter-tui-proof-2628607427/workspace
+↑2 ↓2 0.0%/32k (auto)                                                                         parent

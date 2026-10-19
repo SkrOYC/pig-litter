@@ -1,0 +1,32 @@
+ starting held-b #878473fc
+
+
+ PARENT_SCROLLBACK_MARKER
+
+ Tool output: collapsed
+
+
+ QUICK_WIDGET
+
+
+
+ litter_spawn scout as quick-newer | Return QUICK_REPORT immediately.
+ starting quick-newer #346f2c29
+
+
+
+ litter_wait #346f2c29
+ completed #346f2c29 | QUICK_REPORT
+
+
+ PARENT_SCROLLBACK_MARKER QUICK_DONE
+
+ Litter 2 active 0 errors 0 paused 1 settled
+ held-a running
+ held-b running
+ /pig-litter | +1 more
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/tmp/litter-tui-proof-1913732873/workspace
+↑5 ↓5 0.0%/32k (auto)                                                                         parent

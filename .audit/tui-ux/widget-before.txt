@@ -1,0 +1,32 @@
+ litter_spawn scout as held-b | Hold widget child B until the parent explicitly stops it.
+ starting held-b #65313a7a
+
+
+ PARENT_SCROLLBACK_MARKER
+
+ Tool output: collapsed
+
+
+ QUICK_WIDGET
+
+
+
+ litter_spawn scout as quick-newer | Return QUICK_REPORT immediately.
+ starting quick-newer #fdce30b6
+
+
+
+ litter_wait #fdce30b6
+ completed #fdce30b6 | QUICK_REPORT
+
+
+ PARENT_SCROLLBACK_MARKER QUICK_DONE
+
+ Litter 2 live 1 kept
+ held-b running
+ quick-newer completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/tmp/litter-tui-proof-544445376/workspace
+↑5 ↓5 0.0%/32k (auto)                                                                         parent

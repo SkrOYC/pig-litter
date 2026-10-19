@@ -1,0 +1,28 @@
+{
+  "observedAt": "2026-10-19 03:47:28 UTC",
+  "status": "LATEST_RELEASES_CONFIRMED_FOR_DELIVERY",
+  "core": "v0.4.1",
+  "sdk": "v0.4.1",
+  "results": [
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "b97cb7",
+        "wall_time_seconds": 0.616867307,
+        "exit_code": 0,
+        "original_token_count": 33,
+        "output": "{\"html_url\":\"https://github.com/MichaelKinsy/PiG/releases/tag/v0.4.1\",\"published_at\":\"2026-10-05T21:26:17Z\",\"tag_name\":\"v0.4.1\"}\n"
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "85d79b",
+        "wall_time_seconds": 0.620434775,
+        "exit_code": 0,
+        "original_token_count": 164,
+        "output": "7fbb8e7018212ba2e4caddd6d97eb997a343f18b\trefs/tags/extensions/sdk/v0.2.0\n968717ba298cbf536870e5f0277a422d903173fc\trefs/tags/extensions/sdk/v0.3.0\nc2d4c329f731941c8d49328ae634c7c17b04d2d7\trefs/tags/extensions/sdk/v0.3.1\n7cabfe2659e1270923b2b0d5fc5ac26d93b0ce42\trefs/tags/extensions/sdk/v0.4.0\n81800db3609d67be6a1b897f51e84561dd4367af\trefs/tags/extensions/sdk/v0.4.1\ncc704eba524de213aa5e701bd2c2492c6a0d0831\trefs/tags/v0.2.0\nf144ac89d5c25e29945c595dec10ec5f5cf305a2\trefs/tags/v0.3.0\n5c9a635f27cb883a3460f6dbccbce5736fbab060\trefs/tags/v0.3.1\n76022638c15e2f68f1cee9c6b8984eee1baba620\trefs/tags/v0.4.0\n3ee745c8cda3c1a9a8d71112c140790c4d64d78d\trefs/tags/v0.4.1\n"
+      }
+    }
+  ]
+}

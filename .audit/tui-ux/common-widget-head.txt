@@ -1,0 +1,36 @@
+goos: linux
+goarch: amd64
+pkg: github.com/SkrOYC/pig-litter/extensions/pig-litter
+cpu: AMD Ryzen 7 PRO 4750U with Radeon Graphics
+BenchmarkCommonWidget/named/width-32         	   80863	      4015 ns/op	     680 B/op	      35 allocs/op
+BenchmarkCommonWidget/named/width-32         	   89084	      4022 ns/op	     680 B/op	      35 allocs/op
+BenchmarkCommonWidget/named/width-32         	   95114	      3845 ns/op	     680 B/op	      35 allocs/op
+BenchmarkCommonWidget/named/width-32         	   93500	      3883 ns/op	     680 B/op	      35 allocs/op
+BenchmarkCommonWidget/named/width-32         	   92871	      3800 ns/op	     680 B/op	      35 allocs/op
+BenchmarkCommonWidget/named/width-100        	  129128	      2898 ns/op	     464 B/op	      23 allocs/op
+BenchmarkCommonWidget/named/width-100        	  131132	      2943 ns/op	     464 B/op	      23 allocs/op
+BenchmarkCommonWidget/named/width-100        	  141006	      2886 ns/op	     464 B/op	      23 allocs/op
+BenchmarkCommonWidget/named/width-100        	  131481	      2936 ns/op	     464 B/op	      23 allocs/op
+BenchmarkCommonWidget/named/width-100        	  137654	      2855 ns/op	     464 B/op	      23 allocs/op
+BenchmarkCommonWidget/unicode/width-32       	   37491	      9491 ns/op	    1144 B/op	      48 allocs/op
+BenchmarkCommonWidget/unicode/width-32       	   37137	      9576 ns/op	    1144 B/op	      48 allocs/op
+BenchmarkCommonWidget/unicode/width-32       	   40274	      9472 ns/op	    1144 B/op	      48 allocs/op
+BenchmarkCommonWidget/unicode/width-32       	   37406	     10118 ns/op	    1144 B/op	      48 allocs/op
+BenchmarkCommonWidget/unicode/width-32       	   36020	      9725 ns/op	    1144 B/op	      48 allocs/op
+BenchmarkCommonWidget/unicode/width-100      	   38065	      9565 ns/op	     944 B/op	      38 allocs/op
+BenchmarkCommonWidget/unicode/width-100      	   37281	      9867 ns/op	     944 B/op	      38 allocs/op
+BenchmarkCommonWidget/unicode/width-100      	   36334	      9690 ns/op	     944 B/op	      38 allocs/op
+BenchmarkCommonWidget/unicode/width-100      	   37201	      9712 ns/op	     944 B/op	      38 allocs/op
+BenchmarkCommonWidget/unicode/width-100      	   38013	      9707 ns/op	     944 B/op	      38 allocs/op
+BenchmarkCommonWidget/states/width-32        	   80750	      4425 ns/op	     832 B/op	      42 allocs/op
+BenchmarkCommonWidget/states/width-32        	   84247	      4505 ns/op	     832 B/op	      42 allocs/op
+BenchmarkCommonWidget/states/width-32        	   80677	      4482 ns/op	     832 B/op	      42 allocs/op
+BenchmarkCommonWidget/states/width-32        	   81895	      4539 ns/op	     832 B/op	      42 allocs/op
+BenchmarkCommonWidget/states/width-32        	   80011	      4648 ns/op	     832 B/op	      42 allocs/op
+BenchmarkCommonWidget/states/width-100       	  121387	      3230 ns/op	     560 B/op	      27 allocs/op
+BenchmarkCommonWidget/states/width-100       	  117079	      3196 ns/op	     560 B/op	      27 allocs/op
+BenchmarkCommonWidget/states/width-100       	  123526	      3192 ns/op	     560 B/op	      27 allocs/op
+BenchmarkCommonWidget/states/width-100       	  114115	      3201 ns/op	     560 B/op	      27 allocs/op
+BenchmarkCommonWidget/states/width-100       	  120408	      3296 ns/op	     560 B/op	      27 allocs/op
+PASS
+ok  	github.com/SkrOYC/pig-litter/extensions/pig-litter	11.200s
