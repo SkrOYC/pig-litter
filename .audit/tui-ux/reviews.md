@@ -17,6 +17,6 @@ Implementation used `gpt-6.1-sol` and `gpt-5.6-sol`. Independent correctness rev
 
 Reviewers preserved counterexamples and failures. Candidate 2 stayed unverified until all three product corrections were applied to a new binary. The original busy-handoff test flake reproduced on untouched baseline code and was fixed in its event fixture. A reviewer compile failed when `/tmp` filled, then passed with an isolated cache. These events do not count as native product passes.
 
-Final native acceptance passes direct and Piglet all-case checks, unselected startup and the strict receipt control. A separate coordinator build and normal Piglet run also pass. The final exact-thread trail verdict remains pending. Source review alone was never treated as native acceptance.
+Final native acceptance passes direct and Piglet all-case checks, unselected startup and the strict receipt control. A separate coordinator build and normal Piglet run also pass. The [final exact-thread readiness audit](readiness.md) is verified with no unresolved flags. Source review alone was never treated as native acceptance. A separate independent baseline-versus-head terminal review gates the newly authorized merge.
 
 The final source reviewer unnecessarily sets a temporary HOME for its focused test subprocess. The exact command remains in its report. No source or global settings change follows, and the declared-environment full checks and native runs independently pass. Future review prompts explicitly forbid that override.
