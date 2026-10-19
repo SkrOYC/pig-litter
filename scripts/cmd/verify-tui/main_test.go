@@ -203,13 +203,13 @@ func TestTmuxSocketCleanupOnlyRemovesStaleOwnedSocket(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if closed, alive := waitForOwnedTmuxExit(ctx, socket); closed || !alive {
+	if closed, alive := waitForTmuxSocketClose(ctx, socket); closed || !alive {
 		t.Fatalf("active server cleanup = closed %v, alive %v", closed, alive)
 	}
 	if err := listener.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if closed, alive := waitForOwnedTmuxExit(context.Background(), socket); !closed || alive {
+	if closed, alive := waitForTmuxSocketClose(context.Background(), socket); !closed || alive {
 		t.Fatalf("stale socket cleanup = closed %v, alive %v", closed, alive)
 	}
 	if _, err := os.Lstat(socket); !os.IsNotExist(err) {
@@ -337,7 +337,7 @@ func TestParseOptionsRequiresAbsolutePrebuiltPaths(t *testing.T) {
 	if err := os.WriteFile(extension, []byte("extension"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	got, err := parseOptions([]string{"--case", "direct", "--pig", pig, "--extension", extension, "--evidence-root", filepath.Join(directory, "evidence")})
+	got, err := parseOptions([]string{"--case", "direct", "--pig", pig, "--extension", extension, "--idle-observer", extension, "--evidence-root", filepath.Join(directory, "evidence")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,6 +346,15 @@ func TestParseOptionsRequiresAbsolutePrebuiltPaths(t *testing.T) {
 	}
 	if _, err := parseOptions([]string{"--case", "direct", "--pig", "pig", "--extension", extension, "--evidence-root", directory}); err == nil {
 		t.Fatal("parseOptions accepted a non-absolute PiG path")
+	}
+	if _, err := parseOptions([]string{"--case", "direct", "--pig", pig, "--extension", extension, "--evidence-root", directory}); err == nil {
+		t.Fatal("selected fixture accepted no idle observer")
+	}
+	if _, err := parseOptions([]string{"--case", "unselected", "--pig", pig, "--extension", extension, "--idle-observer", extension, "--evidence-root", directory}); err == nil {
+		t.Fatal("unselected fixture accepted an idle observer")
+	}
+	if _, err := parseOptions([]string{"--case", "unselected", "--pig", pig, "--extension", extension, "--evidence-root", directory}); err != nil {
+		t.Fatalf("unselected fixture without observer: %v", err)
 	}
 }
 
@@ -397,7 +406,7 @@ func TestProviderCompletesNewerChildAndKeepsHeldChildren(t *testing.T) {
 		t.Fatalf("quick wait = %#v %v", turn, err)
 	}
 	child, err := state.decide(openAIRequest{Model: "quick", Tools: providerTools("read"), Messages: []openAIMessage{{Role: "user", Content: rawJSON(t, "Return QUICK_REPORT immediately.")}}})
-	if err != nil || child.kind != "text" || child.text != "QUICK_REPORT" {
+	if err != nil || child.kind != "text" || child.text != fixtureReport("QUICK_REPORT "+state.quickHistoryMarker) {
 		t.Fatalf("quick child = %#v %v", child, err)
 	}
 	request.Messages = append(request.Messages, openAIMessage{Role: "tool", Content: rawJSON(t, `{"operation":"litter_wait","state":"completed"}`)})
