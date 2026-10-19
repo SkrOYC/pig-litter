@@ -1,5 +1,9 @@
 import { test, expect } from 'bun:test';
-import { configuration, environment, launchArgs, sessionEvidence, sourceIdentity, configuredAgents, currentInspection, pausedOutcome, pausedRetention, completedDelegation, resumedRecall, cancellationAcknowledged, runCommand } from './live.mjs';
+import { readFileSync } from 'node:fs';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { liveWidgetPattern, configuration, environment, launchArgs, sessionEvidence, sourceIdentity, configuredAgents, currentInspection, pausedOutcome, pausedRetention, completedDelegation, resumedRecall, cancellationAcknowledged, runCommand, parseProcessStat, readOwnedProcess, signalOwnedProcess, cleanupOwnedProcesses, saveFailureArtifacts, finalizeArtifacts, launchTmuxSession } from './live.mjs';
 
 const model = 'sample/model';
 const token = 'private-marker-7f4a';
@@ -297,24 +301,45 @@ test('cancellation acknowledgement is scoped to the pending wait', () => {
  expect(cancellationAcknowledged(evidence, 'cancelled-call')).toBe(true);
 });
 
+function fixtureIdentity(pid) {
+ try {
+  const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  return { pid, startTicks: stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19] };
+ } catch (error) { if (['ENOENT', 'ESRCH'].includes(error.code)) return undefined; throw error; }
+}
+
+async function joinFixtureProcesses(rows) {
+ const alive = row => fixtureIdentity(row.pid)?.startTicks === row.startTicks;
+ for (const row of rows.filter(Boolean).toReversed()) {
+  if (!alive(row)) continue;
+  try { process.kill(row.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  const deadline = Date.now() + 1000;
+  while (alive(row) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+ }
+ const remaining = rows.filter(row => row && alive(row));
+ if (remaining.length) throw new Error(`Independent fixture cleanup left owned processes: ${remaining.map(row => row.pid).join(', ')}.`);
+}
+
 async function expectBoundedProcessFailure(options, script, message) {
  let leader;
  let descendant;
  const started = performance.now();
- await expect(runCommand(['sh', '-c', script], {
-  timeoutMs: 100,
-  ...options,
-  onStart(childProcess) { leader = childProcess.pid; },
-  onStdout(text, childProcess) {
-   const pid = Number(text.trim().split('\n')[0]);
-   if (Number.isInteger(pid) && pid > 0) descendant = pid;
-   if (options.input) childProcess.stdin.end();
-  },
- })).rejects.toThrow(message);
- expect(performance.now() - started).toBeLessThan(1200);
- expect(Number.isInteger(descendant)).toBe(true);
- expect(() => process.kill(leader, 0)).toThrow();
- expect(() => process.kill(descendant, 0)).toThrow();
+ try {
+  await expect(runCommand(['sh', '-c', script], {
+   timeoutMs: 100,
+   ...options,
+   onStart(childProcess) { leader = fixtureIdentity(childProcess.pid); },
+   onStdout(text, childProcess) {
+    const pid = Number(text.trim().split('\n')[0]);
+    if (Number.isInteger(pid) && pid > 0) descendant = fixtureIdentity(pid);
+    if (options.input) childProcess.stdin.end();
+   },
+  })).rejects.toThrow(message);
+  expect(performance.now() - started).toBeLessThan(1200);
+  expect(Number.isInteger(descendant?.pid)).toBe(true);
+  expect(() => process.kill(leader.pid, 0)).toThrow();
+  expect(() => process.kill(descendant.pid, 0)).toThrow();
+ } finally { await joinFixtureProcesses([leader, descendant]); }
 }
 
 test('command deadline covers descendant-held pipes and reaps the owned group', async () => {
@@ -331,4 +356,244 @@ test('stream output overflow tears down descendants without waiting for EOF', as
 
 test('ordinary command output remains available after bounded teardown', async () => {
  expect(await runCommand(['sh', '-c', 'printf "metadata ready"'], { timeoutMs: 1000 })).toBe('metadata ready');
+});
+
+test('live widget recognizes active counts at wide and narrow widths', () => {
+ expect(liveWidgetPattern.test(' Litter 2 active 0 errors 1 paused 3 settled')).toBe(true);
+ expect(liveWidgetPattern.test(' Litter 2 live 1 done')).toBe(true);
+ expect(liveWidgetPattern.test(' Litter 0 active 1 error 2 paused 3 settled')).toBe(false);
+ expect(liveWidgetPattern.test(' Litter 0 children')).toBe(false);
+});
+
+test('Linux stat identity preserves start ticks and a command containing parentheses', () => {
+ const row = parseProcessStat('420 (worker ) name) S 7 420 420 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 99112233445566 0');
+ expect(row).toEqual({ pid: 420, parent: 7, group: 420, state: 'S', startTicks: '99112233445566', command: 'worker ) name' });
+ expect(() => parseProcessStat('420 (broken) S 7')).toThrow('Malformed Linux process identity');
+});
+
+test('a different start identity cannot signal the live process that reused its PID', async () => {
+ const child = Bun.spawn(['sleep', '30'], { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' });
+ const fixture = fixtureIdentity(child.pid);
+ try {
+  const owner = readOwnedProcess(child.pid);
+  expect(signalOwnedProcess({ ...owner, startTicks: `${owner.startTicks}0` }, 'SIGTERM')).toBe(false);
+  expect(readOwnedProcess(child.pid).startTicks).toBe(owner.startTicks);
+  expect(signalOwnedProcess(owner, 'SIGTERM')).toBe(true);
+  expect(await child.exited).toBe(143);
+  expect(readOwnedProcess(child.pid)).toBeUndefined();
+ } finally {
+  await joinFixtureProcesses([fixture]);
+  await child.exited;
+ }
+});
+
+const cleanupServer = { pid: 420, parent: 1, group: 420, state: 'S', startTicks: '5000', command: 'tmux' };
+
+test('a closed socket cannot prove that the private tmux process exited', async () => {
+ const result = await cleanupOwnedProcesses({ processes: [], server: cleanupServer, read: () => cleanupServer, socketAlive: async () => false, killServer: async () => {}, send() {}, timeoutMs: 20 });
+ expect(result.serverExited).toBe(false);
+ expect(result.socketClosed).toBe(true);
+ expect(result.remaining).toEqual([cleanupServer]);
+ expect(result.failures).toContain('Owned processes still running: 420.');
+});
+
+test('kill-server failure remains a cleanup failure after fallback signals stop the server', async () => {
+ let current = cleanupServer;
+ const result = await cleanupOwnedProcesses({ processes: [], server: cleanupServer, read: () => current, socketAlive: async () => Boolean(current), killServer: async () => { throw new Error('permission denied'); }, send() { current = undefined; }, timeoutMs: 20 });
+ expect(result.serverExited).toBe(true);
+ expect(result.socketClosed).toBe(true);
+ expect(result.killServer).toEqual({ error: 'permission denied', benignPriorExit: false });
+ expect(result.failures).toContain('kill-server: permission denied');
+});
+
+test('kill-server failure is recorded as benign only when process and socket already exited', async () => {
+ let current = cleanupServer;
+ const result = await cleanupOwnedProcesses({ processes: [], server: cleanupServer, read: () => current, socketAlive: async () => Boolean(current), killServer: async () => { current = undefined; throw new Error('server already exited'); }, send() { throw new Error('must not signal an exited owner'); }, timeoutMs: 20 });
+ expect(result.killServer).toEqual({ error: 'server already exited', benignPriorExit: true });
+ expect(result.serverExited).toBe(true);
+ expect(result.socketClosed).toBe(true);
+ expect(result.failures).toEqual([]);
+});
+
+test('signal failures remain visible and prevent scratch removal', async () => {
+ const scratch = await mkdtemp(join(tmpdir(), 'litter-helper-signal-'));
+ const evidencePath = await mkdtemp(join(tmpdir(), 'litter-helper-evidence-'));
+ try {
+  await writeFile(join(scratch, 'raw.log'), 'required raw evidence\n');
+  const result = await cleanupOwnedProcesses({ processes: [cleanupServer], read: () => cleanupServer, socketAlive: async () => false, send() { throw new Error('signal denied'); }, timeoutMs: 20 });
+  const report = { status: 'passed', cleanup: { ...result, evidenceFailures: [], scratchRemoved: false } };
+  await finalizeArtifacts(report, { scratch, evidencePath });
+  expect(report.status).toBe('failed');
+  expect(report.cleanup.failures).toContain('SIGTERM 420: signal denied');
+  expect(report.cleanup.failures).toContain('SIGKILL 420: signal denied');
+  expect(report.cleanup.scratchRemoved).toBe(false);
+  expect(await readFile(join(scratch, 'raw.log'), 'utf8')).toBe('required raw evidence\n');
+  expect(JSON.parse(await readFile(join(evidencePath, 'run.json'), 'utf8')).status).toBe('failed');
+ } finally { await rm(scratch, { recursive: true, force: true }); await rm(evidencePath, { recursive: true, force: true }); }
+});
+
+test('failed raw evidence saves aggregate errors and preserve the malformed source log', async () => {
+ const scratch = await mkdtemp(join(tmpdir(), 'litter-helper-save-'));
+ const evidencePath = await mkdtemp(join(tmpdir(), 'litter-helper-evidence-'));
+ const sessions = join(scratch, 'sessions');
+ try {
+  await mkdir(sessions);
+  await writeFile(join(sessions, 'native.jsonl'), '{malformed native log\n');
+  const failures = await saveFailureArtifacts({ name: 'selected', sessionDir: sessions, evidencePath, capture: async () => { throw new Error('capture unavailable'); }, save: async () => { throw new Error('disk full'); } });
+  const report = { status: 'failed', cleanup: { failures: [], evidenceFailures: failures, remaining: [], scratchRemoved: false } };
+  await finalizeArtifacts(report, { scratch, evidencePath });
+  expect(failures).toEqual(['failure screen: capture unavailable', 'native.jsonl: disk full']);
+  expect(report.cleanup.scratchRemoved).toBe(false);
+  expect(await readFile(join(sessions, 'native.jsonl'), 'utf8')).toBe('{malformed native log\n');
+  expect(JSON.parse(await readFile(join(evidencePath, 'run.json'), 'utf8')).cleanup.evidenceFailures).toEqual(failures);
+ } finally { await rm(scratch, { recursive: true, force: true }); await rm(evidencePath, { recursive: true, force: true }); }
+});
+
+test('an unsaved run report retains scratch even when every owned process exited', async () => {
+ const scratch = await mkdtemp(join(tmpdir(), 'litter-helper-report-'));
+ try {
+  await writeFile(join(scratch, 'raw.log'), 'only raw evidence\n');
+  const report = { status: 'passed', cleanup: { failures: [], evidenceFailures: [], remaining: [], scratchRemoved: false } };
+  await finalizeArtifacts(report, { scratch, evidencePath: '/not-used', save: async () => { throw new Error('report denied'); } });
+  expect(report.status).toBe('failed');
+  expect(report.cleanup.evidenceFailures).toContain('run.json: report denied');
+  expect(report.cleanup.scratchRemoved).toBe(false);
+  expect(await readFile(join(scratch, 'raw.log'), 'utf8')).toBe('only raw evidence\n');
+ } finally { await rm(scratch, { recursive: true, force: true }); }
+});
+
+test('successful finalization records actual scratch removal after the evidence is saved', async () => {
+ const scratch = await mkdtemp(join(tmpdir(), 'litter-helper-success-'));
+ const evidencePath = await mkdtemp(join(tmpdir(), 'litter-helper-evidence-'));
+ try {
+  const report = { status: 'passed', cleanup: { failures: [], evidenceFailures: [], remaining: [], scratchRemoved: false } };
+  await finalizeArtifacts(report, { scratch, evidencePath });
+  const saved = JSON.parse(await readFile(join(evidencePath, 'run.json'), 'utf8'));
+  expect(saved.status).toBe('passed');
+  expect(saved.cleanup.scratchRemoved).toBe(true);
+  expect(saved.cleanup.retainedScratchRemoved).toBe(false);
+  expect(report.cleanup.retainedScratchRemoved).toBe(true);
+  await expect(readFile(scratch)).rejects.toThrow('ENOENT');
+  await expect(readFile(report.cleanup.retainedScratchPath)).rejects.toThrow('ENOENT');
+ } finally { await rm(scratch, { recursive: true, force: true }); await rm(evidencePath, { recursive: true, force: true }); }
+});
+
+test('a failed second report save retains the raw directory at its recorded path', async () => {
+ const scratch = await mkdtemp(join(tmpdir(), 'litter-helper-second-save-'));
+ const evidencePath = await mkdtemp(join(tmpdir(), 'litter-helper-evidence-'));
+ const report = { status: 'passed', cleanup: { failures: [], evidenceFailures: [], remaining: [], scratchRemoved: false } };
+ let saves = 0;
+ try {
+  await writeFile(join(scratch, 'raw.log'), 'only raw evidence\n');
+  await finalizeArtifacts(report, { scratch, evidencePath, save: async (path, value) => { if (++saves === 2) throw new Error('second save denied'); await writeFile(path, value); } });
+  const saved = JSON.parse(await readFile(join(evidencePath, 'run.json'), 'utf8'));
+  expect(saves).toBe(2);
+  expect(report.status).toBe('failed');
+  expect(report.cleanup.evidenceFailures).toContain('run.json: second save denied');
+  expect(report.cleanup.retainedScratchRemoved).toBe(false);
+  expect(saved.status).toBe('finalizing');
+  expect(await readFile(join(saved.cleanup.retainedScratchPath, 'raw.log'), 'utf8')).toBe('only raw evidence\n');
+ } finally { await rm(scratch, { recursive: true, force: true }); await rm(`${scratch}.retained`, { recursive: true, force: true }); await rm(evidencePath, { recursive: true, force: true }); }
+});
+
+test('retained raw disposal failure is reported without claiming successful disposal', async () => {
+ const scratch = await mkdtemp(join(tmpdir(), 'litter-helper-disposal-'));
+ const evidencePath = await mkdtemp(join(tmpdir(), 'litter-helper-evidence-'));
+ const report = { status: 'passed', cleanup: { failures: [], evidenceFailures: [], remaining: [], scratchRemoved: false } };
+ try {
+  await writeFile(join(scratch, 'raw.log'), 'required raw evidence\n');
+  await finalizeArtifacts(report, { scratch, evidencePath, remove: async () => { throw new Error('disposal denied'); } });
+  const saved = JSON.parse(await readFile(join(evidencePath, 'run.json'), 'utf8'));
+  expect(report.status).toBe('failed');
+  expect(saved.status).toBe('failed');
+  expect(saved.cleanup.failures).toContain('retained scratch removal: disposal denied');
+  expect(saved.cleanup.retainedScratchRemoved).toBe(false);
+  expect(await readFile(join(saved.cleanup.retainedScratchPath, 'raw.log'), 'utf8')).toBe('required raw evidence\n');
+ } finally { await rm(scratch, { recursive: true, force: true }); await rm(`${scratch}.retained`, { recursive: true, force: true }); await rm(evidencePath, { recursive: true, force: true }); }
+});
+
+test('ambiguous tmux launch is not proven exited even when its socket disappears', async () => {
+ let attempts = 0;
+ const result = await cleanupOwnedProcesses({ launchAttempted: true, processes: [], socketAlive: async () => false, killServer: async () => { attempts++; throw new Error('no server'); }, timeoutMs: 20 });
+ expect(attempts).toBe(1);
+ expect(result.serverExited).toBeNull();
+ expect(result.socketClosed).toBe(true);
+ expect(result.killServer).toEqual({ error: 'no server', benignPriorExit: false });
+ expect(result.failures).toContain('Private tmux server identity was not captured after a launch attempt.');
+});
+
+test('post-creation tmux identity capture failure still shuts down the private server', async () => {
+ const scratch = await mkdtemp(join(tmpdir(), 'litter-helper-launch-'));
+ const socket = join(scratch, 'tmux.sock');
+ const launch = { attempted: false };
+ const owned = [];
+ const tmux = (...args) => runCommand(['tmux', '-S', socket, '-f', '/dev/null', ...args], { timeoutMs: 1000, cwd: scratch });
+ let killAttempts = 0;
+ try {
+  await expect(launchTmuxSession({ launch, create: async () => {
+   const response = await tmux('new-session', '-d', '-P', '-F', '#{pid}|#{pane_pid}', '-s', 'launch', 'sleep', '30');
+   for (const pid of response.trim().split('|').map(Number)) owned.push(fixtureIdentity(pid));
+   return response;
+  }, read() { throw new Error('capture denied'); } })).rejects.toThrow('capture denied');
+  expect(launch.attempted).toBe(true);
+  expect(launch.serverPID).toBe(owned[0].pid);
+  expect(launch.panePID).toBe(owned[1].pid);
+  const result = await cleanupOwnedProcesses({ launchAttempted: launch.attempted, processes: [], socket, killServer: async () => { killAttempts++; await tmux('kill-server'); }, timeoutMs: 2000 });
+  expect(killAttempts).toBe(1);
+  expect(result.serverExited).toBeNull();
+  expect(result.socketClosed).toBe(true);
+  expect(result.failures).toContain('Private tmux server identity was not captured after a launch attempt.');
+  for (const row of owned) expect(fixtureIdentity(row.pid)?.startTicks).not.toBe(row.startTicks);
+ } finally { await joinFixtureProcesses(owned); await rm(scratch, { recursive: true, force: true }); }
+});
+
+test('a lost successful tmux launch response still triggers private-socket teardown', async () => {
+ const scratch = await mkdtemp(join(tmpdir(), 'litter-helper-launch-response-'));
+ const socket = join(scratch, 'tmux.sock');
+ const launch = { attempted: false };
+ const owned = [];
+ const tmux = (...args) => runCommand(['tmux', '-S', socket, '-f', '/dev/null', ...args], { timeoutMs: 1000, cwd: scratch });
+ let killAttempts = 0;
+ try {
+  await expect(launchTmuxSession({ launch, create: async () => {
+   const response = await tmux('new-session', '-d', '-P', '-F', '#{pid}|#{pane_pid}', '-s', 'launch', 'sleep', '30');
+   for (const pid of response.trim().split('|').map(Number)) owned.push(fixtureIdentity(pid));
+   throw new Error('launch response lost');
+  } })).rejects.toThrow('launch response lost');
+  const result = await cleanupOwnedProcesses({ launchAttempted: launch.attempted, processes: [], socket, killServer: async () => { killAttempts++; await tmux('kill-server'); }, timeoutMs: 2000 });
+  expect(launch.attempted).toBe(true);
+  expect(launch.serverPID).toBeUndefined();
+  expect(killAttempts).toBe(1);
+  expect(result.serverExited).toBeNull();
+  expect(result.socketClosed).toBe(true);
+  expect(result.failures).toContain('Private tmux server identity was not captured after a launch attempt.');
+ } finally { await joinFixtureProcesses(owned); await rm(scratch, { recursive: true, force: true }); }
+});
+
+test('private tmux cleanup joins its exact process independently of the socket', async () => {
+ const scratch = await mkdtemp(join(tmpdir(), 'litter-helper-tmux-'));
+ const socket = join(scratch, 'tmux.sock');
+ const tmux = (...args) => runCommand(['tmux', '-S', socket, '-f', '/dev/null', ...args], { timeoutMs: 1000, cwd: scratch });
+ let server;
+ let pane;
+ const owned = [];
+ try {
+  const launch = await launchTmuxSession({ launch: { attempted: false }, create: async () => {
+   const response = await tmux('new-session', '-d', '-P', '-F', '#{pid}|#{pane_pid}', '-s', 'cleanup', 'sleep', '30');
+   for (const pid of response.trim().split('|').map(Number)) owned.push(fixtureIdentity(pid));
+   return response;
+  } });
+  server = launch.server;
+  pane = launch.process;
+  const result = await cleanupOwnedProcesses({ processes: [pane], server, socket, killServer: () => tmux('kill-server'), timeoutMs: 2000 });
+  expect(result.serverExited).toBe(true);
+  expect(result.socketClosed).toBe(true);
+  expect(result.remaining).toEqual([]);
+  expect(result.failures).toEqual([]);
+  expect(readOwnedProcess(server.pid)).toBeUndefined();
+  expect(readOwnedProcess(pane.pid)).toBeUndefined();
+ } finally {
+  await joinFixtureProcesses(owned);
+  await rm(scratch, { recursive: true, force: true });
+ }
 });
