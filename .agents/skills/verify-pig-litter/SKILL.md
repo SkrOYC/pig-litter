@@ -1,13 +1,13 @@
 ---
 name: verify-pig-litter
-description: "Verify Pig Litter's direct and Piglet selection, background children, persisted UUID resume, child working directories, terminal tools, diagnostic command, and unselected startup through the terminal UI. Use real providers or isolated deterministic fixtures."
+description: "Verify Pig Litter's direct and Piglet selection, background children, persisted UUID resume, child working directories, terminal tools, retained child controls, and unselected startup through the terminal UI. Use real providers or isolated deterministic fixtures."
 ---
 
 # Verify Pig Litter
 
 Use the live helper for installed Piglets and real providers. Use the pinned terminal fixture for isolated selection and UI controls. Keep real-provider observations separate from deterministic lifecycle checks. The coordinator owns every PiG drive, including doctors.
 
-Run the commands from the repository root.
+Run the commands from the repository root on Linux with `/proc` available. The drivers use process start ticks to identify owned processes.
 
 ## Configure the live run
 
@@ -47,11 +47,11 @@ The helper starts each case in fresh scratch with a private tmux socket and pare
 
 ## Assess child sessions
 
-Selected startup requires an editor displaying the exact model and scratch path. `/pig-litter` must explain the six background controls. There is no foreground startup status.
+Selected startup requires an editor displaying the exact model and scratch path. `/pig-litter help` must explain the six background controls. `/pig-litter` opens the retained direct-child panel. There is no foreground startup status.
 
 The selected proof discovers agents and spawns a scout to read a private token. The scout token exists only in its input file. It also spawns a worker with an explicit `cwd` and requires terminal commands to produce independently checked file effects there. Each child is a persisted PiG session with one stable UUID across turns, pause, and explicit resume. File tools and resources use the spawn directory. Role patterns expand against refreshed root tool enumeration; nested children cannot widen their parent's ceiling. MCP uses root configuration. The parent prompt restricts its own calls to `litter_*` controls; recorded calls enforce that restriction.
 
-A passing run requires matching spawn admissions and completed outcomes by child ID, inherited exact models, the private scout token, and expected worker file effects. It also requires a live `Litter N live M kept` widget. Parent prose alone cannot pass. `litter_inspect` returns status and the latest result. It exposes no transcript or tool receipts.
+A passing run requires matching spawn admissions and completed outcomes by child ID, inherited exact models, the private scout token, and expected worker file effects. It also requires a live `Litter` widget with active counts. Parent prose alone cannot pass. `litter_inspect` returns status and the latest result. It exposes no transcript or tool receipts.
 
 The proof removes the scout's input before resuming it through `litter_message`. The resume message must omit the private token. Require recall in a completed result for the same ID, after the resume acknowledgement. `litter_inspect` exposes current status and the latest outcome. It does not expose transcript history or tool receipts. Real-provider observations cannot establish every internal tool call. Use deterministic provider requests to verify forbidden tools and exact child configuration.
 
@@ -87,9 +87,9 @@ devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh doctor
 devenv shell -- .agents/skills/verify-pig-litter/scripts/verify.sh
 ```
 
-The wrapper checks PiG 0.4.1, Go 1.27.1, and tmux 3.7c. It runs direct, local Piglet, and unselected cases using the maintained product terminal fixture. The fixture uses isolated credentials and a loopback provider, prebuilt Go code, private scratch, and its own tmux server. It exercises tool registration, children, widget, resize, editor, help, stopping, scrollback, and pane and socket cleanup. Evidence stays under `.pstack/evidence/go-tui/`. These checks don't prove real provider readiness or record PiG's exit status.
+The wrapper checks PiG 0.4.1, Go 1.27.1, and tmux 3.7c. It runs direct, local Piglet, and unselected cases using the maintained product terminal fixture. The fixture uses isolated credentials and a loopback provider, prebuilt Go code, private scratch, and its own tmux server. It checks compact and expanded tool cards, active-first widget rows, and retained direct-child controls. It also checks messages, pause, same-UUID resume, reports, live refresh, root Escape, reload, root isolation, resize, editor return, scrollback, and cleanup. Native session records and loopback requests prove effects. Terminal root notices wait for a new explicit root turn after the previous turn settles. Steering into the active turn does not promote these notices. Passive observation preserves outstanding receipts; two new explicit root turns must retain one native completion entry without duplicate delivery. The driver also sends public Kitty keyboard sequences and checks sanitized command errors from a hostile private configuration. Key-to-visible-state timings have a two-second budget. Evidence stays under `.pstack/evidence/go-tui/`. The driver records normal PiG exit status and exact owned process cleanup. These checks do not prove real provider readiness.
 
-Run the wrappers with writable build output and `/tmp`. The terminal and lifecycle drivers do not forward `TMPDIR` to their child environments. To keep source read-only during review, build into owned scratch and use copies of the drivers that forward `TMPDIR`. Choose a short physical temporary path for Unix sockets and canonical directory comparisons. Preserve the driver diff and all original assertions.
+Run the wrappers in the declared devenv environment with CGO enabled, writable build caches, and `/tmp`. The drivers use private session directories and isolated fixture credentials. If access blocks the declared toolchain or required paths, obtain the authorized escalation. Preserve the original assertions and report any check that remains blocked.
 
 ## Run deterministic lifecycle checks
 

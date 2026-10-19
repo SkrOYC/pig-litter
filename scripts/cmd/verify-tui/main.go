@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -31,9 +32,10 @@ const (
 	fixtureAPIKey         = "local-fixture-only"
 	escapeSettle          = 150 * time.Millisecond
 	stageTimeout          = 35 * time.Second
-	runTimeout            = 2 * time.Minute
+	runTimeout            = 6 * time.Minute
 	maxEvidenceRequests   = 128
 	maxProviderErrors     = 32
+	maxRawPTY             = 16 << 20
 )
 
 var (
@@ -58,9 +60,11 @@ const (
 )
 
 type options struct {
+	scenario     string
 	caseName     runCase
 	pigPath      string
 	extension    string
+	idleObserver string
 	piglet       string
 	evidenceRoot string
 }
@@ -71,8 +75,9 @@ type childRef struct {
 }
 
 type openAIMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
 }
 
 type openAITool struct {
@@ -82,12 +87,16 @@ type openAITool struct {
 }
 
 type openAIRequest struct {
-	Model    string          `json:"model"`
-	Messages []openAIMessage `json:"messages"`
-	Tools    []openAITool    `json:"tools"`
+	RequestIndex int             `json:"-"`
+	Model        string          `json:"model"`
+	Messages     []openAIMessage `json:"messages"`
+	Tools        []openAITool    `json:"tools"`
 }
 
 type requestEvidence struct {
+	RequestIndex     int            `json:"requestIndex"`
+	ObservedAt       string         `json:"observedAt"`
+	Markers          []string       `json:"markers,omitempty"`
 	Model            string         `json:"model"`
 	Tools            []string       `json:"tools"`
 	RootMarker       string         `json:"rootMarker,omitempty"`
@@ -104,6 +113,17 @@ type failedSpawn struct {
 
 type fixtureState struct {
 	mu                    sync.Mutex
+	requestTotals         map[string]int
+	requestCount          int
+	rawRequestCount       int
+	quickHistoryMarker    string
+	admissions            map[string]admissionChild
+	admissionCalls        map[string]string
+	expectedSpawns        map[string]spawnExpectation
+	childRequests         []childRequest
+	fixtureWorkspace      string
+	fixtureRoot           string
+	messageDrain          messageDrainStage
 	caseName              runCase
 	requests              []requestEvidence
 	requestsOmitted       int
@@ -119,6 +139,12 @@ type fixtureState struct {
 	providerErrorsOmitted int
 	failedSpawns          []failedSpawn
 	callSequence          int
+	gates                 map[string]chan struct{}
+	released              map[string]bool
+	rawRequests           []json.RawMessage
+	chainWorker           childRef
+	chainSibling          childRef
+	chainGrandchild       childRef
 }
 
 type providerTurn struct {
@@ -134,9 +160,12 @@ type toolCall struct {
 }
 
 type fixtureProvider struct {
-	state  *fixtureState
-	server *http.Server
-	port   int
+	state     *fixtureState
+	server    *http.Server
+	port      int
+	done      chan error
+	closeOnce sync.Once
+	closeErr  error
 }
 
 type paneGeometry struct {
@@ -145,6 +174,7 @@ type paneGeometry struct {
 }
 
 type framePair struct {
+	ansi       string
 	visible    string
 	scrollback string
 }
@@ -155,37 +185,55 @@ type tmuxFailure struct {
 }
 
 type cleanupEvidence struct {
-	PaneJoined       bool   `json:"paneJoined"`
-	TmuxSocketClosed bool   `json:"tmuxSocketClosed"`
-	TmuxServerAlive  bool   `json:"tmuxServerAlive"`
-	TmuxFailureCount int    `json:"tmuxFailureCount"`
-	ScratchRetained  string `json:"scratchRetainedAt,omitempty"`
+	TmuxProcess             observedProcess   `json:"tmuxProcess"`
+	ProviderJoined          bool              `json:"providerJoined"`
+	ObservedProcesses       []observedProcess `json:"observedProcesses"`
+	ObservedProcessesExited bool              `json:"observedProcessesExited"`
+	PaneJoined              bool              `json:"paneJoined"`
+	TmuxSocketClosed        bool              `json:"tmuxSocketClosed"`
+	TmuxServerAlive         bool              `json:"tmuxServerAlive"`
+	TmuxFailureCount        int               `json:"tmuxFailureCount"`
+	ScratchRetained         string            `json:"scratchRetainedAt,omitempty"`
 }
 
 type evidenceReport struct {
-	Case              runCase           `json:"case"`
-	Pig               string            `json:"pig"`
-	Extension         string            `json:"extension"`
-	PigletSource      string            `json:"pigletSource,omitempty"`
-	PigletFixture     string            `json:"pigletFixture,omitempty"`
-	PigletResource    string            `json:"pigletResource,omitempty"`
-	SelectedToolNames []string          `json:"selectedToolNames,omitempty"`
-	ChildRefs         []childRef        `json:"childRefs,omitempty"`
-	QuickChild        childRef          `json:"newerCompletedChild"`
-	AbortedStreams    []string          `json:"abortedStreams,omitempty"`
-	ChildReads        []string          `json:"childReads,omitempty"`
-	FailedSpawns      []failedSpawn     `json:"failedSpawns,omitempty"`
-	ProviderRequests  []requestEvidence `json:"providerRequests,omitempty"`
-	RequestsOmitted   int               `json:"providerRequestsOmitted,omitempty"`
-	ProviderErrors    []string          `json:"providerErrors,omitempty"`
-	ErrorsOmitted     int               `json:"providerErrorsOmitted,omitempty"`
-	FailureFrame      map[string]any    `json:"failureFrame,omitempty"`
-	Cleanup           cleanupEvidence   `json:"cleanup"`
-	OK                bool              `json:"ok"`
-	Error             string            `json:"error,omitempty"`
+	HostExits             []hostExit        `json:"hostExits"`
+	Scenario              string            `json:"scenario"`
+	ExtensionSHA256       string            `json:"extensionSha256"`
+	VerifierSHA256        string            `json:"verifierSha256"`
+	IdleObserverSHA256    string            `json:"idleObserverSha256,omitempty"`
+	IdleObserver          string            `json:"idleObserver,omitempty"`
+	GoVersion             string            `json:"goVersion"`
+	Case                  runCase           `json:"case"`
+	Pig                   string            `json:"pig"`
+	Extension             string            `json:"extension"`
+	PigletSource          string            `json:"pigletSource,omitempty"`
+	PigletFixture         string            `json:"pigletFixture,omitempty"`
+	PigletResource        string            `json:"pigletResource,omitempty"`
+	SelectedToolNames     []string          `json:"selectedToolNames,omitempty"`
+	ChildRefs             []childRef        `json:"childRefs,omitempty"`
+	QuickChild            childRef          `json:"newerCompletedChild"`
+	AbortedStreams        []string          `json:"abortedStreams,omitempty"`
+	ChildReads            []string          `json:"childReads,omitempty"`
+	FailedSpawns          []failedSpawn     `json:"failedSpawns,omitempty"`
+	ProviderRequests      []requestEvidence `json:"providerRequests,omitempty"`
+	ProviderRequestTotals map[string]int    `json:"providerRequestTotals"`
+	RequestsOmitted       int               `json:"providerRequestsOmitted,omitempty"`
+	ProviderErrors        []string          `json:"providerErrors,omitempty"`
+	ErrorsOmitted         int               `json:"providerErrorsOmitted,omitempty"`
+	FailureFrame          map[string]any    `json:"failureFrame,omitempty"`
+	Cleanup               cleanupEvidence   `json:"cleanup"`
+	OK                    bool              `json:"ok"`
+	Error                 string            `json:"error,omitempty"`
+}
+
+type hostExit struct {
+	Process observedProcess `json:"process"`
+	Status  int             `json:"status"`
 }
 
 type runSummary struct {
+	Scenario string  `json:"scenario"`
 	OK       bool    `json:"ok"`
 	Case     runCase `json:"case"`
 	Evidence string  `json:"evidence"`
@@ -200,7 +248,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	result, runErr := run(ctx, options)
-	_ = json.NewEncoder(os.Stdout).Encode(runSummary{OK: runErr == nil, Case: options.caseName, Evidence: result})
+	_ = json.NewEncoder(os.Stdout).Encode(runSummary{Scenario: options.scenario, OK: runErr == nil, Case: options.caseName, Evidence: result})
 	if runErr != nil {
 		fmt.Fprintln(os.Stderr, runErr)
 		os.Exit(1)
@@ -211,9 +259,11 @@ func parseOptions(args []string) (options, error) {
 	var result options
 	flags := flag.NewFlagSet("go-tui-proof", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
+	flags.StringVar(&result.scenario, "scenario", "all", "all, receipt-control, or chain")
 	caseValue := flags.String("case", "", "direct, piglet, or unselected")
 	flags.StringVar(&result.pigPath, "pig", "", "absolute path to the released PiG executable")
 	flags.StringVar(&result.extension, "extension", "", "absolute path to the prebuilt pig-litter executable")
+	flags.StringVar(&result.idleObserver, "idle-observer", "", "absolute path to the prebuilt private TUI idle observer; selected cases only")
 	flags.StringVar(&result.piglet, "piglet", "", "absolute path to the current pig-litter manifest")
 	flags.StringVar(&result.evidenceRoot, "evidence-root", "", "absolute directory for private evidence")
 	if err := flags.Parse(args); err != nil {
@@ -222,9 +272,15 @@ func parseOptions(args []string) (options, error) {
 	if flags.NArg() != 0 {
 		return options{}, errors.New("positional arguments are not supported")
 	}
+	if result.scenario != "all" && result.scenario != "receipt-control" && result.scenario != "chain" {
+		return options{}, errors.New("use --scenario all|receipt-control|chain")
+	}
 	result.caseName = runCase(*caseValue)
 	if result.caseName != caseDirect && result.caseName != casePiglet && result.caseName != caseUnselected {
 		return options{}, errors.New("use --case direct|piglet|unselected")
+	}
+	if result.caseName == caseUnselected && result.scenario != "all" {
+		return options{}, errors.New("focused scenarios require a selected Resource")
 	}
 	for label, path := range map[string]string{
 		"--pig": result.pigPath, "--extension": result.extension, "--evidence-root": result.evidenceRoot,
@@ -244,6 +300,16 @@ func parseOptions(args []string) (options, error) {
 	}
 	if err := requireExecutable(result.extension, "prebuilt pig-litter executable"); err != nil {
 		return options{}, err
+	}
+	if result.caseName != caseUnselected {
+		if !filepath.IsAbs(result.idleObserver) {
+			return options{}, errors.New("selected fixtures require an absolute --idle-observer path")
+		}
+		if err := requireExecutable(result.idleObserver, "private TUI idle observer"); err != nil {
+			return options{}, err
+		}
+	} else if result.idleObserver != "" {
+		return options{}, errors.New("unselected fixture must omit --idle-observer")
 	}
 	if filepath.Base(result.extension) != selectedExtensionName {
 		return options{}, fmt.Errorf("prebuilt extension basename must be %q", selectedExtensionName)
@@ -294,7 +360,28 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	if err := os.Chmod(evidencePath, 0o700); err != nil {
 		return evidencePath, fmt.Errorf("secure evidence directory: %w", err)
 	}
-	report := evidenceReport{Case: options.caseName, Pig: options.pigPath, Extension: options.extension}
+	var panel *panelProof
+	report := evidenceReport{Scenario: options.scenario, Case: options.caseName, Pig: options.pigPath, Extension: options.extension, GoVersion: runtime.Version()}
+	extensionHash, err := fileSHA256(options.extension)
+	if err != nil {
+		return evidencePath, err
+	}
+	report.ExtensionSHA256 = extensionHash
+	if options.caseName != caseUnselected {
+		report.IdleObserver = options.idleObserver
+		report.IdleObserverSHA256, err = fileSHA256(options.idleObserver)
+		if err != nil {
+			return evidencePath, err
+		}
+	}
+	verifierPath, err := os.Executable()
+	if err != nil {
+		return evidencePath, err
+	}
+	report.VerifierSHA256, err = fileSHA256(verifierPath)
+	if err != nil {
+		return evidencePath, err
+	}
 	scratch, err := os.MkdirTemp("", "litter-tui-proof-")
 	if err != nil {
 		return evidencePath, fmt.Errorf("create fixture directory: %w", err)
@@ -302,6 +389,10 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	if err := os.Chmod(scratch, 0o700); err != nil {
 		_ = os.RemoveAll(scratch)
 		return evidencePath, fmt.Errorf("secure fixture directory: %w", err)
+	}
+	rootSessions := filepath.Join(scratch, "root-sessions")
+	if err := os.MkdirAll(rootSessions, 0o700); err != nil {
+		return evidencePath, err
 	}
 	workspace := filepath.Join(scratch, "workspace")
 	home := filepath.Join(scratch, "home")
@@ -315,8 +406,18 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		return evidencePath, errors.New("tmux must be available on the host PATH")
 	}
 	childEnv := fixtureEnvironment(options.pigPath, tmuxPath, home, pigHome, agentDir, scratch)
+	idleCommand, idleDirectory := "", ""
+	if options.caseName != caseUnselected {
+		idleCommand = "fixture-idle-" + strings.ToLower(rand.Text())
+		idleDirectory = filepath.Join(evidencePath, "idle-readiness")
+		if err := os.Mkdir(idleDirectory, 0o700); err != nil {
+			return evidencePath, err
+		}
+		childEnv = append(childEnv, "PIG_TUI_IDLE_COMMAND="+idleCommand, "PIG_TUI_IDLE_DIRECTORY="+idleDirectory)
+	}
 	tmuxErrors := make([]tmuxFailure, 0)
 	state := newFixtureState(options.caseName)
+	state.fixtureWorkspace = workspace
 	provider, err := startFixtureProvider(state)
 	if err != nil {
 		_ = os.RemoveAll(scratch)
@@ -324,6 +425,22 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	}
 	socketStarted := false
 	panePID := 0
+	var tmuxProcess observedProcess
+	observed := map[string]observedProcess{}
+	observeOwned := func() ([]observedProcess, error) {
+		rootPID := panePID
+		if tmuxProcess.PID > 0 {
+			rootPID = tmuxProcess.PID
+		}
+		processes, err := observeDescendants(rootPID)
+		if err != nil {
+			return nil, err
+		}
+		for _, process := range processes {
+			observed[fmt.Sprintf("%d/%s", process.PID, process.StartTicks)] = process
+		}
+		return processes, nil
+	}
 	paneExited := false
 	socketClosed := false
 	tmuxServerAlive := false
@@ -364,55 +481,148 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		if err != nil {
 			return framePair{}, err
 		}
-		pair := framePair{visible: visible, scrollback: scrollback}
+		ansi, err := tmuxCall("capture-pane", "-e", "-p", "-t", session)
+		if err != nil {
+			return framePair{}, err
+		}
+		if _, err := observeOwned(); err != nil {
+			return framePair{}, err
+		}
+		pair := framePair{visible: visible, scrollback: scrollback, ansi: ansi}
 		if err := saveFrame(evidencePath, name, pair); err != nil {
 			return framePair{}, err
 		}
 		return pair, nil
 	}
+	var inputs []panelEvent
 	sendText := func(text string) error {
+		event := panelEvent{Action: "literal-terminal-input", Input: text, SentAt: time.Now().UTC().Format(time.RFC3339Nano)}
 		_, err := tmuxCall("send-keys", "-l", "-t", session, text)
+		event.ReturnedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		inputs = append(inputs, event)
 		return err
 	}
 	sendKey := func(key string) error {
+		event := panelEvent{Action: "named-terminal-key", Input: key, SentAt: time.Now().UTC().Format(time.RFC3339Nano)}
 		_, err := tmuxCall("send-keys", "-t", session, key)
+		event.ReturnedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		inputs = append(inputs, event)
 		return err
 	}
-	captureFailure := func() map[string]any {
-		visible, err := readVisible()
+	exitHost := func() error {
+		process, err := readObservedProcess(panePID)
 		if err != nil {
-			return map[string]any{"captureError": evidenceText(err.Error())}
+			return err
 		}
-		_ = writePrivate(filepath.Join(evidencePath, "failure-current-visible.txt"), []byte(visible))
-		result := map[string]any{"visibleFile": "failure-current-visible.txt"}
-		if scrollback, err := readScrollback(); err == nil {
-			_ = writePrivate(filepath.Join(evidencePath, "failure-current-scrollback.txt"), []byte(scrollback))
-			result["scrollbackSaved"] = true
-		} else {
-			result["scrollbackSaved"] = false
+		if err := sendKey("C-d"); err != nil {
+			return err
 		}
-		if geometry, err := paneSize(); err == nil {
-			result["geometry"] = fmt.Sprintf("%dx%d", geometry.width, geometry.height)
+		if err := waitFor(ctx, "released PiG normal exit", 10*time.Second, func() (bool, error) {
+			dead, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_dead}")
+			return err == nil && dead == "1" && !observedAlive(process), nil
+		}); err != nil {
+			return err
 		}
-		if dead, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_dead}"); err == nil {
-			result["paneDead"] = dead == "1"
+		status, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_dead_status}")
+		if err != nil {
+			return err
 		}
-		if current, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_current_command}"); err == nil {
-			result["paneCommand"] = current
+		code, err := strconv.Atoi(status)
+		if err != nil {
+			return err
 		}
-		return result
+		report.HostExits = append(report.HostExits, hostExit{Process: process, Status: code})
+		if code != 0 {
+			return fmt.Errorf("released PiG exited with status %d", code)
+		}
+		return nil
+	}
+	armRawPTY := func() error {
+		path := filepath.Join(evidencePath, "pty.raw")
+		errorsFile, err := os.OpenFile(path+".stderr", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return err
+		}
+		if err := errorsFile.Close(); err != nil {
+			return err
+		}
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return err
+		}
+		info, statErr := file.Stat()
+		err = errors.Join(statErr, file.Close())
+		if err != nil {
+			return err
+		}
+		remaining := int64(maxRawPTY) - info.Size() + 1
+		if remaining <= 0 {
+			return errors.New("raw PTY capture bound exhausted")
+		}
+		_, err = tmuxCall("pipe-pane", "-O", "-t", session, joinShellCommand("head", []string{"-c", strconv.FormatInt(remaining, 10)})+" >> "+shellQuote(path)+" 2>> "+shellQuote(path+".stderr"))
+		return err
+	}
+	if options.caseName != caseUnselected {
+		panel = &panelProof{idleCommand: idleCommand, idleDirectory: idleDirectory, idleObserver: options.idleObserver, rawActive: func() error {
+			value, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_pipe}")
+			if err != nil {
+				return err
+			}
+			if value != "1" {
+				return errors.New("raw PTY recorder is not armed")
+			}
+			return nil
+		}, workspace: workspace, paneTitle: func() (string, error) { return tmuxCall("display-message", "-p", "-t", session, "#{pane_title}") }, processes: observeOwned, scenario: options.scenario, ctx: ctx, state: state, sendText: sendText, sendKey: sendKey, visible: readVisible, frame: frame, geometry: paneSize, rootSessions: rootSessions, agentDir: agentDir, evidence: evidencePath, configPath: filepath.Join(workspace, "litter.yaml"), resize: func(width, height int) error {
+			_, err := tmuxCall("resize-window", "-t", session, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
+			return err
+		}}
+	}
+	captureFailure := func() (map[string]any, error) {
+		result := map[string]any{}
+		var failures []error
+		for _, capture := range []struct {
+			name string
+			args []string
+		}{
+			{"visible", []string{"capture-pane", "-p", "-t", session}},
+			{"scrollback", []string{"capture-pane", "-p", "-S", "-1000", "-t", session}},
+			{"ansi", []string{"capture-pane", "-e", "-p", "-t", session}},
+		} {
+			text, err := tmuxCall(capture.args...)
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			name := "failure-current-" + capture.name + ".txt"
+			if err := writePrivate(filepath.Join(evidencePath, name), []byte(text)); err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			result[capture.name+"File"] = name
+		}
+		return result, errors.Join(failures...)
 	}
 	defer func() {
+		artifactsOK := true
+		addFailure := func(err error) {
+			if err != nil {
+				artifactsOK = false
+				runErr = errors.Join(runErr, err)
+			}
+		}
 		if runErr != nil && socketStarted {
-			report.FailureFrame = captureFailure()
+			var err error
+			report.FailureFrame, err = captureFailure()
+			addFailure(err)
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cleanupCancel()
 		if tmuxSessionExists {
 			if _, err := runTmux(cleanupCtx, tmuxPath, socket, childEnv, "kill-session", "-t", session); err == nil {
 				tmuxSessionExists = false
-			} else if _, alive, statusErr := tmuxSocketStatus(socket); statusErr != nil || alive {
+			} else if tmuxProcess.PID == 0 || observedAlive(tmuxProcess) {
 				tmuxErrors = append(tmuxErrors, tmuxFailure{Operation: "kill-session", Stderr: evidenceText(err.Error())})
+				addFailure(err)
 			} else {
 				tmuxSessionExists = false
 			}
@@ -422,27 +632,64 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		} else {
 			paneExited = true
 		}
-		provider.close()
+		providerErr := provider.close()
+		addFailure(providerErr)
 		if socketStarted {
-			socketClosed, tmuxServerAlive = waitForOwnedTmuxExit(cleanupCtx, socket)
+			socketClosed, tmuxServerAlive = waitForTmuxSocketClose(cleanupCtx, socket)
 		} else {
 			socketClosed = true
 		}
-		if !paneExited && runErr == nil {
-			runErr = errors.New("private TUI process did not exit during cleanup")
+		if !paneExited {
+			addFailure(errors.New("private TUI process did not exit during cleanup"))
 		}
-		if !socketClosed && runErr == nil {
-			runErr = errors.New("private tmux socket did not close during cleanup")
+		if !socketClosed {
+			addFailure(errors.New("private tmux socket did not close during cleanup"))
 		}
 		if len(tmuxErrors) > 0 {
 			encoded, _ := json.MarshalIndent(tmuxErrors, "", "  ")
-			_ = writePrivate(filepath.Join(evidencePath, "tmux-errors.json"), encoded)
+			addFailure(writePrivate(filepath.Join(evidencePath, "tmux-errors.json"), encoded))
 		}
-		cleanup := cleanupEvidence{PaneJoined: paneExited, TmuxSocketClosed: socketClosed, TmuxServerAlive: tmuxServerAlive, TmuxFailureCount: len(tmuxErrors)}
-		if !paneExited || !socketClosed {
+		addFailure(saveNativeEvidence(filepath.Join(evidencePath, "native-final"), rootSessions, filepath.Join(agentDir, "sessions")))
+		if panel != nil {
+			addFailure(panel.save())
+		}
+		if data, err := json.MarshalIndent(inputs, "", "  "); err != nil {
+			addFailure(err)
+		} else if err == nil {
+			addFailure(writePrivate(filepath.Join(evidencePath, "terminal-inputs.json"), data))
+		}
+		addFailure(state.saveRequests(filepath.Join(evidencePath, "provider-requests")))
+		addFailure(state.providerFailure())
+		var observedList []observedProcess
+		for _, process := range observed {
+			observedList = append(observedList, process)
+		}
+		sort.Slice(observedList, func(i, j int) bool { return observedList[i].PID < observedList[j].PID })
+		allExited := waitUntilDone(cleanupCtx, func() bool {
+			for _, process := range observedList {
+				if observedAlive(process) {
+					return false
+				}
+			}
+			return true
+		})
+		if !allExited {
+			addFailure(errors.New("observed owned process survived cleanup"))
+		}
+		if tmuxProcess.PID > 0 {
+			tmuxServerAlive = observedAlive(tmuxProcess)
+		}
+		addFailure(checkRawPTY(filepath.Join(evidencePath, "pty.raw")))
+		if runErr == nil && options.caseName != caseUnselected && options.scenario == "all" {
+			raw, err := os.ReadFile(filepath.Join(evidencePath, "pty.raw"))
+			addFailure(err)
+			if !bytes.Contains(raw, []byte("HOSTILE_CONFIG_BEGIN")) || !bytes.Contains(raw, []byte("REPORT_LINE_70")) {
+				addFailure(errors.New("raw PTY lacks required hostile-action output"))
+			}
+		}
+		cleanup := cleanupEvidence{TmuxProcess: tmuxProcess, ProviderJoined: providerErr == nil, ObservedProcesses: observedList, ObservedProcessesExited: allExited, PaneJoined: paneExited, TmuxSocketClosed: socketClosed, TmuxServerAlive: tmuxServerAlive, TmuxFailureCount: len(tmuxErrors)}
+		if !paneExited || !socketClosed || !allExited || !artifactsOK {
 			cleanup.ScratchRetained = scratch
-		} else {
-			_ = os.RemoveAll(scratch)
 		}
 		report.Case = options.caseName
 		report.Pig = options.pigPath
@@ -457,6 +704,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		report.ChildReads = state.names(state.childReads)
 		report.FailedSpawns = state.spawnFailures()
 		report.ProviderRequests = state.requestEvidence()
+		report.ProviderRequestTotals = state.requestTotalSnapshot()
 		report.RequestsOmitted = state.requestsOmittedCount()
 		report.ProviderErrors = state.errors()
 		report.ErrorsOmitted = state.providerErrorsOmittedCount()
@@ -466,8 +714,9 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			report.Error = evidenceText(runErr.Error())
 		}
 		encoded, _ := json.MarshalIndent(report, "", "  ")
-		if err := writePrivate(filepath.Join(evidencePath, "result.json"), encoded); err != nil && runErr == nil {
-			runErr = fmt.Errorf("write result evidence: %w", err)
+		addFailure(writePrivate(filepath.Join(evidencePath, "result.json"), encoded))
+		if cleanup.ScratchRetained == "" && artifactsOK {
+			addFailure(os.RemoveAll(scratch))
 		}
 	}()
 
@@ -481,24 +730,61 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		}
 	}
 	args := []string{
-		"--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--approve",
+		"--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--session-dir", rootSessions, "--approve",
 		"--model", "fixture/parent",
 	}
 	switch options.caseName {
 	case caseDirect:
-		args = append([]string{"--no-extensions", "-e", options.extension}, args...)
+		args = append([]string{"--no-extensions", "-e", options.extension, "-e", options.idleObserver}, args...)
 	case casePiglet:
-		args = append([]string{"--piglet", manifestDestination}, args...)
+		args = append([]string{"--piglet", manifestDestination, "-e", options.idleObserver}, args...)
 	case caseUnselected:
 		args = append([]string{"--no-extensions"}, args...)
 	}
 	command = joinShellCommand(options.pigPath, args)
+	if panel != nil {
+		panel.restartHost = func(path string) error {
+			if err := exitHost(); err != nil {
+				return err
+			}
+			if _, err := tmuxCall("respawn-pane", "-k", "-t", session, joinShellCommand(options.pigPath, append(append([]string(nil), args...), "--session", path))); err != nil {
+				return err
+			}
+			pidText, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_pid}")
+			if err != nil {
+				return err
+			}
+			panePID, err = strconv.Atoi(pidText)
+			if err != nil {
+				return err
+			}
+			if err := armRawPTY(); err != nil {
+				return err
+			}
+			return waitFor(ctx, "restarted native PiG TUI", stageTimeout, func() (bool, error) { text, err := readVisible(); return err == nil && startupFrameReady(text), nil })
+		}
+	}
 
 	socketStarted = true
 	if _, err := tmuxCall("new-session", "-d", "-s", session, "-x", "100", "-y", "32", "-c", workspace, "/bin/sh"); err != nil {
 		return evidencePath, err
 	}
 	tmuxSessionExists = true
+	serverPID, err := tmuxCall("display-message", "-p", "-t", session, "#{pid}")
+	if err != nil {
+		return evidencePath, err
+	}
+	serverNumber, err := strconv.Atoi(serverPID)
+	if err != nil {
+		return evidencePath, err
+	}
+	tmuxProcess, err = readObservedProcess(serverNumber)
+	if err != nil {
+		return evidencePath, err
+	}
+	if _, err := observeOwned(); err != nil {
+		return evidencePath, err
+	}
 	if _, err := tmuxCall("set-window-option", "-t", session, "remain-on-exit", "on"); err != nil {
 		return evidencePath, err
 	}
@@ -512,6 +798,9 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	panePID, err = strconv.Atoi(pidText)
 	if err != nil || panePID <= 0 {
 		return evidencePath, errors.New("private TUI process ID was unavailable")
+	}
+	if err := armRawPTY(); err != nil {
+		return evidencePath, err
 	}
 	if err := waitFor(ctx, "private PiG TUI", stageTimeout, func() (bool, error) {
 		dead, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_dead}")
@@ -541,6 +830,11 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		return evidencePath, err
 	}
 
+	if panel != nil {
+		if err := panel.coldRootProof(); err != nil {
+			return evidencePath, err
+		}
+	}
 	if options.caseName == caseUnselected {
 		if err := sendText("UNSELECTED_WIDGET"); err != nil {
 			return evidencePath, err
@@ -565,6 +859,13 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		}
 		if strings.Contains(captured.visible, "Litter") || strings.Contains(captured.visible, "litter_spawn") {
 			return evidencePath, errors.New("unselected TUI exposed the Resource widget or tools")
+		}
+	} else if options.scenario == "chain" {
+		if err := panel.chainProof(); err != nil {
+			return evidencePath, err
+		}
+		if err := panel.newRootProof(); err != nil {
+			return evidencePath, err
 		}
 	} else {
 		if err := sendText("START_WIDGET"); err != nil {
@@ -656,11 +957,14 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		if !widgetShows(activeBeforeResize.visible, "running") {
 			return evidencePath, errors.New("newer completed child displaced older active widget rows")
 		}
-		requestsBeforeResize := len(state.requestEvidence())
 		widgetBeforeResize := latestWidgetLines(activeBeforeResize.visible)
 		if !strings.Contains(widgetBeforeResize[0], "2 active") || !strings.Contains(widgetBeforeResize[0], "1 settled") || !strings.Contains(widgetBeforeResize[3], "/pig-litter | +1 more") {
 			return evidencePath, errors.New("widget did not retain completed counts and command discovery")
 		}
+		if err := panel.preResize(); err != nil {
+			return evidencePath, err
+		}
+		requestsBeforeResize := state.totalRequests()
 		if _, err := tmuxCall("resize-window", "-t", session, "-x", "32", "-y", "32"); err != nil {
 			return evidencePath, err
 		}
@@ -683,7 +987,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		if err != nil {
 			return evidencePath, err
 		}
-		if len(state.requestEvidence()) != requestsBeforeResize {
+		if state.totalRequests() != requestsBeforeResize {
 			return evidencePath, errors.New("resize unexpectedly started inference")
 		}
 		if err := saveFrame(evidencePath, "live-100-after-resize", wide); err != nil {
@@ -835,17 +1139,11 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		if text, ok := editorInputText(latest.visible); !ok || text != "" {
 			return evidencePath, errors.New("editor must be empty before Ctrl+D")
 		}
-	}
-	if err := sendKey("C-d"); err != nil {
-		return evidencePath, err
-	}
-	if err := waitFor(ctx, "PiG to exit after Ctrl+D", 10*time.Second, func() (bool, error) {
-		dead, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_dead}")
-		if err != nil {
-			return !processExists(panePID), nil
+		if err := panel.afterHistory(); err != nil {
+			return evidencePath, err
 		}
-		return dead == "1" && !processExists(panePID), nil
-	}); err != nil {
+	}
+	if err := exitHost(); err != nil {
 		return evidencePath, err
 	}
 	paneExited = true
@@ -854,10 +1152,15 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 
 func newFixtureState(caseName runCase) *fixtureState {
 	return &fixtureState{
-		caseName:   caseName,
-		held:       make(map[string]struct{}),
-		aborted:    make(map[string]struct{}),
-		childReads: make(map[string]struct{}),
+		requestTotals:      make(map[string]int),
+		quickHistoryMarker: "PRIVATE_ASSISTANT_" + rand.Text(),
+		admissions:         make(map[string]admissionChild),
+		admissionCalls:     make(map[string]string),
+		expectedSpawns:     make(map[string]spawnExpectation),
+		caseName:           caseName,
+		held:               make(map[string]struct{}),
+		aborted:            make(map[string]struct{}),
+		childReads:         make(map[string]struct{}),
 	}
 }
 
@@ -867,12 +1170,33 @@ func (state *fixtureState) decide(request openAIRequest) (providerTurn, error) {
 	toolResults := toolResultCounts(request.Messages)
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	state.requestTotals[request.Model]++
+	state.requestCount++
+	if request.Model != "parent" && len(state.childRequests) < maxEvidenceRequests {
+		state.childRequests = append(state.childRequests, childRequest{RequestIndex: request.RequestIndex, Model: request.Model, Name: state.requestChildNameLocked(request)})
+	}
+	for _, message := range roleMessages(request.Messages, "tool") {
+		var result toolResult
+		if json.Unmarshal([]byte(contentText(message.Content)), &result) == nil && result.Operation == "litter_spawn" && result.Child.ID != "" {
+			if old, exists := state.admissions[result.Child.ID]; exists && old != result.Child {
+				return providerTurn{}, fmt.Errorf("spawn identity changed for %s", result.Child.ID)
+			}
+			if call, exists := state.admissionCalls[result.Child.ID]; exists && call != message.ToolCallID {
+				return providerTurn{}, fmt.Errorf("spawn call identity changed for %s", result.Child.ID)
+			}
+			state.admissions[result.Child.ID] = result.Child
+			state.admissionCalls[result.Child.ID] = message.ToolCallID
+		}
+	}
 	if len(state.requests) < maxEvidenceRequests {
 		state.requests = append(state.requests, requestEvidence{
-			Model: request.Model, Tools: tools, RootMarker: marker.marker, ToolResultCounts: toolResults,
+			RequestIndex: request.RequestIndex, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Markers: fixtureMarkers(request.Messages), Model: request.Model, Tools: tools, RootMarker: marker.marker, ToolResultCounts: toolResults,
 		})
 	} else {
 		state.requestsOmitted++
+	}
+	if turn, handled, err := state.panelTurnLocked(request, tools); handled {
+		return turn, err
 	}
 	if request.Model == "held" {
 		if state.caseName == caseUnselected {
@@ -905,7 +1229,7 @@ func (state *fixtureState) decide(request openAIRequest) (providerTurn, error) {
 		if err := requireToolInventory(tools, []string{"read"}, []string{"ls"}, "quick scout leaf"); err != nil {
 			return providerTurn{}, err
 		}
-		return providerTurn{kind: "text", text: "QUICK_REPORT"}, nil
+		return providerTurn{kind: "text", text: fixtureReport("QUICK_REPORT " + state.quickHistoryMarker)}, nil
 	}
 	if request.Model != "parent" {
 		return providerTurn{}, fmt.Errorf("unexpected fixture model %q", request.Model)
@@ -1063,6 +1387,12 @@ func (state *fixtureState) beginHold(name string) error {
 		return fmt.Errorf("child %s opened more than one hold stream", name)
 	}
 	state.held[name] = struct{}{}
+	if state.gates == nil {
+		state.gates = map[string]chan struct{}{}
+		state.released = map[string]bool{}
+	}
+	state.gates[name] = make(chan struct{})
+	state.released[name] = false
 	return nil
 }
 
@@ -1204,6 +1534,9 @@ func (state *fixtureState) errors() []string {
 func (state *fixtureState) providerFailure() error {
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	if state.requestsOmitted != 0 || state.rawRequestCount > maxEvidenceRequests || state.providerErrorsOmitted != 0 {
+		return fmt.Errorf("correctness evidence omitted: requests=%d raw=%d errors=%d", state.requestsOmitted, max(0, state.rawRequestCount-maxEvidenceRequests), state.providerErrorsOmitted)
+	}
 	if len(state.providerError) == 0 {
 		return nil
 	}
@@ -1226,21 +1559,36 @@ func startFixtureProvider(state *fixtureState) (*fixtureProvider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("start loopback provider: %w", err)
 	}
-	provider := &fixtureProvider{state: state, port: listener.Addr().(*net.TCPAddr).Port}
+	provider := &fixtureProvider{state: state, port: listener.Addr().(*net.TCPAddr).Port, done: make(chan error, 1)}
 	provider.server = &http.Server{
 		Handler:           http.HandlerFunc(provider.serveHTTP),
 		ReadHeaderTimeout: 5 * time.Second,
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
-	go func() { _ = provider.server.Serve(listener) }()
+	go func() { provider.done <- provider.server.Serve(listener) }()
 	return provider, nil
 }
 
-func (provider *fixtureProvider) close() {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_ = provider.server.Shutdown(ctx)
-	_ = provider.server.Close()
+func (provider *fixtureProvider) close() error {
+	provider.closeOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		provider.closeErr = errors.Join(provider.server.Shutdown(ctx), provider.server.Close())
+		select {
+		case err := <-provider.done:
+			if !errors.Is(err, http.ErrServerClosed) {
+				provider.closeErr = errors.Join(provider.closeErr, err)
+			}
+		case <-ctx.Done():
+			provider.closeErr = errors.Join(provider.closeErr, fmt.Errorf("provider Serve did not join: %w", ctx.Err()))
+		}
+		connection, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(provider.port)), 100*time.Millisecond)
+		if err == nil {
+			_ = connection.Close()
+			provider.closeErr = errors.Join(provider.closeErr, errors.New("fixture listener still accepts connections"))
+		}
+	})
+	return provider.closeErr
 }
 
 func (provider *fixtureProvider) serveHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -1249,10 +1597,15 @@ func (provider *fixtureProvider) serveHTTP(writer http.ResponseWriter, request *
 		return
 	}
 	var body openAIRequest
-	if err := json.NewDecoder(io.LimitReader(request.Body, 8<<20)).Decode(&body); err != nil {
+	payload, err := io.ReadAll(io.LimitReader(request.Body, 8<<20))
+	if err == nil {
+		err = json.Unmarshal(payload, &body)
+	}
+	if err != nil {
 		provider.fail(writer, fmt.Errorf("decode provider request: %w", err))
 		return
 	}
+	body.RequestIndex = provider.state.captureRequest(payload)
 	turn, err := provider.state.decide(body)
 	if err != nil {
 		provider.fail(writer, err)
@@ -1269,8 +1622,17 @@ func (provider *fixtureProvider) serveHTTP(writer http.ResponseWriter, request *
 		if flusher, ok := writer.(http.Flusher); ok {
 			flusher.Flush()
 		}
-		<-request.Context().Done()
-		provider.state.cancelHold(turn.name)
+		select {
+		case <-request.Context().Done():
+			provider.state.cancelHold(turn.name)
+		case <-provider.state.holdGate(turn.name):
+			provider.state.completeHold(turn.name)
+			if len(turn.calls) != 0 {
+				provider.writeTools(writer, body, turn.calls)
+			} else {
+				provider.writeText(writer, body.Model, turn.text)
+			}
+		}
 		return
 	}
 	writer.Header().Set("Content-Type", "text/event-stream")
@@ -1280,7 +1642,7 @@ func (provider *fixtureProvider) serveHTTP(writer http.ResponseWriter, request *
 		return
 	}
 	if turn.kind == "tools" {
-		provider.writeTools(writer, body.Model, turn.calls)
+		provider.writeTools(writer, body, turn.calls)
 		return
 	}
 	provider.fail(writer, fmt.Errorf("unknown fixture response kind %q", turn.kind))
@@ -1303,14 +1665,21 @@ func (provider *fixtureProvider) writeText(writer http.ResponseWriter, model, te
 	}
 }
 
-func (provider *fixtureProvider) writeTools(writer http.ResponseWriter, model string, calls []toolCall) {
+func (provider *fixtureProvider) writeTools(writer http.ResponseWriter, request openAIRequest, calls []toolCall) {
 	sequence := provider.state.nextCallSequence()
 	toolCalls := make([]map[string]any, 0, len(calls))
 	for index, call := range calls {
 		arguments, _ := json.Marshal(call.args)
+		id := fmt.Sprintf("litter-tui-%d-%d", sequence, index)
+		if call.name == "litter_spawn" {
+			if err := provider.state.expectSpawn(id, request, arguments); err != nil {
+				provider.fail(writer, err)
+				return
+			}
+		}
 		toolCalls = append(toolCalls, map[string]any{
 			"index": index,
-			"id":    fmt.Sprintf("litter-tui-%d-%d", sequence, index),
+			"id":    id,
 			"type":  "function",
 			"function": map[string]string{
 				"name": call.name, "arguments": string(arguments),
@@ -1318,7 +1687,7 @@ func (provider *fixtureProvider) writeTools(writer http.ResponseWriter, model st
 		})
 	}
 	flusher, _ := writer.(http.Flusher)
-	_ = writeSSE(writer, flusher, completionChunk{Model: model, Delta: map[string]any{"role": "assistant", "tool_calls": toolCalls}, FinishReason: "tool_calls", Usage: &completionUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}})
+	_ = writeSSE(writer, flusher, completionChunk{Model: request.Model, Delta: map[string]any{"role": "assistant", "tool_calls": toolCalls}, FinishReason: "tool_calls", Usage: &completionUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}})
 	_, _ = io.WriteString(writer, "data: [DONE]\n\n")
 	if flusher != nil {
 		flusher.Flush()
@@ -1382,9 +1751,9 @@ func makeFixtureFiles(workspace, home, pigHome, agentDir string, port int) error
 		}
 	}
 	files := map[string][]byte{
-		filepath.Join(workspace, "litter.yaml"):           []byte("concurrency: 4\ndepth: 2\n"),
+		filepath.Join(workspace, "litter.yaml"):           []byte("concurrency: 6\ndepth: 2\n"),
 		filepath.Join(workspace, "fixture-read.txt"):      []byte("TUI_READ_MARKER\n"),
-		filepath.Join(agentDir, "models.json"):            []byte(fmt.Sprintf(`{"providers":{"fixture":{"api":"openai-completions","baseUrl":"http://127.0.0.1:%d/v1","apiKey":%q,"models":[{"id":"parent","name":"parent","contextWindow":32000,"maxTokens":2048},{"id":"held","name":"held","contextWindow":32000,"maxTokens":2048},{"id":"quick","name":"quick","contextWindow":32000,"maxTokens":2048}]}}}`, port, fixtureAPIKey)),
+		filepath.Join(agentDir, "models.json"):            []byte(fmt.Sprintf(`{"providers":{"fixture":{"api":"openai-completions","baseUrl":"http://127.0.0.1:%d/v1","apiKey":%q,"models":[{"id":"parent","name":"parent","contextWindow":32000,"maxTokens":2048},{"id":"held","name":"held","contextWindow":32000,"maxTokens":2048},{"id":"quick","name":"quick","contextWindow":32000,"maxTokens":2048},{ "id":"chain_worker","name":"chain_worker","contextWindow":32000,"maxTokens":2048},{"id":"chain_sibling","name":"chain_sibling","contextWindow":32000,"maxTokens":2048},{"id":"chain_grand","name":"chain_grand","contextWindow":32000,"maxTokens":2048}]}}}`, port, fixtureAPIKey)),
 		filepath.Join(agentDir, "auth.json"):              []byte(fmt.Sprintf(`{"fixture":{"type":"api_key","key":%q}}`, fixtureAPIKey)),
 		filepath.Join(agentDir, "trust.json"):             []byte(`{}`),
 		filepath.Join(agentDir, "settings.json"):          []byte(`{}`),
@@ -1562,7 +1931,7 @@ func latestRootPrompt(messages []openAIMessage) (marker struct{ marker, text str
 		lines := strings.Split(strings.ReplaceAll(contentText(messages[index].Content), "\r\n", "\n"), "\n")
 		for lineIndex := len(lines) - 1; lineIndex >= 0; lineIndex-- {
 			line := strings.TrimSpace(lines[lineIndex])
-			if line == "START_WIDGET" || line == "UNSELECTED_WIDGET" || line == "QUICK_WIDGET" {
+			if line == "START_WIDGET" || line == "UNSELECTED_WIDGET" || line == "QUICK_WIDGET" || line == "RECEIPT_WIDGET" || line == "CHAIN_WIDGET" || line == "ROOT_NOTICE_FIRST" || line == "ROOT_NOTICE_SECOND" || line == "ROOT_RESTART_FIRST" || line == "ROOT_RESTART_SECOND" || line == "ROOT_RESTART_THIRD" || line == "NEW_ROOT_HEADER" || line == "COLD_ROOT_HEADER" {
 				return struct{ marker, text string }{marker: line, text: line}
 			}
 			if strings.HasPrefix(line, "STOP_WIDGET ") {
@@ -1648,14 +2017,22 @@ func requireToolInventory(got, required, optional []string, actor string) error 
 }
 
 type toolResult struct {
-	Operation string `json:"operation"`
-	State     string `json:"state"`
-	Code      string `json:"code"`
-	Report    string `json:"report"`
-	Child     struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	} `json:"child"`
+	Operation string         `json:"operation"`
+	State     string         `json:"state"`
+	Code      string         `json:"code"`
+	Report    string         `json:"report"`
+	Child     admissionChild `json:"child"`
+	Delivery  string         `json:"delivery"`
+	Outcome   *nativeOutcome `json:"outcome"`
+}
+
+type admissionChild struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Parent string `json:"parent"`
+	Model  string `json:"model"`
+	Cwd    string `json:"cwd"`
+	Type   string `json:"type"`
 }
 
 func toolResultValues(messages []openAIMessage) ([]toolResult, error) {
@@ -1954,6 +2331,7 @@ func pageUpUntilVisible(ctx context.Context, readVisible func() (string, error),
 func saveFrame(directory, name string, frame framePair) error {
 	for filename, content := range map[string]string{
 		name + "-visible.txt":    frame.visible,
+		name + "-ansi.txt":       frame.ansi,
 		name + "-scrollback.txt": frame.scrollback,
 	} {
 		if err := writePrivate(filepath.Join(directory, filename), []byte(content)); err != nil {
@@ -2010,7 +2388,7 @@ func tmuxSocketStatus(path string) (exists, alive bool, err error) {
 	return true, false, err
 }
 
-func waitForOwnedTmuxExit(ctx context.Context, path string) (closed, alive bool) {
+func waitForTmuxSocketClose(ctx context.Context, path string) (closed, alive bool) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
