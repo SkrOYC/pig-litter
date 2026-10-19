@@ -17,6 +17,16 @@ import (
 )
 
 func withCompletionHost(t *testing.T, tree *Tree, exercise func(*owner), hostCall func(string, json.RawMessage) json.RawMessage, servers ...extension.RegisteredMcpServer) {
+	withCompletionMode(t, tree, "print", exercise, hostCall, servers...)
+}
+
+func withCompletionMode(t *testing.T, tree *Tree, mode string, exercise func(*owner), hostCall func(string, json.RawMessage) json.RawMessage, servers ...extension.RegisteredMcpServer) {
+	withCompletionReplies(t, tree, mode, exercise, func(method string, raw json.RawMessage) *subprocess.CallResultPayload {
+		return &subprocess.CallResultPayload{Result: hostCall(method, raw)}
+	}, servers...)
+}
+
+func withCompletionReplies(t *testing.T, tree *Tree, mode string, exercise func(*owner), hostCall func(string, json.RawMessage) *subprocess.CallResultPayload, servers ...extension.RegisteredMcpServer) {
 	t.Helper()
 	host, peer := net.Pipe()
 	defer host.Close()
@@ -28,6 +38,7 @@ func withCompletionHost(t *testing.T, tree *Tree, exercise func(*owner), hostCal
 	ext.OnEvent("exercise", func(ctx sdk.Context, _ map[string]any) (any, error) {
 		state := &extensionState{calls: newCallScope()}
 		o := &owner{state: state, sessionID: "fixture", context: ctx, tree: tree, config: tree.config, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
+		o.rootCalls = state.calls
 		state.owner = o
 		exercise(o)
 		return nil, nil
@@ -37,7 +48,7 @@ func withCompletionHost(t *testing.T, tree *Tree, exercise func(*owner), hostCal
 	if frame := readCompletionEnvelope(t, host); frame.Type != subprocess.MsgRegister {
 		t.Fatal(frame)
 	}
-	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgReady, Ready: &subprocess.ReadyPayload{Cwd: t.TempDir(), Width: 80, State: &subprocess.StatePayload{McpServers: append([]extension.RegisteredMcpServer{}, servers...)}}})
+	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgReady, Ready: &subprocess.ReadyPayload{Cwd: t.TempDir(), Mode: mode, Width: 80, State: &subprocess.StatePayload{McpServers: append([]extension.RegisteredMcpServer{}, servers...)}}})
 	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgRequest, ID: "exercise", Request: &subprocess.RequestPayload{Method: "event", Event: "exercise", HandlerID: 1, Args: json.RawMessage(`{}`)}})
 	for {
 		frame := readCompletionEnvelope(t, host)
@@ -51,7 +62,7 @@ func withCompletionHost(t *testing.T, tree *Tree, exercise func(*owner), hostCal
 			continue
 		}
 		result := hostCall(frame.Call.Method, frame.Call.Args)
-		writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgCallResult, ID: frame.ID, CallResult: &subprocess.CallResultPayload{Result: result}})
+		writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgCallResult, ID: frame.ID, CallResult: result})
 	}
 	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgShutdown, Shutdown: &subprocess.ShutdownPayload{Reason: "complete"}})
 	if err := <-done; err != nil {

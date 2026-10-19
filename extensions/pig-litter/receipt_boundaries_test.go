@@ -330,3 +330,64 @@ func TestAttemptedNativeInputWithAnUnavailableHeaderIsNotRecreated(t *testing.T)
 		}
 	})
 }
+
+func TestTUIContextCannotConfirmARejectedNativeRootAppendFromMemory(t *testing.T) {
+	t.Setenv("PIG_OFFLINE", "1")
+	directory, agentDir := t.TempDir(), t.TempDir()
+	writeRuntimeModels(t, agentDir, "http://127.0.0.1:1")
+	id, err := ai.UUIDv7(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := nativeReceiptManager(t, directory, agentDir, id, filepath.Join(directory, "sessions"))
+	tree := testTree(t, defaultConfig())
+	tree.root.id = ChildID(id)
+	selected := panelAdmission(t, tree, "rejected native append")
+	tree.execute = func(*record, *run) Outcome { return Outcome{State: Completed, Text: "REJECTED_NATIVE_ROOT_APPEND"} }
+	if err := tree.activate(selected); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tree.wait(context.Background(), selected, 1000); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := completionContent(*selected.outcome)
+	details := completionDetails{ChildID: selected.ref.ID, Receipt: selected.noticeID}
+	if err := os.Remove(manager.Path()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(manager.Path(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.AppendCustomMessage("litter_completion", content, false, details); err == nil {
+		t.Fatal("native root append unexpectedly persisted through a directory")
+	}
+	withCompletionMode(t, tree, "tui", func(o *owner) {
+		o.sessionID, o.cwd, o.agentDir = id, directory, agentDir
+		_, _ = o.reconcileRootContext(nil)
+		if len(tree.pending) != 1 || selected.reservation.stored {
+			t.Errorf("context acknowledged a rejected native append from memory: pending=%d stored=%t", len(tree.pending), selected.reservation.stored)
+		}
+	}, func(method string, raw json.RawMessage) json.RawMessage {
+		if method == "sessionRead" {
+			var query struct{ Method string }
+			_ = json.Unmarshal(raw, &query)
+			var result any
+			switch query.Method {
+			case "getEntries":
+				result = manager.Entries()
+			case "getSessionFile":
+				result = manager.Path()
+			case "getSessionDir":
+				result = manager.GetSessionDir()
+			case "getSessionId":
+				result = id
+			default:
+				t.Errorf("unexpected session read %s", query.Method)
+			}
+			data, _ := json.Marshal(result)
+			return data
+		}
+		t.Errorf("unexpected rejected-append host action %s", method)
+		return json.RawMessage(`{}`)
+	})
+}

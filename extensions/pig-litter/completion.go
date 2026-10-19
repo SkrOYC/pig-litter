@@ -39,12 +39,24 @@ func completionContent(outcome Outcome) (string, error) {
 	return string(content), err
 }
 
+type receiptSubmission uint8
+
+const (
+	receiptSubmitting receiptSubmission = iota
+	receiptAccepted
+	receiptRejected
+	receiptConfirmed
+)
+
 type completionReceipt struct {
 	mu       sync.Mutex
 	retired  bool
-	failed   bool
+	state    receiptSubmission
+	deferred bool
 	once     sync.Once
 	appended func()
+	submit   func() error
+	rejected func(error)
 	fallback func() error
 	observed func() bool
 }
@@ -104,7 +116,9 @@ func (o *owner) beginOutcomeAck(key *callTicket, selected *run, operation string
 	if request != nil {
 		requestDone = request.Done()
 	}
+	o.ackWG.Add(1)
 	go func() {
+		defer o.ackWG.Done()
 		select {
 		case <-requestDone:
 			if request.Err() != nil {
@@ -219,28 +233,81 @@ func (o *owner) awaitOutcomeAck(selected *run) bool {
 
 func (r *completionReceipt) complete() {
 	r.mu.Lock()
-	failed := r.failed
+	state := r.state
 	r.mu.Unlock()
-	if !failed && (r.observed == nil || r.observed()) {
-		r.once.Do(r.appended)
+	if state == receiptConfirmed {
+		return
 	}
+	if r.observed != nil {
+		if r.observed() {
+			r.confirm()
+		}
+	} else if state != receiptRejected {
+		r.confirm()
+	}
+}
+
+func (r *completionReceipt) confirm() {
+	r.mu.Lock()
+	r.state = receiptConfirmed
+	r.mu.Unlock()
+	r.once.Do(r.appended)
+}
+
+func (r *completionReceipt) submitted(err error) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state == receiptConfirmed {
+		return false
+	}
+	r.state = receiptAccepted
+	if err != nil {
+		r.state = receiptRejected
+		if r.rejected != nil {
+			r.rejected(err)
+		}
+	}
+	return true
+}
+
+func (r *completionReceipt) retry() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state != receiptRejected {
+		return false
+	}
+	r.state = receiptSubmitting
+	return true
 }
 
 func (r *completionReceipt) retire() {
 	r.mu.Lock()
-	if r.retired && !r.failed {
+	if r.deferred {
+		r.mu.Unlock()
+		r.complete()
+		return
+	}
+	if r.state == receiptConfirmed || r.retired && r.state != receiptRejected {
 		r.mu.Unlock()
 		return
 	}
 	r.retired = true
-	r.failed = false
+	r.state = receiptSubmitting
 	r.mu.Unlock()
 	err := r.fallback()
-	r.mu.Lock()
-	r.failed = err != nil
-	r.mu.Unlock()
-	if err == nil {
+	if r.submitted(err) && err == nil {
 		r.complete()
+	}
+}
+
+func (o *owner) acknowledgeCompletion(selected *run) {
+	selected.mu.Lock()
+	receipt := selected.deliveryReceipt
+	selected.mu.Unlock()
+	if receipt != nil {
+		receipt.confirm()
+	} else {
+		o.tree.acknowledge(selected)
 	}
 }
 
@@ -372,13 +439,14 @@ func (o *owner) auditCompletion(selected *run) error {
 	}
 	notice.auditMu.Lock()
 	if !notice.auditStored {
-		if parent != nil {
+		serialized := parent != nil && (parent != o.tree.root || o.context.Mode() != "tui")
+		if serialized {
 			parent.deliveryMu.Lock()
 		}
 		details := completionDetails{ChildID: selected.ref.ID, Receipt: notice.nonce}
 		notice.auditErr = o.storeRetained(notice.parent, details, notice.content, &completionAudit{Content: notice.content, Details: details, Handback: handback})
 		notice.auditStored = notice.auditErr == nil
-		if parent != nil {
+		if serialized {
 			parent.deliveryMu.Unlock()
 		}
 	}
@@ -389,7 +457,7 @@ func (o *owner) auditCompletion(selected *run) error {
 		entries, err := o.persistedCompletionEntries(notice.parent)
 		details := completionDetails{ChildID: selected.ref.ID, Receipt: notice.nonce}
 		if err == nil && completionStored(entries, details, notice.content) {
-			o.tree.acknowledge(selected)
+			o.acknowledgeCompletion(selected)
 		}
 	}
 	return err
@@ -412,9 +480,15 @@ func (o *owner) sendCompletion(r *record, selected *run, outcome Outcome) {
 	notice := selected.reservation
 	parent := o.completionParentLocked(notice.parent)
 	o.tree.mu.Unlock()
-	if o.awaitOutcomeAck(selected) {
+	consumed := o.awaitOutcomeAck(selected)
+	if consumed {
 		_ = o.auditCompletion(selected)
-		return
+		o.tree.mu.Lock()
+		stored := notice.stored
+		o.tree.mu.Unlock()
+		if stored || !o.tree.rootID(notice.parent) || o.context.Mode() != "tui" {
+			return
+		}
 	}
 	observed := func() bool {
 		o.tree.mu.Lock()
@@ -426,8 +500,14 @@ func (o *owner) sendCompletion(r *record, selected *run, outcome Outcome) {
 		entries, err := o.persistedCompletionEntries(notice.parent)
 		return err == nil && completionStored(entries, details, content)
 	}
-	var receipt *completionReceipt
-	receipt = &completionReceipt{
+	submission := receiptSubmitting
+	if consumed {
+		submission = receiptRejected
+	}
+	receipt := &completionReceipt{
+		state:    submission,
+		deferred: o.tree.rootID(notice.parent) && o.context.Mode() == "tui",
+		rejected: func(err error) { o.tree.deliveryFailed(selected, err) },
 		appended: func() {
 			if parent != nil {
 				parent.receiptMu.Lock()
@@ -440,8 +520,7 @@ func (o *owner) sendCompletion(r *record, selected *run, outcome Outcome) {
 			o.tree.acknowledge(selected)
 		},
 		observed: observed,
-		fallback: func() (err error) {
-			defer func() { o.tree.deliveryFailed(selected, err) }()
+		fallback: func() error {
 			o.tree.mu.Lock()
 			consumed := notice.outcomeObserved
 			o.tree.mu.Unlock()
@@ -474,28 +553,38 @@ func (o *owner) sendCompletion(r *record, selected *run, outcome Outcome) {
 		parent.notices[notice.nonce] = notice
 		o.tree.mu.Unlock()
 	}
-	if o.tree.rootID(notice.parent) {
-		parent.deliveryMu.Lock()
-		idle, stateErr := o.context.IsIdle()
-		if stateErr != nil {
-			parent.deliveryMu.Unlock()
-			o.tree.deliveryFailed(selected, stateErr)
-			return
+	receipt.submit = func() error {
+		if o.tree.rootID(notice.parent) {
+			parent.deliveryMu.Lock()
+			defer parent.deliveryMu.Unlock()
+			idle, err := o.context.IsIdle()
+			if err != nil {
+				return err
+			}
+			options := o.completionOptions(parent, details, !idle)
+			return o.context.SendCustomMessage(sdk.CustomMessage{CustomType: "litter_completion", Content: content, Display: false, Details: details}, sdk.SendMessageOptions{TriggerTurn: options.TriggerTurn, DeliverAs: string(options.DeliverAs)})
 		}
-		options := o.completionOptions(parent, details, !idle)
-		err = o.context.SendCustomMessage(sdk.CustomMessage{CustomType: "litter_completion", Content: content, Display: false, Details: details}, sdk.SendMessageOptions{TriggerTurn: options.TriggerTurn, DeliverAs: string(options.DeliverAs)})
-		parent.deliveryMu.Unlock()
-	} else {
-		err = o.deliverRetained(parent, details, content)
+		return o.deliverRetained(parent, details, content)
 	}
-	if err != nil {
-		receipt.mu.Lock()
-		receipt.failed = true
-		receipt.mu.Unlock()
-		o.tree.deliveryFailed(selected, err)
+	if consumed {
+		receipt.complete()
 		return
 	}
-	receipt.complete()
+	receipt.send()
+}
+
+func (r *completionReceipt) send() {
+	r.complete()
+	r.mu.Lock()
+	confirmed := r.state == receiptConfirmed
+	r.mu.Unlock()
+	if confirmed {
+		return
+	}
+	err := r.submit()
+	if r.submitted(err) && err == nil {
+		r.complete()
+	}
 }
 
 func (o *owner) completionOwner(pending *reservation, caller *run) bool {
@@ -514,7 +603,8 @@ func (r *record) markAgentEnded(ended bool) {
 func (o *owner) completionOptions(parent *record, details completionDetails, busy bool) extension.SendMessageOptions {
 	o.tree.mu.Lock()
 	defer o.tree.mu.Unlock()
-	active := busy && !parent.paused
+	deferred := parent == o.tree.root && o.context.Mode() == "tui"
+	active := busy && !parent.paused && !deferred
 	if notice := parent.notices[details.Receipt]; notice != nil {
 		notice.continueTurn = active
 	}
@@ -522,6 +612,9 @@ func (o *owner) completionOptions(parent *record, details completionDetails, bus
 		return extension.SendMessageOptions{DeliverAs: extension.DeliverAsSteer}
 	}
 	trigger := false
+	if deferred {
+		return extension.SendMessageOptions{TriggerTurn: &trigger, DeliverAs: extension.DeliverAsNextTurn}
+	}
 	return extension.SendMessageOptions{TriggerTurn: &trigger}
 }
 
@@ -569,6 +662,9 @@ func (o *owner) retireReceipts(parent *record) {
 	o.tree.mu.Unlock()
 	for _, selected := range audits {
 		_ = o.auditCompletion(selected)
+		if parent == o.tree.root && o.context.Mode() == "tui" {
+			continue
+		}
 		o.tree.mu.Lock()
 		notice := o.tree.pending[selected]
 		if notice != nil {
@@ -588,7 +684,7 @@ func (o *owner) retireReceipts(parent *record) {
 		if err == nil {
 			entries, readErr := o.persistedCompletionEntries(notice.parent)
 			if readErr == nil && completionStored(entries, details, notice.content) {
-				o.tree.acknowledge(selected)
+				o.acknowledgeCompletion(selected)
 			}
 		}
 		o.tree.deliveryFailed(selected, err)
@@ -664,7 +760,7 @@ func (o *owner) continueForCompletions(parent *record, pending []any) bool {
 	return continuation
 }
 
-func contextCompletion(message any) (completionDetails, bool) {
+func contextCustom(message any) map[string]any {
 	var custom map[string]any
 	switch message := message.(type) {
 	case agent.AgentMessage:
@@ -674,6 +770,11 @@ func contextCompletion(message any) (completionDetails, bool) {
 			custom = message
 		}
 	}
+	return custom
+}
+
+func contextCompletion(message any) (completionDetails, bool) {
+	custom := contextCustom(message)
 	if custom["customType"] != "litter_completion" {
 		return completionDetails{}, false
 	}
@@ -687,17 +788,23 @@ func contextCompletion(message any) (completionDetails, bool) {
 
 func (o *owner) completionContext(parent *record, messages []any) []any {
 	kept := make([]any, 0, len(messages))
-	seen := map[completionDetails]bool{}
+	type completionKey struct {
+		details completionDetails
+		content string
+	}
+	seen := map[completionKey]bool{}
 	var audits []*run
 	o.tree.mu.Lock()
 	for _, message := range messages {
 		details, ok := contextCompletion(message)
 		if ok {
-			if seen[details] {
+			content, _ := contextCustom(message)["content"].(string)
+			key := completionKey{details, content}
+			if seen[key] {
 				continue
 			}
-			seen[details] = true
-			if notice := parent.notices[details.Receipt]; notice != nil && notice.selected.ref.ID == details.ChildID {
+			seen[key] = true
+			if notice := parent.notices[details.Receipt]; notice != nil && notice.selected.ref.ID == details.ChildID && notice.content == content {
 				if notice.outcomeObserved {
 					audits = append(audits, notice.selected)
 					continue
@@ -709,7 +816,7 @@ func (o *owner) completionContext(parent *record, messages []any) []any {
 		kept = append(kept, message)
 	}
 	for id, notice := range parent.notices {
-		if notice.stored && !seen[completionDetails{ChildID: notice.selected.ref.ID, Receipt: id}] {
+		if notice.stored && !seen[completionKey{completionDetails{ChildID: notice.selected.ref.ID, Receipt: id}, notice.content}] {
 			delete(parent.notices, id)
 		}
 	}

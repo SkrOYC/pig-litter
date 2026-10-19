@@ -3,6 +3,7 @@ package piglitter
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/MichaelKinsy/PiG/coding"
 )
@@ -106,6 +107,21 @@ type message struct {
 	result     chan error
 }
 
+type runAdmission uint8
+
+const (
+	admissionPending runAdmission = iota
+	admissionStoring
+	admissionReady
+)
+
+type runProgress struct {
+	activated, settled time.Time
+	toolStarts         uint64
+	activeTools        map[string]string
+	toolsClipped       bool
+}
+
 type run struct {
 	ref             Ref
 	noticeID        string
@@ -116,6 +132,8 @@ type run struct {
 	cancel          context.CancelFunc
 	done            chan struct{}
 	started         bool
+	admission       runAdmission
+	progress        runProgress
 	finishing       bool
 	outcome         *Outcome
 	prompt          string

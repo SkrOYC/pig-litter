@@ -95,7 +95,7 @@ func (o *owner) recoverCompletions(pending []recoveredCompletion) {
 		}
 		entries, err := o.persistedCompletionEntries(selected.owner.parentID())
 		if err == nil && completionStored(entries, completionDetails{ChildID: selected.ref.ID, Receipt: selected.noticeID}, content) {
-			o.tree.acknowledge(selected)
+			o.acknowledgeCompletion(selected)
 			continue
 		}
 		o.tree.mu.Lock()
@@ -107,7 +107,7 @@ func (o *owner) recoverCompletions(pending []recoveredCompletion) {
 		}
 		o.tree.mu.Unlock()
 		if consumed && err == nil && handbackStored(entries, handback, selected.ref.ID) {
-			o.tree.acknowledge(selected)
+			o.acknowledgeCompletion(selected)
 			continue
 		}
 		if notice != nil {
@@ -220,6 +220,7 @@ func (o *owner) restoreChildren() error {
 			r.pendingInputs = saved.PendingInputs
 			r.run = o.tree.newRunLocked(Ref{id}, "")
 			r.run.owner, r.run.noticeID, r.run.state = r, saved.NoticeID, saved.State
+			r.run.admission = admissionReady
 			if !saved.State.terminal() {
 				r.run.state, r.paused = Paused, true
 				r.latest = &Outcome{Run: Ref{id}, Model: r.model, State: Paused, Error: "previous execution was interrupted; resume to continue"}
@@ -237,6 +238,7 @@ func (o *owner) restoreChildren() error {
 				if notice.Nonce != selected.noticeID {
 					selected = o.tree.newRunLocked(Ref{id}, "")
 					selected.owner, selected.noticeID, selected.state = r, notice.Nonce, notice.Outcome.State
+					selected.admission = admissionReady
 					selected.cancel()
 					close(selected.done)
 				}

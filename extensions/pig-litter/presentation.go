@@ -109,6 +109,13 @@ func paintText(raw string, multiline bool) string {
 	return clean[:end] + " [display text clipped]"
 }
 
+func paintError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s", paintText(err.Error(), false))
+}
+
 func toolCallRenderer(operation string) sdk.ToolRenderCallFunc {
 	return func(_ sdk.Context, args map[string]any, render sdk.ToolRenderContext, width int) ([]string, error) {
 		arg := func(key string) string { value, _ := args[key].(string); return value }
