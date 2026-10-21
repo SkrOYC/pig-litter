@@ -23,7 +23,7 @@ Use a repeatable local harness to exercise an interactive CLI instead of poking 
 4. Capture the current screen before interacting. For history assertions, identify whether the claim concerns the application transcript or terminal scrollback. Use the navigation and rendering mode for that store.
 5. Send one action at a time: text, Enter, arrows, Escape, Ctrl-C, resize.
 6. Wait for a concrete screen pattern or prompt before the next action. For cancellation, steering, or restart assertions, name the lifecycle phase under test. Verify that the application processes the action during that phase before claiming coverage.
-7. Save the transcript and any profile artifacts.
+7. Save sent input, rendered frames, and terminal state separately. For claims about emitted control bytes, retain bounded raw output through process exit and recorder EOF. A clean final frame cannot establish that earlier output was safe.
 8. Kill the session cleanly.
 
 ## Harness Options
@@ -102,6 +102,8 @@ If the CLI needs richer terminal control, use `pty.fork()` or an existing PTY li
 
 ## Guardrails
 
+- Use tmux-owned ordinary keys unless the driver observes authoritative replies for the requested enhanced keyboard mode. Keep decoder compatibility tests separate from live negotiation claims.
+- For concurrent verification builds, allocate private outputs, writable caches, and temporary paths before building. Cleanup requires the allocation identity and observed process exit. Keep evidence outside removable paths.
 - Prefer deterministic waits over sleeps. If you must sleep, explain why.
 - Do not send credentials or destructive commands into a controlled session.
 - Keep the harness in `/tmp` unless the repo already has a testing/demo harness.

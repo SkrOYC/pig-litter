@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/MichaelKinsy/PiG/tui"
 )
@@ -184,4 +186,25 @@ func TestReleasedTerminalPressRepeatAndRelease(t *testing.T) {
 	if got := delivered.String(); got != "kk" || !tui.IsKeyRelease(events[2]) {
 		t.Fatalf("delivered=%q, events=%q", got, events)
 	}
+}
+
+func kittyText(text string) string {
+	var encoded strings.Builder
+	var previous rune
+	for _, r := range text {
+		event := 1
+		if r == previous {
+			event = 2
+		}
+		switch {
+		case r == '_':
+			fmt.Fprintf(&encoded, "\x1b[45:95;2:%du", event)
+		case unicode.IsUpper(r):
+			fmt.Fprintf(&encoded, "\x1b[%d:%d;2:%du", unicode.ToLower(r), r, event)
+		default:
+			fmt.Fprintf(&encoded, "\x1b[%d;1:%du", r, event)
+		}
+		previous = r
+	}
+	return encoded.String()
 }

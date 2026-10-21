@@ -60,13 +60,14 @@ const (
 )
 
 type options struct {
-	scenario     string
-	caseName     runCase
-	pigPath      string
-	extension    string
-	idleObserver string
-	piglet       string
-	evidenceRoot string
+	scenario       string
+	caseName       runCase
+	pigPath        string
+	extension      string
+	idleObserver   string
+	piglet         string
+	evidenceRoot   string
+	allocationFile string
 }
 
 type childRef struct {
@@ -203,6 +204,9 @@ type evidenceReport struct {
 	VerifierSHA256        string            `json:"verifierSha256"`
 	IdleObserverSHA256    string            `json:"idleObserverSha256,omitempty"`
 	IdleObserver          string            `json:"idleObserver,omitempty"`
+	Allocation            *runAllocation    `json:"allocation,omitempty"`
+	Scratch               ownedResource     `json:"scratch"`
+	KeyboardCoverage      map[string]string `json:"keyboardCoverage"`
 	GoVersion             string            `json:"goVersion"`
 	Case                  runCase           `json:"case"`
 	Pig                   string            `json:"pig"`
@@ -240,6 +244,22 @@ type runSummary struct {
 }
 
 func main() {
+	if len(os.Args) >= 2 && (os.Args[1] == "--capture-pane" || os.Args[1] == "--capture-pipe") {
+		var err error
+		switch {
+		case os.Args[1] == "--capture-pane" && len(os.Args) == 3:
+			err = runCapturePane(os.Args[2])
+		case os.Args[1] == "--capture-pipe" && len(os.Args) == 4:
+			err = runCapturePipe(os.Args[2], os.Args[3])
+		default:
+			err = errors.New("invalid private capture arguments")
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	options, err := parseOptions(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -266,6 +286,7 @@ func parseOptions(args []string) (options, error) {
 	flags.StringVar(&result.idleObserver, "idle-observer", "", "absolute path to the prebuilt private TUI idle observer; selected cases only")
 	flags.StringVar(&result.piglet, "piglet", "", "absolute path to the current pig-litter manifest")
 	flags.StringVar(&result.evidenceRoot, "evidence-root", "", "absolute directory for private evidence")
+	flags.StringVar(&result.allocationFile, "run-allocation", "", "private wrapper allocation record")
 	if err := flags.Parse(args); err != nil {
 		return options{}, fmt.Errorf("parse flags: %w", err)
 	}
@@ -361,7 +382,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		return evidencePath, fmt.Errorf("secure evidence directory: %w", err)
 	}
 	var panel *panelProof
-	report := evidenceReport{Scenario: options.scenario, Case: options.caseName, Pig: options.pigPath, Extension: options.extension, GoVersion: runtime.Version()}
+	report := evidenceReport{Scenario: options.scenario, Case: options.caseName, Pig: options.pigPath, Extension: options.extension, GoVersion: runtime.Version(), KeyboardCoverage: map[string]string{"live": "tmux-owned ordinary keys and text", "enhanced": "unsupported: tmux 3.7c does not expose negotiated Kitty flag bits", "decoder": "exact CSI-u and press/repeat/release fixtures use the declared PiG v0.4.1 public decoder"}}
 	extensionHash, err := fileSHA256(options.extension)
 	if err != nil {
 		return evidencePath, err
@@ -382,14 +403,30 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	if err != nil {
 		return evidencePath, err
 	}
-	scratch, err := os.MkdirTemp("", "litter-tui-proof-")
+	allocation, err := readRunAllocation(options.allocationFile)
+	if err != nil {
+		return evidencePath, err
+	}
+	report.Allocation = allocation
+	scratchParent := ""
+	if allocation != nil {
+		if err := outsideAllocation(allocation.Root, evidencePath); err != nil {
+			return evidencePath, err
+		}
+		scratchParent = filepath.Join(allocation.Root, "runtime")
+	}
+	scratch, err := os.MkdirTemp(scratchParent, "f-")
 	if err != nil {
 		return evidencePath, fmt.Errorf("create fixture directory: %w", err)
 	}
 	if err := os.Chmod(scratch, 0o700); err != nil {
-		_ = os.RemoveAll(scratch)
 		return evidencePath, fmt.Errorf("secure fixture directory: %w", err)
 	}
+	scratchOwned, err := resourceIdentity(scratch)
+	if err != nil {
+		return evidencePath, err
+	}
+	report.Scratch = scratchOwned
 	rootSessions := filepath.Join(scratch, "root-sessions")
 	if err := os.MkdirAll(rootSessions, 0o700); err != nil {
 		return evidencePath, err
@@ -402,7 +439,6 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	const session = "litter-proof"
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {
-		_ = os.RemoveAll(scratch)
 		return evidencePath, errors.New("tmux must be available on the host PATH")
 	}
 	childEnv := fixtureEnvironment(options.pigPath, tmuxPath, home, pigHome, agentDir, scratch)
@@ -420,7 +456,6 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	state.fixtureWorkspace = workspace
 	provider, err := startFixtureProvider(state)
 	if err != nil {
-		_ = os.RemoveAll(scratch)
 		return evidencePath, err
 	}
 	socketStarted := false
@@ -447,7 +482,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	tmuxSessionExists := false
 	var manifestDestination string
 	var resourceDestination string
-	var command string
+	var capture *ptyCapture
 	tmuxCall := func(args ...string) (string, error) {
 		value, err := runTmux(ctx, tmuxPath, socket, childEnv, args...)
 		if err != nil {
@@ -472,6 +507,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		}
 		return parsePaneGeometry(value)
 	}
+	var terminalStates []map[string]string
 	frame := func(name string) (framePair, error) {
 		visible, err := readVisible()
 		if err != nil {
@@ -492,10 +528,22 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		if err := saveFrame(evidencePath, name, pair); err != nil {
 			return framePair{}, err
 		}
+		title, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_title}")
+		if err != nil {
+			return framePair{}, err
+		}
+		mode, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_id} #{alternate_on} #{pane_width} #{pane_height}")
+		if err != nil {
+			return framePair{}, err
+		}
+		terminalStates = append(terminalStates, map[string]string{"frame": name, "title": title, "paneScreenAndSize": mode, "observedAt": time.Now().UTC().Format(time.RFC3339Nano)})
 		return pair, nil
 	}
 	var inputs []panelEvent
 	sendText := func(text string) error {
+		if err := validateTerminalText(text); err != nil {
+			return err
+		}
 		event := panelEvent{Action: "literal-terminal-input", Input: text, SentAt: time.Now().UTC().Format(time.RFC3339Nano)}
 		_, err := tmuxCall("send-keys", "-l", "-t", session, text)
 		event.ReturnedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -503,6 +551,9 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		return err
 	}
 	sendKey := func(key string) error {
+		if err := validateTerminalText(key); err != nil {
+			return err
+		}
 		event := panelEvent{Action: "named-terminal-key", Input: key, SentAt: time.Now().UTC().Format(time.RFC3339Nano)}
 		_, err := tmuxCall("send-keys", "-t", session, key)
 		event.ReturnedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -510,68 +561,28 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		return err
 	}
 	exitHost := func() error {
-		process, err := readObservedProcess(panePID)
-		if err != nil {
-			return err
-		}
 		if err := sendKey("C-d"); err != nil {
 			return err
 		}
-		if err := waitFor(ctx, "released PiG normal exit", 10*time.Second, func() (bool, error) {
+		completion, err := capture.finish(ctx)
+		if err != nil {
+			return err
+		}
+		if err := waitFor(ctx, "released PiG supervisor exit", 10*time.Second, func() (bool, error) {
 			dead, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_dead}")
-			return err == nil && dead == "1" && !observedAlive(process), nil
+			return err == nil && dead == "1", nil
 		}); err != nil {
 			return err
 		}
-		status, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_dead_status}")
-		if err != nil {
-			return err
-		}
-		code, err := strconv.Atoi(status)
-		if err != nil {
-			return err
-		}
-		report.HostExits = append(report.HostExits, hostExit{Process: process, Status: code})
-		if code != 0 {
-			return fmt.Errorf("released PiG exited with status %d", code)
+		report.HostExits = append(report.HostExits, hostExit{Process: completion.Process, Status: completion.Status})
+		if completion.Status != 0 {
+			return fmt.Errorf("released PiG exited with status %d", completion.Status)
 		}
 		return nil
 	}
-	armRawPTY := func() error {
-		path := filepath.Join(evidencePath, "pty.raw")
-		errorsFile, err := os.OpenFile(path+".stderr", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			return err
-		}
-		if err := errorsFile.Close(); err != nil {
-			return err
-		}
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			return err
-		}
-		info, statErr := file.Stat()
-		err = errors.Join(statErr, file.Close())
-		if err != nil {
-			return err
-		}
-		remaining := int64(maxRawPTY) - info.Size() + 1
-		if remaining <= 0 {
-			return errors.New("raw PTY capture bound exhausted")
-		}
-		_, err = tmuxCall("pipe-pane", "-O", "-t", session, joinShellCommand("head", []string{"-c", strconv.FormatInt(remaining, 10)})+" >> "+shellQuote(path)+" 2>> "+shellQuote(path+".stderr"))
-		return err
-	}
 	if options.caseName != caseUnselected {
 		panel = &panelProof{idleCommand: idleCommand, idleDirectory: idleDirectory, idleObserver: options.idleObserver, rawActive: func() error {
-			value, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_pipe}")
-			if err != nil {
-				return err
-			}
-			if value != "1" {
-				return errors.New("raw PTY recorder is not armed")
-			}
-			return nil
+			return capture.checkActive()
 		}, workspace: workspace, paneTitle: func() (string, error) { return tmuxCall("display-message", "-p", "-t", session, "#{pane_title}") }, processes: observeOwned, scenario: options.scenario, ctx: ctx, state: state, sendText: sendText, sendKey: sendKey, visible: readVisible, frame: frame, geometry: paneSize, rootSessions: rootSessions, agentDir: agentDir, evidence: evidencePath, configPath: filepath.Join(workspace, "litter.yaml"), resize: func(width, height int) error {
 			_, err := tmuxCall("resize-window", "-t", session, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
 			return err
@@ -618,6 +629,8 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cleanupCancel()
 		if tmuxSessionExists {
+			_, err := observeOwned()
+			addFailure(err)
 			if _, err := runTmux(cleanupCtx, tmuxPath, socket, childEnv, "kill-session", "-t", session); err == nil {
 				tmuxSessionExists = false
 			} else if tmuxProcess.PID == 0 || observedAlive(tmuxProcess) {
@@ -658,6 +671,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		} else if err == nil {
 			addFailure(writePrivate(filepath.Join(evidencePath, "terminal-inputs.json"), data))
 		}
+		addFailure(writeCaptureJSON(filepath.Join(evidencePath, "terminal-state.json"), terminalStates))
 		addFailure(state.saveRequests(filepath.Join(evidencePath, "provider-requests")))
 		addFailure(state.providerFailure())
 		var observedList []observedProcess
@@ -679,6 +693,9 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		if tmuxProcess.PID > 0 {
 			tmuxServerAlive = observedAlive(tmuxProcess)
 		}
+		if capture != nil {
+			addFailure(capture.close(cleanupCtx))
+		}
 		addFailure(checkRawPTY(filepath.Join(evidencePath, "pty.raw")))
 		if runErr == nil && options.caseName != caseUnselected && options.scenario == "all" {
 			raw, err := os.ReadFile(filepath.Join(evidencePath, "pty.raw"))
@@ -687,8 +704,12 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 				addFailure(errors.New("raw PTY lacks required hostile-action output"))
 			}
 		}
+		addFailure(scratchOwned.check())
+		if allocation != nil {
+			addFailure(allocation.check())
+		}
 		cleanup := cleanupEvidence{TmuxProcess: tmuxProcess, ProviderJoined: providerErr == nil, ObservedProcesses: observedList, ObservedProcessesExited: allExited, PaneJoined: paneExited, TmuxSocketClosed: socketClosed, TmuxServerAlive: tmuxServerAlive, TmuxFailureCount: len(tmuxErrors)}
-		if !paneExited || !socketClosed || !allExited || !artifactsOK {
+		if runErr != nil || !paneExited || !socketClosed || !allExited || !artifactsOK {
 			cleanup.ScratchRetained = scratch
 		}
 		report.Case = options.caseName
@@ -713,10 +734,22 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		if runErr != nil {
 			report.Error = evidenceText(runErr.Error())
 		}
-		encoded, _ := json.MarshalIndent(report, "", "  ")
-		addFailure(writePrivate(filepath.Join(evidencePath, "result.json"), encoded))
-		if cleanup.ScratchRetained == "" && artifactsOK {
-			addFailure(os.RemoveAll(scratch))
+		addFailure(writeCaptureJSON(filepath.Join(evidencePath, "result.json"), report))
+		if cleanup.ScratchRetained == "" && artifactsOK && runErr == nil {
+			addFailure(scratchOwned.check())
+			if allocation != nil {
+				if runErr == nil {
+					addFailure(allocation.acknowledge(evidencePath, cleanup))
+				}
+			} else if runErr == nil {
+				addFailure(os.RemoveAll(scratch))
+			}
+		}
+		if runErr != nil && report.OK {
+			report.OK = false
+			report.Error = evidenceText(runErr.Error())
+			report.Cleanup.ScratchRetained = scratch
+			addFailure(writeCaptureJSON(filepath.Join(evidencePath, "result.json"), report))
 		}
 	}()
 
@@ -741,24 +774,14 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	case caseUnselected:
 		args = append([]string{"--no-extensions"}, args...)
 	}
-	command = joinShellCommand(options.pigPath, args)
 	if panel != nil {
 		panel.restartHost = func(path string) error {
 			if err := exitHost(); err != nil {
 				return err
 			}
-			if _, err := tmuxCall("respawn-pane", "-k", "-t", session, joinShellCommand(options.pigPath, append(append([]string(nil), args...), "--session", path))); err != nil {
-				return err
-			}
-			pidText, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_pid}")
+			process, err := capture.start(append([]string{options.pigPath}, append(append([]string(nil), args...), "--session", path)...))
+			panePID = process.PID
 			if err != nil {
-				return err
-			}
-			panePID, err = strconv.Atoi(pidText)
-			if err != nil {
-				return err
-			}
-			if err := armRawPTY(); err != nil {
 				return err
 			}
 			return waitFor(ctx, "restarted native PiG TUI", stageTimeout, func() (bool, error) { text, err := readVisible(); return err == nil && startupFrameReady(text), nil })
@@ -788,18 +811,13 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	if _, err := tmuxCall("set-window-option", "-t", session, "remain-on-exit", "on"); err != nil {
 		return evidencePath, err
 	}
-	if _, err := tmuxCall("respawn-pane", "-k", "-t", session, command); err != nil {
-		return evidencePath, err
-	}
-	pidText, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_pid}")
+	capture, err = newPTYCapture(scratch, evidencePath, verifierPath, session, tmuxCall, maxRawPTY)
 	if err != nil {
 		return evidencePath, err
 	}
-	panePID, err = strconv.Atoi(pidText)
-	if err != nil || panePID <= 0 {
-		return evidencePath, errors.New("private TUI process ID was unavailable")
-	}
-	if err := armRawPTY(); err != nil {
+	process, err := capture.start(append([]string{options.pigPath}, args...))
+	panePID = process.PID
+	if err != nil {
 		return evidencePath, err
 	}
 	if err := waitFor(ctx, "private PiG TUI", stageTimeout, func() (bool, error) {
@@ -1777,6 +1795,9 @@ func fixtureEnvironment(pigPath, tmuxPath, home, pigHome, agentDir, socketDir st
 		"LANG=C.UTF-8",
 		"TERM=xterm-256color",
 		"TMUX_TMPDIR=" + socketDir,
+		"TMPDIR=" + socketDir,
+		"XDG_CACHE_HOME=" + filepath.Join(socketDir, "cache"),
+		"XDG_RUNTIME_DIR=" + socketDir,
 		"PIG_HOME=" + pigHome,
 		"PIG_CODING_AGENT_DIR=" + agentDir,
 		"PIG_USE_PI_DIRS=0",

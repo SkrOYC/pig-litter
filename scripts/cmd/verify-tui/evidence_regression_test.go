@@ -166,7 +166,7 @@ func TestRawPTYAllowsHostANSIAndRejectsExecutedAttackBytes(t *testing.T) {
 		if err := os.WriteFile(path, []byte(test.raw), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if got := checkRawPTY(path); (got != nil) != test.unsafe {
+		if got := checkRawPayload(path); (got != nil) != test.unsafe {
 			t.Fatalf("transport=%q error=%v", test.raw, got)
 		}
 	}
@@ -176,7 +176,7 @@ func TestRawPTYAllowsHostANSIAndRejectsExecutedAttackBytes(t *testing.T) {
 	if err := os.WriteFile(path+".stderr", []byte("head: write error"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if checkRawPTY(path) == nil {
+	if checkRawPayload(path) == nil {
 		t.Fatal("accepted incomplete raw recording after collector write error")
 	}
 }
