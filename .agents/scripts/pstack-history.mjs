@@ -25,6 +25,11 @@ function parseArgs(argv) {
     const key = rest[i];
     if (!key.startsWith("--")) fail(`Unexpected argument: ${key}`);
     const name = key.slice(2);
+    if (name === "complete") {
+      if (options.complete) fail("Duplicate option: --complete");
+      options.complete = true;
+      continue;
+    }
     if (
       !["cwd", "since", "limit", "id", "after", "after-id", "pattern"].includes(
         name,
@@ -39,6 +44,16 @@ function parseArgs(argv) {
   if (["list", "search", "last"].includes(command) && !options.cwd)
     fail(`${command} requires --cwd PATH`);
   if (command === "read" && !options.id) fail("read requires --id ID");
+  if (
+    options.complete &&
+    (command !== "read" ||
+      !options.cwd ||
+      options.after !== undefined ||
+      options.limit !== undefined)
+  )
+    fail(
+      "read --complete requires --cwd and does not accept pagination options",
+    );
   if (command === "search" && !options.pattern)
     fail("search requires --pattern TEXT");
   if (options.limit !== undefined) {
@@ -67,7 +82,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  return `Read-only Codex conversation history. Output is JSON.\n\nUsage:\n  bun .agents/scripts/pstack-history.mjs list --cwd PATH [--since ISO] [--limit N]\n  bun .agents/scripts/pstack-history.mjs read --id ID [--limit N] [--after ORDINAL [--after-id ITEM_ID]]\n  bun .agents/scripts/pstack-history.mjs search --cwd PATH --pattern TEXT [--since ISO] [--limit N]\n  bun .agents/scripts/pstack-history.mjs last --cwd PATH\n\nWorkspace scope includes threads whose recorded cwd is PATH or a descendant. Separate sibling worktrees require their own --cwd. Limits are capped at ${MAX_LIMIT}. Read pages are ordered by ordinal then item identity; to continue within a shared ordinal, pass both --after ORDINAL and --after-id ITEM_ID from the final returned item.\n`;
+  return `Read-only Codex conversation history. Output is JSON.\n\nUsage:\n  bun .agents/scripts/pstack-history.mjs list --cwd PATH [--since ISO] [--limit N]\n  bun .agents/scripts/pstack-history.mjs read --id ID [--limit N] [--after ORDINAL [--after-id ITEM_ID]]\n  bun .agents/scripts/pstack-history.mjs read --cwd PATH --id ID --complete\n  bun .agents/scripts/pstack-history.mjs search --cwd PATH --pattern TEXT [--since ISO] [--limit N]\n  bun .agents/scripts/pstack-history.mjs last --cwd PATH\n\nWorkspace scope includes threads whose recorded cwd is PATH or a descendant. Separate sibling worktrees require their own --cwd. Limits are capped at ${MAX_LIMIT}. Read pages are ordered by ordinal then item identity; to continue within a shared ordinal, pass both --after ORDINAL and --after-id ITEM_ID from the final returned item.\n`;
 }
 
 function dataRoot(env = process.env, home = homedir()) {
@@ -77,7 +92,7 @@ function dataRoot(env = process.env, home = homedir()) {
 function commandFiles(root, glob) {
   const result = spawnSync(
     "rg",
-    ["--files", "--hidden", "--glob", glob, root],
+    ["--files", "--hidden", "--no-ignore", "--glob", glob, root],
     { encoding: "utf8" },
   );
   if (result.error)
@@ -106,17 +121,22 @@ function discoverDatabases(root) {
     /(?:^|\/)state_.*\.sqlite$/.test(file),
   );
   const candidates = [];
+  const issues = [];
   for (const file of files) {
     let db;
     try {
       db = new Database(file, { readonly: true });
       const names = tables(db);
-      if (!names.includes("threads")) continue;
+      if (!names.includes("threads")) {
+        issues.push(`State source has no threads table: ${file}`);
+        continue;
+      }
       const columns = tableInfo(db, "threads");
       if (["id", "cwd"].every((name) => columns.includes(name)))
         candidates.push({ file, columns });
-    } catch {
-      // A corrupt candidate is reported only when no usable state database exists.
+      else issues.push(`Unsupported state source: ${file}`);
+    } catch (error) {
+      issues.push(`Unreadable state source ${file}: ${error.message}`);
     } finally {
       db?.close();
     }
@@ -126,7 +146,7 @@ function discoverDatabases(root) {
       `No readable state database with a compatible threads schema under ${root}`,
     );
   const histories = commandFiles(root, "thread_history_*.sqlite");
-  return { states: candidates, histories };
+  return { states: candidates, histories, issues };
 }
 
 function resolvedPath(path) {
@@ -203,6 +223,8 @@ function rowSummary(row, columns) {
       ? (row.rollout_path ?? null)
       : null,
     archived: columns.includes("archived") ? (row.archived ?? null) : null,
+    source: columns.includes("source") ? row.source : null,
+    thread_source: columns.includes("thread_source") ? row.thread_source : null,
   };
 }
 
@@ -222,6 +244,8 @@ function allThreads(stateCandidates, { cwd, since, id, limit } = {}) {
         "history_mode",
         "rollout_path",
         "archived",
+        "source",
+        "thread_source",
         "updated_at_ms",
         "last_activity_at_ms",
         "updated_at",
@@ -551,6 +575,7 @@ async function* iterateThread(thread, databases) {
   let db;
   try {
     db = new Database(schema.file, { readonly: true });
+    db.exec("BEGIN");
     let offset = 0;
     while (true) {
       const page = sqliteItems(
@@ -596,6 +621,40 @@ async function main(args) {
     const thread = allThreads(databases.states, { id: args.id })[0];
     if (!thread)
       fail(`Thread not found in compatible state databases: ${args.id}`);
+    if (args.cwd && !withinScope(thread.cwd, args.cwd))
+      fail("Selected history is outside --cwd");
+    if (args.complete) {
+      const { collectExecution } =
+        await import("./pstack-history-execution.mjs");
+      const snapshot = collectExecution({
+        cwd: args.cwd,
+        threadId: args.id,
+        includeRootItems: true,
+      });
+      const execution = snapshot.threads.find((item) => item.id === args.id);
+      const complete =
+        execution &&
+        !execution.issues.length &&
+        execution.turns.length > 0 &&
+        execution.turns.every(
+          (turn) => turn.completedAt && !turn.issues.length,
+        );
+      return JSON.stringify(
+        {
+          thread_id: args.id,
+          status: complete ? "verified" : "inconclusive",
+          boundary: execution?.boundary,
+          turns: execution?.turns.map((turn) => ({
+            id: turn.id,
+            startedAt: turn.startedAt,
+            completedAt: turn.completedAt,
+          })),
+          items: execution?.items || [],
+        },
+        null,
+        2,
+      );
+    }
     const items = await readThread(
       thread,
       databases,
@@ -644,6 +703,8 @@ if (import.meta.main) {
 }
 
 export {
+  allThreads,
+  commandFiles,
   dataRoot,
   decodeItem,
   discoverDatabases,

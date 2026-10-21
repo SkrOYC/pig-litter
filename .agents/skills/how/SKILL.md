@@ -9,7 +9,7 @@ Explore the codebase to answer "how does X work?" questions. Produce architectur
 
 Before recommending a fork or runtime change, inspect all relevant public integration APIs, including embedding APIs. Distinguish a missing convenience method from an unsupported capability.
 
-Each run below names a role line in the native pstack agent settings and a default. Resolve it with `bun .agents/scripts/pstack-models.mjs resolve "ROLE LABEL"`. Use that line's model and effort, or the role's default pair if the setting or line is missing. When the value is `auto` or `inherit-parent`, pass the active parent's effective model and effort because a standalone CLI session does not inherit UI overrides. If the selected model is rejected, retry with the default pair and say so. If the default model is rejected, use the closest valid model from its error message and retain the effort when supported. Run each read-only phase with `bun .agents/scripts/pstack-readonly.mjs --cwd WORKSPACE --prompt PROMPT_FILE --output REPORT_FILE --model MODEL --effort EFFORT`. Use one managed shell session per run, retain each session handle for collection or cancellation, and read its unchanged final report from `REPORT_FILE`; detailed events are written beside it. Do not add `--ephemeral`. See `.agents/pstack-runtime.md` for adapter behavior.
+Each run below names a role line in the native pstack agent settings and a default. Resolve it with `bun .agents/scripts/pstack-models.mjs resolve "ROLE LABEL"`. Use that line's model and effort, or the role's default pair if the setting or line is missing. When the value is `auto` or `inherit-parent`, pass the active parent's effective model and effort because a standalone CLI session does not inherit UI overrides. If the selected model is rejected, retry with the default pair and say so. If the default model is rejected, use the closest valid model from its error message and retain the effort when supported. Run each read-only phase with `bun .agents/scripts/pstack-readonly.mjs --cwd WORKSPACE --prompt PROMPT_FILE --output REPORT_FILE --model MODEL --effort EFFORT`. Use one managed shell session for a sequential phase. For concurrent explorers, use one prepared panel process as documented in [the runtime instructions](../../pstack-runtime.md). Include the project preflight and active execution restrictions. Retain the launcher handle for collection or cancellation. Read each unchanged report and its verified canonical receipt before continuing. Do not add `--ephemeral`. See `.agents/pstack-runtime.md` for adapter behavior.
 
 ## Step 1. Assess Complexity
 
@@ -24,7 +24,7 @@ When in doubt, take the simple path.
 
 Decompose the question into 2 to 4 exploration angles, each a distinct slice of the subsystem. Launch all explorers before waiting for any of them:
 
-- Build a separate prompt file from `references/explorer-prompt.md` for each angle. Start a separate managed shell session running the read-only adapter for each explorer.
+- Build a separate prompt file from `references/explorer-prompt.md` for each angle. Put all explorers in one prepared panel manifest with distinct output files. Preparation must finish before that panel starts its reviewers.
 - Resolve the `how explorer` role; its default is `gpt-6-luna` with `xhigh` reasoning effort.
 
 Retain each shell session handle and wait for all explorers to finish. Read their final reports and use every explorer's findings in Step 3.
