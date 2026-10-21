@@ -21,7 +21,27 @@ Cursor's `subagent_type`, `environment`, `run_in_background`, and `readonly` fie
 
 For an explicit `model` or `reasoning_effort` override, use `fork_turns: "none"` and supply the source prompt plus necessary task context. A full-history fork cannot accept overrides in this interface. For `auto` or `inherit-parent`, run `bun .agents/scripts/pstack-models.mjs parent` and pass the active parent's pair explicitly. Omitting settings can select a configured generic child default instead of the source's requested parent model. Keep the alias marker for the source's no-fallback-on-alias rules.
 
-The registered `comment-sicko` agent uses a read-only sandbox. A prompt alone does not select or enforce that configuration. This collaboration interface does not accept a role or sandbox argument. For a source `readonly: true` launch, use a configured native role if the interface exposes it; otherwise run `bun .agents/scripts/pstack-readonly.mjs --cwd WORKSPACE --prompt PROMPT_FILE --output REPORT_FILE --model MODEL --effort EFFORT`, adding `--role comment-sicko` for that named reviewer. This adapter uses native `codex exec --sandbox read-only`, passes the original prompt, and returns the unchanged final report. It preserves native configuration and credentials; detailed events remain in the report's adjacent `.events.jsonl` file. Launch each panel seat through a separate managed shell session and collect its own report, preserving the original fan-out. For an inheritance choice, pass the active parent's effective model and effort explicitly, because a standalone CLI launch does not inherit the current conversation's UI overrides. Keep its process/session handle for cancellation. Use `--ephemeral` only when required by the caller's history policy; the inspected CLI cannot start nested children from an ephemeral parent. Do not add read-only enforcement to source launches that specify writable agent mode, such as Reflect. Do not strip required evidence tools or treat an external MCP as read-only merely because the filesystem is read-only.
+The registered `comment-sicko` agent uses a read-only sandbox. A prompt alone does not select or enforce that configuration. For a source `readonly: true` launch, use a configured native role if the interface exposes it. Otherwise, run `bun .agents/scripts/pstack-readonly.mjs --cwd WORKSPACE --prompt PROMPT_FILE --output REPORT_FILE --model MODEL --effort EFFORT`, adding `--role comment-sicko` for that named reviewer. The adapter uses `codex exec --sandbox read-only` with non-login tool shells. It preserves native configuration, credentials, and the original prompt. It publishes the unchanged report only when canonical native history confirms the session, effective model, completed turn, and exact final message. Events and receipts use adjacent `.events.jsonl` and `.receipt.json` files. Pass the active parent's effective model and effort explicitly for an inheritance choice. An ephemeral session without persisted history produces an inconclusive receipt and no accepted report. Do not add read-only enforcement to writable workflows such as Reflect. An external MCP is not read-only merely because the filesystem is read-only.
+
+For a panel, write one manifest with a single workspace and distinct output files. Use one managed launcher so preparation completes before fan-out. In this repository, run `devenv shell -- bun .agents/scripts/pstack-readonly.mjs --panel PANEL_JSON`. The manifest has this shape:
+
+```json
+{
+  "cwd": "/absolute/workspace",
+  "preflight": "/absolute/workspace/.agents/scripts/pstack-toolchain-probe.mjs",
+  "jobs": [
+    {"prompt": "/evidence/a.prompt.md", "output": "/evidence/a.md", "model": "MODEL", "effort": "EFFORT"},
+    {"prompt": "/evidence/b.prompt.md", "output": "/evidence/b.md", "model": "MODEL", "effort": "EFFORT"}
+  ],
+  "restrictions": {"taskDelegation": "forbid", "forbiddenModels": []}
+}
+```
+
+Choose restrictions from the active task. `forbiddenModels` contains exact model IDs. `allowedTools`, when supplied, contains exact native tool names. `taskDelegation` accepts `allow` or `forbid`. Unknown keys fail before launch. These restrictions audit canonical execution. They do not establish subprocess behavior. The receipt distinguishes the configured session sandbox from recorded per-command permission requests.
+
+The optional project preflight runs through App Server `command/exec` with an explicit read-only policy, network disabled, a timeout, and bounded output. It starts no thread or model turn. The Go probe belongs to this repository. Omit it for a generic non-Go reviewer, or provide that project's script. A singleton accepts `--preflight SCRIPT` and `--restrictions JSON_FILE`. Run the launcher inside the project's declared environment. A successful receipt records preparation evidence; it does not carry environment variables to a later process. The launcher preserves the operator's environment filters.
+
+Retain the panel process handle for collection or cancellation. Each report has its own native thread ID and artifacts. Failed or inconclusive jobs retain a private `.pstack-review-*` directory. Destination reservations prevent concurrent publication. After a crash, inspect the named reservation and owner before manually removing it. Never infer successful execution from a preexisting report or a receipt whose report digest no longer matches.
 
 Children share the checkout. When the source asks for candidate isolation, create its separate worktree first and put the absolute directory in the child prompt. Each child command must use that directory as its working directory, and each file edit must target it. Verify the child diff there before integrating it. If the runtime cannot carry the source's required isolation, report the launch limitation rather than using the parent checkout.
 
@@ -39,7 +59,9 @@ Pass a model ID and effort separately. Preserve `auto` and `inherit-parent` as p
 
 ## History
 
-Use `bun .agents/scripts/pstack-history.mjs --help` for scoped history acquisition. It resolves `CODEX_HOME` or `~/.codex`, discovers database schemas, and reads thread metadata and paginated SQLite items or legacy rollout JSONL. `list` and `search` require a workspace scope; `read` uses a selected thread identity. Keep the original mining steps, time window, source categories, and citations. Use thread/item identities for citations and `rg` on selected JSONL files.
+Use `bun .agents/scripts/pstack-history.mjs --help` for scoped history acquisition. It resolves `CODEX_HOME` or `~/.codex` and reads paginated SQLite items or retained native rollout JSONL. `list` and `search` require a workspace scope. Select an explicit native identity for `read`; concurrent runs make `last` ambiguous. `read --cwd WORKSPACE --id THREAD_ID --complete` returns retained canonical history with its fixed byte boundary and explicit completeness. Unsupported or unfinished records remain inconclusive. Existing paged reads remain available. Continue them with both `--after ORDINAL` and `--after-id ITEM_ID`.
+
+Execution receipts reconcile indexed threads, retained session headers, and native spawn references. Canonical task-parent links define descendants across workspace paths. Guardian records are separate. An exhausted 100-row list is not an exhaustive task census. Receipts include source and per-thread boundaries, effective contexts, and at most 256 native tool records with an omitted-record count. Historical source warnings use compact counts; private staged diagnostics retain detailed source names. Keep the original mining steps, time window, source categories, and canonical citations.
 
 ## Host controls
 
