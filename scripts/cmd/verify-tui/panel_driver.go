@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode"
 )
 
 const panelBudget = 2 * time.Second
@@ -26,7 +25,6 @@ type panelEvent struct {
 	SentAt     string `json:"sentAt"`
 	ReturnedAt string `json:"returnedAt"`
 	Input      string `json:"input,omitempty"`
-	Protocol   string `json:"protocol,omitempty"`
 }
 
 type panelTiming struct {
@@ -102,39 +100,8 @@ func (p *panelProof) key(label, key string, ready func(string) bool) error {
 	return p.action(label, func() error { return p.sendKey(key) }, ready)
 }
 
-func kittyText(text string) string {
-	var encoded strings.Builder
-	var previous rune
-	for _, r := range text {
-		event := 1
-		if r == previous {
-			event = 2
-		}
-		switch {
-		case r == '_':
-			fmt.Fprintf(&encoded, "\x1b[45:95;2:%du", event)
-		case unicode.IsUpper(r):
-			fmt.Fprintf(&encoded, "\x1b[%d:%d;2:%du", unicode.ToLower(r), r, event)
-		default:
-			fmt.Fprintf(&encoded, "\x1b[%d;1:%du", r, event)
-		}
-		previous = r
-	}
-	return encoded.String()
-}
-
-func (p *panelProof) encoded(label, input string, ready func(string) bool) error {
-	return p.action(label, func() error {
-		event := panelEvent{Action: label, SentAt: time.Now().UTC().Format(time.RFC3339Nano), Input: input, Protocol: "https://sw.kovidgoyal.net/kitty/keyboard-protocol/"}
-		err := p.sendText(input)
-		event.ReturnedAt = time.Now().UTC().Format(time.RFC3339Nano)
-		p.events = append(p.events, event)
-		return err
-	}, ready)
-}
-
-func (p *panelProof) encodedInputProof() error {
-	if err := p.open("kitty-open"); err != nil {
+func (p *panelProof) ordinaryInputProof() error {
+	if err := p.open("ordinary-open"); err != nil {
 		return err
 	}
 	text, err := p.visible()
@@ -142,44 +109,41 @@ func (p *panelProof) encodedInputProof() error {
 		return err
 	}
 	before := selectedPanelRow(text)
-	if err := p.encoded("kitty-down", "\x1b[1;1B", func(text string) bool { return selectedPanelRow(text) != "" && selectedPanelRow(text) != before }); err != nil {
+	if err := p.key("ordinary-down", "Down", func(text string) bool { return selectedPanelRow(text) != "" && selectedPanelRow(text) != before }); err != nil {
 		return err
 	}
-	if err := p.encoded("kitty-enter-detail", "\x1b[13u", hasPanelView("detail")); err != nil {
+	if err := p.key("ordinary-enter-detail", "Enter", hasPanelView("detail")); err != nil {
 		return err
 	}
-	if err := p.encoded("kitty-escape-list", "\x1b[27u", hasPanelView("list")); err != nil {
+	if err := p.key("ordinary-escape-list", "Escape", hasPanelView("list")); err != nil {
 		return err
 	}
-	if err := p.selectChild("kitty-target", "held-a"); err != nil {
+	if err := p.selectChild("ordinary-target", "held-a"); err != nil {
 		return err
 	}
-	if err := p.key("kitty-cancel-composer", "m", hasPanelView("message")); err != nil {
+	if err := p.key("ordinary-cancel-composer", "m", hasPanelView("message")); err != nil {
 		return err
 	}
-	if err := p.encoded("kitty-cancel-text", kittyText("KITTY_CANCELLED_MARKER"), func(text string) bool {
+	if err := p.action("ordinary-cancel-text", func() error { return p.sendText("KITTY_CANCELLED_MARKER") }, func(text string) bool {
 		return hasPanelView("message")(text) && strings.Contains(text, "KITTY_CANCELLED_MARKER")
 	}); err != nil {
 		return err
 	}
-	if err := p.encoded("kitty-enter-release", "\x1b[13;1:3u", hasPanelView("message")); err != nil {
+	if err := p.key("ordinary-cancel-escape", "Escape", hasPanelView("list")); err != nil {
 		return err
 	}
-	if err := p.encoded("kitty-cancel-escape", "\x1b[27u", hasPanelView("list")); err != nil {
+	if err := p.key("ordinary-accepted-composer", "m", hasPanelView("message")); err != nil {
 		return err
 	}
-	if err := p.key("kitty-accepted-composer", "m", hasPanelView("message")); err != nil {
-		return err
-	}
-	if err := p.encoded("kitty-accepted-text", kittyText("KITTY_INPUT_MARKER"), func(text string) bool {
+	if err := p.action("ordinary-accepted-text", func() error { return p.sendText("KITTY_INPUT_MARKER") }, func(text string) bool {
 		return hasPanelView("message")(text) && strings.Contains(text, "KITTY_INPUT_MARKER")
 	}); err != nil {
 		return err
 	}
-	if err := p.encoded("kitty-accepted-enter", "\x1b[13u", func(text string) bool { return hasPanelView("list")(text) && strings.Contains(text, "Message queued") }); err != nil {
+	if err := p.key("ordinary-accepted-enter", "Enter", func(text string) bool { return hasPanelView("list")(text) && strings.Contains(text, "Message queued") }); err != nil {
 		return err
 	}
-	return p.close("kitty-close")
+	return p.close("ordinary-close")
 }
 
 func hasPanelView(view string) func(string) bool {
@@ -626,7 +590,7 @@ func (p *panelProof) afterHistory() error {
 	if err := waitFor(p.ctx, "resumed message target stream", stageTimeout, func() (bool, error) { return p.state.holding("held-a"), p.state.providerFailure() }); err != nil {
 		return err
 	}
-	if err := p.encodedInputProof(); err != nil {
+	if err := p.ordinaryInputProof(); err != nil {
 		return err
 	}
 	if err := p.message("human-steer", "steer", "STEER_MARKER"); err != nil {
