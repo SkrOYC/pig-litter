@@ -7,6 +7,8 @@ description: 'Use for "how does X work", code walkthroughs before changing somet
 
 Explore the codebase to answer "how does X work?" questions. Produce architectural explanations at the level of a senior engineer onboarding onto a subsystem, enough to build a working mental model, not so much that it reads like annotated source code.
 
+Before recommending a fork or runtime change, inspect all relevant public integration APIs, including embedding APIs. Distinguish a missing convenience method from an unsupported capability.
+
 Each run below names a role line in the native pstack agent settings and a default. Resolve it with `bun .agents/scripts/pstack-models.mjs resolve "ROLE LABEL"`. Use that line's model and effort, or the role's default pair if the setting or line is missing. When the value is `auto` or `inherit-parent`, pass the active parent's effective model and effort because a standalone CLI session does not inherit UI overrides. If the selected model is rejected, retry with the default pair and say so. If the default model is rejected, use the closest valid model from its error message and retain the effort when supported. Run each read-only phase with `bun .agents/scripts/pstack-readonly.mjs --cwd WORKSPACE --prompt PROMPT_FILE --output REPORT_FILE --model MODEL --effort EFFORT`. Use one managed shell session per run, retain each session handle for collection or cancellation, and read its unchanged final report from `REPORT_FILE`; detailed events are written beside it. Do not add `--ephemeral`. See `.agents/pstack-runtime.md` for adapter behavior.
 
 ## Step 1. Assess Complexity

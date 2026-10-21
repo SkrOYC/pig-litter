@@ -20,9 +20,9 @@ Use a repeatable local harness to exercise an interactive CLI instead of poking 
 1. Identify the command under test and the smallest reproducible workspace.
 2. Discover existing local harnesses: package scripts, e2e tests, demo recorders, expect scripts, or PTY helpers.
 3. If no harness exists, launch the CLI in an isolated terminal session with deterministic env vars.
-4. Capture the current screen before interacting.
+4. Capture the current screen before interacting. For history assertions, identify whether the claim concerns the application transcript or terminal scrollback. Use the navigation and rendering mode for that store.
 5. Send one action at a time: text, Enter, arrows, Escape, Ctrl-C, resize.
-6. Wait for a concrete screen pattern or prompt before the next action.
+6. Wait for a concrete screen pattern or prompt before the next action. For cancellation, steering, or restart assertions, name the lifecycle phase under test. Verify that the application processes the action during that phase before claiming coverage.
 7. Save the transcript and any profile artifacts.
 8. Kill the session cleanly.
 
