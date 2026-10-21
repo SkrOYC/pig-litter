@@ -27,6 +27,7 @@ type paneCommand struct {
 }
 
 type paneCompletion struct {
+	ClosingID  string          `json:"closingID,omitempty"`
 	Generation string          `json:"generation"`
 	Process    observedProcess `json:"process"`
 	StartedAt  string          `json:"startedAt"`
@@ -198,8 +199,8 @@ func (c *ptyCapture) checkActive() error {
 	return nil
 }
 
-func captureBoundary(generation string) []byte {
-	return []byte("\x1eVERIFY_CAPTURE_END_" + generation + "\x1f")
+func captureBoundary(identity string) []byte {
+	return []byte("\x1eVERIFY_CAPTURE_END_" + identity + "\x1f")
 }
 
 func (c *ptyCapture) record(active *paneCapture, reader io.Reader) {
@@ -214,9 +215,16 @@ func (c *ptyCapture) record(active *paneCapture, reader io.Reader) {
 			result.BytesRead += int64(n)
 			scan := append(tail, chunk...)
 			result.Hostile = result.Hostile || hostilePTY(scan)
-			if !result.Boundary && bytes.Contains(scan, captureBoundary(active.command.Generation)) {
-				result.Boundary = true
-				close(active.boundary)
+			if !result.Boundary && bytes.Contains(scan, []byte("\x1eVERIFY_CAPTURE_END_")) {
+				completion, completionErr := readPaneCompletion(active.command)
+				if completionErr != nil && !os.IsNotExist(completionErr) {
+					result.Error = completionErr.Error()
+				}
+				if completionErr == nil && bytes.Contains(scan, captureBoundary(completion.ClosingID)) {
+					result.Completion = completion
+					result.Boundary = true
+					close(active.boundary)
+				}
 			}
 			tail = append([]byte(nil), scan[max(0, len(scan)-256):]...)
 			remaining := c.limit - c.saved
@@ -247,6 +255,29 @@ func (c *ptyCapture) record(active *paneCapture, reader io.Reader) {
 	}
 }
 
+func readPaneCompletion(command paneCommand) (paneCompletion, error) {
+	data, err := os.ReadFile(filepath.Join(command.Directory, "exit.json"))
+	if err != nil {
+		return paneCompletion{}, err
+	}
+	var completion paneCompletion
+	if err := json.Unmarshal(data, &completion); err != nil {
+		return paneCompletion{}, err
+	}
+	data, err = os.ReadFile(filepath.Join(command.Directory, "started.json"))
+	if err != nil {
+		return paneCompletion{}, err
+	}
+	var started paneCompletion
+	if err := json.Unmarshal(data, &started); err != nil {
+		return paneCompletion{}, err
+	}
+	if completion.Generation != command.Generation || completion.Process != started.Process || completion.Process.PID <= 0 || completion.Process.StartTicks == "" || completion.StartedAt != started.StartedAt || completion.ExitedAt == "" || completion.ClosingID == "" || completion.ClosingID == command.Generation || observedAlive(completion.Process) {
+		return paneCompletion{}, errors.New("inconclusive capture: private completion does not establish the owned program exit and closing identity")
+	}
+	return completion, nil
+}
+
 func (c *ptyCapture) finish(ctx context.Context) (paneCompletion, error) {
 	active := c.active
 	if active == nil {
@@ -257,26 +288,13 @@ func (c *ptyCapture) finish(ctx context.Context) (paneCompletion, error) {
 		if err := c.checkActive(); err != nil {
 			return false, err
 		}
-		data, err := os.ReadFile(filepath.Join(active.command.Directory, "exit.json"))
+		var err error
+		completion, err = readPaneCompletion(active.command)
 		if os.IsNotExist(err) {
 			return false, nil
 		}
 		if err != nil {
 			return false, err
-		}
-		if err := json.Unmarshal(data, &completion); err != nil {
-			return false, err
-		}
-		var started paneCompletion
-		data, err = os.ReadFile(filepath.Join(active.command.Directory, "started.json"))
-		if err != nil {
-			return false, err
-		}
-		if err := json.Unmarshal(data, &started); err != nil {
-			return false, err
-		}
-		if completion.Generation != active.command.Generation || completion.Process != started.Process || completion.Process.PID <= 0 || completion.Process.StartTicks == "" || completion.StartedAt != started.StartedAt || completion.ExitedAt == "" || observedAlive(completion.Process) {
-			return false, errors.New("inconclusive capture: private completion does not establish the owned program exit")
 		}
 		return true, nil
 	}); err != nil {
@@ -307,8 +325,10 @@ func (c *ptyCapture) finish(ctx context.Context) (paneCompletion, error) {
 	if !waitUntilDone(ctx, func() bool { return !observedAlive(interval.Pipe) }) {
 		interval.Error = "owned pipe process did not exit"
 	}
-	interval.Completion = completion
-	if interval.EOF && interval.Boundary && interval.BytesRead > int64(len(captureBoundary(interval.Generation))) && interval.BytesSaved > 0 && !interval.Overflow && interval.Error == "" {
+	if interval.Completion != completion {
+		interval.Error = "recorder boundary does not match the private completion record"
+	}
+	if interval.EOF && interval.Boundary && interval.BytesRead > int64(len(captureBoundary(completion.ClosingID))) && interval.BytesSaved > 0 && !interval.Overflow && interval.Error == "" {
 		interval.Status = "complete"
 	}
 	c.intervals = append(c.intervals, interval)
@@ -432,11 +452,12 @@ func runCapturePane(path string) error {
 	}
 	waitErr := child.Wait()
 	completion.ExitedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	completion.ClosingID = rand.Text()
 	completion.Status = child.ProcessState.ExitCode()
 	if err := writeCaptureJSON(filepath.Join(command.Directory, "exit.json"), completion); err != nil {
 		return err
 	}
-	if _, err := os.Stdout.Write(captureBoundary(command.Generation)); err != nil {
+	if _, err := os.Stdout.Write(captureBoundary(completion.ClosingID)); err != nil {
 		return err
 	}
 	if err := waitGate("release"); err != nil {
