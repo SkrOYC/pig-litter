@@ -8,7 +8,9 @@ A retained pane supervisor starts PiG only after the recorder acknowledges readi
 
 This sequence accounts for tmux 3.7c's `remain-on-exit` behavior. A program can exit while its recording pipe remains open. Conversely, detaching a pipe can produce EOF while the program continues. Neither event alone proves complete capture.
 
-The evidence combines owned process identities, the private completion record, an output boundary, explicit transport closure, and recorder completion. Saved bytes are bounded across restarts. Excess bytes are drained and still checked for hostile payloads. Missing, detached, replaced, interrupted, empty, or truncated capture remains inconclusive. Raw output, injected input, rendered frames, and terminal state remain separate artifacts.
+The supervisor creates a fresh closing identity after the program exits and records it before emitting the closing marker. The recorder accepts only that private record's marker. An application-supplied earlier generation marker cannot authorize closure. Certification also requires the recorder's matched completion record to equal the owner's validated record.
+
+The evidence combines owned process identities, the private completion record, the closing boundary, explicit transport closure, and recorder completion. Saved bytes are bounded across restarts. Excess bytes are drained and still checked for hostile payloads. Missing, detached, replaced, interrupted, empty, or truncated capture remains inconclusive. Raw output, injected input, rendered frames, and terminal state remain separate artifacts.
 
 ## Own resources before building
 
@@ -30,9 +32,11 @@ Run the focused verifier suite in the declared environment.
 devenv shell -- go -C scripts test -race ./cmd/verify-tui
 ```
 
-The final race run passed 64 top-level tests. Real PTY fixtures exercise erased title and clear-screen sequences, capture loss, overflow, substituted evidence, missing private records, and hostile bytes beyond the saved limit.
+The corrected race run passed 66 top-level tests. Real PTY fixtures exercise erased title and clear-screen sequences, capture loss, overflow, substituted evidence, missing private records, and hostile bytes beyond the saved limit. Repeated backpressure cases retain the full 2 MiB payload and reject its hostile tail even after an early forged boundary. Recorder-before-owner ordering and substituted private records are also covered.
 
-Two overlapping maintained wrapper runs passed. Run A used direct `receipt-control`; run B used direct `all`. A removed its allocation while B retained its tmux server. B then completed another captured generation and removed its own allocation. Both evidence sets survived. Separate local Piglet `all` and unselected `all` drives also passed.
+The initial implementation checkpoint passed two overlapping maintained wrapper runs. Run A used direct `receipt-control`; run B used direct `all`. A removed its allocation while B retained its tmux server. B then completed another captured generation and removed its own allocation. Both evidence sets survived. Separate local Piglet `all` and unselected `all` drives also passed at that checkpoint.
+
+Independent review then exposed queued-byte loss after a forged early boundary. The retained byte census distinguishes transport loss from storage overflow. After the closing-identity correction, the maintained direct `all` drive passed both generations and cleanup. The final independent PR verdict identifies the source and runtime checks required before landing.
 
 Bulk evidence is retained in the isolated reflection-terminal checkout under `.pstack/reflection-terminal/`. `verified-evidence.json` records result and allocation digests, raw hashes, process exits, removed roots, and retained evidence. `source-digests.json` identifies the tested source. The independent PR verdict records the frozen commit and patch identity.
 
