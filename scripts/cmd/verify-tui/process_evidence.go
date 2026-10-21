@@ -70,7 +70,7 @@ func checkRawPTY(path string) error {
 		return errors.Join(payloadErr, errors.New("inconclusive capture: missing, incomplete, or changed recording"))
 	}
 	for _, interval := range evidence.Intervals {
-		if interval.Status != "complete" || !interval.EOF || !interval.Joined || !interval.Boundary || interval.Overflow || interval.BytesSaved == 0 || interval.Error != "" || interval.Generation != interval.Completion.Generation || interval.Completion.ExitedAt == "" {
+		if interval.Status != "complete" || !interval.EOF || !interval.Joined || !interval.Boundary || interval.Overflow || interval.BytesSaved == 0 || interval.Error != "" || interval.Generation != interval.Completion.Generation || interval.Completion.ExitedAt == "" || interval.Completion.ClosingID == "" || interval.Completion.ClosingID == interval.Generation {
 			return errors.Join(payloadErr, errors.New("inconclusive capture: incomplete pane generation"))
 		}
 	}
