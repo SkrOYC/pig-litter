@@ -3,3 +3,6 @@ description: "Pig Litter background child Sessions"
 extensions:
   - name: pig-litter
     origins: [local:./extensions/pig-litter]
+  # Scope entry, not a loaded extension: keeps MCP tools visible to the root
+  # Session so worker `mcp__*` patterns can expand against them.
+  - name: pig-mcp-adapter
