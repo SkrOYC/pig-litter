@@ -263,7 +263,7 @@ APPLESCRIPT
           reason="The iTerm2 process was not observed."
         elif [ -z "$session_id" ] || [ -z "$session_tty" ] || [ -z "$window_id" ]; then
           reason="The iTerm2 session identity was incomplete."
-        elif ! grep -Fx "$expected" "$artifact_dir/sentinel.txt" || ! grep -Fx "$session_tty" "$artifact_dir/sentinel-tty.txt" || ! grep -Fx "$expected" "$artifact_dir/session.txt"; then
+        elif ! grep -Fx "$expected" "$artifact_dir/sentinel.txt" || ! grep -Fx "$session_tty" "$artifact_dir/sentinel-tty.txt" || ! sed 's/[[:blank:]]*$//' "$artifact_dir/session.txt" | grep -Fx "$expected"; then
           reason="The session output or terminal side effect did not match the sentinel."
         else
           status=pass
