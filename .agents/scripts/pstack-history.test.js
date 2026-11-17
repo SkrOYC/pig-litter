@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
+import { writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -129,6 +130,38 @@ async function fixture({
 }
 
 describe("pstack-history", () => {
+  it("finds history databases when the filename inventory exceeds the subprocess buffer", async () => {
+    const f = await fixture();
+    try {
+      const archive = join(f.root, ".archive\nwith-newline");
+      await mkdir(archive);
+      for (let i = 0; i < 4800; i++)
+        writeFileSync(
+          join(archive, `archive-${i}-${"x".repeat(220)}.sqlite`),
+          "",
+        );
+      const nested = new Database(join(archive, "state_nested.sqlite"));
+      nested.exec(
+        "CREATE TABLE threads (id TEXT, cwd TEXT, created_at_ms INTEGER)",
+      );
+      nested
+        .query("INSERT INTO threads VALUES (?, ?, ?)")
+        .run("nested-thread", f.workspace, Date.parse("2026-10-04T00:00:00Z"));
+      nested.close();
+      const rows = JSON.parse(
+        await main(parseArgs(["list", "--cwd", f.workspace])),
+      );
+      expect(rows.map((row) => row.thread_id)).toEqual([
+        "nested-thread",
+        "thread-new",
+        "thread-child",
+        "thread-old",
+      ]);
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it("uses the newest duplicate thread metadata across compatible state databases", async () => {
     const f = await fixture();
     try {

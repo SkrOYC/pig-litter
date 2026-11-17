@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { collectExecution } from "./pstack-history-execution.mjs";
+import { executionReceipt } from "./pstack-receipt.mjs";
 import { reviewerFixture } from "./pstack-reviewer-test-fixture.js";
 
 function restricted(f, value) {
@@ -17,6 +20,162 @@ function diagnosticReceipt(f) {
     readFileSync(join(f.directory, directory, "receipt.json"), "utf8"),
   );
 }
+
+function receiptAfterInspection(f) {
+  const original = f.receipt();
+  const snapshot = collectExecution({
+    cwd: f.cwd,
+    threadId: original.threadId,
+    root: f.home,
+  });
+  return executionReceipt(snapshot, {
+    cwd: f.cwd,
+    threadId: original.threadId,
+    requested: original.requested,
+    report: readFileSync(f.output, "utf8"),
+    restrictions: {
+      taskDelegation: "forbid",
+      forbiddenModels: ["forbidden-model"],
+    },
+    startedAt: original.boundary.launchedAt,
+    endedAt: original.boundary.launcherExitedAt,
+  });
+}
+
+function addConflictingHeader(f, options = {}) {
+  const rootId = f.receipt().threadId;
+  const source =
+    typeof options.source === "function"
+      ? options.source(rootId)
+      : options.source || "exec";
+  const headerSource = options.headerSource || source;
+  const created =
+    options.created === undefined ? Date.now() - 60000 : options.created;
+  const headerCreated =
+    options.headerCreated === undefined ? created : options.headerCreated;
+  const id = "conflicting-thread";
+  const path = join(f.home, `rollout-${id}.jsonl`);
+  writeFileSync(
+    path,
+    `${JSON.stringify({
+      type: "session_meta",
+      payload: {
+        id,
+        cwd: `${f.cwd}-other`,
+        timestamp:
+          headerCreated === null ? null : new Date(headerCreated).toISOString(),
+        source: headerSource,
+        thread_source: options.headerThreadSource || "user",
+      },
+    })}\n`,
+  );
+  const db = new Database(join(f.home, "state_99.sqlite"));
+  db.query("INSERT INTO threads VALUES (?,?,?,?,?,?,?,?)").run(
+    id,
+    f.cwd,
+    path,
+    "jsonl",
+    created,
+    created,
+    JSON.stringify(source),
+    options.threadSource || "user",
+  );
+  db.close();
+}
+
+test("old unrelated workspace disagreements remain visible without blocking receipts", async () => {
+  const f = reviewerFixture();
+  try {
+    expect((await f.result(f.launch())).code).toBe(0);
+    addConflictingHeader(f);
+    const receipt = receiptAfterInspection(f);
+    expect(receipt.status).toBe("verified");
+    expect(receipt.checks.taskDelegation.status).toBe("verified");
+    expect(receipt.checks.forbiddenModels.status).toBe("verified");
+    expect(receipt.coverage.historicalSourceWarnings).toEqual({
+      count: 1,
+      categories: [{ reason: "Contradictory index/header", count: 1 }],
+    });
+  } finally {
+    f.close();
+  }
+});
+
+for (const [label, options] of [
+  ["recent", { created: Date.now() + 60000 }],
+  ["unknown index time", { created: null, headerCreated: Date.now() - 60000 }],
+  ["unknown header time", { headerCreated: null }],
+  ["disputed thread source", { threadSource: "subagent" }],
+  [
+    "disputed lineage",
+    {
+      source: (rootId) => ({
+        subagent: { thread_spawn: { parent_thread_id: rootId } },
+      }),
+      threadSource: "subagent",
+      headerSource: "exec",
+    },
+  ],
+]) {
+  test(`${label} contradictions keep the receipt inconclusive`, async () => {
+    const f = reviewerFixture();
+    try {
+      expect((await f.result(f.launch())).code).toBe(0);
+      addConflictingHeader(f, options);
+      const receipt = receiptAfterInspection(f);
+      expect(receipt.status).toBe("inconclusive");
+      expect(receipt.coverage.issues).toContainEqual({
+        reason: "Contradictory index/header",
+        count: 1,
+      });
+    } finally {
+      f.close();
+    }
+  });
+}
+
+test("a conflicting old descendant remains part of the task census", async () => {
+  const f = reviewerFixture();
+  try {
+    expect((await f.result(f.launch())).code).toBe(0);
+    addConflictingHeader(f, {
+      source: (rootId) => ({
+        subagent: { thread_spawn: { parent_thread_id: rootId } },
+      }),
+      threadSource: "subagent",
+      headerThreadSource: "subagent",
+    });
+    const receipt = receiptAfterInspection(f);
+    expect(receipt.checks.taskDelegation.status).toBe("violated");
+    expect(receipt.coverage.issues).toContainEqual({
+      reason: "Contradictory index/header",
+      count: 1,
+    });
+  } finally {
+    f.close();
+  }
+});
+
+test("a contradiction in the reviewer thread keeps its receipt inconclusive", async () => {
+  const f = reviewerFixture();
+  try {
+    expect((await f.result(f.launch())).code).toBe(0);
+    const db = new Database(join(f.home, "state_99.sqlite"));
+    db.query("UPDATE threads SET cwd = ? WHERE id = ?").run(
+      `${f.cwd}-other`,
+      f.receipt().threadId,
+    );
+    db.close();
+    const receipt = receiptAfterInspection(f);
+    expect(receipt.status).toBe("inconclusive");
+    expect(receipt.coverage.issues).toContainEqual({
+      reason: "Contradictory index/header",
+      count: 1,
+    });
+  } finally {
+    f.close();
+  }
+});
 
 test("an old report is never returned by a launcher that writes nothing", async () => {
   const f = reviewerFixture("stale");
