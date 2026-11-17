@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if [[ $# -ne 4 ]]; then
+  printf 'usage: %s CANDIDATE_SHA GOOS GOARCH EVIDENCE_DIR\n' "$0" >&2
+  exit 2
+fi
+
+candidate_sha="$1"
+expected_os="$2"
+expected_arch="$3"
+evidence_dir="$4"
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+mkdir -p "$evidence_dir"
+
+finish() {
+  result_code=$?
+  trap - EXIT
+  printf 'exit_code=%s\n' "$result_code" > "$evidence_dir/result.txt"
+  if [[ "$result_code" -ne 0 ]]; then
+    git -C "$root_dir" status --short > "$evidence_dir/failure-git-status.txt" || true
+  fi
+  exit "$result_code"
+}
+trap finish EXIT
+trap 'printf "verification failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
+
+case "$expected_os/$expected_arch" in
+  linux/amd64) runner_os=Linux; runner_arch=X64; machine=x86_64; nix_platform=x86_64-linux ;;
+  linux/arm64) runner_os=Linux; runner_arch=ARM64; machine=aarch64; nix_platform=aarch64-linux ;;
+  darwin/amd64) runner_os=macOS; runner_arch=X64; machine=x86_64; nix_platform=x86_64-darwin ;;
+  darwin/arm64) runner_os=macOS; runner_arch=ARM64; machine=arm64; nix_platform=aarch64-darwin ;;
+  *) printf 'unsupported platform: %s/%s\n' "$expected_os" "$expected_arch" >&2; exit 1 ;;
+esac
+
+[[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
+[[ "$(git -C "$root_dir" rev-parse HEAD)" == "$candidate_sha" ]]
+[[ -z "$(git -C "$root_dir" status --porcelain --untracked-files=all)" ]]
+[[ "${RUNNER_OS:-}" == "$runner_os" && "${RUNNER_ARCH:-}" == "$runner_arch" ]]
+[[ "$(uname -m)" == "$machine" ]]
+if [[ "$expected_os" == linux ]]; then
+  [[ "$(uname -s)" == Linux ]]
+else
+  [[ "$(uname -s)" == Darwin ]]
+  translated="$(sysctl -n sysctl.proc_translated 2>/dev/null || true)"
+  hardware_arm="$(sysctl -n hw.optional.arm64 2>/dev/null || true)"
+  [[ -z "$translated" || "$translated" == 0 ]]
+  if [[ "$expected_arch" == arm64 ]]; then
+    [[ "$hardware_arm" == 1 ]]
+  else
+    [[ "$hardware_arm" != 1 ]]
+  fi
+  printf 'translated=%s\nhardware_arm=%s\n' "$translated" "$hardware_arm" >> "$evidence_dir/runner.txt"
+  sw_vers >> "$evidence_dir/runner.txt"
+fi
+
+scratch_dir="$(mktemp -d "${RUNNER_TEMP:?}/pig-platform.XXXXXXXX")"
+mkdir -p "$scratch_dir/tmp" "$scratch_dir/go-build" "$scratch_dir/go-mod" "$scratch_dir/pig-home/agent"
+export TMPDIR="$scratch_dir/tmp" GOCACHE="$scratch_dir/go-build" GOMODCACHE="$scratch_dir/go-mod"
+export GOPATH="$scratch_dir/go" GOTOOLCHAIN=local CGO_ENABLED=1 GOENV=off
+export PIG_HOME="$scratch_dir/pig-home" PIG_CODING_AGENT_DIR="$scratch_dir/pig-home/agent"
+export PIG_OFFLINE=1 PI_OFFLINE=1 PIG_USE_PI_DIRS=0
+unset GOOS GOARCH
+
+go version | tee "$evidence_dir/go-version.txt"
+go env -json GOVERSION GOHOSTOS GOHOSTARCH GOOS GOARCH CGO_ENABLED GOROOT > "$evidence_dir/go-env.json"
+[[ "$(go env GOVERSION)" == go1.27.4 ]]
+[[ "$(go env GOHOSTOS)" == "$expected_os" && "$(go env GOOS)" == "$expected_os" ]]
+[[ "$(go env GOHOSTARCH)" == "$expected_arch" && "$(go env GOARCH)" == "$expected_arch" ]]
+shasum -a 256 "$(command -v go)" > "$evidence_dir/go-binary.sha256"
+
+pig_module="$(awk '$1 == "github.com/MichaelKinsy/PiG" { print $2 }' "$root_dir/scripts/go.mod")"
+sdk_module="$(awk '$1 == "github.com/MichaelKinsy/PiG/extensions/sdk" { print $2 }' "$root_dir/scripts/go.mod")"
+[[ "$pig_module" == v0.7.0 && "$sdk_module" == "$pig_module" ]]
+pig_version="${pig_module#v}"
+archive="pig-$pig_version-$expected_os-$expected_arch.tar.gz"
+
+nix_value() {
+  awk -F '"' -v platform="$nix_platform" -v field="$1" '
+    $2 == platform && $0 ~ /= *[{]/ { inside = 1; next }
+    inside && /^[[:space:]]*};/ { exit }
+    inside && $1 ~ ("^[[:space:]]*" field "[[:space:]]*=") { print $2; found++ }
+    END { if (found != 1) exit 1 }
+  ' "$root_dir/devenv.nix"
+}
+
+pinned_archive="$(nix_value archive)"
+pinned_root="$(nix_value root)"
+pinned_sri="$(nix_value hash)"
+[[ "$pinned_archive" == "$archive" && "$pinned_root" == "${archive%.tar.gz}" ]]
+release_url="https://github.com/MichaelKinsy/PiG/releases/download/$pig_module"
+curl --fail --silent --show-error --location --retry 3 "$release_url/SHA256SUMS" -o "$evidence_dir/SHA256SUMS"
+curl --fail --silent --show-error --location --retry 3 "$release_url/$archive" -o "$scratch_dir/$archive"
+official_sha="$(awk -v name="$archive" '$2 == name { print tolower($1) }' "$evidence_dir/SHA256SUMS")"
+actual_sha="$(shasum -a 256 "$scratch_dir/$archive" | awk '{ print $1 }')"
+actual_sri="$(perl -MMIME::Base64 -e 'print "sha256-", encode_base64(pack("H*", $ARGV[0]), "")' "$actual_sha")"
+printf 'archive=%s\nofficial_sha256=%s\nactual_sha256=%s\npinned_sri=%s\nactual_sri=%s\n' "$archive" "$official_sha" "$actual_sha" "$pinned_sri" "$actual_sri" | tee "$evidence_dir/archive-checksums.txt"
+[[ "$official_sha" =~ ^[0-9a-f]{64}$ && "$actual_sha" == "$official_sha" && "$actual_sri" == "$pinned_sri" ]]
+
+tar -tzf "$scratch_dir/$archive" > "$evidence_dir/archive-contents.txt"
+grep -Fx "$pinned_root/pig" "$evidence_dir/archive-contents.txt" >/dev/null
+mkdir -p "$scratch_dir/extract" "$scratch_dir/verified-pig-$pig_version/bin"
+tar -xzf "$scratch_dir/$archive" -C "$scratch_dir/extract" "$pinned_root/pig"
+install -m 755 "$scratch_dir/extract/$pinned_root/pig" "$scratch_dir/verified-pig-$pig_version/bin/pig"
+export PATH="$scratch_dir/verified-pig-$pig_version/bin:$PATH"
+pig_file="$(file -b "$(command -v pig)")"
+case "$expected_os/$expected_arch" in
+  linux/amd64) [[ "$pig_file" == *ELF* && "$pig_file" == *x86-64* ]] ;;
+  linux/arm64) [[ "$pig_file" == *ELF* && "$pig_file" == *aarch64* ]] ;;
+  darwin/amd64) [[ "$pig_file" == *Mach-O* && "$pig_file" == *x86_64* ]] ;;
+  darwin/arm64) [[ "$pig_file" == *Mach-O* && "$pig_file" == *arm64* ]] ;;
+esac
+printf '%s\n' "$pig_file" > "$evidence_dir/pig-binary.txt"
+shasum -a 256 "$(command -v pig)" >> "$evidence_dir/pig-binary.txt"
+pig --version | tee -a "$evidence_dir/pig-binary.txt"
+
+go -C "$root_dir/extensions/pig-litter" mod download
+go -C "$root_dir/scripts" mod download
+export GOPROXY=off
+resolved_pig="$(go -C "$root_dir/scripts" list -m -f '{{.Version}}' github.com/MichaelKinsy/PiG)"
+resolved_sdk="$(go -C "$root_dir/scripts" list -m -f '{{.Version}}' github.com/MichaelKinsy/PiG/extensions/sdk)"
+printf 'pig=%s\nsdk=%s\n' "$resolved_pig" "$resolved_sdk" > "$evidence_dir/modules.txt"
+[[ "$resolved_pig" == "$pig_module" && "$resolved_sdk" == "$sdk_module" ]]
+
+bash "$root_dir/scripts/check-pig-extension.sh" 2>&1 | tee "$evidence_dir/check-pig-extension.log"
+
+verify_registration() {
+  artifact="$1"
+  language="$2"
+  form="$3"
+  output="$4"
+  pig install --validate-only --json "$artifact" > "$output"
+  jq --exit-status --arg language "$language" --arg form "$form" '
+    .valid == true and .registered == true and .name == "pig-litter"
+    and .definition.language == $language and .definition.form == $form
+    and (.tools == ["litter_inspect", "litter_list", "litter_message", "litter_spawn", "litter_stop", "litter_wait"])
+    and ((.commands // []) | map(if type == "string" then . else .name end) | index("pig-litter")) != null
+  ' "$output" >/dev/null
+}
+verify_registration "$root_dir/extensions/pig-litter" go factory "$evidence_dir/source-registration.json"
+verify_registration "$root_dir/extensions/pig-litter/dist/pig-litter" binary standalone "$evidence_dir/standalone-registration.json"
+pig piglet validate "$root_dir/piglet.yaml" --json --no-input > "$evidence_dir/piglet-manifest.json"
+jq --exit-status '.valid == true and .name == "pig-litter" and (.extensions | map(.name) | index("pig-litter")) != null and (.errors | length) == 0' "$evidence_dir/piglet-manifest.json" >/dev/null
+
+cat > "$scratch_dir/observer.go" <<'GO'
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	"github.com/MichaelKinsy/PiG/extensions/sdk"
+)
+
+func main() {
+	ext := sdk.New("pig-platform-observer")
+	ext.OnSessionStart(func(ctx sdk.Context, _ map[string]any) (any, error) {
+		tools, err := ctx.GetAllTools()
+		if err != nil {
+			return nil, err
+		}
+		data, err := json.Marshal(tools)
+		if err != nil {
+			return nil, err
+		}
+		return nil, os.WriteFile(os.Getenv("PIG_PLATFORM_TOOLS"), data, 0o600)
+	})
+	if err := ext.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+GO
+go -C "$root_dir/scripts" build -mod=readonly -o "$scratch_dir/pig-platform-observer" "$scratch_dir/observer.go"
+export PIG_PLATFORM_TOOLS="$evidence_dir/piglet-tools.json"
+printf '%s\n' '{"id":"commands","type":"get_commands"}' '{"id":"extensions","type":"get_extensions"}' > "$evidence_dir/piglet-rpc-input.jsonl"
+pig --piglet "$root_dir/piglet.yaml" -e "$scratch_dir/pig-platform-observer" --mode rpc --no-session < "$evidence_dir/piglet-rpc-input.jsonl" > "$evidence_dir/piglet-rpc.jsonl" 2> "$evidence_dir/piglet-rpc.stderr"
+jq --exit-status '[.[] | .name | select(startswith("litter_"))] | sort == ["litter_inspect", "litter_list", "litter_message", "litter_spawn", "litter_stop", "litter_wait"]' "$evidence_dir/piglet-tools.json" >/dev/null
+jq --slurp --exit-status 'any(.[]; .id == "commands" and .success == true and any(.data.commands[]?; .name == "pig-litter" and .source == "extension")) and any(.[]; .id == "extensions" and .success == true and any(.data.paths[]?; endswith("/extensions/pig-litter")))' "$evidence_dir/piglet-rpc.jsonl" >/dev/null
+
+[[ "$(git -C "$root_dir" rev-parse HEAD)" == "$candidate_sha" ]]
+[[ -z "$(git -C "$root_dir" status --porcelain --untracked-files=all)" ]]
+printf 'verified candidate %s on %s/%s\n' "$candidate_sha" "$expected_os" "$expected_arch"
