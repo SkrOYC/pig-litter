@@ -7,8 +7,18 @@ function run(command, args, input) {
     timeout: 4000,
     maxBuffer: 1024 * 1024,
     env:
-      command === "go" && args[0] === "mod"
-        ? { ...process.env, GOENV: "off", GOFLAGS: "", GOTOOLCHAIN: "local" }
+      command === "go" && (args[0] === "mod" || args[0] === "-C")
+        ? {
+            ...process.env,
+            GOENV: "off",
+            GOFLAGS: "",
+            GOTOOLCHAIN: "local",
+            GOPROXY: "off",
+            GOSUMDB: "off",
+            GOPRIVATE: "",
+            GONOPROXY: "",
+            GOWORK: "off",
+          }
         : process.env,
   });
   if (result.error || result.status !== 0)
@@ -47,6 +57,7 @@ try {
         `${name} must be ${expected}; received ${JSON.stringify(settings[name])}`,
       );
   }
+  run("go", ["-C", "scripts", "list", "-mod=readonly", "-m"]);
   if (typeof settings.CC !== "string" || !settings.CC)
     throw new Error("Go has no configured C compiler");
   run(
