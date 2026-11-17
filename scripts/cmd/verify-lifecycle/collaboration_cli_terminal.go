@@ -174,6 +174,9 @@ func (runner *collaborationCLIRunner) probe(ctx context.Context, self string, ta
 	if err := collaborationCLICheckTarget(target); err != nil {
 		return err
 	}
+	if runner.options.scenario == "host-busy-message" || runner.options.scenario == "host-idle-message" {
+		return runner.messageTerminal(ctx, target)
+	}
 	if runner.options.scenario == "host-independent-process" {
 		return runner.independentTerminal(ctx, target, root)
 	}

@@ -171,7 +171,7 @@ func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string
 		}
 		return providerTurn{kind: "text", text: marker + "_DONE"}, true, nil
 	}
-	if marker != "RECEIPT_WIDGET" && marker != "CHAIN_WIDGET" {
+	if marker != "RECEIPT_WIDGET" && marker != "CHAIN_WIDGET" && marker != "P02_BUSY_HOLD" {
 		return providerTurn{}, false, nil
 	}
 	if state.caseName == caseUnselected {
@@ -181,6 +181,8 @@ func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string
 		return providerTurn{}, true, err
 	}
 	switch marker {
+	case "P02_BUSY_HOLD":
+		return providerTurn{kind: "hold", name: "p02-busy", text: "P02_BUSY_HOLD_DONE"}, true, nil
 	case "RECEIPT_WIDGET":
 		return providerTurn{kind: "hold", name: "root-receipt"}, true, nil
 	case "CHAIN_WIDGET":

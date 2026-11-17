@@ -342,6 +342,19 @@ func (media *collaborationMedia) markStartupReady(readyNS int64) {
 	media.receipt.Screenshot.SourceTimestampMS = &stamp
 }
 
+func (media *collaborationMedia) markObservation() error {
+	now, err := collaborationMonotonicNow()
+	if err != nil {
+		return err
+	}
+	if now < media.receipt.RecordingNS {
+		return errors.New("terminal observation preceded media recording")
+	}
+	stamp := (now-media.receipt.RecordingNS)/int64(time.Millisecond) + 50
+	media.receipt.Screenshot.SourceTimestampMS = &stamp
+	return nil
+}
+
 func withoutEnvironment(env []string, key string) []string {
 	result := make([]string, 0, len(env))
 	for _, entry := range env {
