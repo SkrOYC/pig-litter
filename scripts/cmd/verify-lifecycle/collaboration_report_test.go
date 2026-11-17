@@ -531,3 +531,25 @@ func TestCollaborationResearchConflictRequiresSameArchitecture(t *testing.T) {
 		t.Fatalf("different architectures were treated as conflicting: %#v", row)
 	}
 }
+
+func TestCollaborationPlannedVerificationCannotComplete(t *testing.T) {
+	catalog, evidence, registry := collaborationTestReport(t)
+	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
+	evidence.Attempts = append(evidence.Attempts, collaborationValidatedAttempt{
+		Attempt:       collaborationAttempt{ID: "planned-verification", Purpose: "verification", Scenario: "fixture-interrupt", Channel: "live", Platform: "linux", Outcome: "passed"},
+		ArtifactKinds: kinds, ResultsPassed: true,
+	})
+	report, err := collaborationReportForTest(t, catalog, evidence, registry)
+	if err != nil || len(report.Verification) != 1 || report.Verification[0].Complete || report.Parity {
+		t.Fatalf("planned verification = %#v, %v", report.Verification, err)
+	}
+	for index := range catalog.Scenarios {
+		if catalog.Scenarios[index].ID == "fixture-interrupt" {
+			catalog.Scenarios[index].Status = "implemented"
+		}
+	}
+	report, err = collaborationReportForTest(t, catalog, evidence, registry)
+	if err != nil || !report.Verification[0].Complete || report.Parity {
+		t.Fatalf("implemented verification = %#v, %v", report.Verification, err)
+	}
+}
