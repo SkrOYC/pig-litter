@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, renameSync, copyFileSync, cpSync } from 'node:fs';
+import { closeSync, constants, cpSync, copyFileSync, existsSync, fchmodSync, fstatSync, lstatSync, mkdtempSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -91,6 +91,7 @@ function json(file) { return JSON.parse(readFileSync(file, 'utf8')); }
 function sha256(file) { return createHash('sha256').update(readFileSync(file)).digest('hex'); }
 function hashBytes(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
 function mkdir(dir) { mkdirSync(dir, { recursive: true, mode: 0o700 }); }
+function extensionPath(evidence, side) { return path.join(evidence, 'binaries', `${side}-extension`, 'pig-litter'); }
 function createPrivate(parent, prefix) {
   const directory = mkdtempSync(path.join(parent, prefix));
   const stat = statSync(directory);
@@ -98,9 +99,45 @@ function createPrivate(parent, prefix) {
 }
 function removePrivate(owned) {
   if (!owned) return;
-  const stat = statSync(owned.path);
-  if (stat.dev !== owned.dev || stat.ino !== owned.ino || realpathSync(owned.path) !== owned.path) throw new Error(`refusing to remove replaced scratch directory ${owned.path}`);
-  rmSync(owned.path, { recursive: true });
+  function removeDirectory(directory, expected) {
+    const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const current = fstatSync(fd);
+      if (current.dev !== expected.dev || current.ino !== expected.ino || current.dev !== owned.dev || current.uid !== process.getuid()) throw new Error(`refusing to remove replaced, unowned, or mounted directory ${directory}`);
+      fchmodSync(fd, (current.mode & 0o777) | 0o700);
+      const anchor = `/proc/self/fd/${fd}`;
+      for (const name of readdirSync(anchor)) {
+        const entry = path.join(anchor, name);
+        const stat = lstatSync(entry);
+        if (stat.isDirectory()) removeDirectory(entry, stat);
+        else unlinkSync(entry);
+      }
+      const remaining = lstatSync(directory);
+      if (!remaining.isDirectory() || remaining.dev !== current.dev || remaining.ino !== current.ino) throw new Error(`refusing to remove replaced directory ${directory}`);
+      rmdirSync(directory);
+    } finally {
+      closeSync(fd);
+    }
+  }
+  removeDirectory(owned.path, owned);
+}
+
+export function finalizeEvidence(outcome, { evidence, runtime, scratch, retained }) {
+  const failures = [];
+  let evidenceRetained = retained;
+  if (runtime && !retained) {
+    try { cpSync(runtime.path, path.join(evidence, 'samples'), { recursive: true, force: true }); evidenceRetained = true; }
+    catch (error) { failures.push(`evidence retention failed: ${error.message}; runtime retained at ${runtime.path}`); }
+  }
+  if (evidenceRetained) {
+    try { removePrivate(runtime); }
+    catch (error) { failures.push(`runtime cleanup failed at ${runtime.path}: ${error.message}`); }
+  }
+  try { removePrivate(scratch); }
+  catch (error) { failures.push(`scratch cleanup failed at ${scratch.path}: ${error.message}`); }
+  if (failures.length === 0) return outcome;
+  const primary = outcome.status === 'incomplete' ? outcome.reason : undefined;
+  return { status: 'incomplete', reason: [primary, ...failures].filter(Boolean).join('; '), ...(primary ? { primary_error: primary } : {}), finalization_errors: failures };
 }
 
 let activeChild;
@@ -182,7 +219,8 @@ async function prepareSide(side, cwd, scratch, evidence, buildDriver) {
   const elf = readFileSync(pig).subarray(0, 20);
   if (elf.length < 20 || !elf.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) || elf[4] !== 2 || elf[5] !== 1 || elf.readUInt16LE(18) !== 62) throw new Error(`${side} PiG is not native x86-64 ELF`);
   const prep = path.join(sideScratch, 'prepare.sh');
-  const extension = path.join(binaries, `${side}-pig-litter`);
+  const extension = extensionPath(evidence, side);
+  mkdir(path.dirname(extension));
   const driver = path.join(binaries, 'verify-lifecycle');
   writeFileSync(prep, `set -eu\ncd "$1"\ncommand -v go > "$2/go-path"\ncommand -v bash > "$2/bash-path"\ncommand -v pig > "$2/pig-path"\ngo version > "$2/go-version"\ngo env -json GOVERSION GOHOSTOS GOHOSTARCH GOOS GOARCH CGO_ENABLED GOTOOLCHAIN GOROOT > "$2/go-env.json"\ngo -C scripts mod download\ngo -C extensions/pig-litter mod download\nGOPROXY=off go -C scripts build -mod=readonly -o "$3" ./cmd/pig-litter\nif [ "$5" = yes ]; then\n  GOPROXY=off go -C scripts test -mod=readonly ./cmd/verify-lifecycle -run 'TestPerformance|TestResident' -count=1\n  GOPROXY=off go -C scripts build -mod=readonly -o "$4" ./cmd/verify-lifecycle\nfi\ngo version -m "$3" > "$2/build-info"\n`, { mode: 0o700 });
   const env = setupEnvironment(sideScratch);
@@ -267,7 +305,7 @@ export function summarize(evidence) {
     const provenance = json(path.join(evidence, 'provenance.json'));
     if (plan.baseline !== baselineSHA || !validSHA(plan.candidate) || !same(plan.schedule, schedule()) || plan.candidate !== provenance.candidate.source.sha) throw new Error('invalid plan or source identity');
     for (const side of ['baseline', 'candidate']) {
-      if (sha256(path.join(evidence, 'binaries', `${side}-pig-bin`, 'pig')) !== provenance[side].pig_sha256 || sha256(path.join(evidence, 'binaries', `${side}-pig-litter`)) !== provenance[side].extension_sha256) throw new Error(`${side} retained binary identity changed`);
+      if (sha256(path.join(evidence, 'binaries', `${side}-pig-bin`, 'pig')) !== provenance[side].pig_sha256 || sha256(extensionPath(evidence, side)) !== provenance[side].extension_sha256) throw new Error(`${side} retained binary identity changed`);
     }
     if (sha256(path.join(evidence, 'binaries', 'verify-lifecycle')) !== provenance.driver.sha256) throw new Error('retained driver identity changed');
     const identities = identitiesFor(provenance);
@@ -345,13 +383,13 @@ async function runComparison(candidate, evidence) {
   } catch (error) {
     outcome = { status: 'incomplete', reason: error.message };
   } finally {
-    try {
-      if (runtime && !retained) cpSync(runtime.path, path.join(evidence, 'samples'), { recursive: true, force: true });
-      removePrivate(runtime);
-      removePrivate(scratch);
-    } catch (error) { outcome = { status: 'incomplete', reason: `evidence retention or cleanup failed: ${error.message}` }; }
+    outcome = finalizeEvidence(outcome, { evidence, runtime, scratch, retained });
     await new Promise(resolve => setImmediate(resolve));
-    if (interrupted) outcome = { status: 'incomplete', reason: 'comparison interrupted' };
+    if (interrupted && outcome.reason !== 'comparison interrupted') {
+      outcome = outcome.status === 'incomplete'
+        ? { ...outcome, reason: [outcome.reason, 'comparison interrupted'].filter(Boolean).join('; ') }
+        : { status: 'incomplete', reason: 'comparison interrupted' };
+    }
     atomicJSON(path.join(evidence, 'summary.json'), outcome);
     atomicJSON(path.join(evidence, 'state.json'), { status: outcome.status, reason: outcome.reason ?? null });
   }

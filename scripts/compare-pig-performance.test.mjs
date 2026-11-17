@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { onTestFinished, test } from 'bun:test';
 import { fileURLToPath } from 'node:url';
-import { evaluate, percentile, runnerIdentity, schedule, summarize } from './compare-pig-performance.mjs';
+import { evaluate, finalizeEvidence, percentile, runnerIdentity, schedule, summarize } from './compare-pig-performance.mjs';
 
 const identities = {
   driver: 'a'.repeat(64), bash: 'b'.repeat(64),
@@ -122,16 +122,79 @@ test('bare invocation and malformed run arguments do not start a comparison', ()
   }
 });
 
+test('cleanup removes read-only module directories without following links outside scratch', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'pigperf-cleanup-'));
+  const scratch = path.join(dir, 'scratch');
+  const outside = path.join(dir, 'outside');
+  mkdirSync(path.join(scratch, 'go-mod', 'module'), { recursive: true });
+  mkdirSync(outside);
+  writeFileSync(path.join(scratch, 'go-mod', 'module', 'source.go'), 'package fixture\n');
+  writeFileSync(path.join(outside, 'keep.txt'), 'outside data\n');
+  symlinkSync(outside, path.join(scratch, 'outside-link'));
+  chmodSync(path.join(scratch, 'go-mod', 'module'), 0o555);
+  chmodSync(path.join(scratch, 'go-mod'), 0o555);
+  chmodSync(outside, 0o555);
+  onTestFinished(() => { chmodSync(outside, 0o700); rmSync(dir, { recursive: true, force: true }); });
+  const stat = statSync(scratch);
+  const outcome = finalizeEvidence({ status: 'passed' }, { scratch: { path: realpathSync(scratch), dev: stat.dev, ino: stat.ino }, retained: true });
+  assert.equal(outcome.status, 'passed');
+  assert.equal(existsSync(scratch), false);
+  assert.equal(readFileSync(path.join(outside, 'keep.txt'), 'utf8'), 'outside data\n');
+  assert.equal(statSync(outside).mode & 0o777, 0o555);
+});
+
+test('a replaced scratch directory preserves both failures and leaves the target untouched', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'pigperf-replaced-'));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  const scratch = path.join(dir, 'scratch');
+  const outside = path.join(dir, 'outside');
+  mkdirSync(scratch);
+  mkdirSync(outside);
+  writeFileSync(path.join(outside, 'keep.txt'), 'outside data\n');
+  const stat = statSync(scratch);
+  const owned = { path: realpathSync(scratch), dev: stat.dev, ino: stat.ino };
+  renameSync(scratch, path.join(dir, 'original-scratch'));
+  symlinkSync(outside, scratch);
+  const result = finalizeEvidence({ status: 'incomplete', reason: 'first baseline fixture failed' }, { scratch: owned, retained: true });
+  assert.equal(result.status, 'incomplete');
+  assert.equal(result.primary_error, 'first baseline fixture failed');
+  assert.match(result.reason, /first baseline fixture failed/);
+  assert.match(result.reason, /scratch cleanup failed/);
+  assert.equal(result.finalization_errors.length, 1);
+  assert.equal(readFileSync(path.join(outside, 'keep.txt'), 'utf8'), 'outside data\n');
+  assert.equal(existsSync(path.join(dir, 'original-scratch')), true);
+});
+
+test('failed evidence retention preserves runtime files and still removes owned build scratch', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'pigperf-retention-'));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  const runtime = path.join(dir, 'runtime');
+  const scratch = path.join(dir, 'scratch');
+  const evidence = path.join(dir, 'not-a-directory');
+  mkdirSync(runtime);
+  mkdirSync(scratch);
+  writeFileSync(path.join(runtime, 'failure.txt'), 'fixture failed\n');
+  writeFileSync(evidence, 'occupied');
+  const identity = value => { const stat = statSync(value); return { path: realpathSync(value), dev: stat.dev, ino: stat.ino }; };
+  const result = finalizeEvidence({ status: 'incomplete', reason: 'first baseline fixture failed' }, { runtime: identity(runtime), scratch: identity(scratch), evidence, retained: false });
+  assert.equal(result.primary_error, 'first baseline fixture failed');
+  assert.match(result.reason, /evidence retention failed/);
+  assert.match(result.reason, /runtime retained at/);
+  assert.equal(readFileSync(path.join(runtime, 'failure.txt'), 'utf8'), 'fixture failed\n');
+  assert.equal(existsSync(scratch), false);
+});
+
 test('summarization recomputes a complete artifact and detects a changed retained binary', async () => {
   const { createHash } = await import('node:crypto');
-  const { mkdirSync } = await import('node:fs');
   const dir = mkdtempSync(path.join(os.tmpdir(), 'pigperf-summary-'));
   onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   const binaries = path.join(dir, 'binaries');
   mkdirSync(path.join(binaries, 'baseline-pig-bin'), { recursive: true });
   mkdirSync(path.join(binaries, 'candidate-pig-bin'), { recursive: true });
+  mkdirSync(path.join(binaries, 'baseline-extension'), { recursive: true });
+  mkdirSync(path.join(binaries, 'candidate-extension'), { recursive: true });
   const fileHash = file => createHash('sha256').update(readFileSync(file)).digest('hex');
-  const paths = ['baseline-pig-bin/pig', 'baseline-pig-litter', 'candidate-pig-bin/pig', 'candidate-pig-litter', 'verify-lifecycle'];
+  const paths = ['baseline-pig-bin/pig', 'baseline-extension/pig-litter', 'candidate-pig-bin/pig', 'candidate-extension/pig-litter', 'verify-lifecycle'];
   for (const file of paths) writeFileSync(path.join(binaries, file), file);
   const actual = {
     driver: fileHash(path.join(binaries, 'verify-lifecycle')), bash: 'b'.repeat(64),
@@ -186,6 +249,6 @@ test('summarization recomputes a complete artifact and detects a changed retaine
   writeJSON(traceFile, corrupted);
   assert.equal(summarize(dir).status, 'incomplete');
   writeFileSync(traceFile, originalTrace);
-  writeFileSync(path.join(binaries, 'candidate-pig-litter'), 'different');
+  writeFileSync(path.join(binaries, 'candidate-extension', 'pig-litter'), 'different');
   assert.equal(summarize(dir).status, 'incomplete');
 });
