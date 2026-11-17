@@ -281,6 +281,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 1 && os.Getenv("P02_TUI_MESSAGE_EXTENSION") == "1" {
+		if err := runCollaborationTUIMessageExtension(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	options, err := parseOptions(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -300,7 +307,7 @@ func parseOptions(args []string) (options, error) {
 	var result options
 	flags := flag.NewFlagSet("go-tui-proof", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	flags.StringVar(&result.scenario, "scenario", "all", "all, receipt-control, or chain")
+	flags.StringVar(&result.scenario, "scenario", "all", "all, receipt-control, chain, host-idle-message, or host-busy-message")
 	caseValue := flags.String("case", "", "direct, source, piglet, or unselected")
 	flags.StringVar(&result.pigPath, "pig", "", "absolute path to the released PiG executable")
 	flags.StringVar(&result.extension, "extension", "", "absolute path to the prebuilt pig-litter executable")
@@ -320,12 +327,15 @@ func parseOptions(args []string) (options, error) {
 	if flags.NArg() != 0 {
 		return options{}, errors.New("positional arguments are not supported")
 	}
-	if result.scenario != "all" && result.scenario != "receipt-control" && result.scenario != "chain" {
-		return options{}, errors.New("use --scenario all|receipt-control|chain")
+	if result.scenario != "all" && result.scenario != "receipt-control" && result.scenario != "chain" && result.scenario != "host-idle-message" && result.scenario != "host-busy-message" {
+		return options{}, errors.New("unknown terminal scenario")
 	}
 	result.caseName = runCase(*caseValue)
 	if result.caseName != caseDirect && result.caseName != caseSource && result.caseName != casePiglet && result.caseName != caseUnselected {
 		return options{}, errors.New("use --case direct|source|piglet|unselected")
+	}
+	if (result.scenario == "host-idle-message" || result.scenario == "host-busy-message") && (result.caseName != caseDirect || !result.media) {
+		return options{}, errors.New("host message scenarios require the direct case and live media")
 	}
 	if result.caseName == caseSource {
 		if !filepath.IsAbs(result.source) {
@@ -490,6 +500,15 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		return evidencePath, errors.New("tmux must be available on the host PATH")
 	}
 	childEnv := fixtureEnvironment(options.pigPath, tmuxPath, home, pigHome, agentDir, scratch)
+	var messageProbe *collaborationTUIMessageProbe
+	if options.scenario == "host-idle-message" || options.scenario == "host-busy-message" {
+		messageDirectory := filepath.Join(evidencePath, "message-probe")
+		if err := os.Mkdir(messageDirectory, 0o700); err != nil {
+			return evidencePath, err
+		}
+		messageProbe = &collaborationTUIMessageProbe{mode: options.scenario, token: rand.Text(), socket: filepath.Join(scratch, "message.sock"), directory: messageDirectory, sessions: rootSessions, phases: []collaborationTUIMessagePhase{}}
+		childEnv = append(childEnv, "P02_TUI_MESSAGE_EXTENSION=1", "P02_TUI_MESSAGE_TOKEN="+messageProbe.token, "P02_TUI_MESSAGE_SOCKET="+messageProbe.socket, "P02_TUI_MESSAGE_DIRECTORY="+messageDirectory)
+	}
 	idleCommand, idleDirectory := "", ""
 	if options.caseName != caseUnselected {
 		idleCommand = "fixture-idle-" + strings.ToLower(rand.Text())
@@ -769,6 +788,13 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		if capture != nil {
 			addFailure(capture.close(cleanupCtx))
 		}
+		if messageProbe != nil {
+			var process observedProcess
+			if report.Startup != nil {
+				process = report.Startup.Process
+			}
+			addFailure(messageProbe.save(process, runErr))
+		}
 		addFailure(checkRawPTY(filepath.Join(evidencePath, "pty.raw")))
 		if runErr == nil && options.caseName != caseUnselected && options.scenario == "all" {
 			raw, err := os.ReadFile(filepath.Join(evidencePath, "pty.raw"))
@@ -848,6 +874,12 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		}
 		report.Media = "media/receipt.json"
 	}
+	if messageProbe != nil {
+		messageProbe.executable, err = collaborationStageTUIMessageExtension(scratch, verifierPath, report.VerifierSHA256)
+		if err != nil {
+			return evidencePath, err
+		}
+	}
 	if err := makeFixtureFiles(workspace, home, pigHome, agentDir, provider.port); err != nil {
 		return evidencePath, err
 	}
@@ -886,6 +918,9 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		args = append([]string{"--piglet", manifestDestination, "-e", options.idleObserver}, args...)
 	case caseUnselected:
 		args = append([]string{"--no-extensions"}, args...)
+	}
+	if messageProbe != nil {
+		args = append(args, "-e", messageProbe.executable)
 	}
 	if panel != nil {
 		panel.restartHost = func(path string) error {
@@ -1001,11 +1036,39 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	if _, err := frame("startup-100"); err != nil {
 		return evidencePath, err
 	}
+	if messageProbe != nil {
+		descendants, err := observeDescendants(report.Startup.Process.PID)
+		if err != nil {
+			return evidencePath, err
+		}
+		if _, err := observeOwned(); err != nil {
+			return evidencePath, err
+		}
+		if err := messageProbe.connect(ctx, report.Startup.Process, descendants); err != nil {
+			return evidencePath, err
+		}
+		if options.scenario == "host-idle-message" {
+			phase, err := messageProbe.observe(ctx, "fresh-idle", "send", "P02_FRESH", state.totalRequests)
+			if err != nil || !phase.Response.Before.Idle || !phase.Response.After.Idle || phase.Response.Before.MemoryCopies != 0 || phase.Response.After.MemoryCopies != 1 || phase.ProviderBefore != 0 || phase.ProviderAfter != 0 {
+				return evidencePath, fmt.Errorf("fresh idle message observation: %#v, %v", phase, err)
+			}
+		}
+	}
 
 	if panel != nil {
 		if err := panel.coldRootProof(); err != nil {
 			return evidencePath, err
 		}
+	}
+	if messageProbe != nil {
+		if err := runCollaborationTUIMessageScenario(ctx, messageProbe, panel, state, sendText, sendKey, readVisible, frame, media); err != nil {
+			return evidencePath, err
+		}
+		if err := exitHost(); err != nil {
+			return evidencePath, err
+		}
+		paneExited = true
+		return evidencePath, nil
 	}
 	if options.caseName == caseUnselected {
 		if err := sendText("UNSELECTED_WIDGET"); err != nil {
@@ -2106,7 +2169,7 @@ func latestRootPrompt(messages []openAIMessage) (marker struct{ marker, text str
 		lines := strings.Split(strings.ReplaceAll(contentText(messages[index].Content), "\r\n", "\n"), "\n")
 		for lineIndex := len(lines) - 1; lineIndex >= 0; lineIndex-- {
 			line := strings.TrimSpace(lines[lineIndex])
-			if line == "START_WIDGET" || line == "UNSELECTED_WIDGET" || line == "QUICK_WIDGET" || line == "RECEIPT_WIDGET" || line == "CHAIN_WIDGET" || line == "ROOT_NOTICE_FIRST" || line == "ROOT_NOTICE_SECOND" || line == "ROOT_RESTART_FIRST" || line == "ROOT_RESTART_SECOND" || line == "ROOT_RESTART_THIRD" || line == "NEW_ROOT_HEADER" || line == "COLD_ROOT_HEADER" {
+			if line == "START_WIDGET" || line == "UNSELECTED_WIDGET" || line == "QUICK_WIDGET" || line == "RECEIPT_WIDGET" || line == "P02_BUSY_HOLD" || line == "CHAIN_WIDGET" || line == "ROOT_NOTICE_FIRST" || line == "ROOT_NOTICE_SECOND" || line == "ROOT_RESTART_FIRST" || line == "ROOT_RESTART_SECOND" || line == "ROOT_RESTART_THIRD" || line == "NEW_ROOT_HEADER" || line == "COLD_ROOT_HEADER" {
 				return struct{ marker, text string }{marker: line, text: line}
 			}
 			if strings.HasPrefix(line, "STOP_WIDGET ") {

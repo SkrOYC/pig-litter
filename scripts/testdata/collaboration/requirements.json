@@ -2242,13 +2242,13 @@
     {
       "id": "host-busy-message",
       "owner": "P02",
-      "status": "planned",
-      "expected": "Record busy custom-message delivery, provider requests, transcript storage, acknowledgement, crash recovery, and same-ID replay."
+      "status": "implemented",
+      "expected": "Record busy custom-message delivery, provider requests, and native transcript storage in the captured session. Separate scenarios cover acknowledgement, crash recovery, and same-ID replay."
     },
     {
       "id": "host-idle-message",
       "owner": "P02",
-      "status": "planned",
+      "status": "implemented",
       "expected": "Record idle custom-message delivery and distinguish transcript storage from inference and acknowledgement."
     },
     {
