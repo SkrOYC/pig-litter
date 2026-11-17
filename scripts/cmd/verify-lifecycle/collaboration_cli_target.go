@@ -37,6 +37,9 @@ func (runner *collaborationCLIRunner) verifyTarget(ctx context.Context, name str
 	if commit != target.Identity.ProductCommit {
 		return errors.New("checkout HEAD does not match product commit")
 	}
+	if err := runner.verifyTargetBranch(ctx, name, git, target); err != nil {
+		return err
+	}
 	clean := func(step string) error {
 		status, err := readOutput(step, []string{git, "status", "--porcelain", "--untracked-files=all"})
 		if err != nil {
@@ -88,4 +91,42 @@ func (runner *collaborationCLIRunner) verifyTarget(ctx context.Context, name str
 		return err
 	}
 	return collaborationCLICheckTarget(target)
+}
+
+func (runner *collaborationCLIRunner) verifyTargetBranch(ctx context.Context, name, git string, target collaborationCLITarget) error {
+	branchDir, err := runner.executeAt(ctx, name+"-branch-name", []string{git, "check-ref-format", "--branch", target.Identity.Branch}, target.Checkout)
+	if err != nil {
+		return fmt.Errorf("invalid target branch: %w", err)
+	}
+	branch, err := os.ReadFile(filepath.Join(branchDir, "stdout.log"))
+	if err != nil || strings.TrimSpace(string(branch)) != target.Identity.Branch {
+		return errors.New("target branch name did not resolve exactly")
+	}
+	local := "refs/heads/" + target.Identity.Branch
+	remote := "refs/remotes/origin/" + target.Identity.Branch
+	directory, err := runner.executeAt(ctx, name+"-branch-membership", []string{git, "for-each-ref", "--contains", target.Identity.ProductCommit, "--format=%(refname) %(objectname)", local, remote}, target.Checkout)
+	if err != nil {
+		return fmt.Errorf("check target branch membership: %w", err)
+	}
+	data, err := os.ReadFile(filepath.Join(directory, "stdout.log"))
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && (fields[0] == local || fields[0] == remote) && collaborationCommit.MatchString(fields[1]) {
+			path := filepath.Join(runner.directory, name+"-branch-identity.json")
+			receipt := map[string]string{"branch": target.Identity.Branch, "target_commit": target.Identity.ProductCommit, "ref": fields[0], "ref_commit": fields[1]}
+			if err := collaborationCLIWriteNew(path, receipt); err != nil {
+				return err
+			}
+			artifact, err := runner.artifact(path, "log")
+			if err != nil {
+				return err
+			}
+			runner.artifacts = append(runner.artifacts, artifact)
+			return nil
+		}
+	}
+	return errors.New("target commit is not contained by the declared branch")
 }
