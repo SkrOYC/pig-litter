@@ -290,8 +290,9 @@ func (runner *collaborationCLIRunner) executeAt(ctx context.Context, name string
 		"XDG_CONFIG_HOME=" + filepath.Join(directory, "config"), "XDG_CACHE_HOME=" + filepath.Join(directory, "cache"),
 		"XDG_STATE_HOME=" + filepath.Join(directory, "state"), "XDG_DATA_HOME=" + filepath.Join(directory, "data"),
 		"XDG_RUNTIME_DIR=" + filepath.Join(directory, "runtime"), "PIG_OFFLINE=1", "PI_OFFLINE=1", "PIG_USE_PI_DIRS=0", "PI_TELEMETRY=0",
+		"GOENV=off", "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local", "GOTELEMETRY=off",
 	}
-	for _, name := range []string{"GOCACHE", "GOMODCACHE", "GOPATH", "GOTMPDIR", "GOENV", "GOTELEMETRY"} {
+	for _, name := range []string{"GOCACHE", "GOMODCACHE", "GOPATH", "GOTMPDIR"} {
 		if value := os.Getenv(name); value != "" {
 			cmd.Env = append(cmd.Env, name+"="+value)
 		}

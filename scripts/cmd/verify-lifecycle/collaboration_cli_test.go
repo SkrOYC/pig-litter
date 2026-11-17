@@ -151,12 +151,12 @@ func TestCollaborationWrapperRetainsBuildFailure(t *testing.T) {
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "go"), []byte("#!/bin/sh\nprintf 'compiler unavailable\\n' >&2\nexit 7\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "go"), []byte("#!/bin/sh\nif [ -n \"$GOFLAGS\" ] || [ \"$GOWORK\" != off ] || [ \"$GOTOOLCHAIN\" != local ]; then printf 'inherited Go configuration\\n' >&2; exit 9; fi\nprintf 'compiler unavailable\\n' >&2\nexit 7\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	evidence := filepath.Join(root, "evidence with spaces")
 	command := exec.Command("bash", filepath.Join(repo, "scripts", "verify-collaboration.sh"), "--scenario", "baseline", "--evidence-root", evidence)
-	command.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	command.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "GOFLAGS=-tags=unwanted", "GOWORK=/tmp/unwanted-workspace", "GOTOOLCHAIN=auto")
 	output, err := command.CombinedOutput()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 7 || !strings.Contains(string(output), "compiler unavailable") {

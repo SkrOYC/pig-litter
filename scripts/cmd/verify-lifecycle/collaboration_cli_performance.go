@@ -208,7 +208,7 @@ func (runner *collaborationCLIRunner) buildTerminal(ctx context.Context, candida
 	}
 	root := filepath.Join(runner.directory, "terminal-build")
 	binaries := map[string]string{"verify-tui": filepath.Join(root, "verify-tui"), "tui-idle-observer": filepath.Join(root, "tui-idle-observer")}
-	script := "set -eu\ngo -C scripts build -p 2 -mod=readonly -buildvcs=false -o \"$1\" ./cmd/verify-tui\ngo -C scripts build -p 2 -mod=readonly -buildvcs=false -o \"$2\" ./cmd/tui-idle-observer"
+	script := "set -eu\ngo -C scripts build -p 2 -mod=readonly -buildvcs=false -trimpath -o \"$1\" ./cmd/verify-tui\ngo -C scripts build -p 2 -mod=readonly -buildvcs=false -trimpath -o \"$2\" ./cmd/tui-idle-observer"
 	command := []string{devenv, "shell", "--", "bash", "-c", script, "collaboration-terminal-build", binaries["verify-tui"], binaries["tui-idle-observer"]}
 	if _, err := runner.executeAt(ctx, "terminal-build", command, candidate.Checkout); err != nil {
 		return nil, "", "", fmt.Errorf("build terminal driver: %w", err)

@@ -21,7 +21,7 @@ mkdir -m 700 "$bootstrap/home" "$bootstrap/cache" "$bootstrap/modules" "$bootstr
 jq -n --args '$ARGS.positional' -- "$@" > "$bootstrap/arguments.json"
 export HOME="$bootstrap/home" TMPDIR="$bootstrap/tmp" GOTMPDIR="$bootstrap/gotmp"
 export GOCACHE="$bootstrap/cache" GOMODCACHE="$bootstrap/modules" GOPATH="$bootstrap/gopath"
-export GOENV=off GOTELEMETRY=off XDG_CONFIG_HOME="$bootstrap/config" XDG_CACHE_HOME="$bootstrap/cache"
+export GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOTELEMETRY=off XDG_CONFIG_HOME="$bootstrap/config" XDG_CACHE_HOME="$bootstrap/cache"
 export XDG_DATA_HOME="$bootstrap/data" XDG_STATE_HOME="$bootstrap/state" XDG_RUNTIME_DIR="$bootstrap/runtime"
 child=
 child_start=
@@ -52,7 +52,7 @@ on_signal() {
 }
 trap on_signal INT TERM
 
-build=(go -C "$root/scripts" build -mod=readonly -modcacherw -o "$bootstrap/verify-lifecycle" ./cmd/verify-lifecycle)
+build=(go -C "$root/scripts" build -mod=readonly -modcacherw -buildvcs=false -trimpath -o "$bootstrap/verify-lifecycle" ./cmd/verify-lifecycle)
 if command -v setsid >/dev/null 2>&1; then
   build=(setsid "${build[@]}")
   child_group=true

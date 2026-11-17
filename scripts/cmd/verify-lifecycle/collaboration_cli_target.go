@@ -55,7 +55,7 @@ func (runner *collaborationCLIRunner) verifyTarget(ctx context.Context, name str
 	}
 	buildName := name + "-rebuild"
 	output := filepath.Join(runner.directory, buildName, "pig-litter")
-	script := "set -eu\ncommand -v pig\ngo version\ngo -C scripts build -p 2 -mod=readonly -buildvcs=false -o \"$1\" ./cmd/pig-litter"
+	script := "set -eu\ncommand -v pig\ngo version\ngo -C scripts build -p 2 -mod=readonly -buildvcs=false -trimpath -o \"$1\" ./cmd/pig-litter"
 	buildOutput, err := readOutput("rebuild", []string{devenv, "shell", "--", "bash", "-c", script, "collaboration-build", output})
 	if err != nil {
 		return fmt.Errorf("resolve and rebuild target in its declared environment: %w", err)

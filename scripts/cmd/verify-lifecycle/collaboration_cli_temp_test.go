@@ -41,6 +41,9 @@ func TestCollaborationCLIShortTempSupportsUnixSocketsAndRetainsFiles(t *testing.
 }
 
 func TestCollaborationCLIDriverUsesAndRemovesShortTemp(t *testing.T) {
+	t.Setenv("GOFLAGS", "-tags=unwanted")
+	t.Setenv("GOWORK", "/tmp/unwanted-workspace")
+	t.Setenv("GOTOOLCHAIN", "auto")
 	root := t.TempDir()
 	events, err := os.Create(filepath.Join(root, "events.jsonl"))
 	if err != nil {
@@ -48,7 +51,7 @@ func TestCollaborationCLIDriverUsesAndRemovesShortTemp(t *testing.T) {
 	}
 	defer events.Close()
 	runner := collaborationCLIRunner{directory: root, started: time.Now(), eventFile: events}
-	directory, err := runner.execute(context.Background(), "driver", []string{"/bin/sh", "-c", `printf '%s' "$TMPDIR"`})
+	directory, err := runner.execute(context.Background(), "driver", []string{"/bin/sh", "-c", `printf '%s|%s|%s|%s' "$TMPDIR" "$GOFLAGS" "$GOWORK" "$GOTOOLCHAIN"`})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +60,7 @@ func TestCollaborationCLIDriverUsesAndRemovesShortTemp(t *testing.T) {
 		t.Fatalf("driver result = %q, %#v, %v", data, runner.drivers, err)
 	}
 	driver := runner.drivers[0]
-	if string(data) != driver.TemporaryDirectory || !driver.TemporaryDirectoryRemoved || len(driver.TemporaryDirectory) > 60 {
+	if string(data) != driver.TemporaryDirectory+"||off|local" || !driver.TemporaryDirectoryRemoved || len(driver.TemporaryDirectory) > 60 {
 		t.Fatalf("temporary directory receipt = %#v, output = %q", driver, data)
 	}
 	if _, err := os.Lstat(driver.TemporaryDirectory); !os.IsNotExist(err) {
