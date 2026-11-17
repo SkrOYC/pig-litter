@@ -556,13 +556,6 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = bindErr.Error()
 		return
 	}
-	active := session.ActiveToolNames()
-	for _, name := range append([]string{"codemode", "tool_search"}, controlNames...) {
-		if _, exists := allowed[name]; exists {
-			active = append(active, name)
-		}
-	}
-	session.SetActiveToolsByName(active)
 	o.tree.mu.Lock()
 	r.activeLog = session.SessionManager()
 	o.tree.mu.Unlock()
