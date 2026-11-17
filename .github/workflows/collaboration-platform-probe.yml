@@ -30,6 +30,9 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.candidate_ref || github.sha }}
 
+      - name: Check first-launch matcher
+        run: bash scripts/probe-macos-collaboration.sh --test-first-launch-matcher
+
       - name: Run the probe
         timeout-minutes: 16
         env:
@@ -51,7 +54,7 @@ jobs:
         if: always() && steps.upload_evidence.outcome == 'failure'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: collaboration-platform-${{ matrix.runner }}
+          name: collaboration-platform-${{ matrix.runner }}-retry
           path: ${{ runner.temp }}/collaboration-platform-probe/
           if-no-files-found: error
           retention-days: 14

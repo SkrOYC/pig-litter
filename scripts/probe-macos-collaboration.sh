@@ -3,6 +3,67 @@ set -u
 
 artifact_dir="${RUNNER_TEMP:?}/collaboration-platform-probe"
 mkdir -p "$artifact_dir"
+cat >"$artifact_dir/first-launch.applescript" <<'APPLESCRIPT'
+on matchesFirstLaunch(processName, textFields, hasOpen)
+  if hasOpen is not true or (count of textFields) is 0 then return false
+  set headline to item 1 of textFields
+  if class of headline is not text then return false
+  considering case, diacriticals, hyphens, punctuation and white space
+    return (processName is "CoreServicesUIAgent") and (headline is "“iTerm” is an app downloaded from the Internet. Are you sure you want to open it?")
+  end considering
+end matchesFirstLaunch
+
+on run argv
+  set headline to "“iTerm” is an app downloaded from the Internet. Are you sure you want to open it?"
+  if (count of argv) is 1 and item 1 of argv is "self-test" then
+    if not (my matchesFirstLaunch("CoreServicesUIAgent", {headline, "Homebrew Cask downloaded this file."}, true)) then error "Exact prompt was rejected."
+    if my matchesFirstLaunch("CoreServicesUIAgent", {"“iTerm Helper” is an app downloaded from the Internet. Are you sure you want to open it?"}, true) then error "Helper app was accepted."
+    if my matchesFirstLaunch("CoreServicesUIAgent", {"“iTerm Helper” is an app downloaded from the Internet. Are you sure you want to open it?", headline}, true) then error "Secondary text was accepted as the headline."
+    if my matchesFirstLaunch("CoreServicesUIAgent", {"“iTerm2” is an app downloaded from the Internet. Are you sure you want to open it?"}, true) then error "Different app was accepted."
+    if my matchesFirstLaunch("CoreServicesUIAgent", {"“iterm” is an app downloaded from the Internet. Are you sure you want to open it?"}, true) then error "Wrong case was accepted."
+    if my matchesFirstLaunch("CoreServicesUIAgent", {"Prefix " & headline}, true) then error "Headline prefix was accepted."
+    if my matchesFirstLaunch("CoreServicesUIAgent", {headline & " suffix"}, true) then error "Headline suffix was accepted."
+    if my matchesFirstLaunch("CoreServicesUIAgent", {"“iTerm” is an app downloaded from the Internet.", "Are you sure you want to open it?"}, true) then error "Split headline was accepted."
+    if my matchesFirstLaunch("CoreServicesUIAgent", {"Verifying “iTerm”…"}, true) then error "Verification window was accepted."
+    if my matchesFirstLaunch("CoreServicesUIAgent", {}, true) then error "Empty fields were accepted."
+    if my matchesFirstLaunch("CoreServicesUIAgent", {missing value}, true) then error "Missing headline was accepted."
+    if my matchesFirstLaunch("CoreServicesUIAgent", {headline}, false) then error "Missing Open button was accepted."
+    if my matchesFirstLaunch("SecurityAgent", {headline}, true) then error "Wrong process was accepted."
+    return "First-launch matcher: 13 cases passed."
+  end if
+  if (count of argv) is not 2 or item 1 of argv is not "approve" then error "Expected self-test or approve with a screenshot path."
+  set screenshotPath to item 2 of argv
+  tell application "System Events"
+    repeat 80 times
+      if exists process "CoreServicesUIAgent" then
+        repeat with candidateWindow in (every window of process "CoreServicesUIAgent")
+          set dialogTexts to (get value of every static text of candidateWindow)
+          repeat with textItem in dialogTexts
+            set textValue to contents of textItem
+            if textValue is not missing value then log "First-launch field: [" & (textValue as text) & "]"
+          end repeat
+          set processName to (get name of process "CoreServicesUIAgent")
+          set hasOpen to (exists button "Open" of candidateWindow)
+          if my matchesFirstLaunch(processName, dialogTexts, hasOpen) then
+            set quotedPath to quoted form of screenshotPath
+            tell me to do shell script "/usr/sbin/screencapture -x " & quotedPath & " && test -s " & quotedPath
+            click button "Open" of candidateWindow
+            return "Opened the matching iTerm first-launch dialog."
+          end if
+        end repeat
+      end if
+      delay 1
+    end repeat
+  end tell
+  error "The matching iTerm first-launch dialog was not found."
+end run
+APPLESCRIPT
+if [ "${1:-}" = "--test-first-launch-matcher" ]; then
+  perl -e 'alarm shift; exec @ARGV' 30 osascript "$artifact_dir/first-launch.applescript" self-test >"$artifact_dir/first-launch-matcher-tests.txt" 2>&1
+  matcher_status=$?
+  cat "$artifact_dir/first-launch-matcher-tests.txt"
+  exit "$matcher_status"
+fi
 exec > >(tee -a "$artifact_dir/command.log") 2>&1
 set -x
 
@@ -72,36 +133,7 @@ else
         sleep 1
       done
       if kill -0 "$open_pid" 2>/dev/null; then
-        perl -e 'alarm shift; exec @ARGV' 100 osascript - "$artifact_dir/first-launch.png" >"$artifact_dir/first-launch.txt" 2>&1 <<'APPLESCRIPT'
-on run argv
-  set screenshotPath to item 1 of argv
-  tell application "System Events"
-    repeat 80 times
-      if exists process "CoreServicesUIAgent" then
-        repeat with candidateWindow in (every window of process "CoreServicesUIAgent")
-          set dialogText to (name of candidateWindow as text)
-          set dialogTexts to (get value of every static text of candidateWindow)
-          repeat with textItem in dialogTexts
-            set textValue to contents of textItem
-            if textValue is not missing value then
-              set dialogText to dialogText & " " & (textValue as text)
-            end if
-          end repeat
-          log dialogText
-          if dialogText contains "iTerm" and dialogText contains "downloaded" and dialogText contains "Internet" and (exists button "Open" of candidateWindow) then
-            set quotedPath to quoted form of screenshotPath
-            tell me to do shell script "/usr/sbin/screencapture -x " & quotedPath & " && test -s " & quotedPath
-            click button "Open" of candidateWindow
-            return "Opened the matching iTerm first-launch dialog."
-          end if
-        end repeat
-      end if
-      delay 1
-    end repeat
-  end tell
-  error "The matching iTerm first-launch dialog was not found."
-end run
-APPLESCRIPT
+        perl -e 'alarm shift; exec @ARGV' 100 osascript "$artifact_dir/first-launch.applescript" approve "$artifact_dir/first-launch.png" >"$artifact_dir/first-launch.txt" 2>&1
         gui_status=$?
         if [ "$gui_status" -eq 0 ]; then
           first_launch_status=approved
