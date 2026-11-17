@@ -187,7 +187,7 @@ func collaborationReduceReport(evidence collaborationEvidenceSet, registry colla
 			report.Research = append(report.Research, row)
 		case "verification":
 			row := collaborationVerificationRow{ID: attempt.Attempt.ID, Scenario: attempt.Attempt.Scenario, Channel: attempt.Attempt.Channel, Scope: scope, Outcome: attempt.Attempt.Outcome, Reason: attempt.Attempt.Reason}
-			row.Complete = attempt.Attempt.Outcome == "passed" && attempt.ResultsPassed && collaborationArtifactsComplete(attempt.Attempt.Channel, attempt.ArtifactKinds)
+			row.Complete = collaborationScenarioImplemented(catalog, attempt.Attempt.Scenario) && attempt.Attempt.Outcome == "passed" && attempt.ResultsPassed && collaborationArtifactsComplete(attempt.Attempt.Channel, attempt.ArtifactKinds)
 			if !row.Complete {
 				if row.Reason == "" {
 					row.Reason = "fixture result or required artifacts are incomplete"
