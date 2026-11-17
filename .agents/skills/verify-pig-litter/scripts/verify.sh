@@ -6,27 +6,38 @@ repo_root="$(cd "$script_dir/../../../.." && pwd -P)"
 mode="${1:-run}"
 
 doctor() {
-  for command_name in pig go tmux; do
+  for command_name in pig go tmux jq; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
       printf 'missing required command: %s\n' "$command_name" >&2
       return 1
     fi
   done
-  [[ "$(pig --version)" == '0.4.1+1.0.3' ]] || {
-    printf 'expected PiG 0.4.1+1.0.3\n' >&2; return 1;
-  }
-  [[ "$(go env GOVERSION)" == 'go1.27.1' ]] || {
-    printf 'expected Go 1.27.1\n' >&2; return 1;
-  }
-  [[ "$(tmux -V)" == 'tmux 3.7c' ]] || {
-    printf 'expected tmux 3.7c\n' >&2; return 1;
-  }
-  for path in extensions/pig-litter/adapter.go piglet.yaml scripts/verify-terminal-ui.sh; do
+  for path in scripts/go.mod extensions/pig-litter/adapter.go piglet.yaml scripts/verify-terminal-ui.sh; do
     [[ -f "$repo_root/$path" ]] || {
       printf 'required file is missing: %s\n' "$path" >&2; return 1;
     }
   done
-  printf 'PiG 0.4.1+1.0.3, Go 1.27.1, tmux 3.7c; background-session terminal fixture is available\n'
+  local module_json expected_pig expected_go actual_pig actual_go actual_tmux
+  module_json="$(go -C "$repo_root/scripts" mod edit -json)" || {
+    printf 'cannot read scripts/go.mod\n' >&2; return 1;
+  }
+  expected_pig="$(jq -er '.Require[]? | select(.Path == "github.com/MichaelKinsy/PiG") | .Version | select(startswith("v")) | .[1:] | select(length > 0)' <<< "$module_json")" || {
+    printf 'missing PiG root module requirement in scripts/go.mod\n' >&2; return 1;
+  }
+  expected_go="$(jq -er '.Toolchain | select(type == "string" and length > 0)' <<< "$module_json")" || {
+    printf 'missing toolchain directive in scripts/go.mod\n' >&2; return 1;
+  }
+  actual_pig="$(pig --version)" || return 1
+  [[ "${actual_pig%%+*}" == "$expected_pig" ]] || {
+    printf 'expected PiG %s from scripts/go.mod, got %s\n' "$expected_pig" "$actual_pig" >&2; return 1;
+  }
+  actual_go="$(go -C "$repo_root/scripts" env GOVERSION)" || return 1
+  [[ "$actual_go" == "$expected_go" ]] || {
+    printf 'expected Go %s from scripts/go.mod, got %s\n' "$expected_go" "$actual_go" >&2; return 1;
+  }
+  actual_tmux="$(tmux -V)" || return 1
+  [[ -n "$actual_tmux" ]] || { printf 'tmux -V returned no version\n' >&2; return 1; }
+  printf 'PiG %s, Go %s, %s; background-session terminal fixture is available\n' "$actual_pig" "$actual_go" "$actual_tmux"
 }
 
 case "$mode" in

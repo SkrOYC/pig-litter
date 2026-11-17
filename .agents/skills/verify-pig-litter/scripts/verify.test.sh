@@ -79,7 +79,7 @@ expect_failure() {
     exit 1
   fi
   [[ "$output" == *"$expected"* ]] || { printf 'expected failure containing %s, got: %s\n' "$expected" "$output" >&2; exit 1; }
-  printf 'pass: rejected %s\n' "$expected"
+  printf 'pass: rejected %s\n' "$output"
 }
 
 export TEST_PIG_VERSION='0.4.1+1.0.3' TEST_GO_VERSION='go1.27.1' TEST_TMUX_VERSION='tmux 3.7c'
@@ -100,3 +100,22 @@ expect_failure 'missing required command: tmux'
 mv "$test_root/tmux" "$bin/tmux"
 rm "$fixture/piglet.yaml"
 expect_failure 'required file is missing: piglet.yaml'
+touch "$fixture/piglet.yaml"
+rm "$fixture/scripts/go.mod"
+expect_failure 'required file is missing: scripts/go.mod'
+cat > "$fixture/scripts/go.mod" <<'MOD'
+module example.com/fixture
+
+go 1.26.0
+
+toolchain go1.27.4
+MOD
+expect_failure 'missing PiG root module requirement in scripts/go.mod'
+cat > "$fixture/scripts/go.mod" <<'MOD'
+module example.com/fixture
+
+go 1.26.0
+
+require github.com/MichaelKinsy/PiG v0.7.0
+MOD
+expect_failure 'missing toolchain directive in scripts/go.mod'
