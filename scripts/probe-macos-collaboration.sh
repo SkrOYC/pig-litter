@@ -16,8 +16,11 @@ iterm_version=""
 iterm_executable=""
 signature_status=not_checked
 first_launch_status=not_checked
+automation_status=not_checked
 open_status=not_started
 gui_status=not_attempted
+automation_gui_status=not_attempted
+applescript_status=not_attempted
 session_id=""
 session_tty=""
 window_id=""
@@ -148,7 +151,7 @@ APPLESCRIPT
     fi
     if [ "$signature_status" = verified ] && [ "$first_launch_status" != blocked ]; then
       command_text="printf 'PIG_SENTINEL_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}_%s\\n' \"\$(uname -m)\" | tee '$artifact_dir/sentinel.txt'; tty > '$artifact_dir/sentinel-tty.txt'"
-      perl -e 'alarm shift; exec @ARGV' 90 osascript - "$command_text" "$expected" >"$artifact_dir/session.txt" 2>"$artifact_dir/applescript-error.txt" <<'APPLESCRIPT'
+      perl -e 'alarm shift; exec @ARGV' 180 osascript - "$command_text" "$expected" >"$artifact_dir/session.txt" 2>"$artifact_dir/applescript-error.txt" <<'APPLESCRIPT' &
 on run argv
   set commandText to item 1 of argv
   set expectedText to item 2 of argv
@@ -170,6 +173,71 @@ on run argv
   end tell
 end run
 APPLESCRIPT
+      session_pid=$!
+      perl -e 'alarm shift; exec @ARGV' 100 osascript - "$artifact_dir/automation-consent.png" >"$artifact_dir/automation-consent.txt" 2>&1 <<'APPLESCRIPT'
+on run argv
+  set screenshotPath to item 1 of argv
+  set expectedPrompt to "“hosted-compute-agent” wants access to control “iTerm”."
+  tell application "System Events"
+    repeat 30 times
+      repeat with dialogProcess in (every process)
+        set processWindows to {}
+        try
+          set processWindows to (get every window of dialogProcess)
+        on error errorText number errorNumber
+          log "Cannot inspect process windows: " & errorText & " (" & errorNumber & ")"
+        end try
+        repeat with candidateWindow in processWindows
+          set matchesPrompt to false
+          set dialogText to ""
+          try
+            if exists button "Allow" of candidateWindow then
+              set windowName to (get name of candidateWindow)
+              if windowName is not missing value then set dialogText to (windowName as text)
+              set dialogTexts to (get value of every static text of candidateWindow)
+              repeat with textItem in dialogTexts
+                set textValue to contents of textItem
+                if textValue is not missing value then
+                  set dialogText to dialogText & " " & (textValue as text)
+                end if
+              end repeat
+              if dialogText contains expectedPrompt then set matchesPrompt to true
+            end if
+          on error errorText number errorNumber
+            log "Cannot inspect window: " & errorText & " (" & errorNumber & ")"
+          end try
+          if matchesPrompt then
+            log dialogText
+            set quotedPath to quoted form of screenshotPath
+            tell me to do shell script "/usr/sbin/screencapture -x " & quotedPath & " && test -s " & quotedPath
+            click button "Allow" of candidateWindow
+            return "Allowed the matching hosted-compute-agent to iTerm Automation request."
+          end if
+        end repeat
+      end repeat
+      delay 1
+    end repeat
+  end tell
+  error "The matching hosted-compute-agent to iTerm Automation request was not found."
+end run
+APPLESCRIPT
+      automation_gui_status=$?
+      if [ "$automation_gui_status" -eq 0 ]; then
+        automation_status=approved
+      else
+        automation_status=blocked
+        reason="The specific iTerm Automation consent could not be approved."
+        if grep -q 'syntax error' "$artifact_dir/automation-consent.txt" || grep -Eq 'execution error:.*\(-1700\)' "$artifact_dir/automation-consent.txt"; then
+          status=failed
+          reason="The Automation consent script failed to inspect dialog text."
+        fi
+        if [ ! -s "$artifact_dir/automation-consent.png" ]; then
+          perl -e 'alarm shift; exec @ARGV' 30 screencapture -x "$artifact_dir/automation-consent.png"
+        fi
+        kill "$session_pid" 2>/dev/null || true
+      fi
+      cat "$artifact_dir/automation-consent.txt"
+      wait "$session_pid"
       applescript_status=$?
       if [ "$applescript_status" -eq 0 ]; then
         for _ in {1..10}; do
@@ -183,20 +251,24 @@ APPLESCRIPT
       pgrep -fl "$app_path/Contents/MacOS/$iterm_executable" >"$artifact_dir/iterm-process.txt"
       process_status=$?
       cat "$artifact_dir/applescript-error.txt" "$artifact_dir/session.txt" "$artifact_dir/iterm-process.txt"
-      if grep -q 'syntax error' "$artifact_dir/applescript-error.txt"; then
-        status=failed
-        reason="The AppleScript probe did not compile."
-      elif [ "$applescript_status" -ne 0 ]; then
-        reason="AppleScript could not create or inspect an iTerm2 session."
-      elif [ "$process_status" -ne 0 ]; then
-        reason="The iTerm2 process was not observed."
-      elif [ -z "$session_id" ] || [ -z "$session_tty" ] || [ -z "$window_id" ]; then
-        reason="The iTerm2 session identity was incomplete."
-      elif ! grep -Fx "$expected" "$artifact_dir/sentinel.txt" || ! grep -Fx "$session_tty" "$artifact_dir/sentinel-tty.txt" || ! grep -Fx "$expected" "$artifact_dir/session.txt"; then
-        reason="The session output or terminal side effect did not match the sentinel."
-      else
-        status=pass
-        reason="The iTerm2 session produced the sentinel on its recorded terminal."
+      if [ "$automation_status" = approved ]; then
+        if grep -q 'syntax error' "$artifact_dir/applescript-error.txt"; then
+          status=failed
+          reason="The AppleScript probe did not compile."
+        elif [ "$applescript_status" -eq 142 ]; then
+          reason="The iTerm2 session AppleScript timed out."
+        elif [ "$applescript_status" -ne 0 ]; then
+          reason="AppleScript could not create or inspect an iTerm2 session."
+        elif [ "$process_status" -ne 0 ]; then
+          reason="The iTerm2 process was not observed."
+        elif [ -z "$session_id" ] || [ -z "$session_tty" ] || [ -z "$window_id" ]; then
+          reason="The iTerm2 session identity was incomplete."
+        elif ! grep -Fx "$expected" "$artifact_dir/sentinel.txt" || ! grep -Fx "$session_tty" "$artifact_dir/sentinel-tty.txt" || ! grep -Fx "$expected" "$artifact_dir/session.txt"; then
+          reason="The session output or terminal side effect did not match the sentinel."
+        else
+          status=pass
+          reason="The iTerm2 session produced the sentinel on its recorded terminal."
+        fi
       fi
     else
       pgrep -fl "$app_path/Contents/MacOS/$iterm_executable" >"$artifact_dir/iterm-process.txt"
@@ -212,16 +284,17 @@ elif [ "$status" = pass ]; then
   reason="The session produced the sentinel, but a screenshot was unavailable."
 fi
 
-export status reason host_os architecture macos_version commit_sha iterm_version iterm_executable signature_status first_launch_status open_status gui_status session_id session_tty window_id screenshot expected artifact_dir
+export status reason host_os architecture macos_version commit_sha iterm_version iterm_executable signature_status first_launch_status automation_status open_status gui_status automation_gui_status applescript_status session_id session_tty window_id screenshot expected artifact_dir
 if ! python3 - <<'PYTHON'
 import json
 import os
 from pathlib import Path
 
-keys = ("status", "reason", "host_os", "architecture", "macos_version", "commit_sha", "iterm_version", "iterm_executable", "signature_status", "first_launch_status", "open_status", "gui_status", "session_id", "session_tty", "window_id", "screenshot", "expected")
+keys = ("status", "reason", "host_os", "architecture", "macos_version", "commit_sha", "iterm_version", "iterm_executable", "signature_status", "first_launch_status", "automation_status", "open_status", "gui_status", "automation_gui_status", "applescript_status", "session_id", "session_tty", "window_id", "screenshot", "expected")
 result = {key: os.environ[key] for key in keys}
 sentinel_path = Path(os.environ["artifact_dir"], "sentinel.txt")
 first_launch_path = Path(os.environ["artifact_dir"], "first-launch.txt")
+automation_consent_path = Path(os.environ["artifact_dir"], "automation-consent.txt")
 result.update({
     "runner_label": os.environ["PROBE_RUNNER_LABEL"],
     "runner_name": os.environ.get("RUNNER_NAME", ""),
@@ -241,6 +314,8 @@ result.update({
     "first_launch_log": "first-launch.txt",
     "first_launch_output": first_launch_path.read_text().strip() if first_launch_path.exists() else "",
     "first_launch_screenshot": "first-launch.png" if Path(os.environ["artifact_dir"], "first-launch.png").exists() else "",
+    "automation_consent_output": automation_consent_path.read_text().strip() if automation_consent_path.exists() else "",
+    "automation_consent_screenshot": "automation-consent.png" if Path(os.environ["artifact_dir"], "automation-consent.png").exists() else "",
 })
 output = json.dumps(result, indent=2) + "\n"
 Path(os.environ["artifact_dir"], "result.json").write_text(output)

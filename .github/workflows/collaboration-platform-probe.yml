@@ -37,10 +37,21 @@ jobs:
         run: bash scripts/probe-macos-collaboration.sh
 
       - name: Upload probe evidence
+        id: upload_evidence
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: collaboration-platform-${{ matrix.runner }}
           path: ${{ runner.temp }}/collaboration-platform-probe/
-          if-no-files-found: warn
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retry evidence upload
+        if: always() && steps.upload_evidence.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: collaboration-platform-${{ matrix.runner }}
+          path: ${{ runner.temp }}/collaboration-platform-probe/
+          if-no-files-found: error
           retention-days: 14
