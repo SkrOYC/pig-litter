@@ -62,23 +62,27 @@ else
       grep -Fx 'Authority=Developer ID Application: GEORGE NACHMAN (H7V7XYVQ7D)' "$artifact_dir/signature-details.txt" &&
       grep -F 'source=Notarized Developer ID' "$artifact_dir/notarization.txt"; then
       signature_status=verified
-      perl -e 'alarm shift; exec @ARGV' 90 open -a "$app_path" >"$artifact_dir/open.txt" 2>&1 &
+      perl -e 'alarm shift; exec @ARGV' 120 open -a "$app_path" >"$artifact_dir/open.txt" 2>&1 &
       open_pid=$!
       for _ in {1..5}; do
         kill -0 "$open_pid" 2>/dev/null || break
         sleep 1
       done
       if kill -0 "$open_pid" 2>/dev/null; then
-        perl -e 'alarm shift; exec @ARGV' 60 osascript - "$artifact_dir/first-launch.png" >"$artifact_dir/first-launch.txt" 2>&1 <<'APPLESCRIPT'
+        perl -e 'alarm shift; exec @ARGV' 100 osascript - "$artifact_dir/first-launch.png" >"$artifact_dir/first-launch.txt" 2>&1 <<'APPLESCRIPT'
 on run argv
   set screenshotPath to item 1 of argv
   tell application "System Events"
-    repeat 25 times
+    repeat 80 times
       if exists process "CoreServicesUIAgent" then
         repeat with candidateWindow in (every window of process "CoreServicesUIAgent")
           set dialogText to (name of candidateWindow as text)
-          repeat with textItem in (value of every static text of candidateWindow)
-            set dialogText to dialogText & " " & (textItem as text)
+          set dialogTexts to (get value of every static text of candidateWindow)
+          repeat with textItem in dialogTexts
+            set textValue to contents of textItem
+            if textValue is not missing value then
+              set dialogText to dialogText & " " & (textValue as text)
+            end if
           end repeat
           log dialogText
           if dialogText contains "iTerm" and dialogText contains "downloaded" and dialogText contains "Internet" and (exists button "Open" of candidateWindow) then
@@ -103,6 +107,9 @@ APPLESCRIPT
           if grep -q 'syntax error' "$artifact_dir/first-launch.txt"; then
             status=failed
             reason="The first-launch GUI script did not compile."
+          elif grep -Fq '(-1700)' "$artifact_dir/first-launch.txt"; then
+            status=failed
+            reason="The first-launch GUI script could not read dialog text."
           elif [ "$gui_status" -eq 142 ]; then
             reason="The first-launch GUI script timed out."
           else
