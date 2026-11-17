@@ -25,7 +25,7 @@ func collaborationTestReport(t *testing.T) (collaborationCatalog, collaborationE
 		{Channel: "live", Platform: "linux"},
 		{Channel: "performance", Platform: "linux"},
 		{Channel: "live", Platform: "macos"},
-	}, Research: []collaborationResearchDependency{{Scenario: "host-tool-veto", Revision: 1, Scope: collaborationPlatformScope{Platform: "linux"}}}}
+	}, Research: []collaborationResearchDependency{{Scenario: "host-tool-veto", Revision: 1, Capability: "nested-hook", Scope: collaborationPlatformScope{Platform: "linux"}}}}
 	registry := collaborationProofRegistry{"TEAM-001": rule, "TEAM-003": rule}
 	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true, "samples": true}
 	var attempts []collaborationValidatedAttempt
@@ -169,7 +169,7 @@ func TestCollaborationUnsupportedResearchDoesNotProveProductParity(t *testing.T)
 	catalog, evidence, registry := collaborationTestReport(t)
 	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
 	finding := collaborationValidatedAttempt{
-		Attempt:       collaborationAttempt{ID: "host-probe", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Prerequisite: "an enforceable nested hook", Claims: []string{"TEAM-001"}},
+		Attempt:       collaborationAttempt{ID: "host-probe", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Finding: &collaborationCapabilityFinding{Capability: "nested-hook", Verdict: "unsupported", Detail: "nested call was not vetoed"}, Prerequisite: "an enforceable nested hook", Claims: []string{"TEAM-001"}},
 		ArtifactKinds: kinds, ResultsPassed: true,
 	}
 	evidence.Attempts = append(evidence.Attempts[:0], finding)
@@ -322,12 +322,12 @@ func TestCollaborationResearchIsRegisteredIndependentlyOfProductProof(t *testing
 	catalog, evidence, _ := collaborationTestReport(t)
 	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
 	finding := collaborationValidatedAttempt{
-		Attempt:       collaborationAttempt{ID: "host-observation", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Prerequisite: "a host capability", Claims: []string{}},
+		Attempt:       collaborationAttempt{ID: "host-observation", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Observation: "the host lacks this capability", Outcome: "passed", Finding: &collaborationCapabilityFinding{Capability: "nested-hook", Verdict: "unsupported", Detail: "nested call was not vetoed"}, Prerequisite: "a host capability", Claims: []string{}},
 		ArtifactKinds: kinds, ResultsPassed: true,
 	}
 	evidence.Attempts = []collaborationValidatedAttempt{finding}
 	report, err := collaborationReportForTest(t, catalog, evidence, collaborationProofRegistry{})
-	if err != nil || len(report.Research) != 1 || !report.Research[0].Complete || report.Research[0].Prerequisite != "a host capability" || report.Parity || collaborationReportRow(t, report, "TEAM-001").State != "unverified" {
+	if err != nil || len(report.Research) != 1 || !report.Research[0].Complete || report.Research[0].Observation != "the host lacks this capability" || report.Research[0].Finding.Verdict != "unsupported" || report.Research[0].Prerequisite != "a host capability" || report.Parity || collaborationReportRow(t, report, "TEAM-001").State != "unverified" {
 		t.Fatalf("independent research result = %#v, %v", report, err)
 	}
 	for _, edit := range []func(*collaborationAttempt){
@@ -344,6 +344,38 @@ func TestCollaborationResearchIsRegisteredIndependentlyOfProductProof(t *testing
 	}
 }
 
+func TestCollaborationResearchConflictsUseExplicitScopedFindings(t *testing.T) {
+	catalog, evidence, _ := collaborationTestReport(t)
+	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
+	supported := collaborationAttempt{ID: "supported", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "passed", Finding: &collaborationCapabilityFinding{Capability: "nested-hook", Verdict: "supported", Detail: "first observation"}}
+	unsupported := supported
+	unsupported.ID = "unsupported"
+	unsupported.Finding = &collaborationCapabilityFinding{Capability: "nested-hook", Verdict: "unsupported", Detail: "second observation"}
+	unsupported.Prerequisite = "an enforceable nested hook"
+	evidence.Attempts = []collaborationValidatedAttempt{{Attempt: supported, ArtifactKinds: kinds, ResultsPassed: true}, {Attempt: unsupported, ArtifactKinds: kinds, ResultsPassed: true}}
+	report, err := collaborationReportForTest(t, catalog, evidence, collaborationProofRegistry{})
+	if err != nil || len(report.Research) != 2 || !report.Research[0].Complete || !report.Research[1].Complete || !report.Research[0].Conflict || !report.Research[1].Conflict || report.Parity {
+		t.Fatalf("contradictory host findings = %#v, %v", report.Research, err)
+	}
+	evidence.Attempts[1].Attempt.Architecture = "arm64"
+	report, err = collaborationReportForTest(t, catalog, evidence, collaborationProofRegistry{})
+	if err != nil || report.Research[0].Conflict || report.Research[1].Conflict {
+		t.Fatalf("different architectures were conflated: %#v, %v", report.Research, err)
+	}
+	evidence.Attempts[1].Attempt.Architecture = "amd64"
+	evidence.Attempts[1].Attempt.Finding = &collaborationCapabilityFinding{Capability: "direct-hook", Verdict: "unsupported", Detail: "different capability"}
+	report, err = collaborationReportForTest(t, catalog, evidence, collaborationProofRegistry{})
+	if err != nil || report.Research[0].Conflict || report.Research[1].Conflict {
+		t.Fatalf("different capabilities were conflated: %#v, %v", report.Research, err)
+	}
+	evidence.Attempts[1].Attempt.Finding = unsupported.Finding
+	evidence.Attempts[0].Attempt.Finding = nil
+	report, err = collaborationReportForTest(t, catalog, evidence, collaborationProofRegistry{})
+	if err != nil || report.Research[0].Conflict || report.Research[1].Conflict {
+		t.Fatalf("scenario outcome was treated as a capability finding: %#v, %v", report.Research, err)
+	}
+}
+
 func TestCollaborationP02ScenarioTableCoversCatalog(t *testing.T) {
 	catalog := collaborationTestCatalog(t)
 	seen := make(map[string]bool)
@@ -352,7 +384,7 @@ func TestCollaborationP02ScenarioTableCoversCatalog(t *testing.T) {
 			continue
 		}
 		rule, ok := collaborationP02Scenarios[scenario.ID]
-		if !ok || rule.Revision != 1 || !collaborationOneOf(rule.Purpose, "research", "verification") || !collaborationOneOf(rule.Channel, "research", "live", "performance") || (rule.Purpose == "research") != (rule.Channel == "research") {
+		if !ok || rule.Revision != 1 || !collaborationOneOf(rule.Purpose, "research", "verification") || !collaborationOneOf(rule.Channel, "research", "live", "performance") || (rule.Purpose == "research") != (rule.Channel == "research") || (rule.Purpose == "research") != (len(rule.Capabilities) > 0) {
 			t.Fatalf("P02 scenario has no trusted rule: %#v", scenario)
 		}
 		seen[scenario.ID] = true
@@ -533,7 +565,7 @@ func TestCollaborationResearchDependencyMatchesRevisionAndScope(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			catalog, evidence, registry := collaborationTestReport(t)
 			finding := collaborationValidatedAttempt{
-				Attempt:       collaborationAttempt{ID: "unrelated", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Prerequisite: "different scope", Claims: []string{"TEAM-001"}},
+				Attempt:       collaborationAttempt{ID: "unrelated", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Finding: &collaborationCapabilityFinding{Capability: "nested-hook", Verdict: "unsupported", Detail: "fixture finding"}, Prerequisite: "different scope", Claims: []string{"TEAM-001"}},
 				ArtifactKinds: map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}, ResultsPassed: true,
 			}
 			rule := registry["TEAM-001"]
@@ -556,7 +588,7 @@ func TestCollaborationRepeatedUnsupportedFindingsPreserveConflict(t *testing.T) 
 	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
 	for index, prerequisite := range []string{"first prerequisite", "second prerequisite"} {
 		evidence.Attempts = append(evidence.Attempts, collaborationValidatedAttempt{
-			Attempt:       collaborationAttempt{ID: fmt.Sprintf("unsupported-%d", index), Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Prerequisite: prerequisite, Claims: []string{"TEAM-001"}},
+			Attempt:       collaborationAttempt{ID: fmt.Sprintf("unsupported-%d", index), Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Finding: &collaborationCapabilityFinding{Capability: "nested-hook", Verdict: "unsupported", Detail: "fixture finding"}, Prerequisite: prerequisite, Claims: []string{"TEAM-001"}},
 			ArtifactKinds: kinds, ResultsPassed: true,
 		})
 	}
@@ -596,12 +628,12 @@ func TestCollaborationDifferentResearchScenariosDoNotConflict(t *testing.T) {
 		}
 	}
 	rule := registry["TEAM-001"]
-	rule.Research = append(rule.Research, collaborationResearchDependency{Scenario: "host-busy-message", Revision: 1, Scope: collaborationPlatformScope{Platform: "linux"}})
+	rule.Research = append(rule.Research, collaborationResearchDependency{Scenario: "host-busy-message", Revision: 1, Capability: "peer-delivery", Scope: collaborationPlatformScope{Platform: "linux"}})
 	registry["TEAM-001"] = rule
 	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
 	evidence.Attempts = []collaborationValidatedAttempt{
-		{Attempt: collaborationAttempt{ID: "delivery-supported", Purpose: "research", Channel: "research", Scenario: "host-busy-message", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "passed", Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
-		{Attempt: collaborationAttempt{ID: "veto-unsupported", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Prerequisite: "enforceable hook", Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
+		{Attempt: collaborationAttempt{ID: "delivery-supported", Purpose: "research", Channel: "research", Scenario: "host-busy-message", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "passed", Finding: &collaborationCapabilityFinding{Capability: "peer-delivery", Verdict: "supported", Detail: "fixture finding"}, Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
+		{Attempt: collaborationAttempt{ID: "veto-unsupported", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Finding: &collaborationCapabilityFinding{Capability: "nested-hook", Verdict: "unsupported", Detail: "fixture finding"}, Prerequisite: "enforceable hook", Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
 	}
 	report, err := collaborationReportForTest(t, catalog, evidence, registry)
 	if err != nil {
@@ -616,8 +648,8 @@ func TestCollaborationResearchConflictRequiresSameArchitecture(t *testing.T) {
 	catalog, evidence, registry := collaborationTestReport(t)
 	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
 	evidence.Attempts = []collaborationValidatedAttempt{
-		{Attempt: collaborationAttempt{ID: "amd64-supported", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "passed", Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
-		{Attempt: collaborationAttempt{ID: "arm64-unsupported", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "arm64", Outcome: "unsupported", Prerequisite: "arm64 hook", Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
+		{Attempt: collaborationAttempt{ID: "amd64-supported", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "passed", Finding: &collaborationCapabilityFinding{Capability: "nested-hook", Verdict: "supported", Detail: "fixture finding"}, Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
+		{Attempt: collaborationAttempt{ID: "arm64-unsupported", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "arm64", Outcome: "unsupported", Finding: &collaborationCapabilityFinding{Capability: "nested-hook", Verdict: "unsupported", Detail: "fixture finding"}, Prerequisite: "arm64 hook", Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
 	}
 	report, err := collaborationReportForTest(t, catalog, evidence, registry)
 	if err != nil {
