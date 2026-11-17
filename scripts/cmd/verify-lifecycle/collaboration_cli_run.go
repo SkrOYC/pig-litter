@@ -218,32 +218,21 @@ func collaborationCLIRun(ctx context.Context, options collaborationCLIOptions, a
 	for _, item := range []struct {
 		name   string
 		target collaborationCLITarget
-		media  bool
 	}{
-		{"baseline-lifecycle", baseline, false},
-		{"candidate-lifecycle", selected, false},
-		{"baseline-terminal", baseline, true},
-		{"candidate-terminal", selected, true},
+		{"baseline-lifecycle", baseline},
+		{"candidate-lifecycle", selected},
 	} {
 		if ctx.Err() != nil {
 			break
 		}
-		var stepErr error
-		if item.media {
-			stepErr = runner.terminal(ctx, item.name, item.target, "direct", "receipt-control")
-		} else {
-			stepErr = runner.lifecycle(ctx, self, item.name, item.target)
-		}
-		if stepErr != nil {
+		if stepErr := runner.lifecycle(ctx, self, item.name, item.target); stepErr != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", item.name, stepErr))
 		}
 	}
-	return collaborationBaselineConclusion(failures)
-}
-
-func collaborationBaselineConclusion(failures []error) error {
-	if len(failures) == 0 {
-		return errors.New("baseline has no capture-off terminal comparison or normalized spawn and wait result comparison")
+	if ctx.Err() == nil {
+		if err := runner.baselineTerminal(ctx, baseline, selected); err != nil {
+			failures = append(failures, err)
+		}
 	}
 	return errors.Join(failures...)
 }

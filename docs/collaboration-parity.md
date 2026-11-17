@@ -47,7 +47,7 @@ The trusted applicability profiles define the targets for a full-program parity 
 
 A scenario may have multiple evidence records when a claim spans different processes, fault points, or platforms. Source provenance stays in the requirement and is never substituted for a runtime record.
 
-The scenario registry names the expected result and owner for every requirement. Its current `planned` status is not a test result. The P02 entries cover baseline, startup, host probes, isolation, interruption, and performance. Their driver and report are not implemented in this initial contract snapshot.
+The scenario registry names the expected result and owner for every requirement. A `planned` or `implemented` status describes the driver, not a test result. The P02 entries cover baseline, startup, host probes, isolation, interruption, and performance. Future product scenarios remain planned until their owning changes provide reviewed proof rules.
 
 ## Host research and product claims
 
@@ -57,7 +57,7 @@ The message experiments must measure busy and idle delivery separately. The evid
 
 The enforcement experiment must invoke a real rejecting tool hook and inspect the fixture side effect. It must cover nested calls as well as a direct write. A missing hook path or a successful side effect is a concrete blocker for the dependent plan gate. The independent-process experiment must start a real PiG process with the extension explicitly selected and record its session identity and registered tools. Neither experiment may infer support from a signature alone.
 
-A member-to-member message must not require a lead model turn as a relay. The routing choice remains open until the host experiments establish the applicable runtime and process contracts. [PiG extension documentation](https://pi-in-go.dev/docs/latest/extensions/) and the [PiG Go SDK documentation](https://www.pi-in-go.dev/docs/latest/sdk/) describe public integration points, but those descriptions do not prove delivery timing, transcript persistence, or nested veto coverage.
+A member-to-member message must not require a lead model turn as a relay. Use programmatic runtime routing for embedded sessions and a persistent mailbox for independently running processes. P04 must establish durable acceptance and idempotent delivery before this is a supported product contract. A product-owned serialized receipt and reconciliation mechanism or an upstream atomic idempotent append contract could supply that guarantee; the current probes do not prove either. [PiG extension documentation](https://pi-in-go.dev/docs/latest/extensions/) and the [PiG Go SDK documentation](https://www.pi-in-go.dev/docs/latest/sdk/) describe public integration points, but those descriptions do not prove delivery timing, transcript persistence, or nested veto coverage.
 
 ## PiG 0.7.0 research observations
 
@@ -73,14 +73,24 @@ The host probes use the public PiG 0.7.0 SDK and an isolated local fixture provi
 | Same-ID replay after a process crash | Replay after acceptance but before append produced one entry. Replay after append produced a second entry, both before and after the send returned. |
 | In-process tool hook | A rejecting hook stopped direct file writes, nested codemode writes, direct MCP writes, and codemode-to-MCP writes in the controlled fixture. The matching allowed controls produced their files. |
 | Independently selected process | A separate PiG process loaded the standalone extension and exposed the six selected litter tools to its fixture provider. Its native session header carried the requested session ID. |
+| Embedded tool registration | A factory-registered tool and two explicitly named extra tools appeared in both the native session and the provider request when allowed. Narrowing the allowlist exposed only the selected names; an allowlist containing no registered name exposed none. |
 
 The message-end event is not a general storage acknowledgement. The observations establish process-visible file contents after the named events, not file synchronization or power-loss durability. PiG does not suppress replay based on the ID placed in custom-message details. One proposed delivery design persists acceptance separately and serializes replay with native storage checks. These probes do not establish that design's crash safety. An upstream atomic idempotent append contract is another possible prerequisite. The hook result covers the tested in-process paths. Subprocess extension hooks, shell, and delegated mutation still need their own evidence.
 
-The message and crash probes are in [collaboration_message_probe_test.go](../scripts/cmd/verify-lifecycle/collaboration_message_probe_test.go) and [collaboration_crash_probe_test.go](../scripts/cmd/verify-lifecycle/collaboration_crash_probe_test.go). The independent-process and hook probes are in [collaboration_process_probe_test.go](../scripts/cmd/verify-lifecycle/collaboration_process_probe_test.go) and [collaboration_hook_probe_test.go](../scripts/cmd/verify-lifecycle/collaboration_hook_probe_test.go). Their test results do not replace the required live terminal lanes or performance checks.
+The message and crash probes are in [collaboration_message_probe_test.go](../scripts/cmd/verify-lifecycle/collaboration_message_probe_test.go) and [collaboration_crash_probe_test.go](../scripts/cmd/verify-lifecycle/collaboration_crash_probe_test.go). The independent-process, embedded registration, and hook probes are in [collaboration_process_probe_test.go](../scripts/cmd/verify-lifecycle/collaboration_process_probe_test.go), [collaboration_registration_probe_test.go](../scripts/cmd/verify-lifecycle/collaboration_registration_probe_test.go), and [collaboration_hook_probe_test.go](../scripts/cmd/verify-lifecycle/collaboration_hook_probe_test.go). The registration probe establishes tool exposure, not tool execution or team behavior. These test results do not replace the required live terminal lanes or performance checks.
+
+The handoff keeps the remaining work scoped to its owner:
+
+- P03 can build explicit team registration on the observed embedded extra-tool and allowlist APIs. It must preserve ordinary child permissions and allow shared-checkout writers only in explicit team mode.
+- P04 must prove a durable acceptance and same-ID replay contract. The observed native append behavior alone does not supply one.
+- P06 must verify every enforcement path it relies on. The current in-process observations do not establish subprocess hook transport, shell behavior, or delegated mutation controls.
+- P08 must verify independent team process startup and terminal backends. The selected standalone litter process establishes only the existing tool registration and session identity.
 
 ## Verification artifacts
 
-The planned scenario wrapper selects one registered scenario and gives each run isolated writable state. A complete run retains monotonic timing, process and provider logs, raw terminal output, ANSI frames, screenshots, terminal video, and a structured result. Failures and interruptions retain their artifacts and report an inconclusive or failed result. Two concurrent runs must not share fixture homes, ports, sockets, session identities, or output paths.
+The scenario wrapper selects one registered scenario and gives each run isolated writable state. A complete run retains monotonic timing, process and provider logs, raw terminal output, ANSI frames, screenshots, terminal video, and a structured result. Failures and interruptions retain their artifacts and report an inconclusive or failed result. Two concurrent runs must not share fixture homes, ports, sockets, session identities, or output paths.
+
+The report records each research scenario's completion separately from any named host capability finding. It flags conflicting findings only when their capability, scenario revision, platform, architecture, and terminal match. A finding does not block a product requirement unless a reviewed product proof rule explicitly names that dependency. Program target rows require matched live evidence for every applicable requirement on that target. Full parity also requires all other proof slots and reference relationships to match.
 
 The existing lifecycle and terminal drivers remain the starting points for the wrapper. The current terminal driver has Linux-specific allocation and cleanup checks. A portable command-construction test cannot replace a real macOS or iTerm2 run. The catalog must not label any future scenario as passed until its actual artifacts and result exist.
 

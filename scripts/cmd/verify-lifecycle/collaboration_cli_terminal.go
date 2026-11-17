@@ -246,7 +246,16 @@ func (runner *collaborationCLIRunner) finish(emit bool) error {
 			}
 		}
 	}
-	if path := filepath.Join(runner.directory, "terminal-build-identities.json"); runner.attempt.Scenario == "capture-performance" || runner.attempt.Scenario == "fixture-isolation" || runner.attempt.Scenario == "fixture-interrupt" {
+	if path := filepath.Join(runner.directory, "terminal-build-identities.json"); runner.attempt.Scenario == "baseline" || runner.attempt.Scenario == "capture-performance" || runner.attempt.Scenario == "fixture-isolation" || runner.attempt.Scenario == "fixture-interrupt" {
+		if _, err := os.Stat(path); err == nil {
+			artifact, err := runner.artifact(path, "log")
+			if err != nil {
+				return err
+			}
+			runner.artifacts = append(runner.artifacts, artifact)
+		}
+	}
+	if path := filepath.Join(runner.directory, "baseline-samples.json"); runner.attempt.Scenario == "baseline" {
 		if _, err := os.Stat(path); err == nil {
 			artifact, err := runner.artifact(path, "log")
 			if err != nil {
