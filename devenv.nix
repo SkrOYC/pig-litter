@@ -1,34 +1,38 @@
-{ pkgs, ... }:
+{ pkgs, inputs, ... }:
 let
+  go = pkgs.go_1_27.overrideAttrs (_: {
+    version = "1.27.4";
+    src = inputs.go-src;
+  });
   pigRelease = {
     "x86_64-linux" = {
-      archive = "pig-0.4.1-linux-amd64.tar.gz";
-      root = "pig-0.4.1-linux-amd64";
-      hash = "sha256-O03jWHy/thfe9IPsYt3c81gnrMNDaxRUzFaUwi3Nrz8=";
+      archive = "pig-0.7.0-linux-amd64.tar.gz";
+      root = "pig-0.7.0-linux-amd64";
+      hash = "sha256-C1q3y19oDn0zU72qOhAYhjw8NVL4i+xzA3BmjlgZmVo=";
     };
     "aarch64-linux" = {
-      archive = "pig-0.4.1-linux-arm64.tar.gz";
-      root = "pig-0.4.1-linux-arm64";
-      hash = "sha256-4XaLv84pt4TXYAHrR+vZifBe0EL76BrYYpgW4YH6Wsg=";
+      archive = "pig-0.7.0-linux-arm64.tar.gz";
+      root = "pig-0.7.0-linux-arm64";
+      hash = "sha256-iNLctKSFKpgNwcqSAu7ZRV/4+wEVU8jbYsG4XGdqNms=";
     };
     "x86_64-darwin" = {
-      archive = "pig-0.4.1-darwin-amd64.tar.gz";
-      root = "pig-0.4.1-darwin-amd64";
-      hash = "sha256-nynvASzTQHSsAq1KSub3uT1CtP69NaoIrfR3ApRNOoc=";
+      archive = "pig-0.7.0-darwin-amd64.tar.gz";
+      root = "pig-0.7.0-darwin-amd64";
+      hash = "sha256-bHRLOxNo+4Jy36ZAM/BsAgeCLe3gXxrA34OOlg1+OsE=";
     };
     "aarch64-darwin" = {
-      archive = "pig-0.4.1-darwin-arm64.tar.gz";
-      root = "pig-0.4.1-darwin-arm64";
-      hash = "sha256-JaHiveaF8oaE5JWyUNzK17KWCoQEVNgMiMNdXHqMWWY=";
+      archive = "pig-0.7.0-darwin-arm64.tar.gz";
+      root = "pig-0.7.0-darwin-arm64";
+      hash = "sha256-2Hxl4DrOx3yPo87TI8J/Jzhrab3sqA/eVgCMhdR60aQ=";
     };
   };
   system = pkgs.stdenv.hostPlatform.system;
-  release = pigRelease.${system} or (throw "PiG 0.4.1 has no release archive for ${system}");
+  release = pigRelease.${system} or (throw "PiG 0.7.0 has no release archive for ${system}");
   pig = pkgs.stdenvNoCC.mkDerivation {
     pname = "pig";
-    version = "0.4.1";
+    version = "0.7.0";
     src = pkgs.fetchurl {
-      url = "https://github.com/MichaelKinsy/PiG/releases/download/v0.4.1/${release.archive}";
+      url = "https://github.com/MichaelKinsy/PiG/releases/download/v0.7.0/${release.archive}";
       hash = release.hash;
     };
     sourceRoot = release.root;
@@ -52,7 +56,7 @@ in
 {
   languages.go = {
     enable = true;
-    package = pkgs.go_1_27;
+    package = go;
   };
 
   env.GOTOOLCHAIN = "local";

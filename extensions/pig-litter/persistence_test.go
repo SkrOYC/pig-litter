@@ -70,6 +70,15 @@ func (h *runtimeHost) call(t *testing.T, method string, raw json.RawMessage) jso
 			tools = append(tools, map[string]any{"name": name, "parameters": map[string]any{"type": "object"}})
 		}
 		result = map[string]any{"tools": tools}
+	case "ui.setWidget":
+		var widget struct {
+			Key     string   `json:"key"`
+			Content []string `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &widget); err != nil || widget.Key != "pig-litter" || widget.Content == nil {
+			t.Fatalf("invalid native widget update: %#v %v", widget, err)
+		}
+		result = map[string]any{}
 	default:
 		t.Fatalf("unexpected native-runtime host call %s", method)
 	}
@@ -84,7 +93,7 @@ func withRuntimeOwner(t *testing.T, host *runtimeHost, tree *Tree, cwd, agentDir
 	t.Helper()
 	withCompletionHost(t, tree, func(o *owner) {
 		trusted := true
-		services, err := coding.NewServices(coding.ServicesOptions{CWD: cwd, AgentDir: agentDir, ProjectTrusted: &trusted})
+		services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: cwd, AgentDir: agentDir, ProjectTrusted: &trusted})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -248,7 +257,7 @@ func TestNativeChildResumesByUUIDWithAFreshOwner(t *testing.T) {
 		if !childUUID.MatchString(string(id)) || child.State != Starting {
 			t.Fatalf("admission did not return a native UUID immediately: %#v", child)
 		}
-		services, err := coding.NewServices(coding.ServicesOptions{CWD: childDir, AgentDir: agentDir})
+		services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: childDir, AgentDir: agentDir})
 		if err != nil {
 			t.Fatal(err)
 		}

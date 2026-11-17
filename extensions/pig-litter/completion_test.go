@@ -671,7 +671,7 @@ func testNestedCompletion(t *testing.T, parentState string) {
 	if err := os.WriteFile(filepath.Join(dir, "models.json"), []byte(models), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: dir, AgentDir: dir})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: dir, AgentDir: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -719,7 +719,7 @@ func testNestedCompletion(t *testing.T, parentState string) {
 	selected.owner = child
 	tree := &Tree{ctx: treeContext, records: map[ChildID]*record{"child": child, parent.id: parent}, pending: map[*run]*reservation{selected: {parent: parent.id, outcomeObserved: parentState == "consumed"}}, dirty: map[ChildID]*record{}}
 	if parentState == "consumed" {
-		tree.pending[selected].handback = &outcomeHandback{CallID: "stored-parent-wait", Operation: "litter_wait", After: manager.LeafID()}
+		tree.pending[selected].handback = &outcomeHandback{CallID: "stored-parent-wait", Operation: "litter_wait", After: manager.GetLeafID()}
 		content, _ := resultContent("litter_wait", map[string]any{"outcome": &Outcome{Run: selected.ref, State: Completed, Text: "nested report"}}, nil)
 		if _, err := manager.AppendMessage(agent.AgentMessage{ToolResult: &agent.ToolResultMessage{Role: "toolResult", ToolCallID: "stored-parent-wait", ToolName: "litter_wait", Content: []ai.ToolResultMessageContent{ai.TextContent{Text: content}}}}); err != nil {
 			t.Fatal(err)
@@ -820,7 +820,7 @@ func testNestedCompletion(t *testing.T, parentState string) {
 		default:
 		}
 	}
-	entries, err := rawEntries(manager.Entries())
+	entries, err := rawEntries(manager.GetEntries())
 	if err != nil {
 		t.Fatal(err)
 	}

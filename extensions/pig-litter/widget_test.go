@@ -224,7 +224,7 @@ func TestWidgetKeepsRecentTerminalResults(t *testing.T) {
 
 func TestCompetingRetirementJoinsBeforeReplacementPublication(t *testing.T) {
 	directory := t.TempDir()
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: directory, AgentDir: directory})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: directory, AgentDir: directory})
 	if err != nil {
 		t.Fatal(err)
 	}

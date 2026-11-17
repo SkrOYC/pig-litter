@@ -157,15 +157,15 @@ func TestLateWaitSuppressesStoredNoticeAndConsumedOnlyContinuation(t *testing.T)
 					o.readyOutcomeAck(ticket, true)
 					o.finishCall(ticket, nativeResult("litter_wait", map[string]any{"outcome": selected.outcome}, nil), false)
 				}
-				if got := o.continueForCompletions(tree.root, nil); got == consumed {
+				if got := continueForCompletions(o, tree.root, []any(nil)); got == consumed {
 					t.Fatalf("automatic continuation=%t consumed=%t", got, consumed)
 				}
-				if o.continueForCompletions(tree.root, nil) {
+				if continueForCompletions(o, tree.root, []any(nil)) {
 					t.Fatal("one stored notice requested a second continuation")
 				}
 				notice := map[string]any{"role": "custom", "customType": "litter_completion", "content": selected.reservation.content, "details": completionDetails{ChildID: child.ID, Receipt: selected.noticeID}}
 				user := map[string]any{"role": "user", "content": "next task"}
-				filtered := o.completionContext(tree.root, []any{notice, user})
+				filtered := completionContext(o, tree.root, []any{notice, user})
 				want := 2
 				if consumed {
 					want = 1
@@ -173,7 +173,7 @@ func TestLateWaitSuppressesStoredNoticeAndConsumedOnlyContinuation(t *testing.T)
 				if len(filtered) != want || filtered[len(filtered)-1].(map[string]any)["content"] != "next task" {
 					t.Fatalf("filtered context=%#v", filtered)
 				}
-				o.completionContext(tree.root, []any{user})
+				completionContext(o, tree.root, []any{user})
 				if len(tree.root.notices) != 0 {
 					t.Fatal("compacted context retained old notice tracking")
 				}
@@ -245,7 +245,7 @@ func TestLateAuditIsStoredAndPreservesNativeResume(t *testing.T) {
 	directory := parent.activeLog.GetCwd()
 	parent.activeLog = nil
 	trusted := true
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: directory, AgentDir: directory, ProjectTrusted: &trusted})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: directory, AgentDir: directory, ProjectTrusted: &trusted})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestLateAuditIsStoredAndPreservesNativeResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	raw, err := json.Marshal(session.SessionManager().Entries())
+	raw, err := json.Marshal(session.SessionManager().GetEntries())
 	if err != nil {
 		t.Fatal(err)
 	}

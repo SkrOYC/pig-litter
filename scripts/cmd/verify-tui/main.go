@@ -382,7 +382,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		return evidencePath, fmt.Errorf("secure evidence directory: %w", err)
 	}
 	var panel *panelProof
-	report := evidenceReport{Scenario: options.scenario, Case: options.caseName, Pig: options.pigPath, Extension: options.extension, GoVersion: runtime.Version(), KeyboardCoverage: map[string]string{"live": "tmux-owned ordinary keys and text", "enhanced": "unsupported: tmux 3.7c does not expose negotiated Kitty flag bits", "decoder": "exact CSI-u and press/repeat/release fixtures use the declared PiG v0.4.1 public decoder"}}
+	report := evidenceReport{Scenario: options.scenario, Case: options.caseName, Pig: options.pigPath, Extension: options.extension, GoVersion: runtime.Version(), KeyboardCoverage: map[string]string{"live": "tmux-owned ordinary keys and text", "enhanced": "not verified: negotiated Kitty flag bits", "decoder": "exact CSI-u and press/repeat/release fixtures use the declared PiG v0.7.0 public decoder"}}
 	extensionHash, err := fileSHA256(options.extension)
 	if err != nil {
 		return evidencePath, err
@@ -2184,7 +2184,7 @@ func frameHasGeometry(frame string, width, height int) bool {
 }
 
 func startupFrameReady(frame string) bool {
-	if !strings.Contains(frame, "v0.4.1+1.0.3") {
+	if !strings.Contains(frame, "v0.7.0+1.5.0") {
 		return false
 	}
 	parentFooter := false
