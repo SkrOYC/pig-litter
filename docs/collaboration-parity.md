@@ -25,7 +25,9 @@ bun -e 'const c = await Bun.file("scripts/testdata/collaboration/requirements.js
 
 ## Catalog records
 
-The catalog contains a list of `Requirement` records and a registry of `Scenario` records. A requirement has an ID, title, reference, proposed behavior, owner, acceptance scenario ID, specific acceptance assertion, and product evidence state. The reference has a source kind, path, section, confidence, and observation. A protocol requirement also names its variant and its role. A scenario has an ID, owner, planned status, and expected result. Requirement and scenario IDs must be unique, and each requirement must reference a scenario with the same owner.
+The catalog contains a list of `Requirement` records and a registry of `Scenario` records. A requirement has an ID, title, reference, proposed behavior, reference relationship, owner, acceptance scenario ID, specific acceptance assertion, and product evidence state. The reference has a source kind, path, section, confidence, and observation. A protocol requirement also names its variant and its role. A scenario has an ID, owner, planned status, and expected result. Requirement and scenario IDs must be unique, and each requirement must reference a scenario with the same owner.
+
+The reference relationship describes the proposed behavior, independently of whether Pig Litter implements it. Its states are `unreviewed`, `equivalent`, and `deliberately_different`. A deliberate difference includes a reason. For example, `TEAM-003` preserves named ordinary children and uses an explicit teammate tool, while the reference selects teammate creation by name. Requirements without a reviewed comparison remain `unreviewed`.
 
 An `Evidence` record identifies a requirement, a scenario, a branch, an exact commit, the host, relevant binary versions, the command, the observation, retained artifact paths, a verdict, and the scope of that verdict. Its kind distinguishes unit, live, and performance evidence. A result that covers one platform or fault point cannot establish a broader claim. The initial catalog contains no runtime records.
 
@@ -39,7 +41,7 @@ An `Evidence` record identifies a requirement, a scenario, a branch, an exact co
 | `unsupported` | The product explicitly does not support the behavior, with a stated reason. |
 | `unverified` | Evidence is missing, stale, incomplete, waived, or inconclusive. |
 
-Only `matched` counts as matched parity. A deliberately different, blocked, unsupported, waived, unmeasured, stale, or inconclusive behavior cannot count as parity. The report must show these states separately and must not convert a waived check into a pass. A platform that has no real host evidence remains unverified or blocked for that platform. In particular, a Linux fixture does not establish macOS or iTerm2 behavior.
+Only `matched` counts as matched parity. A passing product scenario can establish `matched` only when the reference relationship is `equivalent` and all required evidence applies. A passing scenario for a `deliberately_different` target records that difference instead. An `unreviewed` relationship cannot establish a match. A deliberately different, blocked, unsupported, waived, unmeasured, stale, or inconclusive behavior cannot count as parity. The report must show these states separately and must not convert a waived check into a pass. A platform that has no real host evidence remains unverified or blocked for that platform. In particular, a Linux fixture does not establish macOS or iTerm2 behavior.
 
 A scenario may have multiple evidence records when a claim spans different processes, fault points, or platforms. Source provenance stays in the requirement and is never substituted for a runtime record.
 
