@@ -93,7 +93,20 @@ func waitForChildToolStartup(ctx context.Context, session *coding.Session, allow
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		for _, tool := range session.GetAllTools() {
+		for name := range allowed {
+			if isMCPTool(name) {
+				pending[name] = struct{}{}
+			}
+		}
+		tools := session.GetAllTools()
+		active := session.ActiveToolNames()
+		for _, tool := range tools {
+			if tool.Exposure == extension.ToolExposureHidden {
+				continue
+			}
+			if (tool.Exposure == "" || tool.Exposure == extension.ToolExposureDirect || tool.Exposure == extension.ToolExposureModelOnly) && !slices.Contains(active, tool.Name) {
+				continue
+			}
 			delete(pending, tool.Name)
 		}
 		if len(pending) == 0 {

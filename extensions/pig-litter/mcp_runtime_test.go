@@ -307,6 +307,66 @@ func TestNativeMCPResourceToolsWaitForRegistration(t *testing.T) {
 	}
 }
 
+func TestNativeMCPResourceToolsWaitForActivation(t *testing.T) {
+	directory := t.TempDir()
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: directory, AgentDir: directory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer services.Close()
+	runtime, err := coding.NewRuntime(coding.RuntimeOptions{Services: services})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	allowed := map[string]struct{}{"loadout_gate": {}, "list_mcp_resources": {}, "list_mcp_resource_templates": {}, "read_mcp_resource": {}}
+	session, err := runtime.New(coding.SessionStartOptions{ResourceLoader: coding.NoResources, AllowedTools: allowed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var gate, unblock sync.Once
+	defer unblock.Do(func() { close(release) })
+	fixture := extension.Extension{Path: "resource-fixture"}
+	fixture.SetRegisteredTool(extension.RegisteredTool{Definition: extension.ToolDefinition{
+		Name:       "loadout_gate",
+		Parameters: json.RawMessage(`{"type":"object","properties":{}}`),
+		Exposure:   extension.ToolExposureModelOnly,
+		PrepareLoadout: func(extension.ToolLoadout) *extension.ToolLoadoutChanges {
+			gate.Do(func() { close(entered); <-release })
+			return nil
+		},
+	}})
+	for _, name := range []string{"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"} {
+		fixture.SetRegisteredTool(extension.RegisteredTool{Definition: extension.ToolDefinition{Name: name, Parameters: json.RawMessage(`{"type":"object","properties":{}}`)}})
+	}
+	reloaded := make(chan error, 1)
+	go func() {
+		_, err := session.ReloadExtensions([]extension.Extension{fixture})
+		reloaded <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("resource registration did not reach the loadout barrier")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	pending := waitForChildToolStartup(ctx, session, allowed)
+	want := []string{"list_mcp_resource_templates", "list_mcp_resources", "read_mcp_resource"}
+	if !reflect.DeepEqual(pending, want) {
+		t.Fatalf("registered but inactive resource tools were treated as ready: pending=%v active=%v", pending, session.ActiveToolNames())
+	}
+	unblock.Do(func() { close(release) })
+	if err := <-reloaded; err != nil {
+		t.Fatal(err)
+	}
+	if pending := waitForChildToolStartup(context.Background(), session, allowed); len(pending) != 0 {
+		t.Fatalf("active resource tools stayed pending: %v", pending)
+	}
+}
+
 func TestNativeMCPResourcesKeepUnlistedServerToolsOutOfChild(t *testing.T) {
 	t.Setenv("PIG_OFFLINE", "1")
 	t.Setenv("PIG_USE_PI_DIRS", "0")
