@@ -34,25 +34,32 @@ type collaborationSelectedRecord struct {
 }
 
 type collaborationAttempt struct {
-	Version          int                     `json:"version"`
-	ID               string                  `json:"id"`
-	Scenario         string                  `json:"scenario"`
-	ScenarioRevision int                     `json:"scenario_revision"`
-	Target           collaborationTarget     `json:"target"`
-	Purpose          string                  `json:"purpose"`
-	Channel          string                  `json:"channel"`
-	Platform         string                  `json:"platform"`
-	Architecture     string                  `json:"architecture"`
-	Terminal         string                  `json:"terminal,omitempty"`
-	Host             string                  `json:"host"`
-	Command          []string                `json:"command"`
-	Observation      string                  `json:"observation"`
-	Outcome          string                  `json:"outcome"`
-	Reason           string                  `json:"reason,omitempty"`
-	Prerequisite     string                  `json:"prerequisite,omitempty"`
-	Events           []collaborationEvent    `json:"events"`
-	Claims           []string                `json:"claims"`
-	Artifacts        []collaborationArtifact `json:"artifacts"`
+	Version          int                             `json:"version"`
+	ID               string                          `json:"id"`
+	Scenario         string                          `json:"scenario"`
+	ScenarioRevision int                             `json:"scenario_revision"`
+	Target           collaborationTarget             `json:"target"`
+	Purpose          string                          `json:"purpose"`
+	Channel          string                          `json:"channel"`
+	Platform         string                          `json:"platform"`
+	Architecture     string                          `json:"architecture"`
+	Terminal         string                          `json:"terminal,omitempty"`
+	Host             string                          `json:"host"`
+	Command          []string                        `json:"command"`
+	Observation      string                          `json:"observation"`
+	Outcome          string                          `json:"outcome"`
+	Finding          *collaborationCapabilityFinding `json:"finding,omitempty"`
+	Reason           string                          `json:"reason,omitempty"`
+	Prerequisite     string                          `json:"prerequisite,omitempty"`
+	Events           []collaborationEvent            `json:"events"`
+	Claims           []string                        `json:"claims"`
+	Artifacts        []collaborationArtifact         `json:"artifacts"`
+}
+
+type collaborationCapabilityFinding struct {
+	Capability string `json:"capability"`
+	Verdict    string `json:"verdict"`
+	Detail     string `json:"detail"`
 }
 
 type collaborationEvent struct {
@@ -219,6 +226,12 @@ func (attempt collaborationAttempt) validate(catalog collaborationCatalog, expec
 	}
 	if attempt.Purpose == "research" && attempt.Outcome == "unsupported" && strings.TrimSpace(attempt.Prerequisite) == "" {
 		return fmt.Errorf("unsupported research requires a capability prerequisite")
+	}
+	if finding := attempt.Finding; finding != nil {
+		rule, registered := collaborationP02Scenarios[attempt.Scenario]
+		if attempt.Purpose != "research" || !registered || !collaborationContains(rule.Capabilities, finding.Capability) || !collaborationOneOf(finding.Verdict, "supported", "unsupported") || strings.TrimSpace(finding.Detail) == "" || (finding.Verdict == "unsupported" && strings.TrimSpace(attempt.Prerequisite) == "") || (attempt.Outcome == "unsupported" && finding.Verdict != "unsupported") {
+			return fmt.Errorf("invalid scoped capability finding")
+		}
 	}
 	if attempt.Outcome == "unsupported" && len(attempt.Artifacts) == 0 {
 		return fmt.Errorf("unsupported conclusion requires retained evidence")

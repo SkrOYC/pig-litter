@@ -84,6 +84,36 @@ func TestCollaborationSelectsOnlyExplicitImmutableAttempts(t *testing.T) {
 	}
 }
 
+func TestCollaborationCapabilityFindingRequiresScopedResearch(t *testing.T) {
+	_, data, target, attempt := collaborationTestEvidence(t)
+	catalog, err := collaborationReadCatalog(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt.Scenario = "host-tool-veto"
+	attempt.Purpose = "research"
+	attempt.Channel = "research"
+	attempt.Claims = []string{}
+	attempt.Finding = &collaborationCapabilityFinding{Capability: "nested-hook", Verdict: "unsupported", Detail: "nested call was not vetoed"}
+	if err := attempt.validate(catalog, target); err == nil || !strings.Contains(err.Error(), "capability finding") {
+		t.Fatalf("finding without prerequisite = %v", err)
+	}
+	attempt.Prerequisite = "an enforceable nested hook"
+	if err := attempt.validate(catalog, target); err != nil {
+		t.Fatalf("completed research with unsupported finding = %v", err)
+	}
+	attempt.Finding.Capability = "native-idempotent-replay"
+	if err := attempt.validate(catalog, target); err == nil || !strings.Contains(err.Error(), "capability finding") {
+		t.Fatalf("finding outside the scenario contract = %v", err)
+	}
+	attempt.Finding.Capability = "nested-hook"
+	attempt.Purpose = "verification"
+	attempt.Channel = "live"
+	if err := attempt.validate(catalog, target); err == nil || !strings.Contains(err.Error(), "capability finding") {
+		t.Fatalf("verification with a capability finding = %v", err)
+	}
+}
+
 func TestCollaborationRejectsAmbiguousOrStaleEvidence(t *testing.T) {
 	for _, test := range []struct {
 		name string
