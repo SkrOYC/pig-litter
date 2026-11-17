@@ -1,0 +1,2309 @@
+{
+  "schema_version": 1,
+  "reference_version": "Claude Code 2.1.322",
+  "description": "Reference provenance and proposed Pig Litter behavior. Product evidence starts unverified.",
+  "evidence_states": [
+    "matched",
+    "deliberately_different",
+    "blocked",
+    "unsupported",
+    "unverified"
+  ],
+  "source_kinds": [
+    "static_implementation",
+    "captured_runtime",
+    "reconstructed_screen",
+    "proposal"
+  ],
+  "requirements": [
+    {
+      "id": "TEAM-001",
+      "title": "Team identity and roster",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "1.1-1.3",
+        "confidence": "high",
+        "observation": "One session has a team identity and a member roster."
+      },
+      "proposed_behavior": "Keep one versioned team roster per root session.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "All members see the same team and member identities.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-002",
+      "title": "Flat teammate membership",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "1",
+        "confidence": "high",
+        "observation": "The reference team is flat and teammates cannot spawn teammates."
+      },
+      "proposed_behavior": "Allow only the lead to create teammates while retaining ordinary child delegation.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A teammate cannot create a teammate and can still use authorized ordinary delegation.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-003",
+      "title": "Named subagents and teammates",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "4.1-4.2",
+        "confidence": "high",
+        "observation": "A name selects teammate creation in the reference Agent tool; unnamed calls create ordinary subagents."
+      },
+      "proposed_behavior": "Use explicit team creation and keep named litter children as ordinary children.",
+      "reference_relationship": {
+        "state": "deliberately_different",
+        "reason": "The reference selects teammate creation by name. Pig Litter retains named ordinary children and uses an explicit team_spawn tool."
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A named ordinary child remains a child and team_spawn creates a teammate.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-004",
+      "title": "Names and reserved addresses",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/03/reports/03-spawn-backends.md",
+        "section": "3.2",
+        "confidence": "high",
+        "observation": "The reference reserves several addresses and resolves case-insensitive teammate-name collisions with numeric suffixes."
+      },
+      "proposed_behavior": "Validate reserved names and control characters, and document the teammate collision rule.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "Reserved and invalid names fail; duplicate requests follow the documented collision rule without impersonation.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-005",
+      "title": "Member identity and generation",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "1.3, 6.3",
+        "confidence": "high",
+        "observation": "Member records carry identity and join time; stale shutdown approval is checked against membership."
+      },
+      "proposed_behavior": "Bind members and privileged responses to a team and member generation.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A response for an earlier member generation cannot affect its replacement.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-006",
+      "title": "Roster persistence and recovery",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "1.4",
+        "confidence": "high",
+        "observation": "Team metadata mutators use locking and identity-aware updates."
+      },
+      "proposed_behavior": "Persist versioned membership and detect stale leaders on recovery.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "Restart recovers the intended roster without reviving a stale leader.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-007",
+      "title": "Startup rollback",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/03/reports/03-spawn-backends.md",
+        "section": "3.2",
+        "confidence": "high",
+        "observation": "Before startup commits, a failed spawn rolls back provisional membership and owned backend resources."
+      },
+      "proposed_behavior": "Roll back provisional membership when teammate startup fails.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A failed launch leaves no member or owned process behind.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-008",
+      "title": "Shared team workspace",
+      "reference": {
+        "kind": "proposal",
+        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
+        "section": "P03 Build",
+        "confidence": "high",
+        "observation": "The approved plan permits concurrent teammate writers in a shared checkout."
+      },
+      "proposed_behavior": "Allow concurrent writers only for explicit team membership.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "Two teammates can write in one checkout while ordinary child writer guards still apply.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-009",
+      "title": "Optional isolated worktrees",
+      "reference": {
+        "kind": "proposal",
+        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
+        "section": "P03 Build",
+        "confidence": "high",
+        "observation": "The approved plan offers explicit per-teammate worktrees."
+      },
+      "proposed_behavior": "Track worktree ownership and preserve uncommitted changes.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "Teammate edits stay in their worktrees and cleanup preserves uncommitted work.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-010",
+      "title": "Idle teammate lifetime",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "6.2, 6.4b",
+        "confidence": "high",
+        "observation": "Teammate turns can become idle and emit an idle notification."
+      },
+      "proposed_behavior": "Keep an idle teammate addressable and wake it on a peer message; preserve explicit pause.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A message wakes an idle member but does not resume an explicitly paused member.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-011",
+      "title": "Teammate tool registration",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/03/reports/03-spawn-backends.md",
+        "section": "2.5-2.6",
+        "confidence": "high",
+        "observation": "The reference starts in-process and pane teammates with explicit team context."
+      },
+      "proposed_behavior": "Register team tools in member runtimes without widening ordinary child controls.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A teammate has the team tools and an ordinary unselected session does not.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-012",
+      "title": "Member and child authority",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "1, 6",
+        "confidence": "high",
+        "observation": "Teammates, ordinary subagents, and independent sessions are distinct relationships."
+      },
+      "proposed_behavior": "Keep team messaging separate from immediate-parent child control.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A sibling cannot inspect, pause, wait for, or resume another member through child controls.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-013",
+      "title": "Spawn policy hooks",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "4.3",
+        "confidence": "high",
+        "observation": "Spawn hooks may refuse, rewrite, or retype a requested agent."
+      },
+      "proposed_behavior": "Honor enforceable spawn policy without publishing a denied member.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A denied spawn returns feedback and leaves no published member.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-001",
+      "title": "Attributed ordinary messages",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "5.1, 7.1, 7.4",
+        "confidence": "high",
+        "observation": "Plain messages carry a sender and are rendered as attributed teammate input."
+      },
+      "proposed_behavior": "Deliver attributed peer text to the addressed member.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "The recipient sees the sender and body once without a lead provider request.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-002",
+      "title": "Single-recipient addressing",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "5.1, 5.3",
+        "confidence": "high",
+        "observation": "The reference addresses one recipient and rejects broadcast."
+      },
+      "proposed_behavior": "Require one resolved destination for each send.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "A broadcast address is refused and individual sends reach only their intended recipients.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-003",
+      "title": "Message content validation",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/reports/01-tools.md",
+        "section": "3.3-3.4",
+        "confidence": "high",
+        "observation": "The reference checks empty messages, addresses, summaries, and frame-shaped input."
+      },
+      "proposed_behavior": "Validate target and body at the send boundary.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "Empty content, invalid targets, and protocol-shaped ordinary text fail with no delivery.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-004",
+      "title": "Message queue and backpressure",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.1-2.4",
+        "confidence": "high",
+        "observation": "Per-member inboxes track unread messages under a lock."
+      },
+      "proposed_behavior": "Bound pending inboxes and report capacity without losing accepted messages.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "The first over-capacity send fails while prior accepted messages remain recoverable.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-005",
+      "title": "Acceptance and transcript acknowledgement",
+      "reference": {
+        "kind": "proposal",
+        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
+        "section": "P04 Build",
+        "confidence": "high",
+        "observation": "The plan requires separate durable inbox acceptance and native transcript acknowledgement."
+      },
+      "proposed_behavior": "Acknowledge acceptance after persistence and consumption after observed native transcript storage.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "A crash after acceptance and before transcript acknowledgement recovers one delivery.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-006",
+      "title": "Replay and duplicate suppression",
+      "reference": {
+        "kind": "proposal",
+        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
+        "section": "P04 Build",
+        "confidence": "high",
+        "observation": "The plan requires retryable receipts and suppression by message ID across crashes."
+      },
+      "proposed_behavior": "Retain stable message IDs and delivery receipts across restart.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "Replaying the same ID after restart cannot append a duplicate recipient message.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-007",
+      "title": "Sender provenance",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "7.3",
+        "confidence": "high",
+        "observation": "Reference entries classify sender provenance as verified, forged, or unverifiable."
+      },
+      "proposed_behavior": "Derive sender identity from the execution and expose provenance without treating a writable ledger as authentication.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-forgery",
+      "acceptance_assertion": "A forged sender is marked and cannot authorize a privileged action.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-008",
+      "title": "Peer text is not authority",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "7.3-7.5",
+        "confidence": "high",
+        "observation": "Privileged responses require sender and request checks."
+      },
+      "proposed_behavior": "Treat attributed peer text as data, never as user consent or permission.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-forgery",
+      "acceptance_assertion": "A peer message requesting permission or imitating a lead decision does not grant it.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-009",
+      "title": "Message wrapper escaping",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "7.4",
+        "confidence": "high",
+        "observation": "The reference escapes text that could close its message wrapper."
+      },
+      "proposed_behavior": "Keep untrusted text inside its attribution boundary.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-forgery",
+      "acceptance_assertion": "Wrapper-closing text remains visible as peer content and cannot escape its attribution.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-010",
+      "title": "Delivery failures",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "5.4",
+        "confidence": "high",
+        "observation": "The reference distinguishes delivery and routing failures."
+      },
+      "proposed_behavior": "Return explicit failure or uncertainty instead of claiming an unconfirmed delivery.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "Persistence and delivery faults produce distinct non-success results without dropping accepted messages.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-011",
+      "title": "No lead inference relay",
+      "reference": {
+        "kind": "proposal",
+        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
+        "section": "P04 Build",
+        "confidence": "high",
+        "observation": "The plan prohibits using a lead model turn to relay a teammate message."
+      },
+      "proposed_behavior": "Route teammate messages through runtime services without a lead model request.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "A sibling message arrives while the lead provider request count remains unchanged.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-012",
+      "title": "Completion and handback",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "8",
+        "confidence": "high",
+        "observation": "Ordinary subagents return handbacks and completion notifications independently of team messages."
+      },
+      "proposed_behavior": "Preserve existing child completion and retained report semantics.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "An ordinary child completes and its report arrives once after team support is enabled.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-001",
+      "title": "Shared task records",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "3",
+        "confidence": "high",
+        "observation": "Task records contain identity, status, owner, dependencies, and metadata."
+      },
+      "proposed_behavior": "Maintain a shared task graph separate from membership and inboxes.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "Different teammates create, read, update, and list the same task.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-002",
+      "title": "Task states and metadata",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/reports/01-tools.md",
+        "section": "7.1-7.2",
+        "confidence": "high",
+        "observation": "Tasks support pending, in-progress, completed, deletion, and metadata updates."
+      },
+      "proposed_behavior": "Implement the planned task transitions and metadata changes.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "Valid state and metadata updates persist and appear in task reads.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-003",
+      "title": "Dependency-aware claims",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/reports/01-tools.md",
+        "section": "7.2",
+        "confidence": "high",
+        "observation": "Blocked tasks cannot be self-claimed until dependencies resolve."
+      },
+      "proposed_behavior": "Reject blocked self-claims and preserve explicit lead assignment as a separate rule.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "A blocked self-claim fails, a lead assignment remains visible, and completion unblocks the dependent task.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-004",
+      "title": "Atomic claims",
+      "reference": {
+        "kind": "proposal",
+        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
+        "section": "P05 Build",
+        "confidence": "high",
+        "observation": "The plan requires a serialized read-modify-write claim transaction."
+      },
+      "proposed_behavior": "Allow one successful claimant for each available task.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "Four concurrent claimants produce exactly one owner.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-005",
+      "title": "Monotonic task IDs",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "3",
+        "confidence": "high",
+        "observation": "A high-water mark prevents reuse of deleted task IDs."
+      },
+      "proposed_behavior": "Persist a task ID watermark across deletion and restart.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "Deleting the largest task and restarting still yields a greater new ID.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-006",
+      "title": "Task dependency validation",
+      "reference": {
+        "kind": "proposal",
+        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
+        "section": "P05 Build",
+        "confidence": "high",
+        "observation": "The plan requires cycle and missing-dependency validation."
+      },
+      "proposed_behavior": "Reject cycles and cross-team or missing task references without partial updates.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "A cyclic or foreign dependency fails and leaves the graph unchanged.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-007",
+      "title": "Task ownership recovery",
+      "reference": {
+        "kind": "proposal",
+        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
+        "section": "P05 Build",
+        "confidence": "high",
+        "observation": "The plan returns unfinished owned work to pending after member termination."
+      },
+      "proposed_behavior": "Release unfinished task ownership when a teammate terminates.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "After termination, unfinished work is pending and available for a new owner.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-008",
+      "title": "Task lifecycle notices",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 3",
+        "confidence": "high",
+        "observation": "Assignment and completion use distinct typed notifications."
+      },
+      "proposed_behavior": "Publish idempotent assignment and completion notices.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "Replayed task notices do not repeat a transition or duplicate a visible result.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-009",
+      "title": "Task policy hook",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "13",
+        "confidence": "high",
+        "observation": "The reference exposes a task-completion hook."
+      },
+      "proposed_behavior": "Run enforceable completion policy before accepting a task completion.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-hooks",
+      "acceptance_assertion": "A rejecting completion hook leaves the task pending and returns feedback.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-010",
+      "title": "Stop background work",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/reports/01-tools.md",
+        "section": "7.2",
+        "confidence": "high",
+        "observation": "The reference stop tool can terminate a background agent or teammate by its identity."
+      },
+      "proposed_behavior": "Keep force-pause of owned work distinct from the teammate graceful shutdown handshake.",
+      "reference_relationship": {
+        "state": "deliberately_different",
+        "reason": "The reference stop tool terminates a background task or teammate. The planned Pig Litter force-pause retains resumable child state and is distinct from graceful shutdown."
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "Pause retains resumable child state while approved teammate shutdown reaches its separate terminal state.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-011",
+      "title": "Task creation hook",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "13",
+        "confidence": "high",
+        "observation": "The reference exposes a task-creation hook event."
+      },
+      "proposed_behavior": "Record task-creation hook support separately from task-completion policy and keep it unverified until established.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-hooks",
+      "acceptance_assertion": "The report shows whether task creation has an enforceable hook and cites the applicable host evidence.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-001",
+      "title": "Plan approval authority",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "6.4",
+        "confidence": "high",
+        "observation": "Only the lead can approve a pending teammate plan and a response is correlated."
+      },
+      "proposed_behavior": "Bind plan decisions to the lead, request ID, member generation, and deadline.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "Wrong-sender, stale, replayed, and self-approved responses do not authorize implementation.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-002",
+      "title": "Plan rejection and revision",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "6.4",
+        "confidence": "high",
+        "observation": "A rejected plan carries feedback and the teammate can revise it."
+      },
+      "proposed_behavior": "Return feedback and require a new request for a revision.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A rejected plan reaches its author and the revision receives a fresh request ID.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-003",
+      "title": "Plan enforcement at tool boundary",
+      "reference": {
+        "kind": "proposal",
+        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
+        "section": "P06 Build",
+        "confidence": "high",
+        "observation": "The approved plan requires a side-effect veto across direct and nested tool paths."
+      },
+      "proposed_behavior": "Reject prohibited mutation before every enforceable tool call while approval is pending.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "Write, shell, codemode, MCP, and delegated mutation have no side effects and report refusal.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-004",
+      "title": "Permission and sandbox separation",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "7.5",
+        "confidence": "high",
+        "observation": "Tool permission and sandbox permission use separate request and response paths."
+      },
+      "proposed_behavior": "Bridge each permission only when a public host contract enforces it.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "Permission and sandbox decisions cannot substitute for plan approval or each other.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-005",
+      "title": "Graceful shutdown",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "6.3",
+        "confidence": "high",
+        "observation": "A teammate can approve or reject a correlated shutdown request."
+      },
+      "proposed_behavior": "Provide a shutdown handshake distinct from force pause.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "Approval ends the correct member once; rejection retains it and reports a reason.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-006",
+      "title": "Request expiry and restart",
+      "reference": {
+        "kind": "proposal",
+        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
+        "section": "P06 Build",
+        "confidence": "high",
+        "observation": "The plan requires expiration or visible cancellation of pending decisions."
+      },
+      "proposed_behavior": "Expire or visibly cancel unanswered requests without granting approval.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "Timeout and restart leave no request implicitly approved.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-007",
+      "title": "Teammate idle notices",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "6.2, 6.4b",
+        "confidence": "high",
+        "observation": "Teammates report available, interrupted, or failed idle outcomes."
+      },
+      "proposed_behavior": "Emit an attributed idle result or failure once per settled turn.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-idle",
+      "acceptance_assertion": "Separate successful, interrupted, and failed turns produce the correct notice once.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-008",
+      "title": "Teammate idle policy hook",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "13",
+        "confidence": "high",
+        "observation": "The reference exposes a teammate-idle hook."
+      },
+      "proposed_behavior": "Run enforceable idle policy without discarding pending work.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-hooks",
+      "acceptance_assertion": "A rejecting idle hook preserves pending work and returns feedback.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "FRAME-001",
+      "title": "plan_approval_request",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies plan_approval_request as a mailbox frame."
+      },
+      "proposed_behavior": "Preserve the plan_approval_request behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A plan request carries the requester and a correlated request ID.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "plan_approval_request",
+        "role": "mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-002",
+      "title": "plan_approval_response",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies plan_approval_response as a mailbox frame and structured input."
+      },
+      "proposed_behavior": "Preserve the plan_approval_response behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A lead response resolves only its matching pending plan.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "plan_approval_response",
+        "role": "mailbox frame and structured input"
+      }
+    },
+    {
+      "id": "FRAME-003",
+      "title": "shutdown_request",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies shutdown_request as a mailbox frame and structured input."
+      },
+      "proposed_behavior": "Preserve the shutdown_request behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "A shutdown request reaches the intended member with its request ID.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "shutdown_request",
+        "role": "mailbox frame and structured input"
+      }
+    },
+    {
+      "id": "FRAME-004",
+      "title": "shutdown_response",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies shutdown_response as a structured input and classifier form."
+      },
+      "proposed_behavior": "Preserve the shutdown_response behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "A teammate response is correlated and produces an approval or rejection outcome.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "shutdown_response",
+        "role": "structured input and classifier form"
+      }
+    },
+    {
+      "id": "FRAME-005",
+      "title": "shutdown_approved",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies shutdown_approved as a mailbox frame."
+      },
+      "proposed_behavior": "Preserve the shutdown_approved behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "Approval ends the matching teammate and acknowledges the request once.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "shutdown_approved",
+        "role": "mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-006",
+      "title": "shutdown_rejected",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies shutdown_rejected as a mailbox frame."
+      },
+      "proposed_behavior": "Preserve the shutdown_rejected behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "Rejection keeps the teammate addressable and returns its reason.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "shutdown_rejected",
+        "role": "mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-007",
+      "title": "task_assignment",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies task_assignment as a mailbox frame."
+      },
+      "proposed_behavior": "Preserve the task_assignment behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "A task assignment identifies the task and its assigner.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "task_assignment",
+        "role": "mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-008",
+      "title": "task_completed",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies task_completed as a mailbox frame."
+      },
+      "proposed_behavior": "Preserve the task_completed behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "A task completion identifies the completed task and cannot be applied twice.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "task_completed",
+        "role": "mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-009",
+      "title": "teammate_terminated",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies teammate_terminated as a mailbox frame."
+      },
+      "proposed_behavior": "Preserve the teammate_terminated behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "A termination notice identifies the member lifecycle outcome.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "teammate_terminated",
+        "role": "mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-010",
+      "title": "idle_notification",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies idle_notification as a mailbox frame."
+      },
+      "proposed_behavior": "Preserve the idle_notification behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-idle",
+      "acceptance_assertion": "An idle notice carries the member and its available, interrupted, or failed result.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "idle_notification",
+        "role": "mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-011",
+      "title": "permission_request",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies permission_request as a out-of-band mailbox frame."
+      },
+      "proposed_behavior": "Preserve the permission_request behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A tool permission request is correlated to the originating tool call.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "permission_request",
+        "role": "out-of-band mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-012",
+      "title": "permission_response",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies permission_response as a out-of-band mailbox frame."
+      },
+      "proposed_behavior": "Preserve the permission_response behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A permission response is accepted only from the authorized responder for its request.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "permission_response",
+        "role": "out-of-band mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-013",
+      "title": "sandbox_permission_request",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies sandbox_permission_request as a out-of-band mailbox frame."
+      },
+      "proposed_behavior": "Preserve the sandbox_permission_request behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A sandbox request remains distinct from the tool permission request.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "sandbox_permission_request",
+        "role": "out-of-band mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-014",
+      "title": "sandbox_permission_response",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies sandbox_permission_response as a out-of-band mailbox frame."
+      },
+      "proposed_behavior": "Preserve the sandbox_permission_response behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A sandbox response resolves only its matching sandbox request.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "sandbox_permission_response",
+        "role": "out-of-band mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-015",
+      "title": "team_permission_update",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies team_permission_update as a out-of-band classifier form."
+      },
+      "proposed_behavior": "Preserve the team_permission_update behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A permission update cannot widen authority without an enforceable host contract.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "team_permission_update",
+        "role": "out-of-band classifier form"
+      }
+    },
+    {
+      "id": "FRAME-016",
+      "title": "mode_set_request",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "2.5, 6.2-6.4",
+        "confidence": "high",
+        "observation": "The extraction identifies mode_set_request as a out-of-band classifier form."
+      },
+      "proposed_behavior": "Preserve the mode_set_request behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "An inbox mode-change request is rejected rather than silently granting a mode.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "mode_set_request",
+        "role": "out-of-band classifier form"
+      }
+    },
+    {
+      "id": "PEER-001",
+      "title": "Independent session discovery",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "4.7, 5.2-5.4",
+        "confidence": "high",
+        "observation": "The reference discovers local sessions separately from teammates."
+      },
+      "proposed_behavior": "Discover opted-in independent local PiG sessions with separate identity and authority.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "Two independent sessions discover each other without joining the same team.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-002",
+      "title": "Names, references, and collisions",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "4.6, 5.3",
+        "confidence": "high",
+        "observation": "Roster entries can include references and name collisions affect resolution."
+      },
+      "proposed_behavior": "Resolve names deterministically and support explicit pinned references.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "A child, teammate, and independent session with the same name remain individually addressable.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-003",
+      "title": "Pinned session identity",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "5.4, 9",
+        "confidence": "high",
+        "observation": "The reference pins peer identity and reports restarted or contested peers."
+      },
+      "proposed_behavior": "Retain a peer identity pin and reject silent retargeting after a restart.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "A stale or replaced endpoint cannot silently receive a pinned peer message.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-004",
+      "title": "Local transport outcomes",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/02/reports/02-team-state.md",
+        "section": "5.4",
+        "confidence": "high",
+        "observation": "The local route distinguishes stale sockets, busy endpoints, pacing, size, timeout, and uncertain delivery."
+      },
+      "proposed_behavior": "Return route-specific non-success and uncertainty results.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "Stale, busy, oversized, paced, and uncertain sends do not report confirmed delivery.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-005",
+      "title": "Inbound peer approval",
+      "reference": {
+        "kind": "reconstructed_screen",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "12.5",
+        "confidence": "medium",
+        "observation": "Peer messages can be held for user acceptance or denial."
+      },
+      "proposed_behavior": "Require inbound acceptance or denial before enabling a peer route.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "A denied inbound message never reaches the recipient model.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-006",
+      "title": "One-shot idle subscription",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "5.1, 5.3",
+        "confidence": "high",
+        "observation": "Idle subscriptions are limited to local independent sessions from the main conversation."
+      },
+      "proposed_behavior": "Support one idle or exit notice from a main conversation to an independent local session.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "The subscription fires once and teammate or subagent subscription attempts are refused.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-007",
+      "title": "Local peers have no child controls",
+      "reference": {
+        "kind": "proposal",
+        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
+        "section": "P09 Build",
+        "confidence": "high",
+        "observation": "The plan separates local peer references from child control authority."
+      },
+      "proposed_behavior": "Forbid child lifecycle controls on independent peers.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "A local peer cannot be inspected, stopped, or resumed as a child.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-008",
+      "title": "Proprietary remote routes",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "5.4, 9",
+        "confidence": "high",
+        "observation": "The reference has cloud, Remote Control, and Desktop routes."
+      },
+      "proposed_behavior": "Report those proprietary routes as unsupported rather than claiming global parity.",
+      "reference_relationship": {
+        "state": "deliberately_different",
+        "reason": "The reference includes proprietary remote routes. The proposed Pig Litter scope reports those routes as unsupported."
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "The report shows each unavailable proprietary route as unsupported with a reason.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-009",
+      "title": "Discovery limits",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "6",
+        "confidence": "high",
+        "observation": "The reference reports list truncation and partial discovery failure."
+      },
+      "proposed_behavior": "Expose truncated and partial discovery results without treating them as a complete roster.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "A discovery failure or limit is visible and does not hide already verified rows.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-010",
+      "title": "Cross-session file transfer",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/reports/01-tools.md",
+        "section": "8",
+        "confidence": "high",
+        "observation": "The extraction identifies separate user-file and cross-session file delivery tools."
+      },
+      "proposed_behavior": "Track file transfer separately from peer text delivery and retain an unverified status until its scope and evidence are established.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "The report identifies file-transfer evidence separately and does not infer support from peer text delivery.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "FILE-001",
+      "title": "User file delivery",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/reports/01-tools.md",
+        "section": "8",
+        "confidence": "high",
+        "observation": "The reference separately exposes a gated tool for delivering files to the user."
+      },
+      "proposed_behavior": "Track user-directed file delivery separately from cross-session messaging and file transfer.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-parity-report",
+      "acceptance_assertion": "The report records the status and evidence of user-directed file delivery independently of peer text messaging.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "OBS-001",
+      "title": "Observer pairing",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/reports/01-tools.md",
+        "section": "5",
+        "confidence": "high",
+        "observation": "An observer report can target the observed worker or its coordinator."
+      },
+      "proposed_behavior": "Bind each observer to both an observed member and a report destination.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-observers",
+      "acceptance_assertion": "Reports reach the configured observed member or coordinator and no other destination.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "OBS-002",
+      "title": "Observer report tool",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/reports/01-tools.md",
+        "section": "5",
+        "confidence": "high",
+        "observation": "ObserverReport is a dedicated write to the paired destination."
+      },
+      "proposed_behavior": "Expose a dedicated observer report without granting ordinary mutation.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-observers",
+      "acceptance_assertion": "An observer can submit its report while unrelated writes remain refused.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "OBS-003",
+      "title": "Observer tool restrictions",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/reports/01-tools.md",
+        "section": "2.2, 5",
+        "confidence": "medium",
+        "observation": "The extracted observer filter removes messaging, delegation, and selected scheduling tools, then adds the dedicated report tool."
+      },
+      "proposed_behavior": "Enforce observer restrictions at the runtime tool boundary, including the plan requirement to deny unrelated mutation.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-observers",
+      "acceptance_assertion": "Observer mutation, delegation, and ordinary peer sends fail while inspection remains available.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "OBS-004",
+      "title": "Bounded observer activity",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/reports/01-tools.md",
+        "section": "5",
+        "confidence": "high",
+        "observation": "Observers receive activity digests and can remain silent when no report is warranted."
+      },
+      "proposed_behavior": "Bound observer activity digests and permit silence.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-observers",
+      "acceptance_assertion": "A paired observer receives a bounded digest and can finish without sending a report.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "OBS-005",
+      "title": "Observer pairing lifecycle",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/03/reports/03-spawn-backends.md",
+        "section": "5.6",
+        "confidence": "high",
+        "observation": "Observer pairings track arming, stopping, and report destinations."
+      },
+      "proposed_behavior": "Retain an armed or retired pairing and reject reports from inactive pairings.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-observers",
+      "acceptance_assertion": "An armed pairing delivers to its target and a retired pairing refuses later reports.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "OBS-006",
+      "title": "Observer creation trigger",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/03/reports/03-spawn-backends.md",
+        "section": "5.6",
+        "confidence": "high",
+        "observation": "The reference can automatically start an observer for a configured agent type."
+      },
+      "proposed_behavior": "Document whether observer creation is automatic or explicit and preserve that distinction in the parity report.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-observers",
+      "acceptance_assertion": "The observed creation trigger matches the documented policy and any difference from automatic creation remains visible.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-001",
+      "title": "Teammate overview",
+      "reference": {
+        "kind": "reconstructed_screen",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "12.1",
+        "confidence": "medium",
+        "observation": "The extracted team panel shows member identity, state, work, and overflow."
+      },
+      "proposed_behavior": "Show member identity, state, current work, and overflow in the terminal.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "The view distinguishes busy, idle, paused, failed, and terminated members at supported widths.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-002",
+      "title": "Member navigation and detail",
+      "reference": {
+        "kind": "reconstructed_screen",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "12.2-12.3",
+        "confidence": "medium",
+        "observation": "The reference has selection, detail, foreground, stop, and back interactions."
+      },
+      "proposed_behavior": "Allow selection and passive inspection without waking a member.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "Selecting a member shows its own transcript and does not trigger a provider request.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-003",
+      "title": "Task and decision controls",
+      "reference": {
+        "kind": "reconstructed_screen",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "12.2-12.3",
+        "confidence": "medium",
+        "observation": "The reconstructed screens include task and approval states."
+      },
+      "proposed_behavior": "Expose tasks and correlated plan or shutdown decisions in the terminal.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "A user resolves the selected request and sees the corresponding task or gate state.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-004",
+      "title": "Direct terminal messaging",
+      "reference": {
+        "kind": "reconstructed_screen",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "12.6",
+        "confidence": "medium",
+        "observation": "The reference reconstructs prompt addressing for teammates."
+      },
+      "proposed_behavior": "Provide direct terminal messaging through a verified host input hook or an explicit command.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "A user message reaches only the selected teammate with user attribution.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-005",
+      "title": "Accessible states and widths",
+      "reference": {
+        "kind": "reconstructed_screen",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "12",
+        "confidence": "medium",
+        "observation": "The reference defines text labels and screen-reader paths alongside visual states."
+      },
+      "proposed_behavior": "Use text labels alongside color and keep controls usable at 80, 120, and 150 columns.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "States are understandable without color and rendered rows fit each tested width.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-006",
+      "title": "Captured background empty state",
+      "reference": {
+        "kind": "captured_runtime",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/screens/SCREENS.md",
+        "section": "Captured frame 2",
+        "confidence": "high",
+        "observation": "An empty background dialog was captured without a model turn."
+      },
+      "proposed_behavior": "Preserve an understandable empty state in the existing terminal controls.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "An empty team or child view remains navigable and contains no phantom members.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-007",
+      "title": "Captured session listing",
+      "reference": {
+        "kind": "captured_runtime",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/screens/SCREENS.md",
+        "section": "Captured frame 6",
+        "confidence": "high",
+        "observation": "The agent view was captured with a local session list."
+      },
+      "proposed_behavior": "Distinguish independent session entries from team and child entries.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "A local session list labels session identity and relationship correctly.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-008",
+      "title": "Lifecycle and delivery notices",
+      "reference": {
+        "kind": "reconstructed_screen",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "12.5",
+        "confidence": "medium",
+        "observation": "Lifecycle and delivery notices were reconstructed from implementation strings."
+      },
+      "proposed_behavior": "Show member lifecycle changes and explicit message failure.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "A failed send and a terminated member produce visible, distinguishable results.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-009",
+      "title": "Terminal input and recovery",
+      "reference": {
+        "kind": "proposal",
+        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
+        "section": "P07 Build",
+        "confidence": "high",
+        "observation": "The plan requires keyboard, resize, selection, and retained state verification."
+      },
+      "proposed_behavior": "Preserve keys, selection, and retained child controls across reload and resize.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "Arrows, Enter, Escape, scrolling, resize, and reload preserve the selected identity.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "BACKEND-001",
+      "title": "Embedded teammate backend",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/03/reports/03-spawn-backends.md",
+        "section": "2.6",
+        "confidence": "high",
+        "observation": "The reference supports in-process teammates."
+      },
+      "proposed_behavior": "Run embedded teammates with the same team identity and protocol as pane members.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P08",
+      "acceptance_scenario": "team-backends",
+      "acceptance_assertion": "An embedded teammate reaches ready state and participates in the shared team.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "BACKEND-002",
+      "title": "tmux backend",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/03/reports/03-spawn-backends.md",
+        "section": "2.2-2.4",
+        "confidence": "high",
+        "observation": "The reference launches teammates in tmux panes or sessions."
+      },
+      "proposed_behavior": "Launch selected teammates in owned tmux panes with explicit process identity.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P08",
+      "acceptance_scenario": "team-backends",
+      "acceptance_assertion": "Two tmux members use their intended directories and leave no owned panes after shutdown.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "BACKEND-003",
+      "title": "iTerm2 backend",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/03/reports/03-spawn-backends.md",
+        "section": "2.5",
+        "confidence": "high",
+        "observation": "The reference supports native iTerm2 pane teammates."
+      },
+      "proposed_behavior": "Launch and clean up iTerm2 teammates on a real supported macOS host.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P08",
+      "acceptance_scenario": "team-backends",
+      "acceptance_assertion": "A real iTerm2 pane starts, exchanges a message, and closes under the same member identity.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "BACKEND-004",
+      "title": "Backend selection and fallback",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/03/reports/03-spawn-backends.md",
+        "section": "1.2-1.3",
+        "confidence": "high",
+        "observation": "Automatic selection chooses a backend based on terminal availability and can fall back."
+      },
+      "proposed_behavior": "Show automatic embedded fallback and reject an explicitly unavailable backend.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P08",
+      "acceptance_scenario": "team-backends",
+      "acceptance_assertion": "Unavailable auto mode falls back visibly; explicit unavailable mode fails with no orphan member.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "BACKEND-005",
+      "title": "Pane cleanup and ownership",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/03/reports/03-spawn-backends.md",
+        "section": "4",
+        "confidence": "high",
+        "observation": "The reference tracks pane launch and cleanup around teammate lifecycle."
+      },
+      "proposed_behavior": "Track owned process and pane identity and leave unrelated sessions untouched.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P08",
+      "acceptance_scenario": "team-backends",
+      "acceptance_assertion": "Killing or restarting a pane reports its state and cleanup affects only owned resources.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "BACKEND-006",
+      "title": "Independent selected extension process",
+      "reference": {
+        "kind": "proposal",
+        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
+        "section": "P02 Build; P08 Build",
+        "confidence": "high",
+        "observation": "The plan requires a real independent PiG process with explicitly selected extension tools."
+      },
+      "proposed_behavior": "Launch a separate selected PiG process using the verified host contract.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P08",
+      "acceptance_scenario": "team-backends",
+      "acceptance_assertion": "The process identity and registered extension tools appear in retained runtime evidence.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "BACKEND-007",
+      "title": "Backend-specific workspaces",
+      "reference": {
+        "kind": "proposal",
+        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
+        "section": "P08 Build",
+        "confidence": "high",
+        "observation": "The plan requires explicit teammate directories and retained worktree ownership."
+      },
+      "proposed_behavior": "Pass the selected directory and ownership record to each backend.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P08",
+      "acceptance_scenario": "team-backends",
+      "acceptance_assertion": "Quoted directories are preserved and separate worktrees retain uncommitted edits.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "team-roster",
+      "owner": "P03",
+      "status": "planned",
+      "expected": "Members share a flat roster while ordinary child ownership remains intact."
+    },
+    {
+      "id": "team-messages",
+      "owner": "P04",
+      "status": "planned",
+      "expected": "Attributed peer messages reach their intended recipients with durable, observable outcomes."
+    },
+    {
+      "id": "team-forgery",
+      "owner": "P04",
+      "status": "planned",
+      "expected": "Forged identities and protocol-shaped text cannot grant authority."
+    },
+    {
+      "id": "team-tasks",
+      "owner": "P05",
+      "status": "planned",
+      "expected": "Members coordinate through a consistent task graph with atomic claims."
+    },
+    {
+      "id": "team-plan",
+      "owner": "P06",
+      "status": "planned",
+      "expected": "Plan and permission decisions remain correlated and enforceable."
+    },
+    {
+      "id": "team-shutdown",
+      "owner": "P06",
+      "status": "planned",
+      "expected": "Graceful shutdown requests produce the correct correlated lifecycle outcome."
+    },
+    {
+      "id": "team-idle",
+      "owner": "P06",
+      "status": "planned",
+      "expected": "Idle notices identify the member and settled outcome."
+    },
+    {
+      "id": "team-hooks",
+      "owner": "P06",
+      "status": "planned",
+      "expected": "Rejecting policy hooks preserve work and return their refusal."
+    },
+    {
+      "id": "team-view",
+      "owner": "P07",
+      "status": "planned",
+      "expected": "Terminal controls show the selected team state and preserve existing navigation."
+    },
+    {
+      "id": "team-backends",
+      "owner": "P08",
+      "status": "planned",
+      "expected": "Embedded and selected pane backends preserve member identity and lifecycle."
+    },
+    {
+      "id": "team-local-peers",
+      "owner": "P09",
+      "status": "planned",
+      "expected": "Independent opted-in sessions use explicit discovery and route outcomes."
+    },
+    {
+      "id": "team-observers",
+      "owner": "P10",
+      "status": "planned",
+      "expected": "An observer receives bounded activity and reports only to its paired destination."
+    },
+    {
+      "id": "team-parity-report",
+      "owner": "P10",
+      "status": "planned",
+      "expected": "The report distinguishes reference capabilities, product evidence, and unsupported routes."
+    },
+    {
+      "id": "baseline",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Direct child spawn and wait produce the same result with and without evidence capture."
+    },
+    {
+      "id": "startup-source",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "A real source-selected process records its binary, extension selection, registration, and terminal capture."
+    },
+    {
+      "id": "startup-standalone",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "A real standalone-selected process records its executable identity and extension registration."
+    },
+    {
+      "id": "startup-piglet",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "A real Piglet-selected process registers the extension and completes a worker task."
+    },
+    {
+      "id": "startup-unselected",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "An unselected process starts without collaboration registrations."
+    },
+    {
+      "id": "host-busy-message",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Record busy custom-message delivery, provider requests, transcript storage, acknowledgement, crash recovery, and same-ID replay."
+    },
+    {
+      "id": "host-idle-message",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Record idle custom-message delivery and distinguish transcript storage from inference and acknowledgement."
+    },
+    {
+      "id": "host-crash-after-acceptance",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Interrupt after acceptance and before native transcript append, then retain the restarted session observation."
+    },
+    {
+      "id": "host-crash-after-append",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Interrupt after native transcript append and before acknowledgement, then inspect the restarted transcript."
+    },
+    {
+      "id": "host-crash-after-acknowledgement",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Interrupt after acknowledgement and inspect the retained session after restart."
+    },
+    {
+      "id": "host-same-id-replay",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Retry the same message ID after restart and count the actual native transcript entries."
+    },
+    {
+      "id": "host-tool-veto",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "A real rejecting tool hook refuses direct and nested fixture writes before their side effects, or records a reproducible unsupported result."
+    },
+    {
+      "id": "host-independent-process",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "An independently started PiG process exposes explicitly selected extension tools and its session identity, or records a reproducible unsupported result."
+    },
+    {
+      "id": "fixture-isolation",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Concurrent fixtures with the same task names retain separate ports, files, session IDs, and captures."
+    },
+    {
+      "id": "fixture-interrupt",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "An interrupted child attempt remains inconclusive and retains its diagnostic artifacts."
+    },
+    {
+      "id": "capture-performance",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Compare interleaved startup samples and separately record capture overhead and evidence serialization time."
+    }
+  ]
+}
