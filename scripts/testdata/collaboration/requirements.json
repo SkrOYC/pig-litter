@@ -88,18 +88,18 @@
       "title": "Names and reserved addresses",
       "reference": {
         "kind": "static_implementation",
-        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
-        "section": "1, 4.1, 5.1",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/03/reports/03-spawn-backends.md",
+        "section": "3.2",
         "confidence": "high",
-        "observation": "Names address teammates and several names are reserved."
+        "observation": "The reference reserves several addresses and resolves case-insensitive teammate-name collisions with numeric suffixes."
       },
-      "proposed_behavior": "Validate names, reserved addresses, collisions, and control characters at admission.",
+      "proposed_behavior": "Validate reserved names and control characters, and document the teammate collision rule.",
       "reference_relationship": {
         "state": "unreviewed"
       },
       "owner": "P03",
       "acceptance_scenario": "team-roster",
-      "acceptance_assertion": "Invalid and duplicate names fail without creating members.",
+      "acceptance_assertion": "Reserved and invalid names fail; duplicate requests follow the documented collision rule without impersonation.",
       "product_evidence": {
         "state": "unverified",
         "records": []
@@ -155,9 +155,9 @@
       "reference": {
         "kind": "static_implementation",
         "path": "/mnt/empty/rea/work/claude-2.1.322/agents/03/reports/03-spawn-backends.md",
-        "section": "2.1, 4",
+        "section": "3.2",
         "confidence": "high",
-        "observation": "A failed spawn rolls back provisional membership and owned backend resources."
+        "observation": "Before startup commits, a failed spawn rolls back provisional membership and owned backend resources."
       },
       "proposed_behavior": "Roll back provisional membership when teammate startup fails.",
       "reference_relationship": {
@@ -760,6 +760,51 @@
       "owner": "P06",
       "acceptance_scenario": "team-hooks",
       "acceptance_assertion": "A rejecting completion hook leaves the task pending and returns feedback.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-010",
+      "title": "Stop background work",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/reports/01-tools.md",
+        "section": "7.2",
+        "confidence": "high",
+        "observation": "The reference stop tool can terminate a background agent or teammate by its identity."
+      },
+      "proposed_behavior": "Keep force-pause of owned work distinct from the teammate graceful shutdown handshake.",
+      "reference_relationship": {
+        "state": "deliberately_different",
+        "reason": "The reference stop tool terminates a background task or teammate. The planned Pig Litter force-pause retains resumable child state and is distinct from graceful shutdown."
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "Pause retains resumable child state while approved teammate shutdown reaches its separate terminal state.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-011",
+      "title": "Task creation hook",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/REPORT.md",
+        "section": "13",
+        "confidence": "high",
+        "observation": "The reference exposes a task-creation hook event."
+      },
+      "proposed_behavior": "Record task-creation hook support separately from task-completion policy and keep it unverified until established.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-hooks",
+      "acceptance_assertion": "The report shows whether task creation has an enforceable hook and cites the applicable host evidence.",
       "product_evidence": {
         "state": "unverified",
         "records": []
@@ -1566,14 +1611,35 @@
         "confidence": "high",
         "observation": "The extraction identifies separate user-file and cross-session file delivery tools."
       },
-      "proposed_behavior": "Keep file transfer as an explicit unsupported route unless a later scoped implementation supplies it.",
+      "proposed_behavior": "Track file transfer separately from peer text delivery and retain an unverified status until its scope and evidence are established.",
       "reference_relationship": {
-        "state": "deliberately_different",
-        "reason": "The reference exposes file transfer. The proposed Pig Litter scope leaves file transfer unsupported unless later work adds it."
+        "state": "unreviewed"
       },
       "owner": "P09",
       "acceptance_scenario": "team-local-peers",
-      "acceptance_assertion": "The report identifies file-transfer support separately from peer text delivery.",
+      "acceptance_assertion": "The report identifies file-transfer evidence separately and does not infer support from peer text delivery.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "FILE-001",
+      "title": "User file delivery",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/reports/01-tools.md",
+        "section": "8",
+        "confidence": "high",
+        "observation": "The reference separately exposes a gated tool for delivering files to the user."
+      },
+      "proposed_behavior": "Track user-directed file delivery separately from cross-session messaging and file transfer.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-parity-report",
+      "acceptance_assertion": "The report records the status and evidence of user-directed file delivery independently of peer text messaging.",
       "product_evidence": {
         "state": "unverified",
         "records": []
@@ -1630,10 +1696,10 @@
         "kind": "static_implementation",
         "path": "/mnt/empty/rea/work/claude-2.1.322/reports/01-tools.md",
         "section": "2.2, 5",
-        "confidence": "high",
-        "observation": "The reference strips mutation, delegation, and messaging tools from observers."
+        "confidence": "medium",
+        "observation": "The extracted observer filter removes messaging, delegation, and selected scheduling tools, then adds the dedicated report tool."
       },
-      "proposed_behavior": "Enforce observer restrictions at the runtime tool boundary.",
+      "proposed_behavior": "Enforce observer restrictions at the runtime tool boundary, including the plan requirement to deny unrelated mutation.",
       "reference_relationship": {
         "state": "unreviewed"
       },
@@ -1649,19 +1715,63 @@
       "id": "OBS-004",
       "title": "Bounded observer activity",
       "reference": {
-        "kind": "proposal",
-        "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
-        "section": "P10 Build",
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/reports/01-tools.md",
+        "section": "5",
         "confidence": "high",
-        "observation": "The plan calls for bounded activity digests and paired report routing."
+        "observation": "Observers receive activity digests and can remain silent when no report is warranted."
       },
-      "proposed_behavior": "Bound observed activity data and keep observer context separate.",
+      "proposed_behavior": "Bound observer activity digests and permit silence.",
       "reference_relationship": {
         "state": "unreviewed"
       },
       "owner": "P10",
       "acceptance_scenario": "team-observers",
-      "acceptance_assertion": "An observer receives a bounded digest and cannot read an unrelated member conversation.",
+      "acceptance_assertion": "A paired observer receives a bounded digest and can finish without sending a report.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "OBS-005",
+      "title": "Observer pairing lifecycle",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/03/reports/03-spawn-backends.md",
+        "section": "5.6",
+        "confidence": "high",
+        "observation": "Observer pairings track arming, stopping, and report destinations."
+      },
+      "proposed_behavior": "Retain an armed or retired pairing and reject reports from inactive pairings.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-observers",
+      "acceptance_assertion": "An armed pairing delivers to its target and a retired pairing refuses later reports.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "OBS-006",
+      "title": "Observer creation trigger",
+      "reference": {
+        "kind": "static_implementation",
+        "path": "/mnt/empty/rea/work/claude-2.1.322/agents/03/reports/03-spawn-backends.md",
+        "section": "5.6",
+        "confidence": "high",
+        "observation": "The reference can automatically start an observer for a configured agent type."
+      },
+      "proposed_behavior": "Document whether observer creation is automatic or explicit and preserve that distinction in the parity report.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-observers",
+      "acceptance_assertion": "The observed creation trigger matches the documented policy and any difference from automatic creation remains visible.",
       "product_evidence": {
         "state": "unverified",
         "records": []
@@ -1981,7 +2091,7 @@
       "reference": {
         "kind": "proposal",
         "path": "/home/oscar/.codex/pstack/docs/pig-litter-collaboration-parity-plan.md",
-        "section": "P02 Probes; P08 Build",
+        "section": "P02 Build; P08 Build",
         "confidence": "high",
         "observation": "The plan requires a real independent PiG process with explicitly selected extension tools."
       },
@@ -2092,6 +2202,12 @@
       "owner": "P10",
       "status": "planned",
       "expected": "An observer receives bounded activity and reports only to its paired destination."
+    },
+    {
+      "id": "team-parity-report",
+      "owner": "P10",
+      "status": "planned",
+      "expected": "The report distinguishes reference capabilities, product evidence, and unsupported routes."
     },
     {
       "id": "baseline",
