@@ -15,7 +15,7 @@ func collaborationDecodeJSON(data []byte, value any) error {
 		return errors.New("JSON document exceeds size limit")
 	}
 	keys := json.NewDecoder(bytes.NewReader(data))
-	if err := collaborationCheckJSONValue(keys); err != nil {
+	if err := collaborationCheckJSONValue(keys, 0); err != nil {
 		return err
 	}
 	if _, err := keys.Token(); !errors.Is(err, io.EOF) {
@@ -29,7 +29,10 @@ func collaborationDecodeJSON(data []byte, value any) error {
 	return decoder.Decode(value)
 }
 
-func collaborationCheckJSONValue(decoder *json.Decoder) error {
+func collaborationCheckJSONValue(decoder *json.Decoder, depth int) error {
+	if depth > 128 {
+		return errors.New("JSON nesting exceeds limit")
+	}
 	token, err := decoder.Token()
 	if err != nil {
 		return err
@@ -51,13 +54,13 @@ func collaborationCheckJSONValue(decoder *json.Decoder) error {
 				return fmt.Errorf("duplicate or invalid JSON field %q", key)
 			}
 			seen[name] = true
-			if err := collaborationCheckJSONValue(decoder); err != nil {
+			if err := collaborationCheckJSONValue(decoder, depth+1); err != nil {
 				return err
 			}
 		}
 	case '[':
 		for decoder.More() {
-			if err := collaborationCheckJSONValue(decoder); err != nil {
+			if err := collaborationCheckJSONValue(decoder, depth+1); err != nil {
 				return err
 			}
 		}

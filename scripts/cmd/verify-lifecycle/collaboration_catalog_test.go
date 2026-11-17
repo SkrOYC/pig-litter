@@ -99,6 +99,7 @@ func TestCollaborationJSONRejectsAmbiguousDocuments(t *testing.T) {
 		`{"state":"unverified","state":"matched"}`,
 		`{"state":"unverified","unknown":true}`,
 		`{"state":"unverified"} {"state":"matched"}`,
+		strings.Repeat("[", 130) + "0" + strings.Repeat("]", 130),
 	} {
 		if err := collaborationDecodeJSON([]byte(input), &value); err == nil {
 			t.Fatalf("accepted %s", input)

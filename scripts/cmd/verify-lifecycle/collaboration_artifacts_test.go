@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,6 +69,9 @@ func TestCollaborationRejectsArtifactEscapeAndSyntheticMedia(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
+	if _, _, err := collaborationValidateArtifacts(context.Background(), root, make([]collaborationArtifact, 129), collaborationMediaTools{}); err == nil || !strings.Contains(err.Error(), "too many artifacts") {
+		t.Fatalf("artifact-count limit error = %v", err)
+	}
 	outside := filepath.Join(t.TempDir(), "outside.png")
 	data := collaborationPNG(t, color.RGBA{B: 255, A: 255})
 	if err := os.WriteFile(outside, data, 0o600); err != nil {
@@ -87,6 +91,31 @@ func TestCollaborationRejectsArtifactEscapeAndSyntheticMedia(t *testing.T) {
 	local.Origin = "video_frame"
 	if _, _, err := collaborationValidateArtifacts(context.Background(), root, []collaborationArtifact{local}, collaborationMediaTools{}); err == nil || !strings.Contains(err.Error(), "source video") {
 		t.Fatalf("unbound video frame error = %v", err)
+	}
+}
+
+func TestCollaborationVideoSnapshotKeepsSelectedBytes(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "source.mp4")
+	original := []byte("selected bytes")
+	if err := os.WriteFile(name, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	snapshot, err := collaborationSnapshotVideo(source, collaborationTestDigest(original))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	if err := os.WriteFile(name, []byte("changed bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(snapshot)
+	if err != nil || string(data) != "selected bytes" {
+		t.Fatalf("immutable video snapshot = %q, %v", data, err)
 	}
 }
 
@@ -142,5 +171,9 @@ func TestCollaborationChecksVideoAndFrameContents(t *testing.T) {
 	broken := collaborationWriteArtifact(t, dir, "broken.mp4", "video", "live_terminal", videoData[:len(videoData)/2])
 	if _, _, err := collaborationValidateArtifacts(context.Background(), root, []collaborationArtifact{broken}, tools); err == nil {
 		t.Fatal("accepted a truncated video with a matching digest")
+	}
+	playlist := collaborationWriteArtifact(t, dir, "playlist.m3u8", "video", "live_terminal", []byte("#EXTM3U\n#EXT-X-ENDLIST\n"))
+	if _, _, err := collaborationValidateArtifacts(context.Background(), root, []collaborationArtifact{playlist}, tools); err == nil {
+		t.Fatal("accepted a playlist as a self-contained terminal video")
 	}
 }

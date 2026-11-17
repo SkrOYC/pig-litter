@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -17,6 +18,7 @@ type collaborationTarget struct {
 	ProductCommit       string `json:"product_commit"`
 	DriverCommit        string `json:"driver_commit"`
 	ProductBinarySHA256 string `json:"product_binary_sha256"`
+	HostBinarySHA256    string `json:"host_binary_sha256"`
 	CatalogSHA256       string `json:"catalog_sha256"`
 }
 
@@ -40,6 +42,8 @@ type collaborationAttempt struct {
 	Purpose          string                  `json:"purpose"`
 	Channel          string                  `json:"channel"`
 	Platform         string                  `json:"platform"`
+	Architecture     string                  `json:"architecture"`
+	Terminal         string                  `json:"terminal,omitempty"`
 	Host             string                  `json:"host"`
 	Command          []string                `json:"command"`
 	Observation      string                  `json:"observation"`
@@ -66,6 +70,8 @@ type collaborationEvidenceSet struct {
 	Target          collaborationTarget
 	SelectionSHA256 string
 	Attempts        []collaborationValidatedAttempt
+	catalogData     []byte
+	expectedTarget  collaborationTarget
 }
 
 var (
@@ -98,7 +104,7 @@ func collaborationSelectEvidence(ctx context.Context, evidenceDirectory string, 
 	}
 	defer root.Close()
 	selectionHash := sha256.Sum256(selectionData)
-	result := collaborationEvidenceSet{Target: expected, SelectionSHA256: hex.EncodeToString(selectionHash[:])}
+	result := collaborationEvidenceSet{Target: expected, SelectionSHA256: hex.EncodeToString(selectionHash[:]), catalogData: bytes.Clone(catalogData), expectedTarget: expected}
 	ids := make(map[string]bool)
 	paths := make(map[string]bool)
 	for _, selected := range selection.Attempts {
@@ -195,14 +201,14 @@ func collaborationReadSelectedFile(root *os.Root, name, expected string) ([]byte
 }
 
 func (target collaborationTarget) validate() error {
-	if strings.TrimSpace(target.Branch) == "" || !collaborationCommit.MatchString(target.ProductCommit) || !collaborationCommit.MatchString(target.DriverCommit) || !collaborationSHA256(target.ProductBinarySHA256) || !collaborationSHA256(target.CatalogSHA256) {
+	if strings.TrimSpace(target.Branch) == "" || !collaborationCommit.MatchString(target.ProductCommit) || !collaborationCommit.MatchString(target.DriverCommit) || !collaborationSHA256(target.ProductBinarySHA256) || !collaborationSHA256(target.HostBinarySHA256) || !collaborationSHA256(target.CatalogSHA256) {
 		return fmt.Errorf("missing or invalid branch, commit, or digest")
 	}
 	return nil
 }
 
 func (attempt collaborationAttempt) validate(catalog collaborationCatalog, expected collaborationTarget) error {
-	if attempt.Version != 1 || !collaborationAttemptID.MatchString(attempt.ID) || attempt.Target != expected || attempt.ScenarioRevision <= 0 || !collaborationNonempty(attempt.Platform, attempt.Host, attempt.Observation) || len(attempt.Command) == 0 || strings.TrimSpace(attempt.Command[0]) == "" {
+	if attempt.Version != 1 || !collaborationAttemptID.MatchString(attempt.ID) || attempt.Target != expected || attempt.ScenarioRevision <= 0 || !collaborationNonempty(attempt.Platform, attempt.Architecture, attempt.Host, attempt.Observation) || len(attempt.Command) == 0 || strings.TrimSpace(attempt.Command[0]) == "" {
 		return fmt.Errorf("invalid attempt identity or target")
 	}
 	if !collaborationOneOf(attempt.Purpose, "product", "research", "verification") || !collaborationOneOf(attempt.Channel, "unit", "live", "performance", "research") || (attempt.Purpose == "research") != (attempt.Channel == "research") {

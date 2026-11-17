@@ -24,11 +24,11 @@ func collaborationTestEvidence(t *testing.T) (string, []byte, collaborationTarge
 	}
 	target := collaborationTarget{
 		Branch: "test/example", ProductCommit: strings.Repeat("a", 40), DriverCommit: strings.Repeat("b", 40),
-		ProductBinarySHA256: strings.Repeat("c", 64), CatalogSHA256: collaborationTestDigest(catalogData),
+		ProductBinarySHA256: strings.Repeat("c", 64), HostBinarySHA256: strings.Repeat("d", 64), CatalogSHA256: collaborationTestDigest(catalogData),
 	}
 	attempt := collaborationAttempt{
 		Version: 1, ID: "run-1", Scenario: "team-roster", ScenarioRevision: 1, Target: target,
-		Purpose: "product", Channel: "unit", Platform: "linux", Host: "fixture-host",
+		Purpose: "product", Channel: "unit", Platform: "linux", Architecture: "amd64", Host: "fixture-host",
 		Command: []string{"fixture"}, Observation: "fixture completed", Outcome: "passed",
 		Events: []collaborationEvent{{Name: "complete", OffsetNS: 1}}, Claims: []string{"TEAM-001"}, Artifacts: []collaborationArtifact{},
 	}
@@ -112,6 +112,16 @@ func TestCollaborationRejectsAmbiguousOrStaleEvidence(t *testing.T) {
 			*selected = collaborationWriteAttempt(t, root, "one", *attempt)
 			return []collaborationSelectedRecord{*selected}
 		}, "invalid attempt identity or target"},
+		{"wrong host binary", func(t *testing.T, root string, target *collaborationTarget, attempt *collaborationAttempt, selected *collaborationSelectedRecord) []collaborationSelectedRecord {
+			attempt.Target.HostBinarySHA256 = strings.Repeat("e", 64)
+			*selected = collaborationWriteAttempt(t, root, "one", *attempt)
+			return []collaborationSelectedRecord{*selected}
+		}, "invalid attempt identity or target"},
+		{"missing architecture", func(t *testing.T, root string, target *collaborationTarget, attempt *collaborationAttempt, selected *collaborationSelectedRecord) []collaborationSelectedRecord {
+			attempt.Architecture = ""
+			*selected = collaborationWriteAttempt(t, root, "one", *attempt)
+			return []collaborationSelectedRecord{*selected}
+		}, "invalid attempt identity or target"},
 		{"duplicate claim", func(t *testing.T, root string, target *collaborationTarget, attempt *collaborationAttempt, selected *collaborationSelectedRecord) []collaborationSelectedRecord {
 			attempt.Claims = append(attempt.Claims, "TEAM-001")
 			*selected = collaborationWriteAttempt(t, root, "one", *attempt)
@@ -159,5 +169,50 @@ func TestCollaborationRetainsFailedFixtureResult(t *testing.T) {
 	}
 	if len(evidence.Attempts) != 1 || evidence.Attempts[0].ResultsPassed {
 		t.Fatalf("failed fixture was treated as successful: %#v", evidence)
+	}
+}
+
+func TestCollaborationSelectionOwnsCatalogSnapshot(t *testing.T) {
+	root, catalogData, target, _ := collaborationTestEvidence(t)
+	catalog, evidence, err := collaborationSelectEvidence(context.Background(), root, collaborationSelectionData(t, target), catalogData, target, collaborationMediaTools{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range catalog.Requirements {
+		if catalog.Requirements[index].ID == "TEAM-001" {
+			catalog.Requirements[index].ReferenceRelationship = collaborationRelationship{State: "equivalent"}
+		}
+	}
+	for index := range catalog.Scenarios {
+		if catalog.Scenarios[index].ID == "team-roster" {
+			catalog.Scenarios[index].Status = "implemented"
+		}
+	}
+	catalogData[0] = 'X'
+	_, synthetic, registry := collaborationTestReport(t)
+	evidence.Attempts = synthetic.Attempts
+	for index := range evidence.Attempts {
+		evidence.Attempts[index].Attempt.Target = target
+	}
+	report, err := collaborationReduceReport(evidence, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := collaborationReportRow(t, report, "TEAM-001").State; got != "unverified" {
+		t.Fatalf("mutating the returned catalog changed the selected report state to %q", got)
+	}
+	evidence.Target.ProductCommit = strings.Repeat("e", 40)
+	if _, err := collaborationReduceReport(evidence, registry); err == nil || !strings.Contains(err.Error(), "selected target changed") {
+		t.Fatalf("mutated selected target error = %v", err)
+	}
+	evidence.Target = target
+	evidence.Attempts[0].Attempt.Target.HostBinarySHA256 = strings.Repeat("f", 64)
+	if _, err := collaborationReduceReport(evidence, registry); err == nil || !strings.Contains(err.Error(), "target changed") {
+		t.Fatalf("mutated attempt target error = %v", err)
+	}
+	evidence.Attempts[0].Attempt.Target = target
+	evidence.catalogData[0] = 'X'
+	if _, err := collaborationReduceReport(evidence, registry); err == nil || !strings.Contains(err.Error(), "catalog digest changed") {
+		t.Fatalf("mutated selected snapshot error = %v", err)
 	}
 }
