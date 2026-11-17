@@ -43,6 +43,8 @@ An `Evidence` record identifies a requirement, a scenario, a branch, an exact co
 
 Only `matched` counts as matched parity. A passing product scenario can establish `matched` only when the reference relationship is `equivalent` and all required evidence applies. A passing scenario for a `deliberately_different` target records that difference instead. An `unreviewed` relationship cannot establish a match. A deliberately different, blocked, unsupported, waived, unmeasured, stale, or inconclusive behavior cannot count as parity. The report must show these states separately and must not convert a waived check into a pass. A platform that has no real host evidence remains unverified or blocked for that platform. In particular, a Linux fixture does not establish macOS or iTerm2 behavior.
 
+For a full-program parity claim, general requirements need live proof slots for both Linux and macOS. The iTerm2 backend requirement needs a live iTerm2 proof slot. A catalog without the iTerm2 backend requirement cannot produce an aggregate parity result.
+
 A scenario may have multiple evidence records when a claim spans different processes, fault points, or platforms. Source provenance stays in the requirement and is never substituted for a runtime record.
 
 The scenario registry names the expected result and owner for every requirement. Its current `planned` status is not a test result. The P02 entries cover baseline, startup, host probes, isolation, interruption, and performance. Their driver and report are not implemented in this initial contract snapshot.
