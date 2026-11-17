@@ -2112,6 +2112,12 @@
       "expected": "A real standalone-selected process records its executable identity and extension registration."
     },
     {
+      "id": "startup-piglet",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "A real Piglet-selected process registers the extension and completes a worker task."
+    },
+    {
       "id": "startup-unselected",
       "owner": "P02",
       "status": "planned",
