@@ -16,18 +16,21 @@ import (
 )
 
 type collaborationCLIDriver struct {
-	Name             string   `json:"name"`
-	Command          []string `json:"command"`
-	ExecutableSHA256 string   `json:"executable_sha256"`
-	StartedNS        int64    `json:"started_ns"`
-	FinishedNS       int64    `json:"finished_ns"`
-	ExitCode         int      `json:"exit_code"`
-	ProcessID        int      `json:"process_id,omitempty"`
-	ProcessStart     string   `json:"process_start_ticks,omitempty"`
-	Joined           bool     `json:"joined"`
-	ForcedCleanup    bool     `json:"forced_cleanup"`
-	Error            string   `json:"error,omitempty"`
-	Evidence         string   `json:"evidence,omitempty"`
+	Name                  string   `json:"name"`
+	Command               []string `json:"command"`
+	ExecutableSHA256      string   `json:"executable_sha256"`
+	StartedNS             int64    `json:"started_ns"`
+	FinishedNS            int64    `json:"finished_ns"`
+	ExitCode              int      `json:"exit_code"`
+	ProcessID             int      `json:"process_id,omitempty"`
+	ProcessStart          string   `json:"process_start_ticks,omitempty"`
+	Joined                bool     `json:"joined"`
+	ForcedCleanup         bool     `json:"forced_cleanup"`
+	TemporaryAlias        string   `json:"temporary_alias,omitempty"`
+	TemporaryAliasTarget  string   `json:"temporary_alias_target,omitempty"`
+	TemporaryAliasRemoved bool     `json:"temporary_alias_removed"`
+	Error                 string   `json:"error,omitempty"`
+	Evidence              string   `json:"evidence,omitempty"`
 }
 
 type collaborationCLIRunner struct {
@@ -272,13 +275,19 @@ func (runner *collaborationCLIRunner) executeAt(ctx context.Context, name string
 			return "", err
 		}
 	}
+	alias, err := collaborationNewTempAlias(filepath.Join(directory, "tmp"))
+	if err != nil {
+		return directory, err
+	}
 	stdout, err := os.Create(filepath.Join(directory, "stdout.log"))
 	if err != nil {
+		_, _ = alias.release(true)
 		return "", err
 	}
 	defer stdout.Close()
 	stderr, err := os.Create(filepath.Join(directory, "stderr.log"))
 	if err != nil {
+		_, _ = alias.release(true)
 		return "", err
 	}
 	defer stderr.Close()
@@ -289,7 +298,7 @@ func (runner *collaborationCLIRunner) executeAt(ctx context.Context, name string
 		"PATH=" + os.Getenv("PATH"), "LANG=C.UTF-8", "TERM=xterm-256color",
 		"HOME=" + filepath.Join(directory, "home"), "USERPROFILE=" + filepath.Join(directory, "home"),
 		"PIG_HOME=" + filepath.Join(directory, "home"), "PIG_CODING_AGENT_DIR=" + filepath.Join(directory, "agent"),
-		"PIG_CODING_AGENT_SESSION_DIR=" + filepath.Join(directory, "sessions"), "TMPDIR=" + filepath.Join(directory, "tmp"),
+		"PIG_CODING_AGENT_SESSION_DIR=" + filepath.Join(directory, "sessions"), "TMPDIR=" + alias.path,
 		"XDG_CONFIG_HOME=" + filepath.Join(directory, "config"), "XDG_CACHE_HOME=" + filepath.Join(directory, "cache"),
 		"XDG_STATE_HOME=" + filepath.Join(directory, "state"), "XDG_DATA_HOME=" + filepath.Join(directory, "data"),
 		"XDG_RUNTIME_DIR=" + filepath.Join(directory, "runtime"), "PIG_OFFLINE=1", "PI_OFFLINE=1", "PIG_USE_PI_DIRS=0", "PI_TELEMETRY=0",
@@ -302,6 +311,7 @@ func (runner *collaborationCLIRunner) executeAt(ctx context.Context, name string
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	digest, err := collaborationCLIDigest(command[0])
 	if err != nil {
+		_, _ = alias.release(true)
 		return directory, err
 	}
 	driver := collaborationCLIDriver{Name: name, Command: command, ExecutableSHA256: digest, StartedNS: time.Since(runner.started).Nanoseconds(), ExitCode: -1}
@@ -351,6 +361,14 @@ func (runner *collaborationCLIRunner) executeAt(ctx context.Context, name string
 		if driver.Joined && cmd.ProcessState != nil {
 			driver.ExitCode = cmd.ProcessState.ExitCode()
 		}
+	}
+	retained, releaseErr := alias.release(driver.Joined || driver.ProcessID == 0)
+	driver.TemporaryAlias, driver.TemporaryAliasTarget = alias.path, alias.target
+	driver.TemporaryAliasRemoved = retained == ""
+	if releaseErr != nil {
+		err = errors.Join(err, fmt.Errorf("temporary alias cleanup: %w", releaseErr))
+	} else if retained != "" && err == nil {
+		err = errors.New("driver left temporary resources in its private allocation")
 	}
 	if err != nil {
 		driver.Error = err.Error()
