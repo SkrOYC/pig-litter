@@ -3,12 +3,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -63,6 +65,78 @@ func TestResidentTreeIdentityDeduplicationAndDisappearance(t *testing.T) {
 	}
 	if _, _, err := sampleResidentTree(root, processIdentity{PID: 42, StartTicks: 100}, 4096); err == nil {
 		t.Fatal("accepted malformed RSS")
+	}
+}
+
+func TestProcDisappearanceRecognizesWrappedErrors(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"exited process", syscall.ESRCH, true},
+		{"missing process", syscall.ENOENT, true},
+		{"permission denied", syscall.EACCES, false},
+		{"I/O failure", syscall.EIO, false},
+		{"malformed observation", errors.New("malformed stat"), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := fmt.Errorf("sampling: %w", &os.PathError{Op: "read", Path: "/proc/42/stat", Err: test.err})
+			if got := procDisappeared(err); got != test.want {
+				t.Fatalf("procDisappeared(%v) = %t, want %t", err, got, test.want)
+			}
+		})
+	}
+	if procDisappeared(nil) {
+		t.Fatal("classified a successful read as disappearance")
+	}
+}
+
+func TestProcDisappearanceAfterProcessExit(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=^TestPerformanceProcessHelper$")
+	command.Env = append(os.Environ(), "PERFORMANCE_PROCESS_HELPER=child")
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if command.ProcessState == nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	}()
+	path := filepath.Join("/proc", strconv.Itoa(command.Process.Pid), "stat")
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := command.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = command.Wait()
+	_, err = file.Read(make([]byte, 4096))
+	if !errors.Is(err, syscall.ESRCH) || !procDisappeared(fmt.Errorf("open proc read: %w", err)) {
+		t.Fatalf("read after process exit = %v, want recognized ESRCH", err)
+	}
+	_, err = os.ReadFile(path)
+	if !errors.Is(err, syscall.ENOENT) || !procDisappeared(fmt.Errorf("new proc read: %w", err)) {
+		t.Fatalf("open after process exit = %v, want recognized ENOENT", err)
+	}
+}
+
+func TestPerformanceMissingInitialRootRemainsFailure(t *testing.T) {
+	command := exec.Command("/bin/sh", "-c", "exit 0")
+	prepareProcess(command)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := command.Process.Pid
+	if err := command.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	trace, _, _ := monitorPerformance(command)
+	if trace.Root.PID != pid || !errors.Is(trace.Error, os.ErrNotExist) || len(trace.Observations) != 0 {
+		t.Fatalf("missing initial root was not retained as an observation failure: %#v", trace)
 	}
 }
 

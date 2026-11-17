@@ -78,6 +78,10 @@ func readProcStat(root string, pid int) (procStat, error) {
 	return procStat{identity: processIdentity{PID: pid, StartTicks: start}, parent: parent, group: group, state: fields[0][0]}, nil
 }
 
+func procDisappeared(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+}
+
 func sampleResidentTree(procRoot string, root processIdentity, pageSize int) (residentObservation, uint64, error) {
 	if root.PID <= 0 || root.StartTicks == 0 || pageSize <= 0 {
 		return residentObservation{}, 0, errors.New("invalid process identity or page size")
@@ -94,7 +98,7 @@ func sampleResidentTree(procRoot string, root processIdentity, pageSize int) (re
 		}
 		seen[identity.PID] = true
 		before, err := readProcStat(procRoot, identity.PID)
-		if os.IsNotExist(err) {
+		if procDisappeared(err) {
 			vanished++
 			continue
 		}
@@ -107,7 +111,7 @@ func sampleResidentTree(procRoot string, root processIdentity, pageSize int) (re
 		}
 		base := filepath.Join(procRoot, strconv.Itoa(identity.PID))
 		raw, err := os.ReadFile(filepath.Join(base, "statm"))
-		if os.IsNotExist(err) {
+		if procDisappeared(err) {
 			vanished++
 			continue
 		}
@@ -123,7 +127,7 @@ func sampleResidentTree(procRoot string, root processIdentity, pageSize int) (re
 			return observation, vanished, fmt.Errorf("invalid RSS for pid %d", identity.PID)
 		}
 		tasks, err := os.ReadDir(filepath.Join(base, "task"))
-		if os.IsNotExist(err) {
+		if procDisappeared(err) {
 			vanished++
 			continue
 		}
@@ -136,7 +140,7 @@ func sampleResidentTree(procRoot string, root processIdentity, pageSize int) (re
 				continue
 			}
 			children, err := os.ReadFile(filepath.Join(base, "task", task.Name(), "children"))
-			if os.IsNotExist(err) {
+			if procDisappeared(err) {
 				vanished++
 				continue
 			}
@@ -152,7 +156,7 @@ func sampleResidentTree(procRoot string, root processIdentity, pageSize int) (re
 			}
 		}
 		after, err := readProcStat(procRoot, identity.PID)
-		if os.IsNotExist(err) {
+		if procDisappeared(err) {
 			vanished++
 			continue
 		}
@@ -174,7 +178,7 @@ func sampleResidentTree(procRoot string, root processIdentity, pageSize int) (re
 				continue
 			}
 			child, err := readProcStat(procRoot, pid)
-			if os.IsNotExist(err) {
+			if procDisappeared(err) {
 				vanished++
 				continue
 			}
@@ -266,7 +270,7 @@ func cleanupPerformanceProcesses(trace residentTrace) error {
 				continue
 			}
 			stat, err := readProcStat("/proc", pid)
-			if os.IsNotExist(err) {
+			if procDisappeared(err) {
 				continue
 			}
 			if err != nil {
@@ -293,7 +297,7 @@ func cleanupPerformanceProcesses(trace residentTrace) error {
 				continue
 			}
 			stat, err := readProcStat("/proc", pid)
-			if os.IsNotExist(err) {
+			if procDisappeared(err) {
 				continue
 			}
 			if err != nil {
