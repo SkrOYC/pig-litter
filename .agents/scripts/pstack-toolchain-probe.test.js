@@ -15,6 +15,8 @@ function runProbe({
   goVersion = "go1.27.1",
   cgo = "1",
   toolchain = "local",
+  goFlags = "",
+  savedGoFlags = "",
   goEnvFails = false,
   goModFails = false,
   compilerFails = false,
@@ -25,12 +27,14 @@ function runProbe({
   const bin = join(root, "bin");
   const goMod = join(scripts, "go.mod");
   const compiler = join(bin, "fixture-cc");
+  const goEnv = savedGoFlags ? join(root, "go.env") : "off";
 
   try {
     mkdirSync(scripts, { recursive: true });
     mkdirSync(bin);
     mkdirSync(join(root, "home"));
     writeFileSync(goMod, module);
+    if (savedGoFlags) writeFileSync(goEnv, `GOFLAGS=${savedGoFlags}\n`);
     writeFileSync(
       join(bin, "go"),
       `#!/bin/sh
@@ -55,6 +59,10 @@ exec "$PSTACK_TEST_REAL_GO" "$@"
     writeFileSync(
       compiler,
       `#!/bin/sh
+if [ "$GOFLAGS" != "$PSTACK_TEST_EXPECT_GOFLAGS" ] || [ "$GOENV" != "$PSTACK_TEST_EXPECT_GOENV" ]; then
+  printf '%s\n' 'compiler environment changed' >&2
+  exit 1
+fi
 if [ "$PSTACK_TEST_COMPILER_FAILS" = 1 ]; then
   printf '%s\n' 'fixture compiler failed' >&2
   exit 1
@@ -84,7 +92,8 @@ esac
         ...process.env,
         PATH: `${bin}${delimiter}${process.env.PATH}`,
         HOME: join(root, "home"),
-        GOENV: "off",
+        GOENV: goEnv,
+        GOFLAGS: goFlags,
         GOWORK: "off",
         GOTOOLCHAIN: "local",
         GOPROXY: "off",
@@ -101,6 +110,8 @@ esac
         PSTACK_TEST_GO_ENV_FAILS: goEnvFails ? "1" : "0",
         PSTACK_TEST_GO_MOD_FAILS: goModFails ? "1" : "0",
         PSTACK_TEST_COMPILER_FAILS: compilerFails ? "1" : "0",
+        PSTACK_TEST_EXPECT_GOFLAGS: goFlags,
+        PSTACK_TEST_EXPECT_GOENV: goEnv,
       },
     });
     if (result.error) throw result.error;
@@ -170,6 +181,35 @@ test("rejects a Go version that differs from the declaration", () => {
 test("rejects a missing toolchain declaration", () => {
   const result = runProbe({ module: "module example.com/probe\n\ngo 1.26.0\n" });
   expectFailure(result, /scripts\/go\.mod|directive/i);
+});
+
+test("GOFLAGS cannot mask a mismatched toolchain declaration", () => {
+  const result = runProbe({
+    module: "module example.com/probe\n\ngo 1.26.0\n\ntoolchain go1.27.4\n",
+    goFlags: "-toolchain=go1.27.1",
+  });
+  expectFailure(result, /GOVERSION|go1\.27\.4/);
+});
+
+test("GOFLAGS cannot synthesize a missing toolchain declaration", () => {
+  const result = runProbe({
+    module: "module example.com/probe\n\ngo 1.26.0\n",
+    goFlags: "-toolchain=go1.27.1",
+  });
+  expectFailure(result, /scripts\/go\.mod|directive/i);
+});
+
+test("GOFLAGS cannot alter a matching toolchain declaration", () => {
+  const result = runProbe({ goFlags: "-toolchain=go1.27.4" });
+  expectSuccess(result, "go1.27.1");
+});
+
+test("saved GOFLAGS cannot mask a mismatched toolchain declaration", () => {
+  const result = runProbe({
+    module: "module example.com/probe\n\ngo 1.26.0\n\ntoolchain go1.27.4\n",
+    savedGoFlags: "-toolchain=go1.27.1",
+  });
+  expectFailure(result, /GOVERSION|go1\.27\.4/);
 });
 
 test("rejects an invalid toolchain declaration", () => {
