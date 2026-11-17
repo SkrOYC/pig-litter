@@ -54,6 +54,7 @@ func collaborationReduceReport(catalog collaborationCatalog, evidence collaborat
 		return collaborationReport{}, err
 	}
 	report := collaborationReport{Target: evidence.Target, SelectionSHA256: evidence.SelectionSHA256, Parity: len(catalog.Requirements) > 0}
+	hasITermRequirement := false
 	for _, attempt := range evidence.Attempts {
 		if attempt.Attempt.Purpose != "research" {
 			continue
@@ -63,6 +64,9 @@ func collaborationReduceReport(catalog collaborationCatalog, evidence collaborat
 		report.Research = append(report.Research, row)
 	}
 	for _, requirement := range catalog.Requirements {
+		if requirement.ID == "BACKEND-003" {
+			hasITermRequirement = true
+		}
 		row := collaborationRequirementRow{ID: requirement.ID, State: "unverified", Reason: "no implemented proof rule", Evidence: []string{}, Slots: []collaborationSlotRow{}}
 		rule, exists := registry[requirement.ID]
 		if !exists {
@@ -78,6 +82,10 @@ func collaborationReduceReport(catalog collaborationCatalog, evidence collaborat
 				row.Slots = append(row.Slots, slotRow)
 			}
 			row.State, row.Reason = collaborationRequirementState(requirement, row.Slots)
+			if (row.State == "matched" || row.State == "deliberately_different") && !collaborationHasRequiredLivePlatforms(requirement.ID, rule.Slots) {
+				row.State = "unverified"
+				row.Reason = "required platform proof slots are missing"
+			}
 		}
 		for _, attempt := range evidence.Attempts {
 			if attempt.Attempt.Purpose != "research" || attempt.Attempt.Outcome != "unsupported" || !collaborationResearchComplete(attempt) || !collaborationContains(rule.ResearchScenarios, attempt.Attempt.Scenario) || !collaborationContains(attempt.Attempt.Claims, requirement.ID) {
@@ -97,7 +105,30 @@ func collaborationReduceReport(catalog collaborationCatalog, evidence collaborat
 		}
 		report.Requirements = append(report.Requirements, row)
 	}
+	if !hasITermRequirement {
+		report.Parity = false
+	}
 	return report, nil
+}
+
+func collaborationHasRequiredLivePlatforms(requirementID string, slots []collaborationProofSlot) bool {
+	required := []string{"linux", "macos"}
+	if requirementID == "BACKEND-003" {
+		required = []string{"iterm2"}
+	}
+	for _, platform := range required {
+		found := false
+		for _, slot := range slots {
+			if slot.Channel == "live" && slot.Platform == platform {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func collaborationResearchComplete(attempt collaborationValidatedAttempt) bool {

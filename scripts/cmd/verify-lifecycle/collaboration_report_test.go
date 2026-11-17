@@ -22,6 +22,7 @@ func collaborationTestReport(t *testing.T) (collaborationCatalog, collaborationE
 		{Channel: "unit", Platform: "linux"},
 		{Channel: "live", Platform: "linux"},
 		{Channel: "performance", Platform: "linux"},
+		{Channel: "live", Platform: "macos"},
 	}, ResearchScenarios: []string{"host-tool-veto"}}
 	registry := collaborationProofRegistry{"TEAM-001": rule, "TEAM-003": rule}
 	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true, "samples": true}
@@ -32,6 +33,10 @@ func collaborationTestReport(t *testing.T) (collaborationCatalog, collaborationE
 			ArtifactKinds: kinds, ResultsPassed: true,
 		})
 	}
+	attempts = append(attempts, collaborationValidatedAttempt{
+		Attempt:       collaborationAttempt{ID: "live-macos", Purpose: "product", Scenario: "team-roster", ScenarioRevision: 1, Channel: "live", Platform: "macos", Outcome: "passed", Claims: []string{"TEAM-001", "TEAM-003"}},
+		ArtifactKinds: kinds, ResultsPassed: true,
+	})
 	return catalog, collaborationEvidenceSet{Attempts: attempts}, registry
 }
 
@@ -111,8 +116,11 @@ func TestCollaborationReportRefusesIncompleteOrConflictingEvidence(t *testing.T)
 			e.Attempts[0].Attempt.ScenarioRevision = 2
 		}, "unverified"},
 		{"required macOS evidence absent", func(c *collaborationCatalog, e *collaborationEvidenceSet, r collaborationProofRegistry) {
+			e.Attempts = e.Attempts[:3]
+		}, "unverified"},
+		{"required macOS proof slot absent", func(c *collaborationCatalog, e *collaborationEvidenceSet, r collaborationProofRegistry) {
 			rule := r["TEAM-001"]
-			rule.Slots = append(rule.Slots, collaborationProofSlot{Channel: "live", Platform: "macos"})
+			rule.Slots = rule.Slots[:3]
 			r["TEAM-001"] = rule
 		}, "unverified"},
 	} {
@@ -164,5 +172,54 @@ func TestCollaborationRejectsIncompleteProofPolicy(t *testing.T) {
 	registry["TEAM-001"] = rule
 	if _, err := collaborationReduceReport(catalog, evidence, registry); err == nil || !strings.Contains(err.Error(), "performance") {
 		t.Fatalf("incomplete proof policy error = %v", err)
+	}
+}
+
+func TestCollaborationFullParityRequiresAllPlatformProof(t *testing.T) {
+	catalog := collaborationTestCatalog(t)
+	var requirements []collaborationRequirement
+	for _, requirement := range catalog.Requirements {
+		if requirement.ID == "TEAM-001" || requirement.ID == "BACKEND-003" {
+			requirement.ReferenceRelationship = collaborationRelationship{State: "equivalent"}
+			requirements = append(requirements, requirement)
+		}
+	}
+	catalog.Requirements = requirements
+	for index := range catalog.Scenarios {
+		catalog.Scenarios[index].Status = "implemented"
+	}
+	registry := collaborationProofRegistry{
+		"TEAM-001":    {Scenario: "team-roster", ScenarioRevision: 1, Slots: []collaborationProofSlot{{Channel: "unit", Platform: "linux"}, {Channel: "live", Platform: "linux"}, {Channel: "live", Platform: "macos"}, {Channel: "performance", Platform: "linux"}}},
+		"BACKEND-003": {Scenario: "team-backends", ScenarioRevision: 1, Slots: []collaborationProofSlot{{Channel: "unit", Platform: "macos"}, {Channel: "live", Platform: "iterm2"}, {Channel: "performance", Platform: "macos"}}},
+	}
+	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true, "samples": true}
+	var evidence collaborationEvidenceSet
+	for id, rule := range registry {
+		for _, slot := range rule.Slots {
+			evidence.Attempts = append(evidence.Attempts, collaborationValidatedAttempt{
+				Attempt:       collaborationAttempt{ID: id + "-" + slot.Channel + "-" + slot.Platform, Purpose: "product", Scenario: rule.Scenario, ScenarioRevision: 1, Channel: slot.Channel, Platform: slot.Platform, Outcome: "passed", Claims: []string{id}},
+				ArtifactKinds: kinds, ResultsPassed: true,
+			})
+		}
+	}
+	report, err := collaborationReduceReport(catalog, evidence, registry)
+	if err != nil || !report.Parity {
+		t.Fatalf("complete synthetic platform evidence = %#v, %v", report, err)
+	}
+	for index, attempt := range evidence.Attempts {
+		if attempt.Attempt.Platform == "iterm2" {
+			evidence.Attempts = append(evidence.Attempts[:index], evidence.Attempts[index+1:]...)
+			break
+		}
+	}
+	report, err = collaborationReduceReport(catalog, evidence, registry)
+	if err != nil || report.Parity || collaborationReportRow(t, report, "BACKEND-003").State != "unverified" {
+		t.Fatalf("missing iTerm2 evidence = %#v, %v", report, err)
+	}
+	catalog.Requirements = requirements[:1]
+	delete(registry, "BACKEND-003")
+	report, err = collaborationReduceReport(catalog, evidence, registry)
+	if err != nil || report.Parity {
+		t.Fatalf("missing iTerm2 requirement = %#v, %v", report, err)
 	}
 }
