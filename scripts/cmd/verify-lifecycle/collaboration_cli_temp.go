@@ -7,84 +7,42 @@ import (
 	"path/filepath"
 )
 
-type collaborationTempAlias struct {
-	directory string
-	path      string
-	target    string
-	identity  os.FileInfo
-	linkID    os.FileInfo
-	targetID  os.FileInfo
+type collaborationTempDirectory struct {
+	path     string
+	identity os.FileInfo
 }
 
-func collaborationNewTempAlias(target string) (collaborationTempAlias, error) {
-	if !filepath.IsAbs(target) {
-		return collaborationTempAlias{}, errors.New("temporary directory target must be absolute")
-	}
-	targetID, err := os.Lstat(target)
-	if err != nil || !targetID.IsDir() || targetID.Mode()&os.ModeSymlink != 0 {
-		return collaborationTempAlias{}, errors.New("temporary directory target must be an existing directory")
-	}
-	directory, err := os.MkdirTemp("/tmp", "p02-")
+func collaborationNewTempDirectory() (collaborationTempDirectory, error) {
+	parent, err := filepath.EvalSymlinks("/tmp")
 	if err != nil {
-		return collaborationTempAlias{}, err
+		return collaborationTempDirectory{}, err
 	}
-	identity, err := os.Lstat(directory)
+	path, err := os.MkdirTemp(parent, "p02-")
 	if err != nil {
-		_ = os.Remove(directory)
-		return collaborationTempAlias{}, err
+		return collaborationTempDirectory{}, err
 	}
-	path := filepath.Join(directory, "tmp")
-	if err := os.Symlink(target, path); err != nil {
-		_ = os.Remove(directory)
-		return collaborationTempAlias{}, err
-	}
-	linkID, err := os.Lstat(path)
+	identity, err := os.Lstat(path)
 	if err != nil {
 		_ = os.Remove(path)
-		_ = os.Remove(directory)
-		return collaborationTempAlias{}, err
+		return collaborationTempDirectory{}, err
 	}
-	return collaborationTempAlias{directory: directory, path: path, target: target, identity: identity, linkID: linkID, targetID: targetID}, nil
+	return collaborationTempDirectory{path: path, identity: identity}, nil
 }
 
-func (alias collaborationTempAlias) release(joined bool) (string, error) {
-	current, err := os.Lstat(alias.directory)
+func (directory collaborationTempDirectory) release(joined bool) (string, error) {
+	current, err := os.Lstat(directory.path)
 	if err != nil {
-		return alias.path, fmt.Errorf("inspect temporary alias directory: %w", err)
+		return directory.path, fmt.Errorf("inspect temporary directory: %w", err)
 	}
-	if !current.IsDir() || !os.SameFile(alias.identity, current) {
-		return alias.path, errors.New("temporary alias directory changed")
+	if !current.IsDir() || !os.SameFile(directory.identity, current) {
+		return directory.path, errors.New("temporary directory identity changed")
 	}
-	linkID, err := os.Lstat(alias.path)
-	if err != nil {
-		return alias.path, fmt.Errorf("inspect temporary alias identity: %w", err)
-	}
-	if linkID.Mode()&os.ModeSymlink == 0 || !os.SameFile(alias.linkID, linkID) {
-		return alias.path, errors.New("temporary alias identity changed")
-	}
-	target, err := os.Readlink(alias.path)
-	if err != nil {
-		return alias.path, fmt.Errorf("inspect temporary alias: %w", err)
-	}
-	if target != alias.target {
-		return alias.path, errors.New("temporary alias changed")
-	}
-	targetID, err := os.Lstat(alias.target)
-	if err != nil {
-		return alias.path, fmt.Errorf("inspect temporary target: %w", err)
-	}
-	if !targetID.IsDir() || !os.SameFile(alias.targetID, targetID) {
-		return alias.path, errors.New("temporary target changed")
-	}
-	entries, err := os.ReadDir(alias.target)
+	entries, err := os.ReadDir(directory.path)
 	if err != nil || !joined || len(entries) != 0 {
-		return alias.path, err
+		return directory.path, err
 	}
-	if err := os.Remove(alias.path); err != nil {
-		return alias.path, err
-	}
-	if err := os.Remove(alias.directory); err != nil {
-		return alias.directory, err
+	if err := os.Remove(directory.path); err != nil {
+		return directory.path, err
 	}
 	return "", nil
 }
