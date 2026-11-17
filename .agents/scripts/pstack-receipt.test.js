@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { collectExecution } from "./pstack-history-execution.mjs";
 import { executionReceipt } from "./pstack-receipt.mjs";
@@ -61,7 +67,7 @@ function addConflictingHeader(f, options = {}) {
       type: "session_meta",
       payload: {
         id,
-        cwd: `${f.cwd}-other`,
+        cwd: options.sameCwd ? f.cwd : `${f.cwd}-other`,
         timestamp:
           headerCreated === null ? null : new Date(headerCreated).toISOString(),
         source: headerSource,
@@ -103,9 +109,10 @@ test("old unrelated workspace disagreements remain visible without blocking rece
 
 for (const [label, options] of [
   ["recent", { created: Date.now() + 60000 }],
+  ["recent header", { headerCreated: Date.now() + 60000 }],
   ["unknown index time", { created: null, headerCreated: Date.now() - 60000 }],
   ["unknown header time", { headerCreated: null }],
-  ["disputed thread source", { threadSource: "subagent" }],
+  ["disputed thread source", { threadSource: "subagent", sameCwd: true }],
   [
     "disputed lineage",
     {
@@ -114,6 +121,7 @@ for (const [label, options] of [
       }),
       threadSource: "subagent",
       headerSource: "exec",
+      sameCwd: true,
     },
   ],
 ]) {
@@ -172,6 +180,44 @@ test("a contradiction in the reviewer thread keeps its receipt inconclusive", as
       reason: "Contradictory index/header",
       count: 1,
     });
+  } finally {
+    f.close();
+  }
+});
+
+test("the census reads hidden rollout files but ignores lookalikes and symlinks", async () => {
+  const f = reviewerFixture();
+  try {
+    expect((await f.result(f.launch())).code).toBe(0);
+    const hidden = join(f.home, ".hidden");
+    const external = join(f.directory, "external");
+    mkdirSync(hidden);
+    mkdirSync(external);
+    writeFileSync(join(hidden, "other.jsonl"), "{broken\n");
+    writeFileSync(join(hidden, "rollout-child.jsonl.backup"), "{broken\n");
+    const child = `${JSON.stringify({
+      type: "session_meta",
+      payload: {
+        id: "hidden-child",
+        cwd: f.cwd,
+        timestamp: new Date().toISOString(),
+        source: {
+          subagent: { thread_spawn: { parent_thread_id: f.receipt().threadId } },
+        },
+        thread_source: "subagent",
+      },
+    })}\n`;
+    writeFileSync(join(external, "rollout-child.jsonl"), child);
+    symlinkSync(external, join(f.home, "linked-directory"));
+    symlinkSync(
+      join(external, "rollout-child.jsonl"),
+      join(f.home, "rollout-link.jsonl"),
+    );
+    expect(receiptAfterInspection(f).status).toBe("verified");
+    writeFileSync(join(hidden, "rollout-child.jsonl"), child);
+    expect(receiptAfterInspection(f).checks.taskDelegation.status).toBe(
+      "violated",
+    );
   } finally {
     f.close();
   }

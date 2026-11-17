@@ -3,7 +3,7 @@ import { basename } from "node:path";
 import { createHash } from "node:crypto";
 import {
   allThreads,
-  commandFiles,
+  findFiles,
   dataRoot,
   decodeItem,
   discoverDatabases,
@@ -302,6 +302,7 @@ export function collectExecution({
   const inventoryIssues = [];
   const inventoryWarnings = [];
   const headerProblems = [];
+  const contradictions = [];
   const entries = new Map();
   const sources = [];
   let rows = [];
@@ -338,7 +339,7 @@ export function collectExecution({
     });
   let paths = [];
   try {
-    paths = commandFiles(root, "rollout-*.jsonl");
+    paths = findFiles(root, "rollout-*.jsonl");
   } catch (error) {
     inventoryIssues.push(error.message);
   }
@@ -352,14 +353,29 @@ export function collectExecution({
       record = prefix(path, true);
       const meta = header(record);
       const existing = entries.get(meta.id);
+      const sameSource =
+        existing?.source != null &&
+        meta.source != null &&
+        JSON.stringify(sourceValue(existing.source)) ===
+          JSON.stringify(meta.source) &&
+        existing.thread_source != null &&
+        existing.thread_source === meta.thread_source;
       if (
         existing &&
         (existing.cwd !== meta.cwd ||
           (existing.source &&
             JSON.stringify(sourceValue(existing.source)) !==
-              JSON.stringify(meta.source)))
+              JSON.stringify(meta.source)) ||
+          (existing.thread_source != null &&
+            existing.thread_source !== meta.thread_source))
       )
-        inventoryIssues.push(`Contradictory index/header for ${meta.id}`);
+        contradictions.push({
+          id: meta.id,
+          source: basename(path),
+          reason: `Contradictory index/header for ${meta.id}`,
+          timestamps: [existing.timestamp, meta.timestamp],
+          sameSource,
+        });
       const paths = existing?.paths || new Set();
       paths.add(path);
       entries.set(meta.id, {
@@ -389,7 +405,8 @@ export function collectExecution({
     !rootEntry ||
     typeof rootEntry.cwd !== "string" ||
     !withinScope(rootEntry.cwd, cwd)
-  )
+  ) {
+    inventoryIssues.push(...contradictions.map((problem) => problem.reason));
     return {
       observedAt,
       sources,
@@ -398,6 +415,7 @@ export function collectExecution({
       threads: [],
       guardianCount: 0,
     };
+  }
   const rootTime = Date.parse(rootEntry.timestamp);
   for (const problem of headerProblems) {
     if (
@@ -463,6 +481,20 @@ export function collectExecution({
       });
     }
     queue.push(...(children.get(id) || []));
+  }
+  for (const problem of contradictions) {
+    if (
+      problem.sameSource &&
+      !visited.has(problem.id) &&
+      Number.isFinite(rootTime) &&
+      problem.timestamps.every(
+        (value) =>
+          Number.isFinite(Date.parse(value)) &&
+          Date.parse(value) < rootTime - 1000,
+      )
+    )
+      inventoryWarnings.push(problem);
+    else inventoryIssues.push(problem.reason);
   }
   return {
     observedAt: new Date().toISOString(),
