@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - test/collaboration-platform-probe
+  workflow_dispatch:
+    inputs:
+      candidate_ref:
+        description: Optional candidate commit SHA to check out
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -22,6 +28,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          ref: ${{ inputs.candidate_ref || github.sha }}
 
       - name: Run the probe
         timeout-minutes: 16

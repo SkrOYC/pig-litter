@@ -13,6 +13,7 @@ architecture="$(uname -m)"
 macos_version="$(sw_vers -productVersion 2>&1)"
 commit_sha="$(git rev-parse HEAD)"
 iterm_version=""
+iterm_executable=""
 session_id=""
 session_tty=""
 window_id=""
@@ -41,12 +42,14 @@ else
     reason="iTerm2 is unavailable after the installation attempt."
   else
     iterm_version="$(defaults read "$app_path/Contents/Info" CFBundleShortVersionString 2>&1)"
+    iterm_executable="$(defaults read "$app_path/Contents/Info" CFBundleExecutable 2>&1)"
+    perl -e 'alarm shift; exec @ARGV' 30 open -a "$app_path"
     command_text="printf 'PIG_SENTINEL_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}_%s\\n' \"\$(uname -m)\" | tee '$artifact_dir/sentinel.txt'; tty > '$artifact_dir/sentinel-tty.txt'"
     perl -e 'alarm shift; exec @ARGV' 90 osascript - "$command_text" "$expected" > "$artifact_dir/session.txt" 2> "$artifact_dir/applescript-error.txt" <<'APPLESCRIPT'
 on run argv
   set commandText to item 1 of argv
   set expectedText to item 2 of argv
-  tell application "iTerm2"
+  tell application "iTerm"
     activate
     set probeWindow to (create window with default profile)
     set probeSession to current session of probeWindow
@@ -57,7 +60,7 @@ on run argv
     set sessionContents to ""
     repeat 30 times
       delay 1
-      set sessionContents to contents of probeSession
+      set sessionContents to text of probeSession
       if sessionContents contains expectedText then exit repeat
     end repeat
     return sessionID & linefeed & sessionTTY & linefeed & windowID & linefeed & sessionContents
@@ -65,13 +68,22 @@ on run argv
 end run
 APPLESCRIPT
     applescript_status=$?
+    if [ "$applescript_status" -eq 0 ]; then
+      for _ in {1..10}; do
+        [ -s "$artifact_dir/sentinel-tty.txt" ] && break
+        sleep 1
+      done
+    fi
     session_id="$(sed -n '1p' "$artifact_dir/session.txt")"
     session_tty="$(sed -n '2p' "$artifact_dir/session.txt")"
     window_id="$(sed -n '3p' "$artifact_dir/session.txt")"
-    pgrep -fl 'iTerm.app/Contents/MacOS/iTerm2' > "$artifact_dir/iterm-process.txt"
+    pgrep -fl "$app_path/Contents/MacOS/$iterm_executable" > "$artifact_dir/iterm-process.txt"
     process_status=$?
     cat "$artifact_dir/applescript-error.txt" "$artifact_dir/session.txt" "$artifact_dir/iterm-process.txt"
-    if [ "$applescript_status" -ne 0 ]; then
+    if grep -q 'syntax error' "$artifact_dir/applescript-error.txt"; then
+      status=failed
+      reason="The AppleScript probe did not compile."
+    elif [ "$applescript_status" -ne 0 ]; then
       reason="AppleScript could not create or inspect an iTerm2 session."
     elif [ "$process_status" -ne 0 ]; then
       reason="The iTerm2 process was not observed."
@@ -93,14 +105,15 @@ elif [ "$status" = pass ]; then
   reason="The session produced the sentinel, but a screenshot was unavailable."
 fi
 
-export status reason host_os architecture macos_version commit_sha iterm_version session_id session_tty window_id screenshot expected artifact_dir
-python3 - <<'PYTHON'
+export status reason host_os architecture macos_version commit_sha iterm_version iterm_executable session_id session_tty window_id screenshot expected artifact_dir
+if ! python3 - <<'PYTHON'
 import json
 import os
 from pathlib import Path
 
-keys = ("status", "reason", "host_os", "architecture", "macos_version", "commit_sha", "iterm_version", "session_id", "session_tty", "window_id", "screenshot", "expected")
+keys = ("status", "reason", "host_os", "architecture", "macos_version", "commit_sha", "iterm_version", "iterm_executable", "session_id", "session_tty", "window_id", "screenshot", "expected")
 result = {key: os.environ[key] for key in keys}
+sentinel_path = Path(os.environ["artifact_dir"], "sentinel.txt")
 result.update({
     "runner_label": os.environ["PROBE_RUNNER_LABEL"],
     "runner_name": os.environ.get("RUNNER_NAME", ""),
@@ -111,6 +124,7 @@ result.update({
     "command_log": "command.log",
     "session_output": "session.txt",
     "sentinel_output": "sentinel.txt",
+    "observed_sentinel": sentinel_path.read_text().strip() if sentinel_path.exists() else "",
     "sentinel_tty": "sentinel-tty.txt",
     "process_log": "iterm-process.txt",
 })
@@ -118,5 +132,8 @@ output = json.dumps(result, indent=2) + "\n"
 Path(os.environ["artifact_dir"], "result.json").write_text(output)
 print(output, end="")
 PYTHON
+then
+  exit 1
+fi
 
 [ "$status" = pass ]
