@@ -57,6 +57,25 @@ The enforcement experiment must invoke a real rejecting tool hook and inspect th
 
 A member-to-member message must not require a lead model turn as a relay. The routing choice remains open until the host experiments establish the applicable runtime and process contracts. [PiG extension documentation](https://pi-in-go.dev/docs/latest/extensions/) and the [PiG Go SDK documentation](https://www.pi-in-go.dev/docs/latest/sdk/) describe public integration points, but those descriptions do not prove delivery timing, transcript persistence, or nested veto coverage.
 
+## PiG 0.7.0 research observations
+
+The host probes use the public PiG 0.7.0 SDK and an isolated local fixture provider. Their observations are provisional until the final P01 host revision is verified. The tests establish host behavior, not Pig Litter product parity. They retain native session files, provider requests, monotonic timings, and process results when `P02_PROBE_EVIDENCE_ROOT` is set.
+
+| Observation | Result |
+| --- | --- |
+| Fresh idle send with `TriggerTurn=false` | The call returned and emitted a message-end event while the custom entry existed only in memory. The native session file appeared after the first conversation. |
+| Established idle send with `TriggerTurn=false` | One entry was visible in the native file on return, with no additional provider request. |
+| Busy send with `TriggerTurn=false` | The call returned before the entry appeared in memory or on disk. The entry appeared after settlement without an additional provider request. |
+| Busy steering send | The call returned before native storage. After settlement, one additional provider request contained the message. |
+| Idle send with `TriggerTurn=true` | The call returned after one additional provider request, with one entry visible in the native file. |
+| Same-ID replay after a process crash | Replay after acceptance but before append produced one entry. Replay after append produced a second entry, both before and after the send returned. |
+| In-process tool hook | A rejecting hook stopped direct file writes, nested codemode writes, direct MCP writes, and codemode-to-MCP writes in the controlled fixture. The matching allowed controls produced their files. |
+| Independently selected process | A separate PiG process loaded the standalone extension and exposed the six selected litter tools to its fixture provider. Its native session header carried the requested session ID. |
+
+The message-end event is not a general storage acknowledgement. The observations establish process-visible file contents after the named events, not file synchronization or power-loss durability. PiG does not suppress replay based on the ID placed in custom-message details. One proposed delivery design persists acceptance separately and serializes replay with native storage checks. These probes do not establish that design's crash safety. An upstream atomic idempotent append contract is another possible prerequisite. The hook result covers the tested in-process paths. Subprocess extension hooks, shell, and delegated mutation still need their own evidence.
+
+The message and crash probes are in [collaboration_message_probe_test.go](../scripts/cmd/verify-lifecycle/collaboration_message_probe_test.go) and [collaboration_crash_probe_test.go](../scripts/cmd/verify-lifecycle/collaboration_crash_probe_test.go). The independent-process and hook probes are in [collaboration_process_probe_test.go](../scripts/cmd/verify-lifecycle/collaboration_process_probe_test.go) and [collaboration_hook_probe_test.go](../scripts/cmd/verify-lifecycle/collaboration_hook_probe_test.go). Their test results do not replace the required live terminal lanes or performance checks.
+
 ## Verification artifacts
 
 The planned scenario wrapper selects one registered scenario and gives each run isolated writable state. A complete run retains monotonic timing, process and provider logs, raw terminal output, ANSI frames, screenshots, terminal video, and a structured result. Failures and interruptions retain their artifacts and report an inconclusive or failed result. Two concurrent runs must not share fixture homes, ports, sockets, session identities, or output paths.
