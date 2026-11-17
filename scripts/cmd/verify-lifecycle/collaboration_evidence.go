@@ -218,7 +218,7 @@ func (attempt collaborationAttempt) validate(catalog collaborationCatalog, expec
 		return fmt.Errorf("invalid attempt outcome or reason")
 	}
 	if attempt.Purpose == "research" && attempt.Outcome == "unsupported" && strings.TrimSpace(attempt.Prerequisite) == "" {
-		return fmt.Errorf("unsupported research requires an upstream prerequisite")
+		return fmt.Errorf("unsupported research requires a capability prerequisite")
 	}
 	if attempt.Outcome == "unsupported" && len(attempt.Artifacts) == 0 {
 		return fmt.Errorf("unsupported conclusion requires retained evidence")

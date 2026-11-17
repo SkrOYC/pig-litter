@@ -171,13 +171,12 @@ func collaborationReduceReport(evidence collaborationEvidenceSet, registry colla
 	}
 	missing := collaborationMissingRequirements(catalog)
 	report := collaborationReport{Target: evidence.Target, SelectionSHA256: evidence.SelectionSHA256, Parity: len(catalog.Requirements) > 0 && len(missing) == 0, MissingRequirements: missing}
-	matchedTargets := make(map[collaborationPlatformScope][]string)
 	for _, attempt := range evidence.Attempts {
 		scope := collaborationPlatformScope{Platform: attempt.Attempt.Platform, Architecture: attempt.Attempt.Architecture, Terminal: attempt.Attempt.Terminal}
 		switch attempt.Attempt.Purpose {
 		case "research":
 			row := collaborationResearchRow{ID: attempt.Attempt.ID, Scenario: attempt.Attempt.Scenario, Revision: attempt.Attempt.ScenarioRevision, Scope: scope, Outcome: attempt.Attempt.Outcome, Reason: attempt.Attempt.Reason, Prerequisite: attempt.Attempt.Prerequisite}
-			row.Complete = collaborationResearchComplete(attempt) && collaborationResearchRegistered(catalog, registry, attempt.Attempt)
+			row.Complete = collaborationResearchComplete(attempt) && collaborationP02ScenarioRegistered(catalog, attempt.Attempt)
 			if !row.Complete {
 				if row.Reason == "" {
 					row.Reason = "research scenario, scope, or evidence is incomplete"
@@ -187,7 +186,7 @@ func collaborationReduceReport(evidence collaborationEvidenceSet, registry colla
 			report.Research = append(report.Research, row)
 		case "verification":
 			row := collaborationVerificationRow{ID: attempt.Attempt.ID, Scenario: attempt.Attempt.Scenario, Channel: attempt.Attempt.Channel, Scope: scope, Outcome: attempt.Attempt.Outcome, Reason: attempt.Attempt.Reason}
-			row.Complete = collaborationScenarioImplemented(catalog, attempt.Attempt.Scenario) && attempt.Attempt.Outcome == "passed" && attempt.ResultsPassed && collaborationArtifactsComplete(attempt.Attempt.Channel, attempt.ArtifactKinds)
+			row.Complete = collaborationP02ScenarioRegistered(catalog, attempt.Attempt) && attempt.Attempt.Outcome == "passed" && attempt.ResultsPassed && collaborationArtifactsComplete(attempt.Attempt.Channel, attempt.ArtifactKinds)
 			if !row.Complete {
 				if row.Reason == "" {
 					row.Reason = "fixture result or required artifacts are incomplete"
@@ -232,36 +231,64 @@ func collaborationReduceReport(evidence collaborationEvidenceSet, registry colla
 		collaborationApplyResearch(&row, requirement.ID, rule.Research, evidence.Attempts, catalog)
 		if row.State != "matched" {
 			report.Parity = false
-		} else {
-			for _, target := range row.Targets {
-				if target.State == "matched" {
-					matchedTargets[target.Scope] = append(matchedTargets[target.Scope], target.Evidence...)
-				}
-			}
 		}
 		report.Requirements = append(report.Requirements, row)
 	}
-	for _, profile := range []string{"core", "iterm2"} {
-		for _, scope := range collaborationApplicabilityProfiles[profile] {
-			row := collaborationTargetRow{Scope: scope, State: "unverified", Reason: "no matched requirement covers this full-program target", Evidence: []string{}}
-			matched := false
-			for target, evidenceIDs := range matchedTargets {
-				if collaborationScopeMatches(scope, target.Platform, target.Architecture, target.Terminal) {
-					matched = true
-					row.Evidence = append(row.Evidence, evidenceIDs...)
-				}
-			}
-			if matched {
-				row.State, row.Reason = "matched", ""
-				slices.Sort(row.Evidence)
-				row.Evidence = slices.Compact(row.Evidence)
-			} else {
-				report.Parity = false
-			}
-			report.ProgramTargets = append(report.ProgramTargets, row)
+	report.ProgramTargets = collaborationReduceProgramTargets(catalog, report.Requirements, missing)
+	for _, target := range report.ProgramTargets {
+		if target.State != "matched" {
+			report.Parity = false
 		}
 	}
 	return report, nil
+}
+
+func collaborationReduceProgramTargets(catalog collaborationCatalog, requirements []collaborationRequirementRow, missing []string) []collaborationTargetRow {
+	var targets []collaborationTargetRow
+	for _, profile := range []string{"core", "iterm2"} {
+		for _, scope := range collaborationApplicabilityProfiles[profile] {
+			row := collaborationTargetRow{Scope: scope, State: "unverified", Reason: "one or more applicable requirements lack matched target evidence", Evidence: []string{}}
+			matched := len(missing) == 0 && len(requirements) == len(catalog.Requirements)
+			applicable := 0
+			for index, requirement := range catalog.Requirements {
+				_, scopes := collaborationApplicability(requirement)
+				if len(scopes) == 0 {
+					matched = false
+					continue
+				}
+				for _, required := range scopes {
+					if !collaborationProgramScopeIncludes(scope, required) {
+						continue
+					}
+					applicable++
+					if index >= len(requirements) || requirements[index].ID != requirement.ID {
+						matched = false
+						continue
+					}
+					found := false
+					for _, target := range requirements[index].Targets {
+						if target.Scope == required {
+							found = target.State == "matched"
+							row.Evidence = append(row.Evidence, target.Evidence...)
+							break
+						}
+					}
+					matched = matched && found
+				}
+			}
+			if matched && applicable > 0 {
+				row.State, row.Reason = "matched", ""
+				slices.Sort(row.Evidence)
+				row.Evidence = slices.Compact(row.Evidence)
+			}
+			targets = append(targets, row)
+		}
+	}
+	return targets
+}
+
+func collaborationProgramScopeIncludes(target, required collaborationPlatformScope) bool {
+	return target.Platform == required.Platform && (target.Architecture == "" || required.Architecture == "" || target.Architecture == required.Architecture) && (required.Terminal == "" || target.Terminal == required.Terminal)
 }
 
 func collaborationApplyResearch(row *collaborationRequirementRow, requirementID string, dependencies []collaborationResearchDependency, attempts []collaborationValidatedAttempt, catalog collaborationCatalog) {
@@ -275,7 +302,7 @@ func collaborationApplyResearch(row *collaborationRequirementRow, requirementID 
 			var dependencySupported, dependencyUnsupported []collaborationAttempt
 			for _, selected := range attempts {
 				attempt := selected.Attempt
-				if attempt.Purpose != "research" || !collaborationScenarioImplemented(catalog, attempt.Scenario) || !collaborationResearchComplete(selected) || !collaborationContains(attempt.Claims, requirementID) || !collaborationScopeMatches(target.Scope, attempt.Platform, attempt.Architecture, attempt.Terminal) || dependency.Scenario != attempt.Scenario || dependency.Revision != attempt.ScenarioRevision || !collaborationScopeMatches(dependency.Scope, attempt.Platform, attempt.Architecture, attempt.Terminal) {
+				if !collaborationP02ScenarioRegistered(catalog, attempt) || !collaborationResearchComplete(selected) || !collaborationContains(attempt.Claims, requirementID) || !collaborationScopeMatches(target.Scope, attempt.Platform, attempt.Architecture, attempt.Terminal) || dependency.Scenario != attempt.Scenario || dependency.Revision != attempt.ScenarioRevision || !collaborationScopeMatches(dependency.Scope, attempt.Platform, attempt.Architecture, attempt.Terminal) {
 					continue
 				}
 				if attempt.Outcome == "passed" {
@@ -325,23 +352,6 @@ func collaborationApplyResearch(row *collaborationRequirementRow, requirementID 
 	}
 	row.State = "blocked"
 	row.Reason = strings.Join(row.Prerequisites, ", ")
-}
-
-func collaborationResearchRegistered(catalog collaborationCatalog, registry collaborationProofRegistry, attempt collaborationAttempt) bool {
-	if !collaborationScenarioImplemented(catalog, attempt.Scenario) {
-		return false
-	}
-	for requirementID, rule := range registry {
-		if !collaborationContains(attempt.Claims, requirementID) {
-			continue
-		}
-		for _, dependency := range rule.Research {
-			if dependency.Scenario == attempt.Scenario && dependency.Revision == attempt.ScenarioRevision && collaborationScopeMatches(dependency.Scope, attempt.Platform, attempt.Architecture, attempt.Terminal) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func collaborationMissingRequirements(catalog collaborationCatalog) []string {
@@ -419,7 +429,8 @@ func collaborationValidateRegistry(catalog collaborationCatalog, registry collab
 		seenResearch := make(map[collaborationResearchDependency]bool)
 		for _, dependency := range rule.Research {
 			scenario, found := scenarios[dependency.Scenario]
-			if !found || scenario.Owner != "P02" || dependency.Revision <= 0 || !collaborationOneOf(dependency.Scope.Platform, "linux", "macos") || (dependency.Scope.Terminal == "iterm2" && dependency.Scope.Platform != "macos") || seenResearch[dependency] {
+			trusted, registered := collaborationP02Scenarios[dependency.Scenario]
+			if !found || scenario.Owner != "P02" || !registered || trusted.Purpose != "research" || dependency.Revision != trusted.Revision || !collaborationOneOf(dependency.Scope.Platform, "linux", "macos") || (dependency.Scope.Terminal == "iterm2" && dependency.Scope.Platform != "macos") || seenResearch[dependency] {
 				return fmt.Errorf("invalid research scenario for %q", id)
 			}
 			seenResearch[dependency] = true

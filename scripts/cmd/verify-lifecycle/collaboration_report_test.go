@@ -169,7 +169,7 @@ func TestCollaborationUnsupportedResearchDoesNotProveProductParity(t *testing.T)
 	catalog, evidence, registry := collaborationTestReport(t)
 	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
 	finding := collaborationValidatedAttempt{
-		Attempt:       collaborationAttempt{ID: "host-probe", Purpose: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Prerequisite: "an enforceable nested hook", Claims: []string{"TEAM-001"}},
+		Attempt:       collaborationAttempt{ID: "host-probe", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Prerequisite: "an enforceable nested hook", Claims: []string{"TEAM-001"}},
 		ArtifactKinds: kinds, ResultsPassed: true,
 	}
 	evidence.Attempts = append(evidence.Attempts[:0], finding)
@@ -263,6 +263,102 @@ func TestCollaborationTargetMatchesRemainSeparateFromFullParity(t *testing.T) {
 	row := collaborationReportRow(t, report, "TEAM-001")
 	if row.State != "unverified" || report.Parity || len(row.Targets) != 2 || row.Targets[0].Scope.Platform != "linux" || row.Targets[0].State != "matched" || row.Targets[1].Scope.Platform != "macos" || row.Targets[1].State != "unverified" {
 		t.Fatalf("target results = %#v, full parity = %v", row, report.Parity)
+	}
+}
+
+func TestCollaborationProgramTargetsRequireEveryApplicableRequirement(t *testing.T) {
+	catalog := collaborationTestCatalog(t)
+	var selected []collaborationRequirement
+	for _, requirement := range catalog.Requirements {
+		if requirement.ID == "TEAM-001" || requirement.ID == "TEAM-002" || requirement.ID == "BACKEND-003" {
+			selected = append(selected, requirement)
+		}
+	}
+	catalog.Requirements = selected
+	rows := make([]collaborationRequirementRow, 0, len(selected))
+	for _, requirement := range selected {
+		_, scopes := collaborationApplicability(requirement)
+		row := collaborationRequirementRow{ID: requirement.ID}
+		for _, scope := range scopes {
+			state := "matched"
+			if requirement.ID == "TEAM-002" && scope.Platform == "linux" {
+				state = "unverified"
+			}
+			row.Targets = append(row.Targets, collaborationTargetRow{Scope: scope, State: state, Evidence: []string{requirement.ID}})
+		}
+		rows = append(rows, row)
+	}
+	targets := collaborationReduceProgramTargets(catalog, rows, nil)
+	if len(targets) != 3 || targets[0].State != "unverified" || targets[1].State != "matched" || targets[2].State != "matched" {
+		t.Fatalf("partial program targets = %#v", targets)
+	}
+	for index := range rows {
+		for target := range rows[index].Targets {
+			rows[index].Targets[target].State = "matched"
+		}
+	}
+	targets = collaborationReduceProgramTargets(catalog, rows, nil)
+	for _, target := range targets {
+		if target.State != "matched" {
+			t.Fatalf("complete program targets = %#v", targets)
+		}
+	}
+	if got := collaborationReduceProgramTargets(catalog, rows, []string{"TEAM-013"}); got[0].State != "unverified" || got[1].State != "unverified" || got[2].State != "unverified" {
+		t.Fatalf("missing requirement reduced the required scope: %#v", got)
+	}
+	for _, requirement := range collaborationTestCatalog(t).Requirements {
+		if requirement.ID == "TASK-011" {
+			catalog.Requirements = append(catalog.Requirements, requirement)
+			rows = append(rows, collaborationRequirementRow{ID: requirement.ID})
+			break
+		}
+	}
+	if got := collaborationReduceProgramTargets(catalog, rows, nil); got[0].State != "unverified" || got[1].State != "unverified" || got[2].State != "unverified" {
+		t.Fatalf("unreviewed applicability reduced the required scope: %#v", got)
+	}
+}
+
+func TestCollaborationResearchIsRegisteredIndependentlyOfProductProof(t *testing.T) {
+	catalog, evidence, _ := collaborationTestReport(t)
+	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
+	finding := collaborationValidatedAttempt{
+		Attempt:       collaborationAttempt{ID: "host-observation", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Prerequisite: "a host capability", Claims: []string{}},
+		ArtifactKinds: kinds, ResultsPassed: true,
+	}
+	evidence.Attempts = []collaborationValidatedAttempt{finding}
+	report, err := collaborationReportForTest(t, catalog, evidence, collaborationProofRegistry{})
+	if err != nil || len(report.Research) != 1 || !report.Research[0].Complete || report.Research[0].Prerequisite != "a host capability" || report.Parity || collaborationReportRow(t, report, "TEAM-001").State != "unverified" {
+		t.Fatalf("independent research result = %#v, %v", report, err)
+	}
+	for _, edit := range []func(*collaborationAttempt){
+		func(attempt *collaborationAttempt) { attempt.ScenarioRevision = 2 },
+		func(attempt *collaborationAttempt) { attempt.Channel = "live" },
+	} {
+		changed := finding
+		edit(&changed.Attempt)
+		evidence.Attempts[0] = changed
+		report, err = collaborationReportForTest(t, catalog, evidence, collaborationProofRegistry{})
+		if err != nil || report.Research[0].Complete || report.Parity {
+			t.Fatalf("unregistered research result = %#v, %v", report.Research, err)
+		}
+	}
+}
+
+func TestCollaborationP02ScenarioTableCoversCatalog(t *testing.T) {
+	catalog := collaborationTestCatalog(t)
+	seen := make(map[string]bool)
+	for _, scenario := range catalog.Scenarios {
+		if scenario.Owner != "P02" {
+			continue
+		}
+		rule, ok := collaborationP02Scenarios[scenario.ID]
+		if !ok || rule.Revision != 1 || !collaborationOneOf(rule.Purpose, "research", "verification") || !collaborationOneOf(rule.Channel, "research", "live", "performance") || (rule.Purpose == "research") != (rule.Channel == "research") {
+			t.Fatalf("P02 scenario has no trusted rule: %#v", scenario)
+		}
+		seen[scenario.ID] = true
+	}
+	if len(seen) != len(collaborationP02Scenarios) {
+		t.Fatalf("trusted P02 rules do not match catalog: %d vs %d", len(seen), len(collaborationP02Scenarios))
 	}
 }
 
@@ -437,7 +533,7 @@ func TestCollaborationResearchDependencyMatchesRevisionAndScope(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			catalog, evidence, registry := collaborationTestReport(t)
 			finding := collaborationValidatedAttempt{
-				Attempt:       collaborationAttempt{ID: "unrelated", Purpose: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Prerequisite: "different scope", Claims: []string{"TEAM-001"}},
+				Attempt:       collaborationAttempt{ID: "unrelated", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Prerequisite: "different scope", Claims: []string{"TEAM-001"}},
 				ArtifactKinds: map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}, ResultsPassed: true,
 			}
 			rule := registry["TEAM-001"]
@@ -460,7 +556,7 @@ func TestCollaborationRepeatedUnsupportedFindingsPreserveConflict(t *testing.T) 
 	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
 	for index, prerequisite := range []string{"first prerequisite", "second prerequisite"} {
 		evidence.Attempts = append(evidence.Attempts, collaborationValidatedAttempt{
-			Attempt:       collaborationAttempt{ID: fmt.Sprintf("unsupported-%d", index), Purpose: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Prerequisite: prerequisite, Claims: []string{"TEAM-001"}},
+			Attempt:       collaborationAttempt{ID: fmt.Sprintf("unsupported-%d", index), Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Prerequisite: prerequisite, Claims: []string{"TEAM-001"}},
 			ArtifactKinds: kinds, ResultsPassed: true,
 		})
 	}
@@ -483,7 +579,7 @@ func TestCollaborationPlannedResearchCannotComplete(t *testing.T) {
 	}
 	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
 	evidence.Attempts = append(evidence.Attempts, collaborationValidatedAttempt{
-		Attempt:       collaborationAttempt{ID: "unimplemented-research", Purpose: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "passed", Claims: []string{"TEAM-001"}},
+		Attempt:       collaborationAttempt{ID: "unimplemented-research", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "passed", Claims: []string{"TEAM-001"}},
 		ArtifactKinds: kinds, ResultsPassed: true,
 	})
 	report, err := collaborationReportForTest(t, catalog, evidence, registry)
@@ -504,8 +600,8 @@ func TestCollaborationDifferentResearchScenariosDoNotConflict(t *testing.T) {
 	registry["TEAM-001"] = rule
 	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
 	evidence.Attempts = []collaborationValidatedAttempt{
-		{Attempt: collaborationAttempt{ID: "delivery-supported", Purpose: "research", Scenario: "host-busy-message", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "passed", Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
-		{Attempt: collaborationAttempt{ID: "veto-unsupported", Purpose: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Prerequisite: "enforceable hook", Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
+		{Attempt: collaborationAttempt{ID: "delivery-supported", Purpose: "research", Channel: "research", Scenario: "host-busy-message", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "passed", Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
+		{Attempt: collaborationAttempt{ID: "veto-unsupported", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "unsupported", Prerequisite: "enforceable hook", Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
 	}
 	report, err := collaborationReportForTest(t, catalog, evidence, registry)
 	if err != nil {
@@ -520,8 +616,8 @@ func TestCollaborationResearchConflictRequiresSameArchitecture(t *testing.T) {
 	catalog, evidence, registry := collaborationTestReport(t)
 	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
 	evidence.Attempts = []collaborationValidatedAttempt{
-		{Attempt: collaborationAttempt{ID: "amd64-supported", Purpose: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "passed", Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
-		{Attempt: collaborationAttempt{ID: "arm64-unsupported", Purpose: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "arm64", Outcome: "unsupported", Prerequisite: "arm64 hook", Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
+		{Attempt: collaborationAttempt{ID: "amd64-supported", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "amd64", Outcome: "passed", Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
+		{Attempt: collaborationAttempt{ID: "arm64-unsupported", Purpose: "research", Channel: "research", Scenario: "host-tool-veto", ScenarioRevision: 1, Platform: "linux", Architecture: "arm64", Outcome: "unsupported", Prerequisite: "arm64 hook", Claims: []string{"TEAM-001"}}, ArtifactKinds: kinds, ResultsPassed: true},
 	}
 	report, err := collaborationReportForTest(t, catalog, evidence, registry)
 	if err != nil {
@@ -536,7 +632,7 @@ func TestCollaborationPlannedVerificationCannotComplete(t *testing.T) {
 	catalog, evidence, registry := collaborationTestReport(t)
 	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
 	evidence.Attempts = append(evidence.Attempts, collaborationValidatedAttempt{
-		Attempt:       collaborationAttempt{ID: "planned-verification", Purpose: "verification", Scenario: "fixture-interrupt", Channel: "live", Platform: "linux", Outcome: "passed"},
+		Attempt:       collaborationAttempt{ID: "planned-verification", Purpose: "verification", Scenario: "fixture-interrupt", ScenarioRevision: 1, Channel: "live", Platform: "linux", Outcome: "passed"},
 		ArtifactKinds: kinds, ResultsPassed: true,
 	})
 	report, err := collaborationReportForTest(t, catalog, evidence, registry)
