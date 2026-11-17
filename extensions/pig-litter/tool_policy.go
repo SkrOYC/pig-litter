@@ -3,6 +3,7 @@ package piglitter
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os"
 	"path"
@@ -13,6 +14,7 @@ import (
 	"github.com/MichaelKinsy/PiG/coding"
 	"github.com/MichaelKinsy/PiG/coding/extension"
 	"github.com/MichaelKinsy/PiG/coding/extension/builtin"
+	"github.com/MichaelKinsy/PiG/coding/extensionset"
 	"github.com/MichaelKinsy/PiG/coding/mcpext"
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 )
@@ -116,13 +118,13 @@ func (o *owner) childExtensions(r *record, allowed map[string]struct{}) ([]exten
 			mcpAllowed = true
 		}
 	}
-	options := builtin.Options{Mcp: mcpext.Options{AgentDir: o.agentDir, IsCodemodeTool: func(tool extension.ToolInfo) bool { return tool.Name == "codemode" }, IsToolSearchTool: func(tool extension.ToolInfo) bool { return tool.Name == "tool_search" }}}
+	options := builtin.Options{Mcp: mcpext.Options{AgentDir: o.agentDir}}
 	if mcpAllowed {
 		trusted, err := o.context.IsProjectTrusted()
 		if err != nil {
 			return nil, nil, err
 		}
-		options.Mcp.LoadConfig = func(mcpext.EventContext) mcpext.LoadedMcpConfig {
+		options.Mcp.LoadConfig = func(context.Context) mcpext.LoadedMcpConfig {
 			return mcpext.LoadMcpConfig(mcpext.LoadOptions{AgentDir: o.agentDir, Cwd: o.cwd, ProjectTrusted: trusted, ConfigDirName: projectConfigDir()})
 		}
 		servers, err := o.context.GetMcpServers()
@@ -139,6 +141,8 @@ func (o *owner) childExtensions(r *record, allowed map[string]struct{}) ([]exten
 			}
 		}
 	}
+	loader := extensionset.Loader{CWD: r.cwd, Runtime: registrations}
+	var paths []string
 	for _, item := range []struct{ extension, tool string }{{"codemode", "codemode"}, {"tool-search", "tool_search"}, {"mcp", ""}} {
 		if _, present := allowed[item.tool]; !present && (item.extension != "mcp" || !mcpAllowed) {
 			continue
@@ -147,13 +151,14 @@ func (o *owner) childExtensions(r *record, allowed map[string]struct{}) ([]exten
 		if err != nil {
 			return nil, nil, err
 		}
-		loaded, err := entry.Factory()
-		if err != nil {
-			return nil, nil, err
-		}
-		loaded.Name, loaded.Path, loaded.ResolvedPath = entry.Name, entry.Path(), entry.Path()
-		extensions = append(extensions, loaded)
+		loader.Inline = append(loader.Inline, extension.NamedInlineExtension{Name: entry.Name, Factory: entry.Factory, Builtin: true, Replaceable: entry.Replaceable})
+		paths = append(paths, entry.Path())
 	}
+	loaded, failures := loader.LoadBuiltin(paths)
+	if len(failures) != 0 {
+		return nil, nil, fmt.Errorf("load %s: %s", failures[0].Path, failures[0].Error)
+	}
+	extensions = append(extensions, loaded...)
 	return extensions, registrations, nil
 }
 

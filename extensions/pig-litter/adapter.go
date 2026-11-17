@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,7 +13,9 @@ import (
 
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
+	_ "github.com/MichaelKinsy/PiG/ai/providers/bedrock"
 	"github.com/MichaelKinsy/PiG/coding"
+	"github.com/MichaelKinsy/PiG/coding/extension"
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 )
 
@@ -39,7 +42,7 @@ type owner struct {
 	sessionID, cwd, agentDir string
 	context                  sdk.Context
 	config                   Config
-	services                 *coding.Services
+	services                 *coding.AgentSessionServices
 	tree                     *Tree
 	rootCalls                *callScope
 	ackMu                    sync.Mutex
@@ -152,7 +155,7 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 		return nil, err
 	}
 	agentDir := configuredAgentDir()
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: cwd, AgentDir: agentDir, ProjectTrusted: &trusted})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: cwd, AgentDir: agentDir, ProjectTrusted: &trusted})
 	if err != nil {
 		return nil, err
 	}
@@ -442,7 +445,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = err.Error()
 		return
 	}
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: r.cwd, AgentDir: o.agentDir, ProjectTrusted: &trusted})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: r.cwd, AgentDir: o.agentDir, ProjectTrusted: &trusted})
 	if err != nil {
 		outcome.Error = err.Error()
 		return
@@ -497,15 +500,18 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			outcome.State, outcome.Error = Failed, "child cleanup failed: "+err.Error()
 		}
 	}()
-	loader := coding.NewDefaultResourceLoader(coding.DefaultResourceLoaderOptions{CWD: r.cwd, AgentDir: o.agentDir, SettingsManager: services.SettingsManager(), AppendSystemPromptOverride: func(found []string) []string {
+	loader := coding.NewDefaultResourceLoader(coding.DefaultResourceLoaderOptions{CWD: r.cwd, AgentDir: o.agentDir, SettingsManager: services.SettingsManager(), NoExtensions: true, NoThemes: true, AppendSystemPromptOverride: func(found []string) []string {
 		return append(found, r.instructions)
 	}})
+	defer loader.Close()
 	if err := loader.Reload(); err != nil {
 		outcome.Error = err.Error()
 		return
 	}
 	r.deliveryMu.Lock()
-	options := coding.SessionStartOptions{Model: model, ResourceLoader: loader, ExtraTools: tools, AllowedTools: allowed}
+	allowedNames := slices.Sorted(maps.Keys(allowed))
+	scope := &extension.ToolScope{Builtin: &allowedNames, Extensions: map[string]*[]string{extension.McpAdapterEntry: &allowedNames}}
+	options := coding.SessionStartOptions{Model: model, ResourceLoader: loader, ExtraTools: tools, AllowedTools: allowed, ToolScope: scope}
 	var session *coding.Session
 	if run.resume {
 		session, err = runtime.Resume(string(r.id), options)
@@ -536,7 +542,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			coding.AcknowledgeEvent(event)
 		}
 	}()
-	bindErr := session.BindExtensions(run.ctx)
+	bindErr := session.BindExtensions(run.ctx, coding.ExtensionBindings{})
 	var pendingTools []string
 	if bindErr == nil {
 		pendingTools = waitForChildToolStartup(run.ctx, session, allowed)
@@ -854,7 +860,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 		return state.observe(ctx, func(o *owner) (any, error) {
 			preview, _ := data["context"].(map[string]any)
 			pending, _ := preview["pendingMessages"].([]any)
-			if o.continueForCompletions(o.tree.root, pending) {
+			if continueForCompletions(o, o.tree.root, pending) {
 				return map[string]any{"continue": true}, nil
 			}
 			return nil, nil

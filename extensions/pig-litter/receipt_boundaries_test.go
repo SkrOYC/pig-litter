@@ -20,7 +20,7 @@ import (
 func nativeReceiptManager(t *testing.T, directory, agentDir, id, sessionDir string) *coding.SessionManager {
 	t.Helper()
 	trusted := true
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: directory, AgentDir: agentDir, ProjectTrusted: &trusted})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: directory, AgentDir: agentDir, ProjectTrusted: &trusted})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +358,7 @@ func TestTUIContextCannotConfirmARejectedNativeRootAppendFromMemory(t *testing.T
 	if err := os.Mkdir(manager.Path(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.AppendCustomMessage("litter_completion", content, false, details); err == nil {
+	if _, err := manager.AppendCustomMessageEntry("litter_completion", content, false, details); err == nil {
 		t.Fatal("native root append unexpectedly persisted through a directory")
 	}
 	withCompletionMode(t, tree, "tui", func(o *owner) {
@@ -374,7 +374,7 @@ func TestTUIContextCannotConfirmARejectedNativeRootAppendFromMemory(t *testing.T
 			var result any
 			switch query.Method {
 			case "getEntries":
-				result = manager.Entries()
+				result = manager.GetEntries()
 			case "getSessionFile":
 				result = manager.Path()
 			case "getSessionDir":

@@ -22,7 +22,7 @@ func TestTUIRootNextTurnAcceptanceDoesNotAcknowledgeOrResubmit(t *testing.T) {
 		o.sendCompletion(selected.owner, selected, *selected.outcome)
 		o.retireReceipts(tree.root)
 		o.retireReceipts(tree.root)
-		continuation := o.continueForCompletions(tree.root, nil)
+		continuation := continueForCompletions(o, tree.root, []any(nil))
 		tree.mu.Lock()
 		notice := tree.pending[selected]
 		pending := notice != nil && !notice.stored && !notice.outcomeObserved

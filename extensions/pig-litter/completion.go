@@ -87,7 +87,7 @@ func (o *owner) beginOutcomeAck(key *callTicket, selected *run, operation string
 		active := key.caller.owner.activeLog
 		o.tree.mu.Unlock()
 		if active != nil {
-			leaf := active.LeafID()
+			leaf := active.GetLeafID()
 			if leaf == nil {
 				leaf = new(string)
 			}
@@ -363,14 +363,14 @@ func (o *owner) completionEntries(parent ChildID) ([]json.RawMessage, error) {
 		return nil, reject("unavailable", "parent UUID is unavailable")
 	}
 	if active != nil {
-		return rawEntries(active.Entries())
+		return rawEntries(active.GetEntries())
 	}
 	r.deliveryMu.Lock()
 	defer r.deliveryMu.Unlock()
 	var entries []json.RawMessage
 	err := o.withChildLogLocked(r, func(log *coding.SessionManager) error {
 		var err error
-		entries, err = rawEntries(log.Entries())
+		entries, err = rawEntries(log.GetEntries())
 		return err
 	})
 	return entries, err
@@ -412,7 +412,7 @@ func (o *owner) storeRetained(parentID ChildID, details completionDetails, conte
 		if audit != nil {
 			_, err = log.AppendCustomEntry("litter_completion", audit)
 		} else {
-			_, err = log.AppendCustomMessage("litter_completion", content, false, details)
+			_, err = log.AppendCustomMessageEntry("litter_completion", content, false, details)
 		}
 		return err
 	})
@@ -721,7 +721,7 @@ func (o *owner) completionParentLocked(id ChildID) *record {
 	return o.tree.records[id]
 }
 
-func (o *owner) continueForCompletions(parent *record, pending []any) bool {
+func continueForCompletions[T any](o *owner, parent *record, pending []T) bool {
 	parent.receiptMu.Lock()
 	receipts := make([]*completionReceipt, 0, len(parent.receipts))
 	for _, receipt := range parent.receipts {
@@ -786,8 +786,8 @@ func contextCompletion(message any) (completionDetails, bool) {
 	return details, details.Receipt != ""
 }
 
-func (o *owner) completionContext(parent *record, messages []any) []any {
-	kept := make([]any, 0, len(messages))
+func completionContext[T any](o *owner, parent *record, messages []T) []T {
+	kept := make([]T, 0, len(messages))
 	type completionKey struct {
 		details completionDetails
 		content string
@@ -843,11 +843,11 @@ func (o *owner) completionHooks(parent *record) extension.Extension {
 		}},
 		"context": {func(args ...any) (any, error) {
 			event := args[0].(extension.ContextEvent)
-			return &extension.ContextEventResult{Messages: o.completionContext(parent, event.Messages)}, nil
+			return &extension.ContextEventResult{Messages: completionContext(o, parent, event.Messages)}, nil
 		}},
 		"agent_before_settle": {func(args ...any) (any, error) {
 			event := args[0].(*extension.AgentBeforeSettleEvent)
-			if o.continueForCompletions(parent, event.Context.PendingMessages) {
+			if continueForCompletions(o, parent, event.Context.PendingMessages) {
 				continuation := true
 				return extension.BoundaryResult{Continue: &continuation}, nil
 			}

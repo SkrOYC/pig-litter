@@ -276,7 +276,7 @@ func TestWidgetGeometryStartupAndEditorPredicates(t *testing.T) {
 		t.Fatal("parsePaneGeometry accepted malformed dimensions")
 	}
 	lines := make([]string, 32)
-	lines[1] = "v0.4.1+1.0.3"
+	lines[1] = "v0.7.0+1.5.0"
 	lines[27] = strings.Repeat("─", 100)
 	lines[29] = strings.Repeat("─", 100)
 	lines[31] = strings.Repeat(" ", 84) + "parent"

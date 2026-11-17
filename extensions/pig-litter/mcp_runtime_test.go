@@ -199,7 +199,7 @@ func testNativeMCPRootAuthority(t *testing.T, untrusted bool) {
 	tree := testTree(t, defaultConfig())
 	withCompletionHost(t, tree, func(o *owner) {
 		trusted := true
-		services, err := coding.NewServices(coding.ServicesOptions{CWD: directory, AgentDir: agentDir, ProjectTrusted: &trusted})
+		services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: directory, AgentDir: agentDir, ProjectTrusted: &trusted})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -260,7 +260,7 @@ func (c mcpStartupWaitContext) Done() <-chan struct{} {
 func TestNativeMCPResourceToolsWaitForRegistration(t *testing.T) {
 	directory := t.TempDir()
 	trusted := true
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: directory, AgentDir: directory, ProjectTrusted: &trusted})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: directory, AgentDir: directory, ProjectTrusted: &trusted})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,5 +304,155 @@ func TestNativeMCPResourceToolsWaitForRegistration(t *testing.T) {
 	}
 	if got := <-finished; len(got) != 0 {
 		t.Fatalf("registered resource tools did not release the first prompt: pending=%v", got)
+	}
+}
+
+func TestNativeMCPResourcesKeepUnlistedServerToolsOutOfChild(t *testing.T) {
+	t.Setenv("PIG_OFFLINE", "1")
+	t.Setenv("PIG_USE_PI_DIRS", "0")
+	directory := t.TempDir()
+	agentDir := filepath.Join(directory, "agent")
+	t.Setenv("PIG_HOME", directory)
+	t.Setenv("PIG_CODING_AGENT_DIR", agentDir)
+	config := "agents:\n  worker:\n    tools: [codemode, tool_search, list_mcp_resources, list_mcp_resource_templates, read_mcp_resource]\n"
+	if err := os.WriteFile(filepath.Join(directory, "litter.yaml"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var serverCalls atomic.Int32
+	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if request.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var rpc struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				ProtocolVersion string `json:"protocolVersion"`
+				URI             string `json:"uri"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&rpc); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if len(rpc.ID) == 0 {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result any
+		switch rpc.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "resource-fixture")
+			capabilities := map[string]any{"tools": map[string]any{}}
+			if request.URL.Path == "/direct" {
+				capabilities["resources"] = map[string]any{}
+			}
+			result = map[string]any{"protocolVersion": rpc.Params.ProtocolVersion, "capabilities": capabilities, "serverInfo": map[string]any{"name": "fixture", "version": "1"}}
+		case "tools/list":
+			result = map[string]any{"tools": []map[string]any{{"name": "excluded_probe", "description": "Excluded probe", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}}}}
+		case "tools/call":
+			serverCalls.Add(1)
+			result = map[string]any{"content": []map[string]any{{"type": "text", "text": "EXCLUDED_TOOL_CALLED"}}}
+		case "resources/list":
+			result = map[string]any{"resources": []map[string]any{{"uri": "fixture://resource", "name": "fixture"}}}
+		case "resources/read":
+			result = map[string]any{"contents": []map[string]any{{"uri": rpc.Params.URI, "text": "RESOURCE_CONTENT"}}}
+		default:
+			t.Errorf("unexpected MCP method %s", rpc.Method)
+			result = map[string]any{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": rpc.ID, "result": result})
+	}))
+	defer mcpServer.Close()
+	var requests atomic.Int32
+	var failure atomic.Pointer[string]
+	recordFailure := func(message string) { failure.CompareAndSwap(nil, &message) }
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		var conversation struct {
+			Messages []struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.Unmarshal(body, &conversation)
+		var last string
+		if len(conversation.Messages) != 0 {
+			_ = json.Unmarshal(conversation.Messages[len(conversation.Messages)-1].Content, &last)
+		}
+		switch requests.Add(1) {
+		case 1:
+			runtimeToolAnswer(w, "list", "list_mcp_resources", map[string]any{"server": "direct"})
+		case 2:
+			if !strings.Contains(last, "fixture://resource") {
+				recordFailure("the allowed resource was not listed")
+			}
+			runtimeToolAnswer(w, "read", "read_mcp_resource", map[string]any{"server": "direct", "uri": "fixture://resource"})
+		case 3:
+			if !strings.Contains(last, "RESOURCE_CONTENT") {
+				recordFailure("the allowed resource was not read")
+			}
+			runtimeToolAnswer(w, "inspect", "codemode", map[string]any{"code": `text({direct: "mcp__direct__excluded_probe" in tools, deferred: "mcp__deferred__excluded_probe" in tools});`})
+		case 4:
+			if !strings.Contains(last, `"direct":false`) || !strings.Contains(last, `"deferred":false`) {
+				recordFailure("codemode exposed an unlisted MCP tool")
+			}
+			runtimeToolAnswer(w, "search", "tool_search", map[string]any{"query": "excluded_probe"})
+		case 5:
+			if strings.Contains(last, "mcp__deferred__excluded_probe") {
+				recordFailure("tool search exposed an unlisted MCP tool")
+			}
+			runtimeToolAnswer(w, "attempt", "codemode", map[string]any{"code": `let denied = false; try { await tools.mcp__direct__excluded_probe({}); } catch (error) { denied = true; } text({denied});`})
+		case 6:
+			if !strings.Contains(last, `"denied":true`) {
+				recordFailure("codemode did not reject an unlisted MCP call")
+			}
+			runtimeAnswer(w, "RESOURCE_SCOPE_VERIFIED")
+		default:
+			recordFailure("unexpected provider continuation")
+			runtimeAnswer(w, "unexpected provider continuation")
+		}
+	}))
+	defer provider.Close()
+	writeRuntimeModels(t, agentDir, provider.URL)
+	host := &runtimeHost{tools: []string{"codemode", "tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"}}
+	tree := testTree(t, defaultConfig())
+	withCompletionHost(t, tree, func(o *owner) {
+		trusted := true
+		services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: directory, AgentDir: agentDir, ProjectTrusted: &trusted})
+		if err != nil {
+			t.Fatal(err)
+		}
+		o.cwd, o.agentDir, o.services = directory, agentDir, services
+		tree.execute, tree.persist = o.executeRun, o.saveChild
+		defer o.state.retire()
+		value, ticket, err := runtimeOperation(t, o, "litter_spawn", "resource-scope", map[string]any{"type": "worker", "task": "use the permitted resources", "model": "fixture/child"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		o.settleAck(ticket, false)
+		selected := testRun(t, tree, Ref{value["child"].(Snapshot).ID})
+		outcome, err := tree.wait(context.Background(), selected, 15000)
+		if err != nil || outcome.State != Completed || outcome.Text != "RESOURCE_SCOPE_VERIFIED" {
+			t.Fatalf("resource-scoped child did not complete: %#v %v", outcome, err)
+		}
+		tree.acknowledge(selected)
+	}, func(method string, raw json.RawMessage) json.RawMessage { return host.call(t, method, raw) },
+		extension.RegisteredMcpServer{Name: "direct", ExtensionPath: "root-fixture", Config: extension.McpServerConfig{URL: mcpServer.URL + "/direct", Exposure: extension.McpExposureDirect}},
+		extension.RegisteredMcpServer{Name: "deferred", ExtensionPath: "root-fixture", Config: extension.McpServerConfig{URL: mcpServer.URL + "/deferred", Exposure: extension.McpExposureDeferred}})
+	if problem := failure.Load(); problem != nil {
+		t.Fatal(*problem)
+	}
+	if calls := serverCalls.Load(); calls != 0 {
+		t.Fatalf("child reached excluded MCP tools %d times", calls)
 	}
 }

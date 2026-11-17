@@ -8,13 +8,13 @@ for command in pig go jq; do
 done
 pig_path="$(command -v pig)"
 case "$pig_path" in
-  *-pig-0.4.1/bin/pig) ;;
+  *-pig-0.7.0/bin/pig) ;;
   *) printf 'expected pinned PiG from the devenv store, got %s\n' "$pig_path" >&2; exit 1 ;;
 esac
 pig_version="$(pig --version)"
 case "$pig_version" in
-  0.4.1+*) ;;
-  *) printf 'expected PiG v0.4.1, got %s\n' "$pig_version" >&2; exit 1 ;;
+  0.7.0+*) ;;
+  *) printf 'expected PiG v0.7.0, got %s\n' "$pig_version" >&2; exit 1 ;;
 esac
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bash "$root/scripts/test-pig-litter.sh"

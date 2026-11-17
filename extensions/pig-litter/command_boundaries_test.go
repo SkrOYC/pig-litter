@@ -274,7 +274,17 @@ func TestFullRootToolHandlerKeepsServicesAliveUntilItReturns(t *testing.T) {
 				go func() { state.retire(); close(retired) }()
 				for {
 					notification := readCompletionEnvelope(t, host)
-					if notification.Type == subprocess.MsgWidgetPush && len(notification.WidgetPush.Lines) == 0 {
+					if notification.Type != subprocess.MsgCall || notification.Call.Method != "ui.setWidget" {
+						t.Fatalf("unexpected retirement notification: %#v", notification)
+					}
+					var widget struct {
+						Content []string `json:"content"`
+					}
+					if err := json.Unmarshal(notification.Call.Args, &widget); err != nil {
+						t.Fatal(err)
+					}
+					answer(notification)
+					if len(widget.Content) == 0 {
 						break
 					}
 				}
