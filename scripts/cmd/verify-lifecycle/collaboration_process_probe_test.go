@@ -76,6 +76,13 @@ func TestCollaborationHostIndependentSelectedProcess(t *testing.T) {
 	tools := []string{"litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
 	arguments := []string{"--mode", "json", "--print", "--no-extensions", "-e", binary, "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--approve", "--offline", "--model", "fixture/probe", "--tools", strings.Join(tools, ","), "--session-id", sessionID, "--session-dir", filepath.Join(fixture.root, "process-sessions"), "Report that the independent fixture is ready."}
 	command := exec.CommandContext(ctx, pig, arguments...)
+	prepareProcess(command)
+	command.Cancel = func() error {
+		stopProcess(command)
+		return nil
+	}
+	command.WaitDelay = 5 * time.Second
+	defer stopProcess(command)
 	command.Dir = workspace
 	bash, err := exec.LookPath("bash")
 	if err != nil {
