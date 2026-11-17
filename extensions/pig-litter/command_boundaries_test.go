@@ -1,9 +1,12 @@
 package piglitter
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -50,9 +53,61 @@ func startExtensionFixture(t *testing.T, ext *sdk.Extension, ready *subprocess.R
 		defer host.Close()
 		defer peer.Close()
 		writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgShutdown, Shutdown: &subprocess.ShutdownPayload{Reason: "complete"}})
-		if err := <-done; err != nil {
+		drained := make(chan error, 1)
+		go func() { _, err := io.Copy(io.Discard, host); drained <- err }()
+		runErr, drainErr := <-done, <-drained
+		if err := errors.Join(runErr, drainErr); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestExtensionFixtureDrainsResponseDuringShutdown(t *testing.T) {
+	ext := sdk.New("fixture-shutdown-drain")
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	ext.OnEvent("shutdown_probe", func(_ sdk.Context, _ map[string]any) (any, error) {
+		close(entered)
+		<-release
+		return map[string]any{"probe": "returned"}, nil
+	})
+	host, handlers, finish := startExtensionFixture(t, ext, &subprocess.ReadyPayload{Cwd: t.TempDir(), Mode: "rpc", Width: 80, State: &subprocess.StatePayload{}})
+	t.Cleanup(finish)
+	if handlers["shutdown_probe"] == 0 {
+		t.Fatal("shutdown probe handler was not registered")
+	}
+	id := "shutdown-probe-" + strings.Repeat("x", 128)
+	writeCompletionEnvelope(t, host, subprocess.Envelope{Type: subprocess.MsgRequest, ID: id, Request: &subprocess.RequestPayload{Method: "event", Event: "shutdown_probe", HandlerID: handlers["shutdown_probe"], Args: json.RawMessage(`{}`)}})
+	for {
+		frame := readCompletionEnvelope(t, host)
+		if frame.Type == subprocess.MsgRequestState && frame.RequestState != nil && frame.RequestState.RequestID == id && frame.RequestState.State == "started" {
+			break
+		}
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown probe handler did not start")
+	}
+	releaseOnce.Do(func() { close(release) })
+	expected, err := json.Marshal(subprocess.Envelope{Type: subprocess.MsgRequestState, RequestState: &subprocess.RequestStatePayload{RequestID: id, State: "completed"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header [4]byte
+	if _, err := io.ReadFull(host, header[:]); err != nil {
+		t.Fatal(err)
+	}
+	if size := binary.BigEndian.Uint32(header[:]); size != uint32(len(expected)) {
+		t.Fatalf("completed SDK frame size = %d, want %d", size, len(expected))
+	}
+	prefix := make([]byte, len(expected)-1)
+	if _, err := io.ReadFull(host, prefix); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(prefix, expected[:len(expected)-1]) {
+		t.Fatalf("unexpected completed SDK frame prefix: %s", prefix)
 	}
 }
 
