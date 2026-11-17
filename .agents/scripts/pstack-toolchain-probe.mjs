@@ -6,6 +6,10 @@ function run(command, args, input) {
     encoding: "utf8",
     timeout: 4000,
     maxBuffer: 1024 * 1024,
+    env:
+      command === "go" && args[0] === "mod"
+        ? { ...process.env, GOENV: "off", GOFLAGS: "", GOTOOLCHAIN: "local" }
+        : process.env,
   });
   if (result.error || result.status !== 0)
     throw new Error(
