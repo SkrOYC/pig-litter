@@ -1,10 +1,9 @@
 #!/usr/bin/env bun
 import { Database } from "bun:sqlite";
-import { createReadStream, existsSync, realpathSync } from "node:fs";
+import { createReadStream, existsSync, opendirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
-import { spawnSync } from "node:child_process";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
@@ -89,17 +88,28 @@ function dataRoot(env = process.env, home = homedir()) {
   return resolve(env.CODEX_HOME || join(home, ".codex"));
 }
 
-function commandFiles(root, glob) {
-  const result = spawnSync(
-    "rg",
-    ["--files", "--hidden", "--no-ignore", "--glob", glob, root],
-    { encoding: "utf8" },
-  );
-  if (result.error)
-    fail(`Cannot discover history files with rg: ${result.error.message}`);
-  if (result.status > 1)
-    fail(`History file discovery failed: ${result.stderr.trim()}`);
-  return result.stdout.split("\n").filter(Boolean);
+function findFiles(root, glob) {
+  const matcher = new Bun.Glob(glob);
+  const directories = [root];
+  const files = [];
+  while (directories.length) {
+    const path = directories.pop();
+    let directory;
+    try {
+      directory = opendirSync(path);
+      let entry;
+      while ((entry = directory.readSync())) {
+        const child = join(path, entry.name);
+        if (entry.isDirectory()) directories.push(child);
+        else if (entry.isFile() && matcher.match(entry.name)) files.push(child);
+      }
+    } catch (error) {
+      fail(`History file discovery failed in ${path}: ${error.message}`);
+    } finally {
+      directory?.closeSync();
+    }
+  }
+  return files;
 }
 
 function tableInfo(db, table) {
@@ -117,7 +127,7 @@ function tables(db) {
 }
 
 function discoverDatabases(root) {
-  const files = commandFiles(root, "*.sqlite").filter((file) =>
+  const files = findFiles(root, "*.sqlite").filter((file) =>
     /(?:^|\/)state_.*\.sqlite$/.test(file),
   );
   const candidates = [];
@@ -145,7 +155,7 @@ function discoverDatabases(root) {
     fail(
       `No readable state database with a compatible threads schema under ${root}`,
     );
-  const histories = commandFiles(root, "thread_history_*.sqlite");
+  const histories = findFiles(root, "thread_history_*.sqlite");
   return { states: candidates, histories, issues };
 }
 
@@ -704,7 +714,7 @@ if (import.meta.main) {
 
 export {
   allThreads,
-  commandFiles,
+  findFiles,
   dataRoot,
   decodeItem,
   discoverDatabases,

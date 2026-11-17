@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main, parseArgs } from "./pstack-history.mjs";
@@ -129,6 +130,95 @@ async function fixture({
 }
 
 describe("pstack-history", () => {
+  it("finds history databases when the filename inventory exceeds the subprocess buffer", async () => {
+    const f = await fixture();
+    const external = await mkdtemp(join(tmpdir(), "pstack-history-link-"));
+    try {
+      const archive = join(f.root, ".archive\nwith-newline");
+      await mkdir(archive);
+      for (let i = 0; i < 4800; i++)
+        writeFileSync(
+          join(archive, `archive-${i}-${"x".repeat(220)}.sqlite`),
+          "",
+        );
+      const nested = new Database(join(archive, "state_nested.sqlite"));
+      nested.exec(
+        "CREATE TABLE threads (id TEXT, cwd TEXT, created_at_ms INTEGER)",
+      );
+      nested
+        .query("INSERT INTO threads VALUES (?, ?, ?)")
+        .run("nested-thread", f.workspace, Date.parse("2026-10-04T00:00:00Z"));
+      nested.close();
+      const outside = new Database(join(external, "state_external.sqlite"));
+      outside.exec("CREATE TABLE threads (id TEXT, cwd TEXT)");
+      outside
+        .query("INSERT INTO threads VALUES (?, ?)")
+        .run("linked-thread", f.workspace);
+      outside.close();
+      await symlink(external, join(f.root, "linked-directory"));
+      await symlink(
+        join(external, "state_external.sqlite"),
+        join(f.root, "state_link.sqlite"),
+      );
+      const rows = JSON.parse(
+        await main(parseArgs(["list", "--cwd", f.workspace])),
+      );
+      expect(rows.map((row) => row.thread_id)).toEqual([
+        "nested-thread",
+        "thread-new",
+        "thread-child",
+        "thread-old",
+      ]);
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+      await rm(external, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("uses matching hidden history files and ignores similar filenames", async () => {
+    const f = await fixture({ includeHistory: false });
+    try {
+      const archive = join(f.root, ".hidden");
+      await mkdir(archive);
+      await writeFile(join(archive, "state_bad.sqlite.backup"), "not sqlite");
+      await writeFile(
+        join(archive, "other_thread_history_2.sqlite"),
+        "not sqlite",
+      );
+      const history = new Database(join(archive, "thread_history_2.sqlite"));
+      history.exec("CREATE TABLE thread_items (thread_id TEXT, item_json TEXT)");
+      history
+        .query("INSERT INTO thread_items VALUES (?, ?)")
+        .run("thread-new", JSON.stringify({ text: "hidden history" }));
+      history.close();
+      const items = JSON.parse(
+        await main(parseArgs(["read", "--id", "thread-new"])),
+      );
+      expect(items.map((item) => item.text)).toEqual(["hidden history"]);
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports directory read failures instead of claiming complete discovery", async () => {
+    const f = await fixture();
+    const blocked = join(f.root, "blocked");
+    await mkdir(blocked);
+    await chmod(blocked, 0o000);
+    try {
+      if (process.getuid?.() === 0)
+        process.env.CODEX_HOME = join(f.root, "state_99.sqlite");
+      await expect(
+        main(parseArgs(["list", "--cwd", f.workspace])),
+      ).rejects.toThrow(
+        process.getuid?.() === 0 ? "ENOTDIR" : "EACCES",
+      );
+    } finally {
+      await chmod(blocked, 0o700);
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
   it("uses the newest duplicate thread metadata across compatible state databases", async () => {
     const f = await fixture();
     try {
