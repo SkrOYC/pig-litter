@@ -5,7 +5,7 @@ function run(command, args, input) {
     input,
     encoding: "utf8",
     timeout: 4000,
-    maxBuffer: 4096,
+    maxBuffer: 1024 * 1024,
   });
   if (result.error || result.status !== 0)
     throw new Error(
@@ -25,10 +25,18 @@ try {
       "CC",
     ]),
   );
+  if (settings.GOTOOLCHAIN !== "local")
+    throw new Error(
+      `GOTOOLCHAIN must be local; received ${JSON.stringify(settings.GOTOOLCHAIN)}`,
+    );
+  const expectedGo = JSON.parse(
+    run("go", ["mod", "edit", "-json", "scripts/go.mod"]),
+  ).Toolchain;
+  if (typeof expectedGo !== "string" || !expectedGo)
+    throw new Error("missing toolchain directive in scripts/go.mod");
   for (const [name, expected] of Object.entries({
-    GOVERSION: "go1.27.1",
+    GOVERSION: expectedGo,
     CGO_ENABLED: "1",
-    GOTOOLCHAIN: "local",
   })) {
     if (settings[name] !== expected)
       throw new Error(
