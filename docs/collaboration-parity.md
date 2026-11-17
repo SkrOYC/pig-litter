@@ -95,3 +95,18 @@ The report records each research scenario's completion separately from any named
 The existing lifecycle and terminal drivers remain the starting points for the wrapper. The current terminal driver has Linux-specific allocation and cleanup checks. A portable command-construction test cannot replace a real macOS or iTerm2 run. The catalog must not label any future scenario as passed until its actual artifacts and result exist.
 
 The report validates PNG screenshots and self-contained MOV or MP4 video from immutable snapshots of the selected bytes. Video decoding uses only the snapshot descriptor and disallows external references. The decoder has time, memory, pixel, and output limits. If the host cannot apply those limits or decode the media, the evidence remains incomplete.
+
+Each target identity JSON contains `branch`, `product_commit`, `driver_commit`, `product_binary_sha256`, `host_binary_sha256`, and `catalog_sha256`. The product commit and extension digest identify a clean target checkout and its separately built standalone executable. The driver commit identifies the clean checkout running the wrapper. The host digest identifies the PiG executable declared by the target checkout's `devenv` environment. The catalog digest identifies the exact requirements file used by the run. Before accepting an attempt, the driver checks that the declared branch contains the checkout commit, records the resolved ref and its commit, rebuilds the extension, and compares the resulting digest.
+
+With absolute paths to that target JSON, checkout, PiG executable, extension executable, and private evidence directory, run a scenario as follows:
+
+```sh
+devenv shell -- scripts/verify-collaboration.sh --scenario startup-standalone \
+  --target "$P02_TARGET" --target-checkout "$P02_CHECKOUT" \
+  --pig-bin "$P02_PIG" --extension "$P02_EXTENSION" \
+  --evidence-root "$P02_EVIDENCE"
+```
+
+The `baseline` and `capture-performance` scenarios also require `--baseline-target`, `--baseline-checkout`, `--baseline-pig-bin`, and `--baseline-extension`. Their baseline is the final P01 parent. Both targets use a fixture driver built from the candidate checkout. Linux terminal recording needs Xvfb, xterm, and an FFmpeg build with `x11grab`; the `--media-xvfb`, `--media-xterm`, `--media-ffmpeg`, and `--media-ffprobe` options select their executables.
+
+Each attempt writes a `selection.json` that identifies its manifest by digest. Pass an explicit selection and the same target identity to `scripts/verify-collaboration.sh --report "$P02_SELECTION" --target "$P02_TARGET" --evidence-root "$P02_EVIDENCE"`. Add `--require-parity` when the caller needs a nonzero exit unless the complete program has been verified.
