@@ -1,5 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
+registration_only=false
+evidence_dir=""
+case "$#" in
+  0) ;;
+  1)
+    [[ "$1" == --registration-only ]] || { printf 'usage: %s [--registration-only [--evidence-dir DIR]]\n' "$0" >&2; exit 2; }
+    registration_only=true
+    ;;
+  3)
+    [[ "$1" == --registration-only && "$2" == --evidence-dir && -n "$3" ]] || { printf 'usage: %s [--registration-only [--evidence-dir DIR]]\n' "$0" >&2; exit 2; }
+    registration_only=true
+    mkdir -p "$3"
+    evidence_dir="$(cd "$3" && pwd -P)"
+    ;;
+  *) printf 'usage: %s [--registration-only [--evidence-dir DIR]]\n' "$0" >&2; exit 2 ;;
+esac
 for command in pig go jq; do
   if ! command -v "$command" >/dev/null 2>&1; then
     printf 'required command is missing: %s\n' "$command" >&2
@@ -17,7 +33,13 @@ case "$pig_version" in
   *) printf 'expected PiG v0.7.0, got %s\n' "$pig_version" >&2; exit 1 ;;
 esac
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-bash "$root/scripts/test-pig-litter.sh"
+if "$registration_only"; then
+  printf 'Registration-only validation does not run unit, race, TUI, or iTerm2 checks.\n'
+  mkdir -p "$root/extensions/pig-litter/dist"
+  go -C "$root/scripts" build -mod=readonly -o "$root/extensions/pig-litter/dist/pig-litter" ./cmd/pig-litter
+else
+  bash "$root/scripts/test-pig-litter.sh"
+fi
 temp_dir="$(mktemp -d)"
 trap 'rm -rf "$temp_dir"' EXIT
 workspace="$temp_dir/workspace"
@@ -41,12 +63,20 @@ for artifact in ./extensions/pig-litter ./extensions/pig-litter/dist/pig-litter;
     and (.tools == ["litter_inspect", "litter_list", "litter_message", "litter_spawn", "litter_stop", "litter_wait"])
     and ((.commands // []) | map(if type == "string" then . else .name end) | index("pig-litter")) != null
   ' >/dev/null
+  if [[ -n "$evidence_dir" ]]; then
+    if [[ "$form" == factory ]]; then name=source; else name=standalone; fi
+    printf '%s\n' "$report" > "$evidence_dir/$name-registration.json"
+  fi
 done
-pig piglet validate ./piglet.yaml --json --no-input | jq --exit-status '
+piglet_report="$(pig piglet validate ./piglet.yaml --json --no-input)"
+printf '%s\n' "$piglet_report" | jq --exit-status '
   .valid == true and .name == "pig-litter"
   and (.extensions | map(.name) | index("pig-litter")) != null
   and (.errors | length) == 0
 ' >/dev/null
+if [[ -n "$evidence_dir" ]]; then
+  printf '%s\n' "$piglet_report" > "$evidence_dir/piglet-manifest.json"
+fi
 for path in "$agent_dir/settings.json" "$workspace/.pig/settings.json"; do
   if [[ -e "$path" ]]; then printf 'validation wrote settings: %s\n' "$path" >&2; exit 1; fi
 done
