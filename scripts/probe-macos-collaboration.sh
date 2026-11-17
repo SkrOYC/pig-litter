@@ -14,6 +14,10 @@ macos_version="$(sw_vers -productVersion 2>&1)"
 commit_sha="$(git rev-parse HEAD)"
 iterm_version=""
 iterm_executable=""
+signature_status=not_checked
+first_launch_status=not_checked
+open_status=not_started
+gui_status=not_attempted
 session_id=""
 session_tty=""
 window_id=""
@@ -43,9 +47,101 @@ else
   else
     iterm_version="$(defaults read "$app_path/Contents/Info" CFBundleShortVersionString 2>&1)"
     iterm_executable="$(defaults read "$app_path/Contents/Info" CFBundleExecutable 2>&1)"
-    perl -e 'alarm shift; exec @ARGV' 30 open -a "$app_path"
-    command_text="printf 'PIG_SENTINEL_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}_%s\\n' \"\$(uname -m)\" | tee '$artifact_dir/sentinel.txt'; tty > '$artifact_dir/sentinel-tty.txt'"
-    perl -e 'alarm shift; exec @ARGV' 90 osascript - "$command_text" "$expected" > "$artifact_dir/session.txt" 2> "$artifact_dir/applescript-error.txt" <<'APPLESCRIPT'
+    codesign --verify --deep --strict --verbose=2 "$app_path" >"$artifact_dir/signature-verification.txt" 2>&1
+    signature_verification_status=$?
+    codesign -dv --verbose=4 "$app_path" >"$artifact_dir/signature-details.txt" 2>&1
+    signature_details_status=$?
+    perl -e 'alarm shift; exec @ARGV' 60 spctl --assess --type execute --verbose=4 "$app_path" >"$artifact_dir/notarization.txt" 2>&1
+    notarization_status=$?
+    cat "$artifact_dir/signature-verification.txt" "$artifact_dir/signature-details.txt" "$artifact_dir/notarization.txt"
+    if [ "$signature_verification_status" -eq 0 ] &&
+      [ "$signature_details_status" -eq 0 ] &&
+      [ "$notarization_status" -eq 0 ] &&
+      grep -Fx 'Identifier=com.googlecode.iterm2' "$artifact_dir/signature-details.txt" &&
+      grep -Fx 'TeamIdentifier=H7V7XYVQ7D' "$artifact_dir/signature-details.txt" &&
+      grep -Fx 'Authority=Developer ID Application: GEORGE NACHMAN (H7V7XYVQ7D)' "$artifact_dir/signature-details.txt" &&
+      grep -F 'source=Notarized Developer ID' "$artifact_dir/notarization.txt"; then
+      signature_status=verified
+      perl -e 'alarm shift; exec @ARGV' 90 open -a "$app_path" >"$artifact_dir/open.txt" 2>&1 &
+      open_pid=$!
+      for _ in {1..5}; do
+        kill -0 "$open_pid" 2>/dev/null || break
+        sleep 1
+      done
+      if kill -0 "$open_pid" 2>/dev/null; then
+        perl -e 'alarm shift; exec @ARGV' 60 osascript - "$artifact_dir/first-launch.png" >"$artifact_dir/first-launch.txt" 2>&1 <<'APPLESCRIPT'
+on run argv
+  set screenshotPath to item 1 of argv
+  tell application "System Events"
+    repeat 25 times
+      if exists process "CoreServicesUIAgent" then
+        repeat with candidateWindow in (every window of process "CoreServicesUIAgent")
+          set dialogText to (name of candidateWindow as text)
+          repeat with textItem in (value of every static text of candidateWindow)
+            set dialogText to dialogText & " " & (textItem as text)
+          end repeat
+          log dialogText
+          if dialogText contains "iTerm" and dialogText contains "downloaded" and dialogText contains "Internet" and (exists button "Open" of candidateWindow) then
+            set quotedPath to quoted form of screenshotPath
+            tell me to do shell script "/usr/sbin/screencapture -x " & quotedPath & " && test -s " & quotedPath
+            click button "Open" of candidateWindow
+            return "Opened the matching iTerm first-launch dialog."
+          end if
+        end repeat
+      end if
+      delay 1
+    end repeat
+  end tell
+  error "The matching iTerm first-launch dialog was not found."
+end run
+APPLESCRIPT
+        gui_status=$?
+        if [ "$gui_status" -eq 0 ]; then
+          first_launch_status=approved
+        else
+          first_launch_status=blocked
+          if grep -q 'syntax error' "$artifact_dir/first-launch.txt"; then
+            status=failed
+            reason="The first-launch GUI script did not compile."
+          elif [ "$gui_status" -eq 142 ]; then
+            reason="The first-launch GUI script timed out."
+          else
+            reason="The iTerm2 first-launch dialog could not be approved by GUI automation."
+          fi
+          if [ ! -s "$artifact_dir/first-launch.png" ]; then
+            perl -e 'alarm shift; exec @ARGV' 30 screencapture -x "$artifact_dir/first-launch.png"
+          fi
+        fi
+        cat "$artifact_dir/first-launch.txt"
+      else
+        first_launch_status=not_prompted
+      fi
+      for _ in {1..10}; do
+        kill -0 "$open_pid" 2>/dev/null || break
+        sleep 1
+      done
+      if kill -0 "$open_pid" 2>/dev/null; then
+        kill "$open_pid"
+        if [ "$first_launch_status" != blocked ]; then
+          first_launch_status=blocked
+          reason="The iTerm2 launch did not finish after the first-launch check."
+        fi
+      fi
+      wait "$open_pid"
+      open_status=$?
+      cat "$artifact_dir/open.txt"
+      if [ "$open_status" -ne 0 ] && [ "$first_launch_status" != blocked ]; then
+        first_launch_status=blocked
+        reason="The iTerm2 launch failed after the first-launch check."
+      fi
+    else
+      signature_status=failed
+      status=failed
+      reason="iTerm2 signature or notarization verification failed."
+    fi
+    if [ "$signature_status" = verified ] && [ "$first_launch_status" != blocked ]; then
+      command_text="printf 'PIG_SENTINEL_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}_%s\\n' \"\$(uname -m)\" | tee '$artifact_dir/sentinel.txt'; tty > '$artifact_dir/sentinel-tty.txt'"
+      perl -e 'alarm shift; exec @ARGV' 90 osascript - "$command_text" "$expected" >"$artifact_dir/session.txt" 2>"$artifact_dir/applescript-error.txt" <<'APPLESCRIPT'
 on run argv
   set commandText to item 1 of argv
   set expectedText to item 2 of argv
@@ -67,33 +163,37 @@ on run argv
   end tell
 end run
 APPLESCRIPT
-    applescript_status=$?
-    if [ "$applescript_status" -eq 0 ]; then
-      for _ in {1..10}; do
-        [ -s "$artifact_dir/sentinel-tty.txt" ] && break
-        sleep 1
-      done
-    fi
-    session_id="$(sed -n '1p' "$artifact_dir/session.txt")"
-    session_tty="$(sed -n '2p' "$artifact_dir/session.txt")"
-    window_id="$(sed -n '3p' "$artifact_dir/session.txt")"
-    pgrep -fl "$app_path/Contents/MacOS/$iterm_executable" > "$artifact_dir/iterm-process.txt"
-    process_status=$?
-    cat "$artifact_dir/applescript-error.txt" "$artifact_dir/session.txt" "$artifact_dir/iterm-process.txt"
-    if grep -q 'syntax error' "$artifact_dir/applescript-error.txt"; then
-      status=failed
-      reason="The AppleScript probe did not compile."
-    elif [ "$applescript_status" -ne 0 ]; then
-      reason="AppleScript could not create or inspect an iTerm2 session."
-    elif [ "$process_status" -ne 0 ]; then
-      reason="The iTerm2 process was not observed."
-    elif [ -z "$session_id" ] || [ -z "$session_tty" ] || [ -z "$window_id" ]; then
-      reason="The iTerm2 session identity was incomplete."
-    elif ! grep -Fx "$expected" "$artifact_dir/sentinel.txt" || ! grep -Fx "$session_tty" "$artifact_dir/sentinel-tty.txt" || ! grep -Fx "$expected" "$artifact_dir/session.txt"; then
-      reason="The session output or terminal side effect did not match the sentinel."
+      applescript_status=$?
+      if [ "$applescript_status" -eq 0 ]; then
+        for _ in {1..10}; do
+          [ -s "$artifact_dir/sentinel-tty.txt" ] && break
+          sleep 1
+        done
+      fi
+      session_id="$(sed -n '1p' "$artifact_dir/session.txt")"
+      session_tty="$(sed -n '2p' "$artifact_dir/session.txt")"
+      window_id="$(sed -n '3p' "$artifact_dir/session.txt")"
+      pgrep -fl "$app_path/Contents/MacOS/$iterm_executable" >"$artifact_dir/iterm-process.txt"
+      process_status=$?
+      cat "$artifact_dir/applescript-error.txt" "$artifact_dir/session.txt" "$artifact_dir/iterm-process.txt"
+      if grep -q 'syntax error' "$artifact_dir/applescript-error.txt"; then
+        status=failed
+        reason="The AppleScript probe did not compile."
+      elif [ "$applescript_status" -ne 0 ]; then
+        reason="AppleScript could not create or inspect an iTerm2 session."
+      elif [ "$process_status" -ne 0 ]; then
+        reason="The iTerm2 process was not observed."
+      elif [ -z "$session_id" ] || [ -z "$session_tty" ] || [ -z "$window_id" ]; then
+        reason="The iTerm2 session identity was incomplete."
+      elif ! grep -Fx "$expected" "$artifact_dir/sentinel.txt" || ! grep -Fx "$session_tty" "$artifact_dir/sentinel-tty.txt" || ! grep -Fx "$expected" "$artifact_dir/session.txt"; then
+        reason="The session output or terminal side effect did not match the sentinel."
+      else
+        status=pass
+        reason="The iTerm2 session produced the sentinel on its recorded terminal."
+      fi
     else
-      status=pass
-      reason="The iTerm2 session produced the sentinel on its recorded terminal."
+      pgrep -fl "$app_path/Contents/MacOS/$iterm_executable" >"$artifact_dir/iterm-process.txt"
+      cat "$artifact_dir/iterm-process.txt"
     fi
   fi
 fi
@@ -105,15 +205,16 @@ elif [ "$status" = pass ]; then
   reason="The session produced the sentinel, but a screenshot was unavailable."
 fi
 
-export status reason host_os architecture macos_version commit_sha iterm_version iterm_executable session_id session_tty window_id screenshot expected artifact_dir
+export status reason host_os architecture macos_version commit_sha iterm_version iterm_executable signature_status first_launch_status open_status gui_status session_id session_tty window_id screenshot expected artifact_dir
 if ! python3 - <<'PYTHON'
 import json
 import os
 from pathlib import Path
 
-keys = ("status", "reason", "host_os", "architecture", "macos_version", "commit_sha", "iterm_version", "iterm_executable", "session_id", "session_tty", "window_id", "screenshot", "expected")
+keys = ("status", "reason", "host_os", "architecture", "macos_version", "commit_sha", "iterm_version", "iterm_executable", "signature_status", "first_launch_status", "open_status", "gui_status", "session_id", "session_tty", "window_id", "screenshot", "expected")
 result = {key: os.environ[key] for key in keys}
 sentinel_path = Path(os.environ["artifact_dir"], "sentinel.txt")
+first_launch_path = Path(os.environ["artifact_dir"], "first-launch.txt")
 result.update({
     "runner_label": os.environ["PROBE_RUNNER_LABEL"],
     "runner_name": os.environ.get("RUNNER_NAME", ""),
@@ -127,6 +228,12 @@ result.update({
     "observed_sentinel": sentinel_path.read_text().strip() if sentinel_path.exists() else "",
     "sentinel_tty": "sentinel-tty.txt",
     "process_log": "iterm-process.txt",
+    "signature_log": "signature-verification.txt",
+    "signature_details": "signature-details.txt",
+    "notarization_log": "notarization.txt",
+    "first_launch_log": "first-launch.txt",
+    "first_launch_output": first_launch_path.read_text().strip() if first_launch_path.exists() else "",
+    "first_launch_screenshot": "first-launch.png" if Path(os.environ["artifact_dir"], "first-launch.png").exists() else "",
 })
 output = json.dumps(result, indent=2) + "\n"
 Path(os.environ["artifact_dir"], "result.json").write_text(output)
