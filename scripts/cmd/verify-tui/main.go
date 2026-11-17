@@ -56,6 +56,7 @@ type runCase string
 
 const (
 	caseDirect     runCase = "direct"
+	caseSource     runCase = "source"
 	casePiglet     runCase = "piglet"
 	caseUnselected runCase = "unselected"
 )
@@ -67,8 +68,14 @@ type options struct {
 	extension      string
 	idleObserver   string
 	piglet         string
+	source         string
 	evidenceRoot   string
 	allocationFile string
+	media          bool
+	mediaXvfb      string
+	mediaXterm     string
+	mediaFFmpeg    string
+	mediaFFprobe   string
 }
 
 type childRef struct {
@@ -199,37 +206,43 @@ type cleanupEvidence struct {
 }
 
 type evidenceReport struct {
-	HostExits             []hostExit        `json:"hostExits"`
-	Scenario              string            `json:"scenario"`
-	ExtensionSHA256       string            `json:"extensionSha256"`
-	VerifierSHA256        string            `json:"verifierSha256"`
-	IdleObserverSHA256    string            `json:"idleObserverSha256,omitempty"`
-	IdleObserver          string            `json:"idleObserver,omitempty"`
-	Allocation            *runAllocation    `json:"allocation,omitempty"`
-	Scratch               ownedResource     `json:"scratch"`
-	KeyboardCoverage      map[string]string `json:"keyboardCoverage"`
-	GoVersion             string            `json:"goVersion"`
-	Case                  runCase           `json:"case"`
-	Pig                   string            `json:"pig"`
-	Extension             string            `json:"extension"`
-	PigletSource          string            `json:"pigletSource,omitempty"`
-	PigletFixture         string            `json:"pigletFixture,omitempty"`
-	PigletResource        string            `json:"pigletResource,omitempty"`
-	SelectedToolNames     []string          `json:"selectedToolNames,omitempty"`
-	ChildRefs             []childRef        `json:"childRefs,omitempty"`
-	QuickChild            childRef          `json:"newerCompletedChild"`
-	AbortedStreams        []string          `json:"abortedStreams,omitempty"`
-	ChildReads            []string          `json:"childReads,omitempty"`
-	FailedSpawns          []failedSpawn     `json:"failedSpawns,omitempty"`
-	ProviderRequests      []requestEvidence `json:"providerRequests,omitempty"`
-	ProviderRequestTotals map[string]int    `json:"providerRequestTotals"`
-	RequestsOmitted       int               `json:"providerRequestsOmitted,omitempty"`
-	ProviderErrors        []string          `json:"providerErrors,omitempty"`
-	ErrorsOmitted         int               `json:"providerErrorsOmitted,omitempty"`
-	FailureFrame          map[string]any    `json:"failureFrame,omitempty"`
-	Cleanup               cleanupEvidence   `json:"cleanup"`
-	OK                    bool              `json:"ok"`
-	Error                 string            `json:"error,omitempty"`
+	HostExits             []hostExit                       `json:"hostExits"`
+	Scenario              string                           `json:"scenario"`
+	ExtensionSHA256       string                           `json:"extensionSha256"`
+	VerifierSHA256        string                           `json:"verifierSha256"`
+	IdleObserverSHA256    string                           `json:"idleObserverSha256,omitempty"`
+	IdleObserver          string                           `json:"idleObserver,omitempty"`
+	Allocation            *runAllocation                   `json:"allocation,omitempty"`
+	Scratch               ownedResource                    `json:"scratch"`
+	KeyboardCoverage      map[string]string                `json:"keyboardCoverage"`
+	GoVersion             string                           `json:"goVersion"`
+	Case                  runCase                          `json:"case"`
+	Pig                   string                           `json:"pig"`
+	PigSHA256             string                           `json:"pigSha256"`
+	Media                 string                           `json:"mediaReceipt,omitempty"`
+	Startup               *collaborationStartupMeasurement `json:"startup,omitempty"`
+	Fixture               *collaborationFixtureEvidence    `json:"fixture,omitempty"`
+	Extension             string                           `json:"extension"`
+	PigletSource          string                           `json:"pigletSource,omitempty"`
+	PigletSourceSHA256    string                           `json:"pigletSourceSha256,omitempty"`
+	SourceSelection       *collaborationSourceSelection    `json:"sourceSelection,omitempty"`
+	PigletFixture         string                           `json:"pigletFixture,omitempty"`
+	PigletResource        string                           `json:"pigletResource,omitempty"`
+	SelectedToolNames     []string                         `json:"selectedToolNames,omitempty"`
+	ChildRefs             []childRef                       `json:"childRefs,omitempty"`
+	QuickChild            childRef                         `json:"newerCompletedChild"`
+	AbortedStreams        []string                         `json:"abortedStreams,omitempty"`
+	ChildReads            []string                         `json:"childReads,omitempty"`
+	FailedSpawns          []failedSpawn                    `json:"failedSpawns,omitempty"`
+	ProviderRequests      []requestEvidence                `json:"providerRequests,omitempty"`
+	ProviderRequestTotals map[string]int                   `json:"providerRequestTotals"`
+	RequestsOmitted       int                              `json:"providerRequestsOmitted,omitempty"`
+	ProviderErrors        []string                         `json:"providerErrors,omitempty"`
+	ErrorsOmitted         int                              `json:"providerErrorsOmitted,omitempty"`
+	FailureFrame          map[string]any                   `json:"failureFrame,omitempty"`
+	Cleanup               cleanupEvidence                  `json:"cleanup"`
+	OK                    bool                             `json:"ok"`
+	Error                 string                           `json:"error,omitempty"`
 }
 
 type hostExit struct {
@@ -245,6 +258,13 @@ type runSummary struct {
 }
 
 func main() {
+	if len(os.Args) == 6 && os.Args[1] == "--media-observer" {
+		if err := runCollaborationMediaObserver(os.Args[2], os.Args[3], os.Args[4], os.Args[5]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) >= 2 && (os.Args[1] == "--capture-pane" || os.Args[1] == "--capture-pipe") {
 		var err error
 		switch {
@@ -281,13 +301,19 @@ func parseOptions(args []string) (options, error) {
 	flags := flag.NewFlagSet("go-tui-proof", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&result.scenario, "scenario", "all", "all, receipt-control, or chain")
-	caseValue := flags.String("case", "", "direct, piglet, or unselected")
+	caseValue := flags.String("case", "", "direct, source, piglet, or unselected")
 	flags.StringVar(&result.pigPath, "pig", "", "absolute path to the released PiG executable")
 	flags.StringVar(&result.extension, "extension", "", "absolute path to the prebuilt pig-litter executable")
 	flags.StringVar(&result.idleObserver, "idle-observer", "", "absolute path to the prebuilt private TUI idle observer; selected cases only")
 	flags.StringVar(&result.piglet, "piglet", "", "absolute path to the current pig-litter manifest")
+	flags.StringVar(&result.source, "source", "", "absolute path to the selected Go extension source directory")
 	flags.StringVar(&result.evidenceRoot, "evidence-root", "", "absolute directory for private evidence")
 	flags.StringVar(&result.allocationFile, "run-allocation", "", "private wrapper allocation record")
+	flags.BoolVar(&result.media, "media", false, "record the live terminal as video and a screenshot")
+	flags.StringVar(&result.mediaXvfb, "media-xvfb", "Xvfb", "Xvfb executable")
+	flags.StringVar(&result.mediaXterm, "media-xterm", "xterm", "xterm executable")
+	flags.StringVar(&result.mediaFFmpeg, "media-ffmpeg", "ffmpeg", "FFmpeg executable with x11grab")
+	flags.StringVar(&result.mediaFFprobe, "media-ffprobe", "ffprobe", "FFprobe executable")
 	if err := flags.Parse(args); err != nil {
 		return options{}, fmt.Errorf("parse flags: %w", err)
 	}
@@ -298,8 +324,18 @@ func parseOptions(args []string) (options, error) {
 		return options{}, errors.New("use --scenario all|receipt-control|chain")
 	}
 	result.caseName = runCase(*caseValue)
-	if result.caseName != caseDirect && result.caseName != casePiglet && result.caseName != caseUnselected {
-		return options{}, errors.New("use --case direct|piglet|unselected")
+	if result.caseName != caseDirect && result.caseName != caseSource && result.caseName != casePiglet && result.caseName != caseUnselected {
+		return options{}, errors.New("use --case direct|source|piglet|unselected")
+	}
+	if result.caseName == caseSource {
+		if !filepath.IsAbs(result.source) {
+			return options{}, errors.New("--source must be an absolute directory for the source case")
+		}
+		if err := requireRegularFile(filepath.Join(result.source, "go.mod"), "source go.mod"); err != nil {
+			return options{}, err
+		}
+	} else if result.source != "" {
+		return options{}, errors.New("--source requires --case source")
 	}
 	if result.caseName == caseUnselected && result.scenario != "all" {
 		return options{}, errors.New("focused scenarios require a selected Resource")
@@ -384,11 +420,22 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	}
 	var panel *panelProof
 	report := evidenceReport{Scenario: options.scenario, Case: options.caseName, Pig: options.pigPath, Extension: options.extension, GoVersion: runtime.Version(), KeyboardCoverage: map[string]string{"live": "tmux-owned ordinary keys and text", "enhanced": "not verified: negotiated Kitty flag bits", "decoder": "exact CSI-u and press/repeat/release fixtures use the declared PiG v0.7.0 public decoder"}}
+	pigHash, err := fileSHA256(options.pigPath)
+	if err != nil {
+		return evidencePath, err
+	}
+	report.PigSHA256 = pigHash
 	extensionHash, err := fileSHA256(options.extension)
 	if err != nil {
 		return evidencePath, err
 	}
 	report.ExtensionSHA256 = extensionHash
+	if options.caseName == casePiglet {
+		report.PigletSourceSHA256, err = fileSHA256(options.piglet)
+		if err != nil {
+			return evidencePath, err
+		}
+	}
 	if options.caseName != caseUnselected {
 		report.IdleObserver = options.idleObserver
 		report.IdleObserverSHA256, err = fileSHA256(options.idleObserver)
@@ -459,6 +506,14 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	if err != nil {
 		return evidencePath, err
 	}
+	providerStarted, clockErr := collaborationMonotonicNow()
+	bootID, bootErr := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	timeNamespace, namespaceErr := os.Readlink("/proc/self/ns/time")
+	if err := errors.Join(clockErr, bootErr, namespaceErr); err != nil {
+		_ = provider.close()
+		return evidencePath, fmt.Errorf("fixture clock identity: %w", err)
+	}
+	report.Fixture = &collaborationFixtureEvidence{Clock: "CLOCK_MONOTONIC", BootID: strings.TrimSpace(string(bootID)), TimeNamespace: timeNamespace, ProviderPort: provider.port, ProviderStartedNS: providerStarted}
 	socketStarted := false
 	panePID := 0
 	var tmuxProcess observedProcess
@@ -484,6 +539,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	var manifestDestination string
 	var resourceDestination string
 	var capture *ptyCapture
+	var media *collaborationMedia
 	tmuxCall := func(args ...string) (string, error) {
 		value, err := runTmux(ctx, tmuxPath, socket, childEnv, args...)
 		if err != nil {
@@ -627,6 +683,9 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			report.FailureFrame, err = captureFailure()
 			addFailure(err)
 		}
+		if media != nil {
+			addFailure(media.finish(runErr))
+		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cleanupCancel()
 		if tmuxSessionExists {
@@ -646,6 +705,9 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		} else {
 			paneExited = true
 		}
+		providerCloseStarted, err := collaborationMonotonicNow()
+		addFailure(err)
+		report.Fixture.ProviderCloseStartedNS = providerCloseStarted
 		providerErr := provider.close()
 		addFailure(providerErr)
 		if socketStarted {
@@ -664,6 +726,16 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			addFailure(writePrivate(filepath.Join(evidencePath, "tmux-errors.json"), encoded))
 		}
 		addFailure(saveNativeEvidence(filepath.Join(evidencePath, "native-final"), rootSessions, filepath.Join(agentDir, "sessions")))
+		rootViews, err := readNativeSessions(rootSessions)
+		addFailure(err)
+		for _, root := range rootViews {
+			identity, identityErr := collaborationFileIdentity(root.Path)
+			digest, digestErr := fileSHA256(root.Path)
+			addFailure(errors.Join(identityErr, digestErr))
+			if identityErr == nil && digestErr == nil {
+				report.Fixture.RootSessions = append(report.Fixture.RootSessions, collaborationFixtureSession{ID: root.ID, File: identity, SHA256: digest})
+			}
+		}
 		if panel != nil {
 			addFailure(panel.save())
 		}
@@ -703,6 +775,21 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			addFailure(err)
 			if !bytes.Contains(raw, []byte("HOSTILE_CONFIG_BEGIN")) || !bytes.Contains(raw, []byte("REPORT_LINE_70")) {
 				addFailure(errors.New("raw PTY lacks required hostile-action output"))
+			}
+		}
+		if report.SourceSelection != nil {
+			_, digest, err := collaborationSnapshotSource(report.SourceSelection.Fixture, "")
+			addFailure(err)
+			if err == nil && digest != report.SourceSelection.SHA256 {
+				addFailure(errors.New("selected source fixture changed during the run"))
+			}
+		}
+		if report.Fixture.Workspace.Path != "" {
+			addFailure(report.Fixture.Workspace.check())
+			current, err := collaborationFileIdentity(report.Fixture.FixtureFile.Path)
+			addFailure(err)
+			if err == nil && current != report.Fixture.FixtureFile {
+				addFailure(errors.New("fixture file was replaced during the run"))
 			}
 		}
 		addFailure(scratchOwned.check())
@@ -754,7 +841,22 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		}
 	}()
 
+	if options.media {
+		media, err = newCollaborationMedia(evidencePath, options, verifierPath, tmuxPath, socket, session, childEnv)
+		if err != nil {
+			return evidencePath, err
+		}
+		report.Media = "media/receipt.json"
+	}
 	if err := makeFixtureFiles(workspace, home, pigHome, agentDir, provider.port); err != nil {
+		return evidencePath, err
+	}
+	report.Fixture.Workspace, err = resourceIdentity(workspace)
+	if err != nil {
+		return evidencePath, err
+	}
+	report.Fixture.FixtureFile, err = collaborationFileIdentity(filepath.Join(workspace, "fixture-read.txt"))
+	if err != nil {
 		return evidencePath, err
 	}
 	if options.caseName == casePiglet {
@@ -763,6 +865,14 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			return evidencePath, err
 		}
 	}
+	if options.caseName == caseSource {
+		selection, sourceEnv, err := collaborationPrepareSource(options.source, workspace, scratch, evidencePath, childEnv)
+		if err != nil {
+			return evidencePath, err
+		}
+		report.SourceSelection = &selection
+		childEnv = sourceEnv
+	}
 	args := []string{
 		"--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--session-dir", rootSessions, "--approve",
 		"--model", "fixture/parent",
@@ -770,6 +880,8 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	switch options.caseName {
 	case caseDirect:
 		args = append([]string{"--no-extensions", "-e", options.extension, "-e", options.idleObserver}, args...)
+	case caseSource:
+		args = append([]string{"--no-extensions", "-e", report.SourceSelection.Fixture, "-e", options.idleObserver}, args...)
 	case casePiglet:
 		args = append([]string{"--piglet", manifestDestination, "-e", options.idleObserver}, args...)
 	case caseUnselected:
@@ -827,12 +939,28 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	if err != nil {
 		return evidencePath, err
 	}
+	if media != nil {
+		if err := media.start(ctx); err != nil {
+			return evidencePath, err
+		}
+	}
 	process, err := capture.start(append([]string{options.pigPath}, args...))
 	panePID = process.PID
 	if err != nil {
 		return evidencePath, err
 	}
-	if err := waitFor(ctx, "private PiG TUI", stageTimeout, func() (bool, error) {
+	timeout := stageTimeout
+	if options.caseName == caseSource {
+		timeout = 4 * time.Minute
+	}
+	lastObserved := time.Time{}
+	if err := waitFor(ctx, "private PiG TUI", timeout, func() (bool, error) {
+		if options.caseName == caseSource && time.Since(lastObserved) >= 250*time.Millisecond {
+			if _, err := observeOwned(); err != nil {
+				return false, err
+			}
+			lastObserved = time.Now()
+		}
 		dead, err := tmuxCall("display-message", "-p", "-t", session, "#{pane_dead}")
 		if err != nil {
 			return false, nil
@@ -855,6 +983,20 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		return startupFrameReady(screen) && currentCommand != "sh" && geometry.width == 100 && geometry.height == 32 && frameHasGeometry(screen, 100, 32), nil
 	}); err != nil {
 		return evidencePath, err
+	}
+	readyNS, err := collaborationMonotonicNow()
+	if err != nil {
+		return evidencePath, err
+	}
+	report.Startup, err = collaborationStartup(capture, readyNS, options.media)
+	if err != nil {
+		return evidencePath, err
+	}
+	if media != nil {
+		if media.receipt.RecorderReadyNS <= 0 || media.receipt.RecorderReadyNS > report.Startup.StartNS {
+			return evidencePath, errors.New("media recorder was not ready before PiG started")
+		}
+		media.markStartupReady(readyNS)
 	}
 	if _, err := frame("startup-100"); err != nil {
 		return evidencePath, err

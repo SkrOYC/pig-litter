@@ -27,12 +27,13 @@ type paneCommand struct {
 }
 
 type paneCompletion struct {
-	ClosingID  string          `json:"closingID,omitempty"`
-	Generation string          `json:"generation"`
-	Process    observedProcess `json:"process"`
-	StartedAt  string          `json:"startedAt"`
-	ExitedAt   string          `json:"exitedAt,omitempty"`
-	Status     int             `json:"status"`
+	ClosingID          string          `json:"closingID,omitempty"`
+	Generation         string          `json:"generation"`
+	Process            observedProcess `json:"process"`
+	StartedAt          string          `json:"startedAt"`
+	StartedMonotonicNS int64           `json:"startedMonotonicNs"`
+	ExitedAt           string          `json:"exitedAt,omitempty"`
+	Status             int             `json:"status"`
 }
 
 type captureInterval struct {
@@ -289,7 +290,7 @@ func readPaneCompletion(command paneCommand) (paneCompletion, error) {
 	if err := json.Unmarshal(data, &started); err != nil {
 		return paneCompletion{}, err
 	}
-	if completion.Generation != command.Generation || completion.Process != started.Process || completion.Process.PID <= 0 || completion.Process.StartTicks == "" || completion.StartedAt != started.StartedAt || completion.ExitedAt == "" || completion.ClosingID == "" || completion.ClosingID == command.Generation || observedAlive(completion.Process) {
+	if completion.Generation != command.Generation || completion.Process != started.Process || completion.Process.PID <= 0 || completion.Process.StartTicks == "" || completion.StartedAt != started.StartedAt || completion.StartedMonotonicNS != started.StartedMonotonicNS || completion.ExitedAt == "" || completion.ClosingID == "" || completion.ClosingID == command.Generation || observedAlive(completion.Process) {
 		return paneCompletion{}, errors.New("inconclusive capture: private completion does not establish the owned program exit and closing identity")
 	}
 	return completion, nil
@@ -455,13 +456,19 @@ func runCapturePane(path string) error {
 	if err := child.Start(); err != nil {
 		return err
 	}
+	startedNS, err := collaborationMonotonicNow()
+	if err != nil {
+		_ = child.Process.Kill()
+		_ = child.Wait()
+		return err
+	}
 	process, err := readObservedProcess(child.Process.Pid)
 	if err != nil {
 		_ = child.Process.Kill()
 		_ = child.Wait()
 		return err
 	}
-	completion := paneCompletion{Generation: command.Generation, Process: process, StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	completion := paneCompletion{Generation: command.Generation, Process: process, StartedAt: time.Now().UTC().Format(time.RFC3339Nano), StartedMonotonicNS: startedNS}
 	if err := writeCaptureJSON(filepath.Join(command.Directory, "started.json"), completion); err != nil {
 		_ = child.Process.Kill()
 		_ = child.Wait()
