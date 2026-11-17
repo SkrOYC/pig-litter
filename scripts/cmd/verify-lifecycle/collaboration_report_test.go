@@ -662,6 +662,11 @@ func TestCollaborationResearchConflictRequiresSameArchitecture(t *testing.T) {
 
 func TestCollaborationPlannedVerificationCannotComplete(t *testing.T) {
 	catalog, evidence, registry := collaborationTestReport(t)
+	for index := range catalog.Scenarios {
+		if catalog.Scenarios[index].ID == "fixture-interrupt" {
+			catalog.Scenarios[index].Status = "planned"
+		}
+	}
 	kinds := map[string]bool{"log": true, "result": true, "ansi": true, "pty": true, "timing": true, "screenshot": true, "video": true}
 	evidence.Attempts = append(evidence.Attempts, collaborationValidatedAttempt{
 		Attempt:       collaborationAttempt{ID: "planned-verification", Purpose: "verification", Scenario: "fixture-interrupt", ScenarioRevision: 1, Channel: "live", Platform: "linux", Outcome: "passed"},

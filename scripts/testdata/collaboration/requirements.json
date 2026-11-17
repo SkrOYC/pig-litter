@@ -2212,31 +2212,31 @@
     {
       "id": "baseline",
       "owner": "P02",
-      "status": "planned",
+      "status": "implemented",
       "expected": "Direct child spawn and wait produce the same result with and without evidence capture."
     },
     {
       "id": "startup-source",
       "owner": "P02",
-      "status": "planned",
+      "status": "implemented",
       "expected": "A real source-selected process records its binary, extension selection, registration, and terminal capture."
     },
     {
       "id": "startup-standalone",
       "owner": "P02",
-      "status": "planned",
+      "status": "implemented",
       "expected": "A real standalone-selected process records its executable identity and extension registration."
     },
     {
       "id": "startup-piglet",
       "owner": "P02",
-      "status": "planned",
+      "status": "implemented",
       "expected": "A real Piglet-selected process registers the extension and completes a worker task."
     },
     {
       "id": "startup-unselected",
       "owner": "P02",
-      "status": "planned",
+      "status": "implemented",
       "expected": "An unselected process starts without collaboration registrations."
     },
     {
@@ -2284,25 +2284,25 @@
     {
       "id": "host-independent-process",
       "owner": "P02",
-      "status": "planned",
+      "status": "implemented",
       "expected": "An independently started PiG process exposes explicitly selected extension tools and its session identity, or records a reproducible unsupported result."
     },
     {
       "id": "fixture-isolation",
       "owner": "P02",
-      "status": "planned",
+      "status": "implemented",
       "expected": "Concurrent fixtures with the same task names retain separate ports, files, session IDs, and captures."
     },
     {
       "id": "fixture-interrupt",
       "owner": "P02",
-      "status": "planned",
+      "status": "implemented",
       "expected": "An interrupted child attempt remains inconclusive and retains its diagnostic artifacts."
     },
     {
       "id": "capture-performance",
       "owner": "P02",
-      "status": "planned",
+      "status": "implemented",
       "expected": "Compare interleaved startup samples and separately record capture overhead and evidence serialization time."
     }
   ]

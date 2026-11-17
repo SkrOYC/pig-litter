@@ -43,6 +43,10 @@ type collaborationCLIFixtureResult struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"childRefs"`
+	QuickChild struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"newerCompletedChild"`
 	SelectedToolNames []string                        `json:"selectedToolNames"`
 	Fixture           collaborationCLIFixtureEvidence `json:"fixture"`
 	Cleanup           struct {

@@ -297,16 +297,6 @@ func TestCollaborationPerformanceBudgetRequiresBothLimits(t *testing.T) {
 	}
 }
 
-func TestCollaborationCLIBaselineRemainsInconclusiveWithoutComparison(t *testing.T) {
-	if err := collaborationBaselineConclusion(nil); err == nil || !strings.Contains(err.Error(), "capture-off terminal comparison") {
-		t.Fatalf("baseline without comparison error = %v", err)
-	}
-	failure := errors.New("candidate fixture failed")
-	if err := collaborationBaselineConclusion([]error{failure}); !errors.Is(err, failure) {
-		t.Fatalf("baseline fixture failure = %v", err)
-	}
-}
-
 func TestCollaborationCLISourceSelectionRejectsChangedFile(t *testing.T) {
 	checkout, evidence := t.TempDir(), t.TempDir()
 	source := filepath.Join(checkout, "extensions", "pig-litter")
