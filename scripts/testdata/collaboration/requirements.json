@@ -2100,6 +2100,24 @@
       "expected": "Direct child spawn and wait produce the same result with and without evidence capture."
     },
     {
+      "id": "startup-source",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "A real source-selected process records its binary, extension selection, registration, and terminal capture."
+    },
+    {
+      "id": "startup-standalone",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "A real standalone-selected process records its executable identity and extension registration."
+    },
+    {
+      "id": "startup-unselected",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "An unselected process starts without collaboration registrations."
+    },
+    {
       "id": "host-busy-message",
       "owner": "P02",
       "status": "planned",
@@ -2112,6 +2130,30 @@
       "expected": "Record idle custom-message delivery and distinguish transcript storage from inference and acknowledgement."
     },
     {
+      "id": "host-crash-after-acceptance",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Interrupt after acceptance and before native transcript append, then retain the restarted session observation."
+    },
+    {
+      "id": "host-crash-after-append",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Interrupt after native transcript append and before acknowledgement, then inspect the restarted transcript."
+    },
+    {
+      "id": "host-crash-after-acknowledgement",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Interrupt after acknowledgement and inspect the retained session after restart."
+    },
+    {
+      "id": "host-same-id-replay",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Retry the same message ID after restart and count the actual native transcript entries."
+    },
+    {
       "id": "host-tool-veto",
       "owner": "P02",
       "status": "planned",
@@ -2122,6 +2164,24 @@
       "owner": "P02",
       "status": "planned",
       "expected": "An independently started PiG process exposes explicitly selected extension tools and its session identity, or records a reproducible unsupported result."
+    },
+    {
+      "id": "fixture-isolation",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Concurrent fixtures with the same task names retain separate ports, files, session IDs, and captures."
+    },
+    {
+      "id": "fixture-interrupt",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "An interrupted child attempt remains inconclusive and retains its diagnostic artifacts."
+    },
+    {
+      "id": "capture-performance",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Compare interleaved startup samples and separately record capture overhead and evidence serialization time."
     }
   ]
 }
