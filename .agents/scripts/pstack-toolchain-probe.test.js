@@ -178,6 +178,13 @@ test("rejects a Go version that differs from the declaration", () => {
   expectFailure(result, /GOVERSION|go1\.27\.4/);
 });
 
+test("rejects a module requiring a newer Go version", () => {
+  const result = runProbe({
+    module: "module example.com/probe\n\ngo 1.999.0\n\ntoolchain go1.27.1\n",
+  });
+  expectFailure(result, /go\.mod requires go >= 1\.999\.0/);
+});
+
 test("rejects a missing toolchain declaration", () => {
   const result = runProbe({ module: "module example.com/probe\n\ngo 1.26.0\n" });
   expectFailure(result, /scripts\/go\.mod|directive/i);
