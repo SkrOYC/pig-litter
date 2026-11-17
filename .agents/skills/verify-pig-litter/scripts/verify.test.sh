@@ -13,7 +13,7 @@ ln -s "$(command -v bash)" "$bin/bash"
 ln -s "$(command -v dirname)" "$bin/dirname"
 ln -s "$(command -v jq)" "$bin/jq"
 export REAL_GO="$(command -v go)"
-export GOTOOLCHAIN=local GOENV=off
+export GOTOOLCHAIN=local GOENV=off GOFLAGS=
 
 cat > "$bin/pig" <<'PIG'
 #!/usr/bin/env bash
@@ -34,6 +34,10 @@ if [[ "${1:-}" == '-C' ]]; then
   shift 2
 fi
 if [[ "$*" == 'env GOVERSION' ]]; then
+  if [[ -n "${TEST_EXPECT_GOENV+x}" ]] && [[ "${GOENV-}" != "$TEST_EXPECT_GOENV" || "${GOFLAGS-}" != "$TEST_EXPECT_GOFLAGS" ]]; then
+    printf 'Go identity environment changed\n' >&2
+    exit 1
+  fi
   printf '%s\n' "$TEST_GO_VERSION"
 else
   if [[ -n "$module_dir" ]]; then
@@ -119,3 +123,44 @@ go 1.26.0
 require github.com/MichaelKinsy/PiG v0.7.0
 MOD
 expect_failure 'missing toolchain directive in scripts/go.mod'
+
+set_ambient_flags() {
+  local source="$1" flags="$2"
+  if [[ "$source" == 'inherited' ]]; then
+    export GOENV=off GOFLAGS="$flags"
+  else
+    printf 'GOFLAGS=%s\n' "$flags" > "$test_root/go.env"
+    export GOENV="$test_root/go.env" GOFLAGS=
+  fi
+  export TEST_EXPECT_GOENV="$GOENV" TEST_EXPECT_GOFLAGS="$GOFLAGS"
+}
+
+export TEST_PIG_VERSION='0.4.1+1.0.3' TEST_GO_VERSION='go1.27.1' TEST_TMUX_VERSION='tmux 3.7c'
+regression_failures=0
+for flag_source in inherited saved; do
+  write_mod '0.4.1' 'go1.27.4'
+  set_ambient_flags "$flag_source" '-toolchain=go1.27.1'
+  (expect_failure 'expected Go go1.27.4') || ((regression_failures += 1))
+
+  cat > "$fixture/scripts/go.mod" <<'MOD'
+module example.com/fixture
+
+go 1.26.0
+
+require github.com/MichaelKinsy/PiG v0.4.1
+MOD
+  (expect_failure 'missing toolchain directive in scripts/go.mod') || ((regression_failures += 1))
+
+  write_mod '0.4.1' 'go1.27.1'
+  set_ambient_flags "$flag_source" '-toolchain=go1.27.4'
+  (expect_success) || ((regression_failures += 1))
+
+  write_mod '0.7.0' 'go1.27.1'
+  set_ambient_flags "$flag_source" '-require=github.com/MichaelKinsy/PiG@v0.4.1'
+  (expect_failure 'expected PiG 0.7.0') || ((regression_failures += 1))
+done
+
+if ((regression_failures)); then
+  printf '%s GOFLAGS regression checks failed\n' "$regression_failures" >&2
+  exit 1
+fi

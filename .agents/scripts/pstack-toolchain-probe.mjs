@@ -5,7 +5,21 @@ function run(command, args, input) {
     input,
     encoding: "utf8",
     timeout: 4000,
-    maxBuffer: 4096,
+    maxBuffer: 1024 * 1024,
+    env:
+      command === "go" && (args[0] === "mod" || args[0] === "-C")
+        ? {
+            ...process.env,
+            GOENV: "off",
+            GOFLAGS: "",
+            GOTOOLCHAIN: "local",
+            GOPROXY: "off",
+            GOSUMDB: "off",
+            GOPRIVATE: "",
+            GONOPROXY: "",
+            GOWORK: "off",
+          }
+        : process.env,
   });
   if (result.error || result.status !== 0)
     throw new Error(
@@ -25,16 +39,25 @@ try {
       "CC",
     ]),
   );
+  if (settings.GOTOOLCHAIN !== "local")
+    throw new Error(
+      `GOTOOLCHAIN must be local; received ${JSON.stringify(settings.GOTOOLCHAIN)}`,
+    );
+  const expectedGo = JSON.parse(
+    run("go", ["mod", "edit", "-json", "scripts/go.mod"]),
+  ).Toolchain;
+  if (typeof expectedGo !== "string" || !expectedGo)
+    throw new Error("missing toolchain directive in scripts/go.mod");
   for (const [name, expected] of Object.entries({
-    GOVERSION: "go1.27.1",
+    GOVERSION: expectedGo,
     CGO_ENABLED: "1",
-    GOTOOLCHAIN: "local",
   })) {
     if (settings[name] !== expected)
       throw new Error(
         `${name} must be ${expected}; received ${JSON.stringify(settings[name])}`,
       );
   }
+  run("go", ["-C", "scripts", "list", "-mod=readonly", "-m"]);
   if (typeof settings.CC !== "string" || !settings.CC)
     throw new Error("Go has no configured C compiler");
   run(

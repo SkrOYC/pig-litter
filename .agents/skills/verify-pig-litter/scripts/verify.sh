@@ -18,7 +18,7 @@ doctor() {
     }
   done
   local module_json expected_pig expected_go actual_pig actual_go actual_tmux
-  module_json="$(go -C "$repo_root/scripts" mod edit -json)" || {
+  module_json="$(GOENV=off GOFLAGS= GOTOOLCHAIN=local GOWORK=off go -C "$repo_root/scripts" mod edit -json)" || {
     printf 'cannot read scripts/go.mod\n' >&2; return 1;
   }
   expected_pig="$(jq -er '.Require[]? | select(.Path == "github.com/MichaelKinsy/PiG") | .Version | select(startswith("v")) | .[1:] | select(length > 0)' <<< "$module_json")" || {
