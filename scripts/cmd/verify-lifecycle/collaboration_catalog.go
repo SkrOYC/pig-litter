@@ -92,7 +92,7 @@ func (catalog collaborationCatalog) validate() error {
 	}
 	scenarios := make(map[string]collaborationScenario, len(catalog.Scenarios))
 	for _, scenario := range catalog.Scenarios {
-		if !collaborationScenarioID.MatchString(scenario.ID) || !collaborationOwner.MatchString(scenario.Owner) || scenario.Status != "planned" || strings.TrimSpace(scenario.Expected) == "" {
+		if !collaborationScenarioID.MatchString(scenario.ID) || !collaborationOwner.MatchString(scenario.Owner) || !collaborationOneOf(scenario.Status, "planned", "implemented") || strings.TrimSpace(scenario.Expected) == "" {
 			return fmt.Errorf("invalid scenario %q", scenario.ID)
 		}
 		if _, exists := scenarios[scenario.ID]; exists {
