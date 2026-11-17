@@ -45,7 +45,7 @@ Only `matched` counts as matched parity. A passing product scenario can establis
 
 A scenario may have multiple evidence records when a claim spans different processes, fault points, or platforms. Source provenance stays in the requirement and is never substituted for a runtime record.
 
-The scenario registry names the expected result and owner for every requirement. Its current `planned` status is not a test result. The `baseline` and `host-*` entries name the P02 experiments. Their driver and report are not implemented in this initial contract snapshot.
+The scenario registry names the expected result and owner for every requirement. Its current `planned` status is not a test result. The P02 entries cover baseline, startup, host probes, isolation, interruption, and performance. Their driver and report are not implemented in this initial contract snapshot.
 
 ## Host research and product claims
 
