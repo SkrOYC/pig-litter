@@ -1,0 +1,98 @@
+name: Compare PiG performance on Linux
+
+on:
+  push:
+    branches:
+      - chore/upgrade-pig-development-environment
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact SHA of the selected workflow branch
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      CANDIDATE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_sha || github.sha }}
+    steps:
+      - name: Initialize evidence
+        shell: bash
+        run: |
+          EVIDENCE_DIR="$RUNNER_TEMP/pig-performance-evidence"
+          PIG_PERFORMANCE_SCRATCH="$RUNNER_TEMP/pig-performance-scratch"
+          printf 'EVIDENCE_DIR=%s\nPIG_PERFORMANCE_SCRATCH=%s\n' "$EVIDENCE_DIR" "$PIG_PERFORMANCE_SCRATCH" >> "$GITHUB_ENV"
+          mkdir -p "$EVIDENCE_DIR"
+          printf 'candidate=%s\nworkflow_sha=%s\n' "$CANDIDATE_SHA" "$GITHUB_SHA" > "$EVIDENCE_DIR/bootstrap.txt"
+          test "$CANDIDATE_SHA" = "$GITHUB_SHA"
+      - name: Check out exact candidate
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Bun
+        id: bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.4.4'
+      - name: Install Nix
+        id: nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086
+      - name: Configure read-only devenv cache
+        id: cache
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866
+        with:
+          name: devenv
+          skipPush: true
+          useDaemon: false
+      - name: Install pinned devenv CLI
+        id: devenv
+        shell: bash
+        run: |
+          nix profile add --profile "$RUNNER_TEMP/devenv-profile" --accept-flake-config github:cachix/devenv/b904dcb51fe48c30db250038241507f60752f222#devenv
+          export PATH="$RUNNER_TEMP/devenv-profile/bin:$PATH"
+          printf '%s\n' "$RUNNER_TEMP/devenv-profile/bin" >> "$GITHUB_PATH"
+          devenv version > "$EVIDENCE_DIR/devenv-version.txt"
+          nix --version > "$EVIDENCE_DIR/nix-version.txt"
+          bun --version > "$EVIDENCE_DIR/bun-version.txt"
+          uname -a > "$EVIDENCE_DIR/uname.txt"
+      - name: Test comparison policy
+        id: tests
+        shell: bash
+        run: bun test scripts/compare-pig-performance.test.mjs
+      - name: Compare exact candidate
+        id: comparison
+        timeout-minutes: 120
+        shell: bash
+        run: |
+          set -o pipefail
+          bun scripts/compare-pig-performance.mjs run "$CANDIDATE_SHA" "$EVIDENCE_DIR/run" 2>&1 | tee "$EVIDENCE_DIR/comparison.log"
+      - name: Record workflow outcomes
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          BUN_OUTCOME: ${{ steps.bun.outcome }}
+          NIX_OUTCOME: ${{ steps.nix.outcome }}
+          CACHE_OUTCOME: ${{ steps.cache.outcome }}
+          DEVENV_OUTCOME: ${{ steps.devenv.outcome }}
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          COMPARISON_OUTCOME: ${{ steps.comparison.outcome }}
+        run: |
+          mkdir -p "$EVIDENCE_DIR"
+          printf 'checkout=%s\nbun=%s\nnix=%s\ncache=%s\ndevenv=%s\ntests=%s\ncomparison=%s\n' "$CHECKOUT_OUTCOME" "$BUN_OUTCOME" "$NIX_OUTCOME" "$CACHE_OUTCOME" "$DEVENV_OUTCOME" "$TESTS_OUTCOME" "$COMPARISON_OUTCOME" > "$EVIDENCE_DIR/workflow-outcomes.txt"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: pig-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pig-performance-evidence
+          include-hidden-files: true
+          if-no-files-found: error
