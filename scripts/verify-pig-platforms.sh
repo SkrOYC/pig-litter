@@ -54,7 +54,8 @@ else
   sw_vers >> "$evidence_dir/runner.txt"
 fi
 
-scratch_dir="$(mktemp -d "${RUNNER_TEMP:?}/pig-platform.XXXXXXXX")"
+scratch_dir="$(mktemp -d /tmp/pig-platform.XXXXXXXX)"
+printf 'scratch_dir=%s\n' "$scratch_dir" >> "$evidence_dir/runner.txt"
 mkdir -p "$scratch_dir/tmp" "$scratch_dir/go-build" "$scratch_dir/go-mod" "$scratch_dir/pig-home/agent"
 export TMPDIR="$scratch_dir/tmp" GOCACHE="$scratch_dir/go-build" GOMODCACHE="$scratch_dir/go-mod"
 export GOPATH="$scratch_dir/go" GOTOOLCHAIN=local CGO_ENABLED=1 GOENV=off
@@ -122,25 +123,7 @@ resolved_sdk="$(go -C "$root_dir/scripts" list -m -f '{{.Version}}' github.com/M
 printf 'pig=%s\nsdk=%s\n' "$resolved_pig" "$resolved_sdk" > "$evidence_dir/modules.txt"
 [[ "$resolved_pig" == "$pig_module" && "$resolved_sdk" == "$sdk_module" ]]
 
-bash "$root_dir/scripts/check-pig-extension.sh" 2>&1 | tee "$evidence_dir/check-pig-extension.log"
-
-verify_registration() {
-  artifact="$1"
-  language="$2"
-  form="$3"
-  output="$4"
-  pig install --validate-only --json "$artifact" > "$output"
-  jq --exit-status --arg language "$language" --arg form "$form" '
-    .valid == true and .registered == true and .name == "pig-litter"
-    and .definition.language == $language and .definition.form == $form
-    and (.tools == ["litter_inspect", "litter_list", "litter_message", "litter_spawn", "litter_stop", "litter_wait"])
-    and ((.commands // []) | map(if type == "string" then . else .name end) | index("pig-litter")) != null
-  ' "$output" >/dev/null
-}
-verify_registration "$root_dir/extensions/pig-litter" go factory "$evidence_dir/source-registration.json"
-verify_registration "$root_dir/extensions/pig-litter/dist/pig-litter" binary standalone "$evidence_dir/standalone-registration.json"
-pig piglet validate "$root_dir/piglet.yaml" --json --no-input > "$evidence_dir/piglet-manifest.json"
-jq --exit-status '.valid == true and .name == "pig-litter" and (.extensions | map(.name) | index("pig-litter")) != null and (.errors | length) == 0' "$evidence_dir/piglet-manifest.json" >/dev/null
+bash "$root_dir/scripts/check-pig-extension.sh" --registration-only --evidence-dir "$evidence_dir" 2>&1 | tee "$evidence_dir/check-pig-extension.log"
 
 cat > "$scratch_dir/observer.go" <<'GO'
 package main
