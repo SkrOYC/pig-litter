@@ -419,12 +419,17 @@ func nativePeerEntry(path string, envelope peerEnvelope, content string) (string
 		if json.Unmarshal(entry.Details, &details) != nil || json.Unmarshal(entry.Content, &entryContent) != nil {
 			return "", errors.New("invalid native peer message")
 		}
-		if details.Envelope == envelope && entryContent == content {
-			if id != "" || entry.ID == "" {
-				return "", errors.New("native peer transcript has duplicate or missing entry IDs")
-			}
-			id = entry.ID
+		other := details.Envelope
+		if other.Team != envelope.Team || other.Sender != envelope.Sender || other.Recipient != envelope.Recipient || other.MessageID != envelope.MessageID {
+			continue
 		}
+		if other != envelope || entryContent != content {
+			return "", errors.New("native peer transcript has conflicting message content")
+		}
+		if id != "" || entry.ID == "" {
+			return "", errors.New("native peer transcript has duplicate or missing entry IDs")
+		}
+		id = entry.ID
 	}
 	return id, nil
 }

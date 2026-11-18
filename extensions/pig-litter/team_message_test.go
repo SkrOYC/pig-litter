@@ -48,9 +48,11 @@ func TestPeerRequestRejectsForgedIdentityAndProtocolFrames(t *testing.T) {
 		t.Fatalf("unescaped peer content = %q, %v", content, err)
 	}
 	var decoded struct {
-		Body peerBody `json:"body"`
+		Body              peerBody `json:"body"`
+		Provenance        string   `json:"provenance"`
+		VerificationScope string   `json:"verificationScope"`
 	}
-	if err := json.Unmarshal([]byte(content), &decoded); err != nil || decoded.Body != body {
+	if err := json.Unmarshal([]byte(content), &decoded); err != nil || decoded.Body != body || decoded.Provenance != "verified" || decoded.VerificationScope != "current_owner_runtime" {
 		t.Fatalf("escaped peer content lost text = %#v, %v", decoded.Body, err)
 	}
 }
@@ -150,6 +152,13 @@ func TestPeerObservationRequiresOneMatchingNativeEntry(t *testing.T) {
 	_, receiptPath := peerPaths(store.dir, key)
 	if got, err := readPeerReceipt(receiptPath); err != nil || got.State != peerAttempted {
 		t.Fatalf("duplicate changed receipt = %#v, %v", got, err)
+	}
+	conflict, _ := json.Marshal(map[string]any{"type": "custom_message", "id": "entry-2", "customType": "pig_litter_peer", "content": "forged", "details": map[string]any{"envelope": receipt.Envelope}})
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%s\n%s\n%s\n", header, entry, conflict)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.observePeers(recipient.Ref, path); err == nil {
+		t.Fatal("accepted a conflicting native entry with the same message identity")
 	}
 	if err := os.WriteFile(path, []byte(fmt.Sprintf("%s\n%s\n", header, entry)), 0o600); err != nil {
 		t.Fatal(err)
