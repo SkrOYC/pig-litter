@@ -26,14 +26,15 @@ pig_path="$(command -v pig)"
 temp_dir="$(mktemp -d)"
 trap 'rm -rf "$temp_dir"' EXIT
 if [[ -n "${PIG_LITTER_EXPECTED_PIG:-}" ]]; then
-  [[ "$(readlink -f "$pig_path")" == "$PIG_LITTER_EXPECTED_PIG" ]] || { printf 'expected preview PiG %s, got %s\n' "$PIG_LITTER_EXPECTED_PIG" "$pig_path" >&2; exit 1; }
-  pig_digest="$(sha256sum "$pig_path" | awk '{ print $1 }')"
+  [[ "$(perl -MCwd=abs_path -e 'print abs_path($ARGV[0])' "$pig_path")" == "$PIG_LITTER_EXPECTED_PIG" ]] || { printf 'expected preview PiG %s, got %s\n' "$PIG_LITTER_EXPECTED_PIG" "$pig_path" >&2; exit 1; }
+  pig_digest="$(shasum -a 256 "$pig_path" | awk '{ print $1 }')"
   [[ "$pig_digest" == "$PIG_LITTER_EXPECTED_PIG_SHA256" ]] || { printf 'unexpected preview PiG digest: %s\n' "$pig_digest" >&2; exit 1; }
+  pig_platform="$(go env GOHOSTOS)/$(go env GOHOSTARCH)"
   mkdir -p "$temp_dir/pig-home/agent"
   pig_identity="$(PIG_HOME="$temp_dir/pig-home" PIG_CODING_AGENT_DIR="$temp_dir/pig-home/agent" PIG_USE_PI_DIRS=0 PIG_OFFLINE=1 PI_OFFLINE=1 pig verify --json)"
-  if ! printf '%s\n' "$pig_identity" | jq --exit-status --arg digest "$pig_digest" --arg build "$PIG_LITTER_EXPECTED_PIG_BUILD" '
+  if ! printf '%s\n' "$pig_identity" | jq --exit-status --arg digest "$pig_digest" --arg build "$PIG_LITTER_EXPECTED_PIG_BUILD" --arg platform "$pig_platform" '
     .verified == true and .identity.pigVersion == "0.7.0" and .identity.go == "go1.27.4"
-    and .identity.platform == "linux/amd64" and .identity.build == $build
+    and .identity.platform == $platform and .identity.build == $build
     and (.targets | length == 1 and .[0].kind == "binary" and .[0].sha256 == $digest)
   ' >/dev/null; then
     printf 'unexpected preview PiG identity\n' >&2
@@ -41,7 +42,7 @@ if [[ -n "${PIG_LITTER_EXPECTED_PIG:-}" ]]; then
   fi
   if [[ -n "$evidence_dir" ]]; then
     printf '%s\n' "$pig_identity" > "$evidence_dir/pig-preview-identity.json"
-    sha256sum "$pig_path" > "$evidence_dir/pig-preview-binary.sha256"
+    shasum -a 256 "$pig_path" > "$evidence_dir/pig-preview-binary.sha256"
   fi
   pig_kind=preview
 else
