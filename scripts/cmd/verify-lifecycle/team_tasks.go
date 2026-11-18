@@ -40,6 +40,7 @@ type teamTaskFixture struct {
 	tasks          map[string]fixtureTask
 	refs           map[string]fixtureMemberRef
 	saw            map[string]bool
+	got            map[string]bool
 	blocked        map[string]bool
 	claims         map[string]fixtureTaskResult
 	assigned       fixtureTask
@@ -244,9 +245,22 @@ func (f *fixture) teamTaskMember(ctx context.Context, body modelRequest) (string
 		if err := f.wait(ctx, func() bool { return len(g.saw) == 2 && len(g.refs) == 2 }); err != nil {
 			return "", nil, err
 		}
-		return "", []call{{"team_task_update", map[string]any{"taskId": g.tasks["blocked"].ID, "action": "claim"}}}, nil
+		return "", []call{{"team_task_get", map[string]any{"taskId": g.tasks["available"].ID}}}, nil
 	case 2:
 		result, err := parseTaskResult(tools[1])
+		if err != nil || result.State != "found" || result.Task.ID != g.tasks["available"].ID || result.Task.Subject != "available" || result.Task.State != "pending" || result.Task.Owner != nil || result.Task.Blocked {
+			return "", nil, fmt.Errorf("teammate %s task lookup: %#v, %v", name, result, err)
+		}
+		f.mu.Lock()
+		g.got[name] = true
+		f.signalLocked()
+		f.mu.Unlock()
+		if err := f.wait(ctx, func() bool { return len(g.got) == 2 }); err != nil {
+			return "", nil, err
+		}
+		return "", []call{{"team_task_update", map[string]any{"taskId": g.tasks["blocked"].ID, "action": "claim"}}}, nil
+	case 3:
+		result, err := parseTaskResult(tools[2])
 		if err != nil || result.State != "blocked" || !result.Task.Blocked || result.Task.Owner != nil {
 			return "", nil, fmt.Errorf("teammate %s blocked claim: %#v, %v", name, result, err)
 		}
@@ -258,8 +272,8 @@ func (f *fixture) teamTaskMember(ctx context.Context, body modelRequest) (string
 			return "", nil, err
 		}
 		return "", []call{{"team_task_update", map[string]any{"taskId": g.tasks["available"].ID, "action": "claim"}}}, nil
-	case 3:
-		result, err := parseTaskResult(tools[2])
+	case 4:
+		result, err := parseTaskResult(tools[3])
 		if err != nil || result.Task.ID != g.tasks["available"].ID {
 			return "", nil, fmt.Errorf("teammate %s claim: %#v, %v", name, result, err)
 		}
@@ -274,8 +288,8 @@ func (f *fixture) teamTaskMember(ctx context.Context, body modelRequest) (string
 			return "", []call{{"team_task_update", map[string]any{"taskId": g.tasks["unblockable"].ID, "action": "claim"}}}, nil
 		}
 		return "TEAM_TASK_" + strings.ToUpper(name) + "_DONE", nil, nil
-	case 4:
-		result, err := parseTaskResult(tools[3])
+	case 5:
+		result, err := parseTaskResult(tools[4])
 		if name != "alpha" || err != nil {
 			return "", nil, fmt.Errorf("invalid unblocked teammate result: %#v, %v", result, err)
 		}
@@ -290,7 +304,7 @@ func (f *fixture) teamTaskMember(ctx context.Context, body modelRequest) (string
 
 func (f *fixture) runTeamTasks(ctx context.Context, directory, workspace, agentDir, pig, extension string, stdout, stderr *os.File) error {
 	f.expectedCWD = workspace
-	f.taskGraph = &teamTaskFixture{tasks: map[string]fixtureTask{}, refs: map[string]fixtureMemberRef{}, saw: map[string]bool{}, blocked: map[string]bool{}, claims: map[string]fixtureTaskResult{}}
+	f.taskGraph = &teamTaskFixture{tasks: map[string]fixtureTask{}, refs: map[string]fixtureMemberRef{}, saw: map[string]bool{}, got: map[string]bool{}, blocked: map[string]bool{}, claims: map[string]fixtureTaskResult{}}
 	if err := os.WriteFile(filepath.Join(workspace, "litter.yaml"), []byte("concurrency: 3\ndepth: 2\n"), 0o600); err != nil {
 		return err
 	}
@@ -330,5 +344,5 @@ func (f *fixture) runTeamTasks(ctx context.Context, directory, workspace, agentD
 	if !f.taskGraph.done {
 		return fmt.Errorf("team tasks fixture stopped at stage %d", f.taskGraph.stage)
 	}
-	return writeJSON(filepath.Join(directory, "team-tasks.json"), map[string]any{"firstArgv": append([]string{pig}, firstArgs...), "reopenArgv": append([]string{pig}, reopenArgs...), "tasks": f.taskGraph.tasks, "members": f.taskGraph.refs, "saw": f.taskGraph.saw, "blocked": f.taskGraph.blocked, "claims": f.taskGraph.claims, "assigned": f.taskGraph.assigned, "unblockedClaim": f.taskGraph.unblockedClaim, "deleted": f.taskGraph.deleted, "afterReopen": f.taskGraph.afterReopen})
+	return writeJSON(filepath.Join(directory, "team-tasks.json"), map[string]any{"firstArgv": append([]string{pig}, firstArgs...), "reopenArgv": append([]string{pig}, reopenArgs...), "tasks": f.taskGraph.tasks, "members": f.taskGraph.refs, "saw": f.taskGraph.saw, "got": f.taskGraph.got, "blocked": f.taskGraph.blocked, "claims": f.taskGraph.claims, "assigned": f.taskGraph.assigned, "unblockedClaim": f.taskGraph.unblockedClaim, "deleted": f.taskGraph.deleted, "afterReopen": f.taskGraph.afterReopen})
 }

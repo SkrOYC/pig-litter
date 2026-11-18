@@ -127,6 +127,19 @@ func (s *teamStore) listTasks() ([]teamTaskView, error) {
 	return result, err
 }
 
+func (s *teamStore) getTask(id TaskID) (teamTaskView, error) {
+	var result teamTaskView
+	err := s.taskTransaction(func(graph *teamTaskGraph) (bool, error) {
+		index := graph.find(id)
+		if index < 0 {
+			return false, reject("rejected", "task is unavailable in this team")
+		}
+		result = graph.view(index)
+		return false, nil
+	})
+	return result, err
+}
+
 func (s *teamStore) claimTask(id TaskID, member MemberRef, explicit bool) (teamTaskView, string, error) {
 	var result teamTaskView
 	var state string

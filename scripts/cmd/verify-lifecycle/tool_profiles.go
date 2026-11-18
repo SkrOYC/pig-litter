@@ -12,7 +12,7 @@ type toolInventory struct {
 }
 
 var controlTools = []string{"litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
-var teamTools = []string{"team_spawn", "team_list", "team_send", "team_task_create", "team_task_list", "team_task_update"}
+var teamTools = []string{"team_spawn", "team_list", "team_send", "team_task_create", "team_task_get", "team_task_list", "team_task_update"}
 
 var toolInventories = map[string]toolInventory{
 	"scout":           {name: "scout leaf", required: []string{"read"}, optional: []string{"ls"}},

@@ -21,6 +21,15 @@ func TestTeamTasksCompetingClaimsAndBlockedAssignment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	fetched, err := store.getTask(available.ID)
+	if err != nil || fetched.Subject != "available" || fetched.ID != available.ID || fetched.State != TaskPending {
+		t.Fatalf("task lookup = %#v, %v", fetched, err)
+	}
+	foreign := available.ID
+	foreign.Team.Root = storeTestUUID(99)
+	if _, err := store.getTask(foreign); err == nil {
+		t.Fatal("looked up a task from a different team")
+	}
 	team := TeamID{Root: root, Epoch: 1}
 	members := make([]MemberRef, 4)
 	for i := range members {
