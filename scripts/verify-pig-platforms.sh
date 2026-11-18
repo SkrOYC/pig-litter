@@ -109,8 +109,10 @@ if [[ -f "$root_dir/pig-source.json" ]]; then
   printf 'source_url=%s\nsource_sha256=%s\nactual_source_sha256=%s\npatch=%s\npatch_sha256=%s\nactual_patch_sha256=%s\n' "$source_url" "$source_sha" "$actual_source_sha" "$patch_path" "$patch_sha" "$actual_patch_sha" | tee "$evidence_dir/source-checksums.txt"
   [[ "$actual_source_sha" == "$source_sha" ]]
   curl --fail --silent --show-error --location --retry 3 "$source_url.sigstore.json" -o "$evidence_dir/source-attestation.sigstore.json"
-  gh --version > "$evidence_dir/gh-version.txt"
-  gh attestation verify "$source_archive" --bundle "$evidence_dir/source-attestation.sigstore.json" \
+  mkdir -p "$build_dir/gh-cache" "$build_dir/gh-config"
+  XDG_CACHE_HOME="$build_dir/gh-cache" GH_CONFIG_DIR="$build_dir/gh-config" gh --version > "$evidence_dir/gh-version.txt"
+  XDG_CACHE_HOME="$build_dir/gh-cache" GH_CONFIG_DIR="$build_dir/gh-config" GH_NO_UPDATE_NOTIFIER=1 \
+    gh attestation verify "$source_archive" --bundle "$evidence_dir/source-attestation.sigstore.json" \
     --repo "$(jq -er '.archive.repository' "$source_input")" \
     --signer-workflow "$(jq -er '.archive.signerWorkflow' "$source_input")" \
     --source-digest "$(jq -er '.archive.sourceCommit' "$source_input")" \
