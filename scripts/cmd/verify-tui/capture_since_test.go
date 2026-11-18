@@ -35,6 +35,9 @@ func TestCaptureVersionMustBelongToNewGeneration(t *testing.T) {
 	if seen, err := capture.containsSince(offset, []byte(versionBanner)); err != nil || !seen {
 		t.Fatalf("new generation version was not observed: seen=%t err=%v", seen, err)
 	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Rename(path, path+".old"); err != nil {
 		t.Fatal(err)
 	}
