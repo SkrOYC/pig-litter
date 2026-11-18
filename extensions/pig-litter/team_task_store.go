@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -156,6 +157,53 @@ func (s *teamStore) claimTask(id TaskID, member MemberRef, explicit bool) (teamT
 		return true, nil
 	})
 	return result, state, err
+}
+
+func (s *teamStore) completeTask(id TaskID, actor *MemberRef) (teamTaskView, string, error) {
+	var result teamTaskView
+	var state string
+	err := s.taskTransaction(func(graph *teamTaskGraph) (bool, error) {
+		index := graph.find(id)
+		if index < 0 {
+			return false, reject("rejected", "task is unavailable in this team")
+		}
+		result = graph.view(index)
+		if actor != nil && (result.Owner == nil || *result.Owner != *actor) {
+			return false, reject("permission_denied", "only the task owner or team lead can complete it")
+		}
+		if result.State == TaskCompleted {
+			state = "already_completed"
+			return false, nil
+		}
+		if result.Blocked {
+			state = "blocked"
+			return false, nil
+		}
+		graph.Tasks[index].State = TaskCompleted
+		result = graph.view(index)
+		state = "completed"
+		return true, nil
+	})
+	return result, state, err
+}
+
+func (s *teamStore) deleteTask(id TaskID) (teamTaskView, error) {
+	var result teamTaskView
+	err := s.taskTransaction(func(graph *teamTaskGraph) (bool, error) {
+		index := graph.find(id)
+		if index < 0 {
+			return false, reject("rejected", "task is unavailable in this team")
+		}
+		for _, task := range graph.Tasks {
+			if slices.Contains(task.BlockedBy, id) {
+				return false, reject("rejected", "another task depends on this task")
+			}
+		}
+		result = graph.view(index)
+		graph.Tasks = slices.Delete(graph.Tasks, index, index+1)
+		return true, nil
+	})
+	return result, err
 }
 
 func loadTeamTasks(dir string, root ChildID) (teamTaskGraph, error) {

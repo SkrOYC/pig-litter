@@ -34,6 +34,28 @@ func TestTeamTasksCompetingClaimsAndBlockedAssignment(t *testing.T) {
 	if err != nil || state != "assigned" || !result.Blocked || result.Owner == nil || *result.Owner != members[0] {
 		t.Fatalf("explicit assignment = %#v, %q, %v", result, state, err)
 	}
+	if _, _, err := store.completeTask(blocked.ID, &members[1]); err == nil {
+		t.Fatal("a different teammate completed the assigned task")
+	}
+	result, state, err = store.completeTask(blocked.ID, &members[0])
+	if err != nil || state != "blocked" || result.State != TaskInProgress {
+		t.Fatalf("blocked completion = %#v, %q, %v", result, state, err)
+	}
+	result, state, err = store.completeTask(prerequisite.ID, nil)
+	if err != nil || state != "completed" || result.State != TaskCompleted {
+		t.Fatalf("prerequisite completion = %#v, %q, %v", result, state, err)
+	}
+	_, state, err = store.completeTask(prerequisite.ID, nil)
+	if err != nil || state != "already_completed" {
+		t.Fatalf("repeated completion = %q, %v", state, err)
+	}
+	if _, err := store.deleteTask(prerequisite.ID); err == nil {
+		t.Fatal("deleted a task that still has a dependent")
+	}
+	tasks, err := store.listTasks()
+	if err != nil || len(tasks) != 3 || tasks[1].Blocked {
+		t.Fatalf("tasks after prerequisite completion = %#v, %v", tasks, err)
+	}
 	type claim struct {
 		task  teamTaskView
 		state string

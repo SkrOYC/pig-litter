@@ -34,15 +34,19 @@ type fixtureTaskResult struct {
 }
 
 type teamTaskFixture struct {
-	leadMu   sync.Mutex
-	stage    int
-	done     bool
-	tasks    map[string]fixtureTask
-	refs     map[string]fixtureMemberRef
-	saw      map[string]bool
-	blocked  map[string]bool
-	claims   map[string]fixtureTaskResult
-	assigned fixtureTask
+	leadMu         sync.Mutex
+	stage          int
+	done           bool
+	tasks          map[string]fixtureTask
+	refs           map[string]fixtureMemberRef
+	saw            map[string]bool
+	blocked        map[string]bool
+	claims         map[string]fixtureTaskResult
+	assigned       fixtureTask
+	completed      bool
+	unblockedClaim fixtureTaskResult
+	deleted        fixtureTask
+	afterReopen    fixtureTask
 }
 
 var fixtureTaskNames = []string{"alpha", "beta"}
@@ -149,8 +153,65 @@ func (f *fixture) parentTeamTasks(ctx context.Context, body modelRequest) (strin
 		if !found {
 			return "", nil, errors.New("lead assignment was not visible in the final list")
 		}
-		g.done, g.stage = true, 6
-		return "TEAM_TASKS_PREVIEW_DONE", nil, nil
+		g.stage = 6
+		return "", []call{{"team_task_create", map[string]any{"subject": "unblockable", "blockedBy": []fixtureTaskID{g.tasks["prerequisite"].ID}}}}, nil
+	case 6:
+		result, err := parseTaskResult(tools[len(tools)-1])
+		if err != nil || result.State != "created" || result.Task.Subject != "unblockable" || !result.Task.Blocked {
+			return "", nil, fmt.Errorf("invalid task awaiting completion: %#v, %v", result, err)
+		}
+		g.tasks["unblockable"] = result.Task
+		g.stage = 7
+		return "", []call{{"team_task_update", map[string]any{"taskId": g.tasks["prerequisite"].ID, "action": "complete"}}}, nil
+	case 7:
+		result, err := parseTaskResult(tools[len(tools)-1])
+		if err != nil || result.State != "completed" || result.Task.State != "completed" || result.Task.ID != g.tasks["prerequisite"].ID {
+			return "", nil, fmt.Errorf("prerequisite completion failed: %#v, %v", result, err)
+		}
+		f.mu.Lock()
+		g.completed = true
+		f.signalLocked()
+		f.mu.Unlock()
+		if err := f.wait(ctx, func() bool { return g.unblockedClaim.State != "" }); err != nil {
+			return "", nil, fmt.Errorf("teammate did not claim the unblocked task: %w", err)
+		}
+		f.mu.Lock()
+		claim := g.unblockedClaim
+		f.mu.Unlock()
+		if claim.State != "claimed" || claim.Task.Blocked || claim.Task.Owner == nil || *claim.Task.Owner != g.refs["alpha"] || claim.Task.ID != g.tasks["unblockable"].ID {
+			return "", nil, fmt.Errorf("unblocked claim failed: %#v", claim)
+		}
+		g.stage = 8
+		return "", []call{{"team_task_create", map[string]any{"subject": "delete-highest"}}}, nil
+	case 8:
+		result, err := parseTaskResult(tools[len(tools)-1])
+		if err != nil || result.State != "created" || result.Task.Subject != "delete-highest" || result.Task.ID.Number <= g.tasks["unblockable"].ID.Number {
+			return "", nil, fmt.Errorf("invalid highest task: %#v, %v", result, err)
+		}
+		g.deleted = result.Task
+		g.stage = 9
+		return "", []call{{"team_task_update", map[string]any{"taskId": result.Task.ID, "action": "delete"}}}, nil
+	case 9:
+		result, err := parseTaskResult(tools[len(tools)-1])
+		if err != nil || result.State != "deleted" || result.Task.ID != g.deleted.ID {
+			return "", nil, fmt.Errorf("highest task deletion failed: %#v, %v", result, err)
+		}
+		g.stage = 10
+		return "TEAM_TASKS_FIRST_DONE", nil, nil
+	case 10:
+		if !strings.Contains(userText(body), "ROOT_TEAM_TASKS_REOPEN") {
+			return "", nil, errors.New("task fixture continued before reopening")
+		}
+		g.stage = 11
+		return "", []call{{"team_task_create", map[string]any{"subject": "after-reopen"}}}, nil
+	case 11:
+		result, err := parseTaskResult(tools[len(tools)-1])
+		if err != nil || result.State != "created" || result.Task.Subject != "after-reopen" || result.Task.ID.Team != g.deleted.ID.Team || result.Task.ID.Number <= g.deleted.ID.Number {
+			return "", nil, fmt.Errorf("task ID after reopening did not advance: %#v, %v", result, err)
+		}
+		g.afterReopen = result.Task
+		g.done, g.stage = true, 12
+		return "TEAM_TASKS_REOPENED_DONE", nil, nil
 	}
 	return "", nil, fmt.Errorf("unexpected team tasks lead stage %d", g.stage)
 }
@@ -206,7 +267,23 @@ func (f *fixture) teamTaskMember(ctx context.Context, body modelRequest) (string
 		g.claims[name] = result
 		f.signalLocked()
 		f.mu.Unlock()
+		if name == "alpha" {
+			if err := f.wait(ctx, func() bool { return g.completed }); err != nil {
+				return "", nil, fmt.Errorf("teammate did not observe prerequisite completion: %w", err)
+			}
+			return "", []call{{"team_task_update", map[string]any{"taskId": g.tasks["unblockable"].ID, "action": "claim"}}}, nil
+		}
 		return "TEAM_TASK_" + strings.ToUpper(name) + "_DONE", nil, nil
+	case 4:
+		result, err := parseTaskResult(tools[3])
+		if name != "alpha" || err != nil {
+			return "", nil, fmt.Errorf("invalid unblocked teammate result: %#v, %v", result, err)
+		}
+		f.mu.Lock()
+		g.unblockedClaim = result
+		f.signalLocked()
+		f.mu.Unlock()
+		return "TEAM_TASK_ALPHA_DONE", nil, nil
 	}
 	return "", nil, fmt.Errorf("unexpected teammate %s task turn %d", name, len(tools))
 }
@@ -217,22 +294,41 @@ func (f *fixture) runTeamTasks(ctx context.Context, directory, workspace, agentD
 	if err := os.WriteFile(filepath.Join(workspace, "litter.yaml"), []byte("concurrency: 3\ndepth: 2\n"), 0o600); err != nil {
 		return err
 	}
-	arguments := []string{"--no-extensions", "-e", extension, "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--session-dir", filepath.Join(directory, "parent-sessions"), "--approve", "--offline", "--model", "fixture/parent_team_tasks", "--mode", "json", "--print", "Run the shared task fixture."}
-	command := exec.CommandContext(ctx, pig, arguments...)
-	prepareProcess(command)
-	defer stopProcess(command)
-	command.Dir, command.Env = workspace, fixtureEnvironment(pig, f.bashPath, directory, agentDir)
-	command.Stdout, command.Stderr = stdout, stderr
-	if err := command.Run(); err != nil {
-		return fmt.Errorf("team tasks fixture host exit: %w", err)
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.failure != nil {
+	arguments := []string{"--no-extensions", "-e", extension, "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--session-dir", filepath.Join(directory, "parent-sessions"), "--approve", "--offline", "--model", "fixture/parent_team_tasks", "--mode", "json", "--print"}
+	run := func(args []string) error {
+		command := exec.CommandContext(ctx, pig, args...)
+		prepareProcess(command)
+		defer stopProcess(command)
+		command.Dir, command.Env = workspace, fixtureEnvironment(pig, f.bashPath, directory, agentDir)
+		command.Stdout, command.Stderr = stdout, stderr
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("team tasks fixture host exit: %w", err)
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
 		return f.failure
 	}
+	firstArgs := append(append([]string(nil), arguments...), "Run the shared task fixture.")
+	if err := run(firstArgs); err != nil {
+		return err
+	}
+	f.taskGraph.leadMu.Lock()
+	stage := f.taskGraph.stage
+	root := f.taskGraph.tasks["prerequisite"].ID.Team.Root
+	f.taskGraph.leadMu.Unlock()
+	if stage != 10 {
+		return fmt.Errorf("first task fixture stopped at stage %d", stage)
+	}
+	reopenArgs := append(append([]string(nil), arguments...), "--session", root, "ROOT_TEAM_TASKS_REOPEN")
+	if err := run(reopenArgs); err != nil {
+		return err
+	}
+	f.taskGraph.leadMu.Lock()
+	defer f.taskGraph.leadMu.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if !f.taskGraph.done {
 		return fmt.Errorf("team tasks fixture stopped at stage %d", f.taskGraph.stage)
 	}
-	return writeJSON(filepath.Join(directory, "team-tasks.json"), map[string]any{"argv": append([]string{pig}, arguments...), "tasks": f.taskGraph.tasks, "members": f.taskGraph.refs, "saw": f.taskGraph.saw, "blocked": f.taskGraph.blocked, "claims": f.taskGraph.claims, "assigned": f.taskGraph.assigned})
+	return writeJSON(filepath.Join(directory, "team-tasks.json"), map[string]any{"firstArgv": append([]string{pig}, firstArgs...), "reopenArgv": append([]string{pig}, reopenArgs...), "tasks": f.taskGraph.tasks, "members": f.taskGraph.refs, "saw": f.taskGraph.saw, "blocked": f.taskGraph.blocked, "claims": f.taskGraph.claims, "assigned": f.taskGraph.assigned, "unblockedClaim": f.taskGraph.unblockedClaim, "deleted": f.taskGraph.deleted, "afterReopen": f.taskGraph.afterReopen})
 }

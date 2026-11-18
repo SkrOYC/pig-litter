@@ -22,7 +22,7 @@ var teamToolNames = []string{"team_spawn", "team_list", "team_send", "team_task_
 var descriptions = map[string]string{
 	"team_task_create": "Create a shared task with optional dependencies.",
 	"team_task_list":   "List shared tasks and whether their dependencies block them.",
-	"team_task_update": "Claim an available task, or explicitly assign a task as the team lead.",
+	"team_task_update": "Claim, assign, complete, or delete a shared task.",
 	"team_spawn":       "Start a named teammate with an explicit workspace policy.",
 	"team_list":        "List the team and classify the caller's inbox receipts.",
 	"team_send":        "Send an ordinary message to a named teammate.",
@@ -58,7 +58,7 @@ var taskIDSchema = object([]string{"team", "number"}, map[string]any{
 var schemas = map[string]map[string]any{
 	"team_task_create": object([]string{"subject"}, map[string]any{"subject": text(256), "description": map[string]any{"type": "string", "maxLength": 16384}, "blockedBy": map[string]any{"type": "array", "maxItems": 128, "items": taskIDSchema}, "metadata": map[string]any{"type": "object", "maxProperties": 64, "additionalProperties": map[string]any{"type": "string", "maxLength": 4096}}}),
 	"team_task_list":   object([]string{}, map[string]any{}),
-	"team_task_update": object([]string{"taskId", "action"}, map[string]any{"taskId": taskIDSchema, "action": map[string]any{"type": "string", "enum": []string{"claim", "assign"}}, "assignee": text(64)}),
+	"team_task_update": object([]string{"taskId", "action"}, map[string]any{"taskId": taskIDSchema, "action": map[string]any{"type": "string", "enum": []string{"claim", "assign", "complete", "delete"}}, "assignee": text(64)}),
 	"team_spawn":       object([]string{"type", "task", "name", "workspace"}, map[string]any{"type": text(64), "task": text(16384), "name": text(64), "model": text(256), "workspace": object([]string{"kind"}, map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"shared_checkout", "isolated_worktree"}}})}),
 	"team_list":        object([]string{}, map[string]any{}),
 	"team_send":        object([]string{"recipient", "messageId", "text", "summary"}, map[string]any{"recipient": text(64), "messageId": text(128), "text": text(16384), "summary": text(256)}),
@@ -189,6 +189,21 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			tasks, err := store.listTasks()
 			return map[string]any{"state": "listed", "tasks": tasks}, err
 		case "team_task_update":
+			if args.Action == "complete" && args.Assignee == "" {
+				var actor *MemberRef
+				if caller != nil {
+					actor = &parent.team.Ref
+				}
+				task, state, err := store.completeTask(args.TaskID, actor)
+				return map[string]any{"state": state, "task": task}, err
+			}
+			if args.Action == "delete" && args.Assignee == "" {
+				if caller != nil {
+					return nil, reject("permission_denied", "only the team lead can delete a task")
+				}
+				task, err := store.deleteTask(args.TaskID)
+				return map[string]any{"state": "deleted", "task": task}, err
+			}
 			var member MemberRef
 			explicit := args.Action == "assign"
 			if explicit {
