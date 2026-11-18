@@ -74,6 +74,7 @@ go env -json GOVERSION GOHOSTOS GOHOSTARCH GOOS GOARCH CGO_ENABLED GOROOT > "$ev
 [[ "$(go env GOVERSION)" == go1.27.4 ]]
 [[ "$(go env GOHOSTOS)" == "$expected_os" && "$(go env GOOS)" == "$expected_os" ]]
 [[ "$(go env GOHOSTARCH)" == "$expected_arch" && "$(go env GOARCH)" == "$expected_arch" ]]
+[[ "$(go env CGO_ENABLED)" == 1 ]]
 shasum -a 256 "$(command -v go)" > "$evidence_dir/go-binary.sha256"
 
 pig_module="$(awk '$1 == "github.com/MichaelKinsy/PiG" { print $2 }' "$root_dir/scripts/go.mod")"
@@ -105,6 +106,14 @@ if [[ -f "$root_dir/pig-source.json" ]]; then
   actual_source_sha="$(shasum -a 256 "$source_archive" | awk '{ print $1 }')"
   printf 'source_url=%s\nsource_sha256=%s\nactual_source_sha256=%s\npatch=%s\npatch_sha256=%s\nactual_patch_sha256=%s\n' "$source_url" "$source_sha" "$actual_source_sha" "$patch_path" "$patch_sha" "$actual_patch_sha" | tee "$evidence_dir/source-checksums.txt"
   [[ "$actual_source_sha" == "$source_sha" ]]
+  curl --fail --silent --show-error --location --retry 3 "$source_url.sigstore.json" -o "$evidence_dir/source-attestation.sigstore.json"
+  gh --version > "$evidence_dir/gh-version.txt"
+  gh attestation verify "$source_archive" --bundle "$evidence_dir/source-attestation.sigstore.json" \
+    --repo "$(jq -er '.archive.repository' "$source_input")" \
+    --signer-workflow "$(jq -er '.archive.signerWorkflow' "$source_input")" \
+    --source-digest "$(jq -er '.archive.sourceCommit' "$source_input")" \
+    --source-ref "$(jq -er '.archive.sourceRef' "$source_input")" --format json \
+    > "$evidence_dir/source-attestation.json" 2> "$evidence_dir/source-attestation.stderr"
   tar -tzf "$source_archive" > "$evidence_dir/archive-contents.txt"
   tar -xzf "$source_archive" -C "$build_dir"
   source_dir="$build_dir/$source_root"
@@ -116,41 +125,45 @@ if [[ -f "$root_dir/pig-source.json" ]]; then
   mkdir -p "$build_dir/bin"
   printf 'CGO_ENABLED=0 go -C %q build -trimpath -buildvcs=false -mod=readonly -ldflags %q -o %q ./cmd/pig\n' "$source_dir" "-s -w -X github.com/MichaelKinsy/PiG/coding/cli.Build=$pig_build" "$build_dir/bin/pig" > "$evidence_dir/pig-build-command.txt"
   CGO_ENABLED=0 go -C "$source_dir" build -trimpath -buildvcs=false -mod=readonly -ldflags "-s -w -X github.com/MichaelKinsy/PiG/coding/cli.Build=$pig_build" -o "$build_dir/bin/pig" ./cmd/pig
+  go version -m "$build_dir/bin/pig" > "$evidence_dir/pig-build-info.txt"
+  grep -Fqx "$(printf '\tbuild\tCGO_ENABLED=0')" "$evidence_dir/pig-build-info.txt"
+  grep -Fqx "$(printf '\tbuild\tGOOS=%s' "$expected_os")" "$evidence_dir/pig-build-info.txt"
+  grep -Fqx "$(printf '\tbuild\tGOARCH=%s' "$expected_arch")" "$evidence_dir/pig-build-info.txt"
   export PATH="$build_dir/bin:$PATH"
   export PIG_LITTER_EXPECTED_PIG="$build_dir/bin/pig"
   export PIG_LITTER_EXPECTED_PIG_SHA256="$(shasum -a 256 "$PIG_LITTER_EXPECTED_PIG" | awk '{ print $1 }')"
   export PIG_LITTER_EXPECTED_PIG_BUILD="$pig_build"
 else
-printf 'stock-release-archive\n' > "$evidence_dir/evidence-kind.txt"
-nix_value() {
-  awk -F '"' -v platform="$nix_platform" -v field="$1" '
-    $2 == platform && $0 ~ /= *[{]/ { inside = 1; next }
-    inside && /^[[:space:]]*};/ { exit }
-    inside && $1 ~ ("^[[:space:]]*" field "[[:space:]]*=") { print $2; found++ }
-    END { if (found != 1) exit 1 }
-  ' "$root_dir/devenv.nix"
-}
+  printf 'stock-release-archive\n' > "$evidence_dir/evidence-kind.txt"
+  nix_value() {
+    awk -F '"' -v platform="$nix_platform" -v field="$1" '
+      $2 == platform && $0 ~ /= *[{]/ { inside = 1; next }
+      inside && /^[[:space:]]*};/ { exit }
+      inside && $1 ~ ("^[[:space:]]*" field "[[:space:]]*=") { print $2; found++ }
+      END { if (found != 1) exit 1 }
+    ' "$root_dir/devenv.nix"
+  }
 
-pinned_archive="$(nix_value archive)"
-pinned_root="$(nix_value root)"
-pinned_sri="$(nix_value hash)"
-[[ "$pinned_archive" == "$archive" && "$pinned_root" == "${archive%.tar.gz}" ]]
-release_url="https://github.com/MichaelKinsy/PiG/releases/download/$pig_module"
-curl --fail --silent --show-error --location --retry 3 "$release_url/SHA256SUMS" -o "$evidence_dir/SHA256SUMS"
-curl --fail --silent --show-error --location --retry 3 "$release_url/$archive" -o "$scratch_dir/$archive"
-official_sha="$(awk -v name="$archive" '$2 == name { print tolower($1) }' "$evidence_dir/SHA256SUMS")"
-actual_sha="$(shasum -a 256 "$scratch_dir/$archive" | awk '{ print $1 }')"
-actual_sri="$(perl -MMIME::Base64 -e 'print "sha256-", encode_base64(pack("H*", $ARGV[0]), "")' "$actual_sha")"
-printf 'archive=%s\nofficial_sha256=%s\nactual_sha256=%s\npinned_sri=%s\nactual_sri=%s\n' "$archive" "$official_sha" "$actual_sha" "$pinned_sri" "$actual_sri" | tee "$evidence_dir/archive-checksums.txt"
-[[ "$official_sha" =~ ^[0-9a-f]{64}$ && "$actual_sha" == "$official_sha" && "$actual_sri" == "$pinned_sri" ]]
+  pinned_archive="$(nix_value archive)"
+  pinned_root="$(nix_value root)"
+  pinned_sri="$(nix_value hash)"
+  [[ "$pinned_archive" == "$archive" && "$pinned_root" == "${archive%.tar.gz}" ]]
+  release_url="https://github.com/MichaelKinsy/PiG/releases/download/$pig_module"
+  curl --fail --silent --show-error --location --retry 3 "$release_url/SHA256SUMS" -o "$evidence_dir/SHA256SUMS"
+  curl --fail --silent --show-error --location --retry 3 "$release_url/$archive" -o "$scratch_dir/$archive"
+  official_sha="$(awk -v name="$archive" '$2 == name { print tolower($1) }' "$evidence_dir/SHA256SUMS")"
+  actual_sha="$(shasum -a 256 "$scratch_dir/$archive" | awk '{ print $1 }')"
+  actual_sri="$(perl -MMIME::Base64 -e 'print "sha256-", encode_base64(pack("H*", $ARGV[0]), "")' "$actual_sha")"
+  printf 'archive=%s\nofficial_sha256=%s\nactual_sha256=%s\npinned_sri=%s\nactual_sri=%s\n' "$archive" "$official_sha" "$actual_sha" "$pinned_sri" "$actual_sri" | tee "$evidence_dir/archive-checksums.txt"
+  [[ "$official_sha" =~ ^[0-9a-f]{64}$ && "$actual_sha" == "$official_sha" && "$actual_sri" == "$pinned_sri" ]]
 
-tar -tzf "$scratch_dir/$archive" > "$evidence_dir/archive-contents.txt"
-grep -Fx "$pinned_root/pig" "$evidence_dir/archive-contents.txt" >/dev/null
-mkdir -p "$scratch_dir/extract" "$scratch_dir/verified-pig-$pig_version/bin"
-tar -xzf "$scratch_dir/$archive" -C "$scratch_dir/extract" "$pinned_root/pig"
-install -m 755 "$scratch_dir/extract/$pinned_root/pig" "$scratch_dir/verified-pig-$pig_version/bin/pig"
-export PATH="$scratch_dir/verified-pig-$pig_version/bin:$PATH"
-unset PIG_LITTER_EXPECTED_PIG PIG_LITTER_EXPECTED_PIG_SHA256 PIG_LITTER_EXPECTED_PIG_BUILD
+  tar -tzf "$scratch_dir/$archive" > "$evidence_dir/archive-contents.txt"
+  grep -Fx "$pinned_root/pig" "$evidence_dir/archive-contents.txt" >/dev/null
+  mkdir -p "$scratch_dir/extract" "$scratch_dir/verified-pig-$pig_version/bin"
+  tar -xzf "$scratch_dir/$archive" -C "$scratch_dir/extract" "$pinned_root/pig"
+  install -m 755 "$scratch_dir/extract/$pinned_root/pig" "$scratch_dir/verified-pig-$pig_version/bin/pig"
+  export PATH="$scratch_dir/verified-pig-$pig_version/bin:$PATH"
+  unset PIG_LITTER_EXPECTED_PIG PIG_LITTER_EXPECTED_PIG_SHA256 PIG_LITTER_EXPECTED_PIG_BUILD
 fi
 pig_file="$(file -b "$(command -v pig)")"
 case "$expected_os/$expected_arch" in
