@@ -12,8 +12,8 @@
   },
   "patch": {
     "path": "patches/pig-0.7.0-integrated.patch",
-    "sha256": "69ea09cc455ed4cf79957fec12c2fc804b6f717a40bb502792263dd4563ae4e8",
-    "commit": "8acf7b96232ed073f4ce384ae2c57d834b7c38e7",
-    "tree": "b15a575200756f38ba5b3fb4c9547c7b5a350012"
+    "sha256": "671e3f2395b16f4a45ff8cf4eb6e85e3ef3974e74fb6a183e9496b1eee958ef2",
+    "commit": "52836142b20c7eccd9ce747837dd886bd2136455",
+    "tree": "b20a94d1430cf1d268c01ce58ac3702153bd17af"
   }
 }

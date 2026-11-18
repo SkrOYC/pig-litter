@@ -1,5 +1,5 @@
 diff --git a/ai/continuation.go b/ai/continuation.go
-index 68caf8434c199c7681469e1e5c4d94df9714ee74..d92e6a159fe3f4136006d05ad90dbe0cfde79b78 100644
+index 68caf8434c199c7681469e1e5c4d94df9714ee74..c292d9d41d63fc90b8690b91164793d6dea9ad61 100644
 --- a/ai/continuation.go
 +++ b/ai/continuation.go
 @@ -46,6 +46,11 @@ type continuationExecutor struct {
@@ -59,18 +59,19 @@ index 68caf8434c199c7681469e1e5c4d94df9714ee74..d92e6a159fe3f4136006d05ad90dbe0c
 +	if executor.idleLocked() && executor.loopBarrier == nil && len(executor.loopEffects) == 0 && !executor.loopWaitChangesLocked() {
  		return false
  	}
-@@ -251,4 +263,107 @@ func (executor *continuationExecutor) startDrainLocked() bool {
+@@ -251,4 +263,112 @@ func (executor *continuationExecutor) startDrainLocked() bool {
  }
  
 +func (executor *continuationExecutor) loopWaitChangesLocked() bool {
 +	return executor.turns != nil && (executor.loopWait != nil) != (len(executor.pendingWaits) > 0)
 +}
 +
-+// enqueueLocked revokes the executor's timer admission before publishing a reaction.
++// enqueueLocked revokes normal timer admission before publishing a reaction to preserve their ordering.
 +func (executor *continuationExecutor) enqueueLocked(queue *continuationQueue, job continuationJob) {
 +	if executor.loopWait != nil {
 +		executor.effectPending = true
-+		effect, pending := executor.loopWait.CloseReady(executor.effectsReady)
++		lease := executor.loopWait
++		effect, pending := lease.CloseReady(func() { executor.effectsReady(lease) })
 +		if !pending {
 +			executor.effectPending = false
 +		}
@@ -83,8 +84,12 @@ index 68caf8434c199c7681469e1e5c4d94df9714ee74..d92e6a159fe3f4136006d05ad90dbe0c
 +	queue.push(job)
 +}
 +
-+func (executor *continuationExecutor) effectsReady() {
++func (executor *continuationExecutor) effectsReady(lease *jsloop.WaitLease) {
 +	executor.mu.Lock()
++	if executor.loopBarrier != lease || !lease.ClaimReady() {
++		executor.mu.Unlock()
++		return
++	}
 +	executor.effectPending = false
 +	drain := executor.startDrainLocked()
 +	executor.mu.Unlock()
@@ -167,14 +172,14 @@ index 68caf8434c199c7681469e1e5c4d94df9714ee74..d92e6a159fe3f4136006d05ad90dbe0c
 +
  func (executor *continuationExecutor) idleLocked() bool {
  	return executor.ready.len() == 0 && executor.ticks.len() == 0 && executor.external.len() == 0
-@@ -325,5 +440,5 @@ func (executor *continuationExecutor) pollWatchersLocked() {
+@@ -325,5 +445,5 @@ func (executor *continuationExecutor) pollWatchersLocked() {
  			continue
  		}
 -		executor.ready.push(continuationJob{fn: watcher.fire})
 +		executor.enqueueLocked(&executor.ready, continuationJob{fn: watcher.fire})
  		executor.watchers = slices.Delete(executor.watchers, index, index+1)
  	}
-@@ -345,5 +460,6 @@ func (executor *continuationExecutor) drainLocked() {
+@@ -345,5 +465,6 @@ func (executor *continuationExecutor) drainLocked() {
  		}
  		executor.pollWatchersLocked()
 -		if executor.active != nil || executor.idleLocked() {
@@ -182,14 +187,14 @@ index 68caf8434c199c7681469e1e5c4d94df9714ee74..d92e6a159fe3f4136006d05ad90dbe0c
 +		if executor.effectPending || executor.active != nil || executor.idleLocked() {
  			idle := executor.endDrainLocked()
  			executor.mu.Unlock()
-@@ -401,5 +517,5 @@ func (executor *continuationExecutor) newTurn() *continuationTurn {
+@@ -401,5 +522,5 @@ func (executor *continuationExecutor) newTurn() *continuationTurn {
  // newDeferredTurn creates a turn whose owner grants it from its own promise reaction.
  func (executor *continuationExecutor) newDeferredTurn() *continuationTurn {
 -	return &continuationTurn{executor: executor}
 +	return &continuationTurn{executor: executor, loopWait: continuationWait{executor: executor}}
  }
  
-@@ -514,6 +630,6 @@ func (executor *continuationExecutor) serve(self *continuationTurn) {
+@@ -514,6 +635,6 @@ func (executor *continuationExecutor) serve(self *continuationTurn) {
  			executor.mu.Unlock()
  			return
 -		case executor.active == nil && !executor.draining && !executor.idleLocked():
@@ -198,21 +203,21 @@ index 68caf8434c199c7681469e1e5c4d94df9714ee74..d92e6a159fe3f4136006d05ad90dbe0c
 +			executor.drainer = self
  			executor.mu.Unlock()
  			executor.drain()
-@@ -632,5 +748,5 @@ func (turn *continuationTurn) resume() {
+@@ -632,5 +753,5 @@ func (turn *continuationTurn) resume() {
  	executor := turn.executor
  	executor.mu.Lock()
 -	executor.ready.push(continuationJob{grant: turn})
 +	executor.enqueueLocked(&executor.ready, continuationJob{grant: turn})
  	drain := executor.startDrainLocked()
  	executor.mu.Unlock()
-@@ -659,5 +775,5 @@ func (turn *continuationTurn) grant() {
+@@ -659,5 +780,5 @@ func (turn *continuationTurn) grant() {
  		turn.owed--
  		if executor.ready.len() != 0 || executor.ticks.len() != 0 {
 -			executor.ready.push(continuationJob{grant: turn})
 +			executor.enqueueLocked(&executor.ready, continuationJob{grant: turn})
  			executor.mu.Unlock()
  			return
-@@ -743,4 +859,14 @@ func (turn *continuationTurn) suspend() {
+@@ -743,4 +864,14 @@ func (turn *continuationTurn) suspend() {
  		panic("stream continuation suspended owing deferred awaits")
  	}
 +	if turn.executor.turns != nil {
@@ -227,7 +232,7 @@ index 68caf8434c199c7681469e1e5c4d94df9714ee74..d92e6a159fe3f4136006d05ad90dbe0c
 +	}
  	if turn.coroutine {
  		if turn.executor.switchEveryPause || !turn.settle(stepSuspend) {
-@@ -829,5 +955,6 @@ func (turn *continuationTurn) settle(step turnStep) bool {
+@@ -829,5 +960,6 @@ func (turn *continuationTurn) settle(step turnStep) bool {
  	for {
  		executor.pollWatchersLocked()
 -		if executor.active != nil || executor.idleLocked() {
@@ -235,7 +240,7 @@ index 68caf8434c199c7681469e1e5c4d94df9714ee74..d92e6a159fe3f4136006d05ad90dbe0c
 +		if executor.effectPending || executor.active != nil || executor.idleLocked() {
  			break
  		}
-@@ -886,7 +1013,7 @@ func (turn *continuationTurn) settle(step turnStep) bool {
+@@ -886,7 +1018,7 @@ func (turn *continuationTurn) settle(step turnStep) bool {
  func (turn *continuationTurn) settlesInPlaceLocked(job continuationJob) bool {
  	switch other := job.grant; {
 -	case other == turn, job.acquire != nil && job.acquire.turn == turn:
@@ -245,28 +250,28 @@ index 68caf8434c199c7681469e1e5c4d94df9714ee74..d92e6a159fe3f4136006d05ad90dbe0c
 +	case job.acquire != nil, job.result != nil:
  		return false
  	case other == nil:
-@@ -920,5 +1047,5 @@ func (promise *continuationPromise[T]) resolveDeferred(value T) func() {
+@@ -920,5 +1052,5 @@ func (promise *continuationPromise[T]) resolveDeferred(value T) func() {
  	promise.value = value
  	for _, then := range promise.then {
 -		executor.ready.push(promise.job(then))
 +		executor.enqueueLocked(&executor.ready, promise.job(then))
  	}
  	clear(promise.then)
-@@ -952,5 +1079,5 @@ func (promise *continuationPromise[T]) addThen(then continuationThen[T]) {
+@@ -952,5 +1084,5 @@ func (promise *continuationPromise[T]) addThen(then continuationThen[T]) {
  		return
  	}
 -	executor.ready.push(promise.job(then))
 +	executor.enqueueLocked(&executor.ready, promise.job(then))
  	drain := executor.startDrainLocked()
  	executor.mu.Unlock()
-@@ -989,5 +1116,5 @@ func awaitSettled(turn *continuationTurn) {
+@@ -989,5 +1121,5 @@ func awaitSettled(turn *continuationTurn) {
  	executor := turn.executor
  	executor.mu.Lock()
 -	executor.ready.push(continuationJob{grant: turn})
 +	executor.enqueueLocked(&executor.ready, continuationJob{grant: turn})
  	drain := executor.startDrainLocked()
  	executor.mu.Unlock()
-@@ -1081,5 +1208,5 @@ func (turn *continuationTurn) awaitResolvedThen(count int, check func() bool) (m
+@@ -1081,5 +1213,5 @@ func (turn *continuationTurn) awaitResolvedThen(count int, check func() bool) (m
  				count, check = 0, nil
  			}
 -			executor.ready.push(continuationJob{grant: turn})
@@ -519,12 +524,108 @@ index 1ff63064539bb68cc9bdc97bdc575728075c3c19..503c16bd69fd5df1b9d2725648ee44f4
 +	close(stream.done)
  	return continuations
  }
+diff --git a/ai/forced_release_after_ready_test.go b/ai/forced_release_after_ready_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..51060755eb755c091bb223d8680df4e329c83c88
+--- /dev/null
++++ b/ai/forced_release_after_ready_test.go
+@@ -0,0 +1,90 @@
++package ai
++
++import (
++	"context"
++	"slices"
++	"sync"
++	"testing"
++	"testing/synctest"
++
++	"github.com/MichaelKinsy/PiG/internal/jsloop"
++)
++
++func TestPreviewForcedOwnerReleaseAfterResultReadiness(t *testing.T) {
++	retainedWaitModes(t, func(t *testing.T, ctx context.Context, executor *continuationExecutor, turns *jsloop.Turns, run func(func(*StreamObservation) error) error) {
++		stream := NewAssistantMessageEventStream()
++		stream.executor = executor
++		order := make(chan string, 5)
++		finished := make(chan error, 1)
++		go func() {
++			finished <- run(func(observation *StreamObservation) error {
++				_, err := stream.ResultContext(observation.Context(ctx))
++				if err == nil {
++					order <- "result"
++				}
++				return err
++			})
++		}()
++		synctest.Wait()
++
++		firstStarted, firstRelease := make(chan struct{}), make(chan struct{})
++		ownerStarted, ownerRelease, ownerReturned := make(chan struct{}), make(chan struct{}), make(chan struct{})
++		var firstOnce, ownerOnce sync.Once
++		finishFirst := func() { firstOnce.Do(func() { close(firstRelease) }) }
++		finishOwner := func() { ownerOnce.Do(func() { close(ownerRelease) }) }
++		defer finishFirst()
++		defer finishOwner()
++		turns.MacrotaskDone(func(done func()) {
++			order <- "first started"
++			close(firstStarted)
++			go func() {
++				<-firstRelease
++				order <- "first written"
++				done()
++			}()
++		})
++		<-firstStarted
++		pushTestDone(t, stream)
++
++		owner := new(int)
++		turns.MacrotaskDoneFor(owner, func(done func()) {
++			order <- "owner started"
++			close(ownerStarted)
++			go func() {
++				<-ownerRelease
++				order <- "owner written"
++				done()
++			}()
++		})
++		go func() { turns.Release(owner); close(ownerReturned) }()
++		synctest.Wait()
++		select {
++		case <-ownerStarted:
++		default:
++			t.Fatal("forced owner release did not start while the first effect remained open")
++		}
++		finishFirst()
++		synctest.Wait()
++		select {
++		case err := <-finished:
++			if err != nil {
++				t.Fatal(err)
++			}
++			t.Error("result resumed before the forced owner effect was written")
++			finishOwner()
++			<-ownerReturned
++			return
++		default:
++		}
++		finishOwner()
++		<-ownerReturned
++		if err := <-finished; err != nil {
++			t.Fatal(err)
++		}
++		got := []string{<-order, <-order, <-order, <-order, <-order}
++		want := []string{"first started", "owner started", "first written", "owner written", "result"}
++		if !slices.Equal(got, want) {
++			t.Errorf("forced owner release order = %q, want %q", got, want)
++		}
++	})
++}
 diff --git a/ai/owned_result_wait.go b/ai/owned_result_wait.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..f028b79226ba28240d9cc02379b0267c6ae80d50
+index 0000000000000000000000000000000000000000..1c1c5a30be58249043227345d66a25fa067633f6
 --- /dev/null
 +++ b/ai/owned_result_wait.go
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,144 @@
 +package ai
 +
 +import (
@@ -545,7 +646,6 @@ index 0000000000000000000000000000000000000000..f028b79226ba28240d9cc02379b0267c
 +	err     error
 +}
 +
-+// ownedResultWait separates result completion from admission of the observation that awaits it.
 +type ownedResultWait struct {
 +	stream      *AssistantMessageEventStream
 +	wait        continuationWait
@@ -573,7 +673,7 @@ index 0000000000000000000000000000000000000000..f028b79226ba28240d9cc02379b0267c
 +	return wait
 +}
 +
-+// admit reserves one observation suspension or leaves an already detached observation with its outer await.
++// admit reports whether the caller must park its turn; a nested wait leaves reacquisition to the outer await.
 +func (wait *ownedResultWait) admit(observation *StreamObservation) bool {
 +	for {
 +		observation.mu.Lock()
@@ -617,7 +717,6 @@ index 0000000000000000000000000000000000000000..f028b79226ba28240d9cc02379b0267c
 +	return wait.completeDeferred(message, nil)
 +}
 +
-+// completeDeferred publishes one outcome and its acquisition before releasing the executor lock.
 +func (wait *ownedResultWait) completeDeferred(message *AssistantMessage, err error) func() {
 +	executor := wait.wait.executor
 +	executor.mu.Lock()
@@ -1282,10 +1381,10 @@ index 0000000000000000000000000000000000000000..1e1f7d1576f3e12f66e35dba6dbcab7e
 +}
 diff --git a/ai/stream_loop_wait_test.go b/ai/stream_loop_wait_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..340c51528d09ba1866f394d4a39f42293cff8477
+index 0000000000000000000000000000000000000000..e7ab1f3f3a1a687818d3b855cdaf7b96090168d2
 --- /dev/null
 +++ b/ai/stream_loop_wait_test.go
-@@ -0,0 +1,462 @@
+@@ -0,0 +1,461 @@
 +package ai
 +
 +import (
@@ -1366,7 +1465,6 @@ index 0000000000000000000000000000000000000000..340c51528d09ba1866f394d4a39f4229
 +	})
 +}
 +
-+// A completion and a direct caller can arrive while opening the wait still joins a timer's effect. Both enqueue without acquiring the execution reserved by that flush, and run once behind its effect.
 +func TestStreamLoopWaitCompletionDuringOpeningKeepsSingleExecution(t *testing.T) {
 +	streamLoopWaitModes(t, func(t *testing.T, ctx context.Context, executor *continuationExecutor, turns *jsloop.Turns, run func(func(*continuationTurn))) {
 +		stream := NewAssistantMessageEventStream()
@@ -2194,14 +2292,13 @@ index 0000000000000000000000000000000000000000..3e578304155cf0f4d3e2f23c3f10e045
 +
 +- Let extension timer calls finish while an owning consumer awaits a pending continuation or provider result, while preserving ready-reaction order and native host-call acknowledgement. Unawaited result observers do not release an unrelated active chain. <!-- fix: f65782ca6c8bb6da67ac278997f4ac14dcf3d7ec, 0dd1b353f3fa4f2793d3a6feacc06593e14722f2 -->
 diff --git a/coding/cli/rpc_mode.go b/coding/cli/rpc_mode.go
-index f83c96d0557001e57424764d3d3366adda09bedb..c570d2435c25108a986e5afc71444694a2cb9630 100644
+index f83c96d0557001e57424764d3d3366adda09bedb..0d2bb181059b8e4dc97dc6875e936711125cabed 100644
 --- a/coding/cli/rpc_mode.go
 +++ b/coding/cli/rpc_mode.go
-@@ -597,9 +597,10 @@ func serveRPCMode(ctx context.Context, rt *coding.Runtime, options rpcModeOption
+@@ -597,9 +597,9 @@ func serveRPCMode(ctx context.Context, rt *coding.Runtime, options rpcModeOption
  
  	handleCycleModel := func(id rpcRequestID, currentSession *coding.Session, turn *rpcResponseTurn) {
 -		// Pi's `await session.cycleModel()` resumes in microtasks once the model_select listeners returned, so the deferred UI calls of those listeners follow the response (rpcBackgroundGate).
-+		// A completed listener's deferred UI calls follow the response; a listener that actually suspends lets the loop turn first.
  		release := host.background.hold()
  		// build runs in the continuation, where Pi samples the response's state (the thinking level) after its await.
  		answer := func(build func() any) { turn.Microtask(func() { writeRPC(build()); release() }) }
@@ -2210,14 +2307,14 @@ index f83c96d0557001e57424764d3d3366adda09bedb..c570d2435c25108a986e5afc71444694
 +		result, complete, err := currentSession.BeginModelCycle(modelCtx, "forward")
  		if err != nil {
  			answer(func() any { return rpcError(id, "cycle_model", err.Error()) })
-@@ -1073,5 +1074,5 @@ commandLoop:
+@@ -1073,5 +1073,5 @@ commandLoop:
  			pendingSetModels = append(pendingSetModels, applied)
  			replacementMu.Unlock()
 -			// The response follows the model_select listeners in microtasks, so their deferred UI calls follow it (rpcBackgroundGate).
 +			// A completed listener's deferred UI calls follow the response; a listener that actually suspends lets the loop turn first.
  			release := host.background.hold()
  			checked.then(func(_ struct{}, err error) {
-@@ -1082,5 +1083,6 @@ commandLoop:
+@@ -1082,5 +1082,6 @@ commandLoop:
  					return
  				}
 -				complete, err := currentSession.BeginModelChange(ctx, newModel, extension.ModelSelectSourceUser)
@@ -2227,10 +2324,10 @@ index f83c96d0557001e57424764d3d3366adda09bedb..c570d2435c25108a986e5afc71444694
  					err = currentSession.FlushEvents(ctx)
 diff --git a/coding/cli/rpc_model_select_prefix_order_test.go b/coding/cli/rpc_model_select_prefix_order_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..d244b07c84cf60611118a82dc516ec346cb15cd1
+index 0000000000000000000000000000000000000000..79b4b2462b7dae55035ca1f261fdb22d16d1fc11
 --- /dev/null
 +++ b/coding/cli/rpc_model_select_prefix_order_test.go
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,85 @@
 +package cli
 +
 +import (
@@ -2241,8 +2338,6 @@ index 0000000000000000000000000000000000000000..d244b07c84cf60611118a82dc516ec34
 +	"testing"
 +)
 +
-+// A listener that finishes before the next loop turn keeps its prefix before
-+// the model response and the timer it queued after that response.
 +func TestRPCModelSelectCompletedPrefixPrecedesResponseAndTimer(t *testing.T) {
 +	if testing.Short() {
 +		t.Skip("builds the pig binary and runs a Node extension")
@@ -2775,10 +2870,10 @@ index 0000000000000000000000000000000000000000..6dd4c3698a8fb29874ce66a4ccf29dcb
 +}
 diff --git a/coding/cli/rpc_timer_loadout_uninstrumented_test.go b/coding/cli/rpc_timer_loadout_uninstrumented_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..c3acbe2a0000ff612e2f9ec302697384c1920c58
+index 0000000000000000000000000000000000000000..cad39549f454cafe9ad8e8a96869688408eb7c1c
 --- /dev/null
 +++ b/coding/cli/rpc_timer_loadout_uninstrumented_test.go
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,121 @@
 +package cli
 +
 +import (
@@ -2790,8 +2885,6 @@ index 0000000000000000000000000000000000000000..c3acbe2a0000ff612e2f9ec302697384
 +	"testing"
 +)
 +
-+// The loadout and nested input also finish when the extension does not
-+// observe or alter the host-call transport promise.
 +func TestRPCTimerLoadoutHookFinishesWithoutTransportObserver(t *testing.T) {
 +	if testing.Short() {
 +		t.Skip("builds the pig binary and runs a Node extension")
@@ -2904,10 +2997,10 @@ index 0000000000000000000000000000000000000000..c3acbe2a0000ff612e2f9ec302697384
 +}
 diff --git a/coding/extension/host/inproc/invocation_boundary_test.go b/coding/extension/host/inproc/invocation_boundary_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..e9d9e81d482a1ded25bf56d27d140dcbc45d441b
+index 0000000000000000000000000000000000000000..0c43acf43dae7b6cc0d0ff82b4b234afac60de18
 --- /dev/null
 +++ b/coding/extension/host/inproc/invocation_boundary_test.go
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,68 @@
 +package inproc
 +
 +import (
@@ -2918,8 +3011,6 @@ index 0000000000000000000000000000000000000000..e9d9e81d482a1ded25bf56d27d140dcb
 +	"github.com/MichaelKinsy/PiG/coding/extension/host/invocation"
 +)
 +
-+// A model notification can have a completed handler followed by one that
-+// suspends. Its suspension-only owner must not release the gate between them.
 +func TestEmitWaitsForActualSuspensionWhenItsOwnerRequiresIt(t *testing.T) {
 +	for _, suspensionOnly := range []bool{false, true} {
 +		name := "ordinary"
@@ -39835,10 +39926,10 @@ index ad867c8f7a1742d5a931588edd1e01b3ea4d3855..8781933a50c39a873b31782b006c1e98
 +const nodeRuntimeHash = "\xe6\xf6\xaf(\xfa\x9c\x1b\b\x1d\x9e#Ey\xbak\xa3A\xc3k\xfd-q\x92J\xc4\xf5\xd6\x12~\xc4JA"
 diff --git a/coding/extension/host/subprocess/runtime_node_host_prefix_test.go b/coding/extension/host/subprocess/runtime_node_host_prefix_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..ca2e5d1e754dda3479389fe61d23f42726353455
+index 0000000000000000000000000000000000000000..4646966c7a8ff708e380676c698b5c409e8e3021
 --- /dev/null
 +++ b/coding/extension/host/subprocess/runtime_node_host_prefix_test.go
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,134 @@
 +package subprocess
 +
 +import (
@@ -39849,8 +39940,6 @@ index 0000000000000000000000000000000000000000..ca2e5d1e754dda3479389fe61d23f427
 +	"testing"
 +)
 +
-+// A prefix receipt belongs to one call on one connection. It can release the
-+// handler's host-call barrier without settling the call's actual result.
 +func TestNodeHostCallPrefixAndFinalResult(t *testing.T) {
 +	nodeCellRequireNode(t)
 +	path, err := filepath.Abs("runtime-node/runtime.mjs")
@@ -39923,8 +40012,6 @@ index 0000000000000000000000000000000000000000..ca2e5d1e754dda3479389fe61d23f427
 +	}
 +}
 +
-+// Even if a fire-and-forget call's cleanup throws, it must leave no rejected
-+// cleanup promise behind and a caller observing the original sees the error.
 +func TestNodeHostCallCleanupHandlesRejectedOperation(t *testing.T) {
 +	nodeCellRequireNode(t)
 +	path, err := filepath.Abs("runtime-node/runtime.mjs")
@@ -40195,18 +40282,19 @@ index 651bb01cac75bc7484c319afb2a9feb04edad334..f4551701819c9ea8d828da934c1f5f15
  ### BF-f68aa40
  
 diff --git a/internal/jsloop/turns.go b/internal/jsloop/turns.go
-index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..e8d6beda3821189e6dea8cc3dbb1d871a705f067 100644
+index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..b1a6e95f32fbe3e04028b0c046ac81688da5c6e5 100644
 --- a/internal/jsloop/turns.go
 +++ b/internal/jsloop/turns.go
-@@ -18,5 +18,7 @@ type Turns struct {
+@@ -18,5 +18,8 @@ type Turns struct {
  	chains    int
  	waits     int
 +	ready     int
  	held      []heldCall
 +	effects   map[*turnEffect]struct{}
++	fences    map[*effectFence]struct{}
  	commands  int
  	observers []func(deferring bool)
-@@ -27,6 +29,7 @@ type Turns struct {
+@@ -27,6 +30,7 @@ type Turns struct {
  	ticks        []tickCall
  	// ticked holds the tool calls whose tick boundary passed in this chain (Ticked); ToolStarted forgets a call that starts again, and the end of the chain forgets all.
 -	ticked   map[string]struct{}
@@ -40216,13 +40304,13 @@ index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..e8d6beda3821189e6dea8cc3dbb1d871
 +	flushingDone chan struct{}
  }
  
-@@ -35,4 +38,5 @@ type tickCall struct {
+@@ -35,4 +39,5 @@ type tickCall struct {
  	fn     func(done func())
  	origin string
 +	effect *turnEffect
  }
  
-@@ -42,4 +46,69 @@ type heldCall struct {
+@@ -42,4 +47,69 @@ type heldCall struct {
  	owner   any
  	turning bool
 +	effect  *turnEffect
@@ -40292,7 +40380,7 @@ index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..e8d6beda3821189e6dea8cc3dbb1d871
 +	}
  }
  
-@@ -111,21 +180,149 @@ func (t *Turns) Arm(ctx context.Context) (end func()) {
+@@ -111,21 +181,170 @@ func (t *Turns) Arm(ctx context.Context) (end func()) {
  }
  
 -// syncDeferLocked tells the observers when the deferring state changed, and unlocks.
@@ -40334,6 +40422,7 @@ index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..e8d6beda3821189e6dea8cc3dbb1d871
 +	turns *Turns
 +	open  bool
 +	ready bool
++	fence *effectFence
 +}
 +
 +// BeginWait opens a wait and reserves its already held callbacks. Its returned effect runs without the caller's locks.
@@ -40428,11 +40517,29 @@ index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..e8d6beda3821189e6dea8cc3dbb1d871
 +			effect.fences = append(effect.fences, fence)
 +			fence.remaining++
 +		}
++		if t.fences == nil {
++			t.fences = make(map[*effectFence]struct{})
++		}
++		t.fences[fence] = struct{}{}
++		lease.fence = fence
 +		pending = true
 +	}
 +	notify := t.deferChangeLocked()
 +	t.mu.Unlock()
 +	return notify, pending
++}
++
++// ClaimReady checks the current effect prefix before letting the executor resume.
++func (lease *WaitLease) ClaimReady() bool {
++	t := lease.turns
++	t.mu.Lock()
++	defer t.mu.Unlock()
++	if lease.fence != nil && lease.fence.remaining > 0 {
++		return false
++	}
++	delete(t.fences, lease.fence)
++	lease.fence = nil
++	return true
 +}
 +
 +// ReleaseReady lets later timer turns run after the admitted reactions have finished.
@@ -40444,6 +40551,8 @@ index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..e8d6beda3821189e6dea8cc3dbb1d871
 +		return nil
 +	}
 +	lease.ready = false
++	delete(t.fences, lease.fence)
++	lease.fence = nil
 +	t.ready--
 +	t.mu.Unlock()
 +	return func() {
@@ -40451,7 +40560,7 @@ index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..e8d6beda3821189e6dea8cc3dbb1d871
 +		t.flushLocked(false)
  	}
  }
-@@ -175,12 +372,19 @@ func (t *Turns) MacrotaskDoneFor(owner any, fn func(done func())) {
+@@ -175,12 +394,19 @@ func (t *Turns) MacrotaskDoneFor(owner any, fn func(done func())) {
  	}
  	t.mu.Lock()
 -	if t.flushing || len(t.held)+len(t.ticks) > 0 || (t.chains > 0 && t.waits == 0) {
@@ -40474,13 +40583,20 @@ index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..e8d6beda3821189e6dea8cc3dbb1d871
 +	fn(effect.finish)
  }
  
-@@ -195,4 +399,5 @@ func (t *Turns) Release(owner any) {
+@@ -195,4 +421,12 @@ func (t *Turns) Release(owner any) {
  	for _, call := range t.held {
  		if call.owner == owner {
++			newEffect := call.effect == nil
 +			t.admitHeldLocked(&call)
++			if newEffect {
++				for fence := range t.fences {
++					call.effect.fences = append(call.effect.fences, fence)
++					fence.remaining++
++				}
++			}
  			mine = append(mine, call)
  		} else {
-@@ -209,5 +414,6 @@ func (t *Turns) Release(owner any) {
+@@ -209,5 +443,6 @@ func (t *Turns) Release(owner any) {
  	for _, call := range mine {
  		written.Add(1)
 -		call.fn(written.Done)
@@ -40488,7 +40604,7 @@ index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..e8d6beda3821189e6dea8cc3dbb1d871
 +		call.fn(func() { once.Do(func() { written.Done(); call.effect.finish() }) })
  	}
  	written.Wait()
-@@ -224,11 +430,17 @@ func (t *Turns) Tick(origin string, fn func(done func())) {
+@@ -224,11 +459,17 @@ func (t *Turns) Tick(origin string, fn func(done func())) {
  	t.mu.Lock()
  	if _, passed := t.ticked[origin]; origin != "" && passed {
 -		if t.flushing || len(t.held) > 0 {
@@ -40508,7 +40624,7 @@ index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..e8d6beda3821189e6dea8cc3dbb1d871
 +		fn(effect.finish)
  		return
  	}
-@@ -238,6 +450,7 @@ func (t *Turns) Tick(origin string, fn func(done func())) {
+@@ -238,6 +479,7 @@ func (t *Turns) Tick(origin string, fn func(done func())) {
  		return
  	}
 +	effect := t.admitLocked()
@@ -40517,20 +40633,20 @@ index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..e8d6beda3821189e6dea8cc3dbb1d871
 +	fn(effect.finish)
  }
  
-@@ -268,5 +481,5 @@ func (t *Turns) Ticked(toolCallID string) {
+@@ -268,5 +510,5 @@ func (t *Turns) Ticked(toolCallID string) {
  		return
  	}
 -	t.flushing = true
 +	t.startFlushLocked()
  	for {
  		var batch []tickCall
-@@ -274,4 +487,5 @@ func (t *Turns) Ticked(toolCallID string) {
+@@ -274,4 +516,5 @@ func (t *Turns) Ticked(toolCallID string) {
  		for _, call := range t.ticks {
  			if call.origin == "" || call.origin == toolCallID {
 +				call.effect = t.admitLocked()
  				batch = append(batch, call)
  			} else {
-@@ -287,5 +501,6 @@ func (t *Turns) Ticked(toolCallID string) {
+@@ -287,5 +530,6 @@ func (t *Turns) Ticked(toolCallID string) {
  		for _, call := range batch {
  			written.Add(1)
 -			call.fn(written.Done)
@@ -40538,21 +40654,21 @@ index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..e8d6beda3821189e6dea8cc3dbb1d871
 +			call.fn(func() { once.Do(func() { written.Done(); call.effect.finish() }) })
  		}
  		// The next step of Pi's chain follows the callbacks' output, so the output is written before Ticked returns.
-@@ -293,5 +508,5 @@ func (t *Turns) Ticked(toolCallID string) {
+@@ -293,5 +537,5 @@ func (t *Turns) Ticked(toolCallID string) {
  		t.mu.Lock()
  	}
 -	t.flushing = false
 +	t.endFlushLocked()
  	t.flushLocked(false)
  }
-@@ -316,5 +531,5 @@ func (t *Turns) flushLocked(turn bool) {
+@@ -316,5 +560,5 @@ func (t *Turns) flushLocked(turn bool) {
  		// A late tick (heldCall.turning) is a turn of the loop: the callbacks held before it run with it.
  		turning := slices.ContainsFunc(t.held, func(call heldCall) bool { return call.turning })
 -		open := turn || turning || t.chains == 0 || t.waits > 0
 +		open := turn || t.ready == 0 && (turning || t.chains == 0 || t.waits > 0)
  		ticks := turn || t.chains == 0
  		if !ticks && !turning && len(t.ticks) > 0 {
-@@ -329,20 +544,44 @@ func (t *Turns) flushLocked(turn bool) {
+@@ -329,20 +573,44 @@ func (t *Turns) flushLocked(turn bool) {
  		if open {
  			runHeld, t.held = t.held, nil
 +		} else {
@@ -40602,10 +40718,16 @@ index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..e8d6beda3821189e6dea8cc3dbb1d871
  		}
  		written.Wait()
 diff --git a/internal/jsloop/turns_test.go b/internal/jsloop/turns_test.go
-index 0a52da03463365acdd020d0cac8ef848813b2a66..5b3cf6114daf70d3600eaa6bd1992688ebe76e4e 100644
+index 0a52da03463365acdd020d0cac8ef848813b2a66..7339215c92ae707291dbf1915ab96084715a8760 100644
 --- a/internal/jsloop/turns_test.go
 +++ b/internal/jsloop/turns_test.go
-@@ -122,4 +122,90 @@ func TestTurnsTravelInTheContext(t *testing.T) {
+@@ -4,4 +4,5 @@ import (
+ 	"context"
+ 	"slices"
++	"sync/atomic"
+ 	"testing"
+ )
+@@ -122,4 +123,140 @@ func TestTurnsTravelInTheContext(t *testing.T) {
  }
  
 +func TestWaitLeaseKeepsAdmittedCallbacksAfterItCloses(t *testing.T) {
@@ -40652,6 +40774,56 @@ index 0a52da03463365acdd020d0cac8ef848813b2a66..5b3cf6114daf70d3600eaa6bd1992688
 +	turns.Turn()
 +	if want := []string{"other wait", "next turn"}; !slices.Equal(order, want) {
 +		t.Fatalf("after next turn = %q, want %q", order, want)
++	}
++}
++
++func TestWaitLeaseForcedReleaseExtendsFenceBeforeScheduledWake(t *testing.T) {
++	var turns Turns
++	end := turns.Chain()
++	defer end()
++	lease, open := turns.BeginWait()
++	open()
++	firstDone := make(chan func(), 1)
++	turns.MacrotaskDone(func(done func()) { firstDone <- done })
++	wakeEntered, allowWake := make(chan struct{}), make(chan struct{})
++	claims := make(chan bool, 2)
++	var wakes atomic.Int32
++	notify, pending := lease.CloseReady(func() {
++		if wakes.Add(1) == 1 {
++			close(wakeEntered)
++			<-allowWake
++		}
++		claims <- lease.ClaimReady()
++	})
++	if notify != nil {
++		notify()
++	}
++	if !pending {
++		t.Fatal("the first effect did not create a readiness fence")
++	}
++	owner := new(int)
++	ownerStarted, ownerFinish, ownerReturned := make(chan struct{}), make(chan struct{}), make(chan struct{})
++	turns.MacrotaskDoneFor(owner, func(done func()) {
++		close(ownerStarted)
++		go func() { <-ownerFinish; done() }()
++	})
++	firstReturned := make(chan struct{})
++	go func() { (<-firstDone)(); close(firstReturned) }()
++	<-wakeEntered
++	go func() { turns.Release(owner); close(ownerReturned) }()
++	<-ownerStarted
++	close(allowWake)
++	if <-claims {
++		t.Error("the scheduled wake claimed readiness before the forced effect finished")
++	}
++	close(ownerFinish)
++	if !<-claims {
++		t.Error("the completed forced effect did not release readiness")
++	}
++	<-firstReturned
++	<-ownerReturned
++	if release := lease.ReleaseReady(); release != nil {
++		release()
 +	}
 +}
 +
