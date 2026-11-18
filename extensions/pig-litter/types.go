@@ -77,6 +77,7 @@ type Snapshot struct {
 
 type record struct {
 	id                                   ChildID
+	team                                 *teamMember
 	parent                               *record
 	depth                                int
 	name, kind, model, instructions, cwd string
@@ -150,6 +151,8 @@ type run struct {
 	ready           chan struct{}
 	deliveryError   string
 	reservation     *reservation
+	teamResult      [32]byte
+	teamSessionFile string
 }
 
 type Inspection struct {

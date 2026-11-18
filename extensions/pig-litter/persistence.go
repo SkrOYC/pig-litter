@@ -39,6 +39,7 @@ type savedChild struct {
 	NoticeID      string         `json:"noticeId"`
 	Latest        *Outcome       `json:"latest,omitempty"`
 	Notices       []savedNotice  `json:"notices,omitempty"`
+	Team          *teamMember    `json:"team,omitempty"`
 }
 
 func (o *owner) saveChild(r *record) error {
@@ -54,6 +55,10 @@ func (o *owner) saveChild(r *record) error {
 		selected, paused = r.previous, selected.resumePaused
 	}
 	saved := savedChild{RootID: o.tree.root.id, ID: r.id, ParentID: r.parentID(), Name: r.name, Kind: r.kind, Model: r.model, Cwd: r.cwd, Instructions: r.instructions, Tools: slices.Clone(r.tools), CanDelegate: r.canDelegate, ReadOnly: r.readOnly, PendingTask: r.pendingTask, Admitted: r.admitted, State: selected.state, Paused: paused, NoticeID: selected.noticeID}
+	if r.team != nil {
+		copy := *r.team
+		saved.Team = &copy
+	}
 	saved.PendingInputs = slices.Clone(r.pendingInputs)
 	if r.latest != nil {
 		copy := *r.latest
@@ -149,6 +154,16 @@ func spawnStored(entries []json.RawMessage, id ChildID) bool {
 }
 
 func (o *owner) restoreChildren() error {
+	members := map[ChildID]teamMember{}
+	if o.teamStore != nil {
+		_, roster, err := o.teamStore.Snapshot()
+		if err != nil {
+			return err
+		}
+		for _, member := range roster {
+			members[member.Ref.ID] = member
+		}
+	}
 	entries, err := o.context.SessionManager().GetEntries()
 	if err != nil {
 		return err
@@ -174,6 +189,13 @@ func (o *owner) restoreChildren() error {
 		if !childUUID.MatchString(string(saved.ID)) || saved.ID == saved.ParentID || saved.Cwd == "" || saved.Name == "" {
 			return reject("unavailable", "stored child metadata is invalid")
 		}
+		if saved.Team != nil {
+			member, exists := members[saved.ID]
+			if !exists || saved.ParentID != o.tree.root.id || member.Ref != saved.Team.Ref || member.AdmissionID != saved.Team.AdmissionID || member.Name != saved.Name || member.Workspace.Cwd != saved.Cwd || member.Workspace != saved.Team.Workspace {
+				continue
+			}
+			saved.Team = &member
+		}
 		if _, exists := latest[saved.ID]; !exists {
 			order = append(order, saved.ID)
 		}
@@ -194,7 +216,7 @@ func (o *owner) restoreChildren() error {
 					continue
 				}
 			}
-			if !saved.Admitted {
+			if !saved.Admitted && saved.Team == nil {
 				parentEntries := raw
 				if parent != o.tree.root {
 					parent.deliveryMu.Lock()
@@ -213,10 +235,10 @@ func (o *owner) restoreChildren() error {
 				}
 			}
 			key := string(parent.id) + "\x00" + saved.Name
-			if _, exists := o.tree.names[key]; exists {
+			if _, exists := o.tree.names[key]; exists && saved.Team == nil {
 				return reject("unavailable", "stored child names conflict")
 			}
-			r := &record{id: id, parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest}
+			r := &record{id: id, team: saved.Team, parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest}
 			r.pendingInputs = saved.PendingInputs
 			r.run = o.tree.newRunLocked(Ref{id}, "")
 			r.run.owner, r.run.noticeID, r.run.state = r, saved.NoticeID, saved.State
@@ -231,7 +253,12 @@ func (o *owner) restoreChildren() error {
 			r.run.outcome = r.latest
 			r.run.cancel()
 			close(r.run.done)
-			o.tree.records[id], o.tree.names[key] = r, id
+			o.tree.records[id] = r
+			if saved.Team == nil {
+				o.tree.names[key] = id
+			} else {
+				delete(members, id)
+			}
 			o.tree.order = append(o.tree.order, id)
 			for _, notice := range saved.Notices {
 				selected := r.run
@@ -252,6 +279,11 @@ func (o *owner) restoreChildren() error {
 			return reject("unavailable", "stored child parents form a cycle")
 		}
 		order = remaining
+	}
+	for _, member := range members {
+		if err := o.teamStore.SetState(member.Ref, "unavailable"); err != nil {
+			return err
+		}
 	}
 	return nil
 }

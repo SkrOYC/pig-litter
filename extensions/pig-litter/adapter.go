@@ -64,6 +64,8 @@ type owner struct {
 	actionCancel             context.CancelFunc
 	actionsClosed            bool
 	persistMu                sync.Mutex
+	teamMu                   sync.Mutex
+	teamStore                *teamStore
 	widgetMu                 sync.Mutex
 	widgetStopped            bool
 	widgetUnsubscribe        func()
@@ -168,8 +170,15 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 	tree.root.paused = !recover
 	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 	tree.execute, tree.completion, tree.changed = o.executeRun, o.sendCompletion, o.widget
+	tree.teamFinished, tree.teamCanceled = o.finishTeamMember, o.cancelTeamMember
+	if err := o.restoreTeamStore(); err != nil {
+		tree.close()
+		services.Close()
+		return nil, err
+	}
 	if err := o.restoreChildren(); err != nil {
 		tree.close()
+		o.closeTeamStore()
 		services.Close()
 		return nil, err
 	}
@@ -179,6 +188,7 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 	if s.epoch != epoch {
 		s.mu.Unlock()
 		tree.close()
+		o.closeTeamStore()
 		services.Close()
 		return nil, reject("unavailable", "the root Session changed during initialization")
 	}
@@ -304,6 +314,7 @@ func (s *extensionState) retire() {
 	previous.tree.close()
 	previous.rootWG.Wait()
 	previous.ackWG.Wait()
+	previous.closeTeamStore()
 	previous.services.Close()
 	close(retirement)
 }
@@ -416,6 +427,12 @@ func (o *owner) settleAck(key *callTicket, failed bool) {
 		return
 	}
 	ack.once.Do(func() {
+		if !failed && ack.run.owner.team != nil {
+			o.ackWG.Add(1)
+			go o.activateTeamWhenStored(key, ack.run)
+			close(ack.done)
+			return
+		}
 		close(ack.done)
 		if failed {
 			o.tree.cancelPending(ack.run)
@@ -449,6 +466,11 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = err.Error()
 		return
 	}
+	var teamGate *teamAdmissionGate
+	if r.team != nil {
+		teamGate = &teamAdmissionGate{owner: o, record: r, run: run}
+		defer teamGate.finish(&outcome)
+	}
 	trusted := true
 	if err := o.saveChild(r); err != nil {
 		outcome.State = Unavailable
@@ -475,12 +497,19 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	tools := []agent.AgentTool{}
 	allowed := map[string]struct{}{}
 	for _, name := range expandTools(r.tools, available) {
-		if withinParent(r.parent, o.tree.root, name) {
+		if !slices.Contains(teamToolNames, name) && withinParent(r.parent, o.tree.root, name) {
 			allowed[name] = struct{}{}
 		}
 	}
-	if r.canDelegate {
-		for _, name := range controlNames {
+	if r.canDelegate || r.team != nil {
+		names := []string{}
+		if r.canDelegate {
+			names = append(names, controlNames...)
+		}
+		if r.team != nil {
+			names = append(names, teamToolNames...)
+		}
+		for _, name := range names {
 			if !slices.Contains(available, name) {
 				continue
 			}
@@ -522,6 +551,9 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	allowedNames := slices.Sorted(maps.Keys(allowed))
 	scope := &extension.ToolScope{Builtin: &allowedNames, Extensions: map[string]*[]string{extension.McpAdapterEntry: &allowedNames}}
 	options := coding.SessionStartOptions{Model: model, ResourceLoader: loader, ExtraTools: tools, AllowedTools: allowed, ToolScope: scope}
+	if teamGate != nil {
+		options.BeforeToolCall = []agent.BeforeToolCallHook{teamGate.before}
+	}
 	var session *coding.Session
 	if run.resume {
 		session, err = runtime.Resume(string(r.id), options)
@@ -615,6 +647,9 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			}
 		case agent.MessageEndEvent:
 			if event.Message.Assistant != nil {
+				if teamGate != nil {
+					teamGate.observe(event.Message.Assistant)
+				}
 				observedMu.Lock()
 				terminal = event.Message.Assistant
 				observedMu.Unlock()
@@ -785,8 +820,12 @@ func Run() error {
 
 func newExtension(state *extensionState) *sdk.Extension {
 	ext := sdk.New("pig-litter")
-	for _, name := range controlNames {
-		ext.RegisterTool(sdk.ToolDefinition{Name: name, Label: name, Description: descriptions[name], PromptSnippet: descriptions[name], PromptGuidelines: promptGuidelines[name], Parameters: schemas[name], RenderShell: sdk.ToolRenderShellDefault, RenderCall: toolCallRenderer(name), RenderResult: toolResultRenderer(name), ExecutionMode: "parallel", Execute: func(ctx sdk.Context, params map[string]any) (any, error) {
+	for _, name := range append(slices.Clone(controlNames), teamToolNames...) {
+		renderCall, renderResult := toolCallRenderer(name), toolResultRenderer(name)
+		if slices.Contains(teamToolNames, name) {
+			renderCall, renderResult = nil, nil
+		}
+		ext.RegisterTool(sdk.ToolDefinition{Name: name, Label: name, Description: descriptions[name], PromptSnippet: descriptions[name], PromptGuidelines: promptGuidelines[name], Parameters: schemas[name], RenderShell: sdk.ToolRenderShellDefault, RenderCall: renderCall, RenderResult: renderResult, ExecutionMode: "parallel", Execute: func(ctx sdk.Context, params map[string]any) (any, error) {
 			o, err := state.ensure(ctx)
 			if err != nil {
 				return sdkResult(name, nil, err), nil

@@ -41,10 +41,13 @@ type Tree struct {
 	closed       bool
 	closedDone   chan struct{}
 	completionWG sync.WaitGroup
+	teamWG       sync.WaitGroup
 	execute      func(*record, *run) Outcome
 	completion   func(*record, *run, Outcome)
 	changed      func()
 	persist      func(*record) error
+	teamFinished func(*record, *run, Outcome)
+	teamCanceled func(*record)
 	dirty        map[ChildID]*record
 }
 
@@ -53,6 +56,7 @@ type admission struct {
 	kind, name, model, cwd, task string
 	agent                        AgentDefinition
 	available                    []string
+	member                       *teamMember
 }
 
 type controlAuthority struct {
@@ -206,7 +210,7 @@ func displayLabel(name string, id ChildID) string {
 	return "#" + string(id)[max(0, len(id)-8):]
 }
 
-func (t *Tree) roomLocked(parent ChildID, writer bool, cwd string, except ChildID) error {
+func (t *Tree) roomLocked(parent ChildID, writer bool, cwd string, except ChildID, member *teamMember) error {
 	if t.live >= t.config.Concurrency {
 		return reject("rejected", "live child capacity reached")
 	}
@@ -216,7 +220,7 @@ func (t *Tree) roomLocked(parent ChildID, writer bool, cwd string, except ChildI
 			reserved++
 		}
 	}
-	if reserved >= t.config.MaxMailbox {
+	if member == nil && reserved >= t.config.MaxMailbox {
 		if t.rootID(parent) {
 			return reject("rejected", "root completion capacity reached")
 		}
@@ -225,6 +229,9 @@ func (t *Tree) roomLocked(parent ChildID, writer bool, cwd string, except ChildI
 	if writer {
 		for _, r := range t.records {
 			if r.id != except && !r.readOnly && r.cwd == cwd && !r.run.state.terminal() {
+				if member != nil && r.team != nil && member.Ref.Team == r.team.Ref.Team && member.Workspace.Kind == "shared_checkout" && r.team.Workspace.Kind == "shared_checkout" && member.Workspace.Cwd == cwd && r.team.Workspace.Cwd == cwd {
+					continue
+				}
 				return reject("rejected", "writer conflict in the shared working directory")
 			}
 		}
@@ -266,29 +273,42 @@ func (t *Tree) admit(request admission) (Snapshot, *run, error) {
 		return Snapshot{}, nil, reject("rejected", "child depth limit reached")
 	}
 	readOnly := request.agent.Role == "scout" || !matchesTool(request.agent.Tools, "write") && !matchesTool(request.agent.Tools, "edit") && !matchesTool(request.agent.Tools, "bash")
-	if err := t.roomLocked(parent.id, !readOnly, request.cwd, ""); err != nil {
+	if err := t.roomLocked(parent.id, !readOnly, request.cwd, "", request.member); err != nil {
 		return Snapshot{}, nil, err
 	}
-	uuid, err := ai.UUIDv7(nil)
-	if err != nil {
-		return Snapshot{}, nil, err
+	var id ChildID
+	if request.member != nil {
+		if parent != t.root || request.member.Ref.Team.Root != t.root.id || request.member.Workspace.Kind != "shared_checkout" || request.member.Workspace.Cwd != request.cwd {
+			return Snapshot{}, nil, reject("permission_denied", "invalid team workspace admission")
+		}
+		id = request.member.Ref.ID
+	} else {
+		uuid, err := ai.UUIDv7(nil)
+		if err != nil {
+			return Snapshot{}, nil, err
+		}
+		id = ChildID(uuid)
 	}
-	id := ChildID(uuid)
 	name := request.name
 	if name == "" {
 		name = string(id)
 	}
 	nameKey := string(parent.id) + "\x00" + name
-	if _, exists := t.names[nameKey]; exists {
+	if _, exists := t.names[nameKey]; exists && request.member == nil {
 		return Snapshot{}, nil, reject("rejected", "child name already belongs to this owner")
 	}
-	r := &record{id: id, parent: parent, depth: depth, name: name, kind: request.kind, model: request.model, instructions: request.agent.Instructions, pendingTask: request.task, cwd: request.cwd, tools: slices.Clone(request.agent.Tools), canDelegate: request.agent.CanDelegate && request.agent.Role != "scout", readOnly: readOnly}
+	r := &record{id: id, team: request.member, parent: parent, depth: depth, name: name, kind: request.kind, model: request.model, instructions: request.agent.Instructions, pendingTask: request.task, cwd: request.cwd, tools: slices.Clone(request.agent.Tools), canDelegate: request.agent.CanDelegate && request.agent.Role != "scout", readOnly: readOnly}
 	r.run = t.newRunLocked(Ref{id}, "Task:\n"+request.task)
 	r.run.owner = r
-	t.records[id], t.names[nameKey] = r, id
+	t.records[id] = r
+	if request.member == nil {
+		t.names[nameKey] = id
+	}
 	t.order = append(t.order, id)
-	r.run.reservation = &reservation{parent: r.parentID(), nonce: r.run.noticeID, selected: r.run}
-	t.pending[r.run] = r.run.reservation
+	if request.member == nil {
+		r.run.reservation = &reservation{parent: r.parentID(), nonce: r.run.noticeID, selected: r.run}
+		t.pending[r.run] = r.run.reservation
+	}
 	t.live++
 	return t.snapshotLocked(r), r.run, nil
 }
@@ -381,10 +401,16 @@ func (t *Tree) cancelPending(selected *run) {
 		t.dirty[r.id] = r
 	} else {
 		delete(t.records, r.id)
-		delete(t.names, string(r.parentID())+"\x00"+r.name)
+		nameKey := string(r.parentID()) + "\x00" + r.name
+		if r.team == nil && t.names[nameKey] == r.id {
+			delete(t.names, nameKey)
+		}
 		t.order = slices.DeleteFunc(t.order, func(id ChildID) bool { return id == r.id })
 	}
 	t.mu.Unlock()
+	if r.team != nil && t.teamCanceled != nil {
+		t.teamCanceled(r)
+	}
 	t.notify()
 }
 
@@ -448,13 +474,20 @@ mailboxDrained:
 	run.pendingMessages = 0
 	run.messageMu.Unlock()
 	t.live--
+	if r.team != nil && t.teamFinished != nil {
+		t.teamWG.Add(1)
+	}
 	close(run.done)
-	deliver := run.started && !t.closed && t.completion != nil
+	deliver := r.team == nil && run.started && !t.closed && t.completion != nil
 	if deliver {
 		t.completionWG.Add(1)
 	}
 	t.mu.Unlock()
 	t.lifecycleMu.Unlock()
+	if r.team != nil && t.teamFinished != nil {
+		t.teamFinished(r, run, raw)
+		t.teamWG.Done()
+	}
 	t.notify()
 	if deliver {
 		go func() {
@@ -512,7 +545,7 @@ func (t *Tree) snapshotsLocked(parent *record, activeOnly bool) []Snapshot {
 	list := []Snapshot{}
 	for _, id := range t.order {
 		r := t.records[id]
-		if r.parent == parent && (!activeOnly || !r.paused && !r.run.state.terminal()) {
+		if r.team == nil && r.parent == parent && (!activeOnly || !r.paused && !r.run.state.terminal()) {
 			list = append(list, t.snapshotLocked(r))
 		}
 	}
@@ -606,12 +639,16 @@ func (t *Tree) resumeAs(authority controlAuthority, selected *run, text string) 
 		t.mu.Unlock()
 		return Snapshot{}, nil, reject("rejected", "resume needs a settled child and text")
 	}
+	if r.team != nil {
+		t.mu.Unlock()
+		return Snapshot{}, nil, reject("unavailable", "teammate resume is not available in this preview")
+	}
 	prompt := text
 	if r.pendingTask != "" {
 		prompt = "Task:\n" + r.pendingTask + "\n\nResume instructions:\n" + text
 	}
 	defer t.mu.Unlock()
-	if err := t.roomLocked(r.parentID(), !r.readOnly, r.cwd, r.id); err != nil {
+	if err := t.roomLocked(r.parentID(), !r.readOnly, r.cwd, r.id, nil); err != nil {
 		return Snapshot{}, nil, err
 	}
 	r.previous = r.run
@@ -821,6 +858,7 @@ func (t *Tree) close() {
 		<-run.done
 	}
 	t.completionWG.Wait()
+	t.teamWG.Wait()
 	t.mu.Lock()
 	for selected := range t.pending {
 		delete(t.pending, selected)
