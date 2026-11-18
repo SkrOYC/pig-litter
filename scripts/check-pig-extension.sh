@@ -23,10 +23,34 @@ for command in pig go jq; do
   fi
 done
 pig_path="$(command -v pig)"
-case "$pig_path" in
-  *-pig-0.7.0/bin/pig) ;;
-  *) printf 'expected pinned PiG from the devenv store, got %s\n' "$pig_path" >&2; exit 1 ;;
-esac
+temp_dir="$(mktemp -d)"
+trap 'rm -rf "$temp_dir"' EXIT
+if [[ -n "${PIG_LITTER_EXPECTED_PIG:-}" ]]; then
+  [[ "$(readlink -f "$pig_path")" == "$PIG_LITTER_EXPECTED_PIG" ]] || { printf 'expected preview PiG %s, got %s\n' "$PIG_LITTER_EXPECTED_PIG" "$pig_path" >&2; exit 1; }
+  pig_digest="$(sha256sum "$pig_path" | awk '{ print $1 }')"
+  [[ "$pig_digest" == "$PIG_LITTER_EXPECTED_PIG_SHA256" ]] || { printf 'unexpected preview PiG digest: %s\n' "$pig_digest" >&2; exit 1; }
+  mkdir -p "$temp_dir/pig-home/agent"
+  pig_identity="$(PIG_HOME="$temp_dir/pig-home" PIG_CODING_AGENT_DIR="$temp_dir/pig-home/agent" PIG_USE_PI_DIRS=0 PIG_OFFLINE=1 PI_OFFLINE=1 pig verify --json)"
+  if ! printf '%s\n' "$pig_identity" | jq --exit-status --arg digest "$pig_digest" --arg build "$PIG_LITTER_EXPECTED_PIG_BUILD" '
+    .verified == true and .identity.pigVersion == "0.7.0" and .identity.go == "go1.27.4"
+    and .identity.platform == "linux/amd64" and .identity.build == $build
+    and (.targets | length == 1 and .[0].kind == "binary" and .[0].sha256 == $digest)
+  ' >/dev/null; then
+    printf 'unexpected preview PiG identity\n' >&2
+    exit 1
+  fi
+  if [[ -n "$evidence_dir" ]]; then
+    printf '%s\n' "$pig_identity" > "$evidence_dir/pig-preview-identity.json"
+    sha256sum "$pig_path" > "$evidence_dir/pig-preview-binary.sha256"
+  fi
+  pig_kind=preview
+else
+  case "$pig_path" in
+    *-pig-0.7.0/bin/pig) ;;
+    *) printf 'expected pinned stock PiG, got %s\n' "$pig_path" >&2; exit 1 ;;
+  esac
+  pig_kind=stock
+fi
 pig_version="$(pig --version)"
 case "$pig_version" in
   0.7.0+*) ;;
@@ -40,8 +64,6 @@ if "$registration_only"; then
 else
   bash "$root/scripts/test-pig-litter.sh"
 fi
-temp_dir="$(mktemp -d)"
-trap 'rm -rf "$temp_dir"' EXIT
 workspace="$temp_dir/workspace"
 agent_dir="$temp_dir/pig-home/agent"
 mkdir -p "$workspace/extensions" "$agent_dir"
@@ -80,4 +102,4 @@ fi
 for path in "$agent_dir/settings.json" "$workspace/.pig/settings.json"; do
   if [[ -e "$path" ]]; then printf 'validation wrote settings: %s\n' "$path" >&2; exit 1; fi
 done
-printf 'PiG %s registered the Go Resource and prebuilt standalone with six child tools and validated the Piglet\n' "$pig_version"
+printf 'PiG %s (%s host) registered the Go Resource and prebuilt standalone with six child tools and validated the Piglet\n' "$pig_version" "$pig_kind"

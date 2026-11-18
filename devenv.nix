@@ -28,7 +28,7 @@ let
   };
   system = pkgs.stdenv.hostPlatform.system;
   release = pigRelease.${system} or (throw "PiG 0.7.0 has no release archive for ${system}");
-  pig = pkgs.stdenvNoCC.mkDerivation {
+  stockPig = pkgs.stdenvNoCC.mkDerivation {
     pname = "pig";
     version = "0.7.0";
     src = pkgs.fetchurl {
@@ -52,6 +52,51 @@ let
       platforms = builtins.attrNames pigRelease;
     };
   };
+  pigPreview =
+    let
+      patch = ./patches/pig-0.7.0-integrated.patch;
+      patchDigest = "69ea09cc455ed4cf79957fec12c2fc804b6f717a40bb502792263dd4563ae4e8";
+      build = "pig-litter-patch-${patchDigest}";
+      binaryDigest = "938d9e003f41c669fbb45b09068e11a56458fda048f025646466f9c196d25d5e";
+      buildGo = pkgs.buildGo127Module.override { inherit go; };
+    in
+    assert builtins.hashFile "sha256" patch == patchDigest;
+    {
+      inherit build binaryDigest;
+      package = buildGo {
+        pname = "pig-litter-host-preview";
+        version = "0.7.0";
+        src = pkgs.fetchurl {
+          url = "https://github.com/MichaelKinsy/PiG/releases/download/v0.7.0/pig-0.7.0-source.tar.gz";
+          hash = "sha256-DjkFioYd0NdveWH9W7xMrO9rnwq17OCZC5lp1qfJULg=";
+        };
+        sourceRoot = "pig-0.7.0";
+        proxyVendor = true;
+        vendorHash = "sha256-Wa2wOKBr760duMx01Ln5C2Pyw3XXekcVNuS3xpTsqW0=";
+        subPackages = [ "cmd/pig" ];
+        nativeBuildInputs = [ pkgs.gitMinimal ];
+        env.CGO_ENABLED = "0";
+        postPatch = ''
+          git apply --check ${patch}
+          git apply ${patch}
+        '';
+        modBuildPhase = ''
+          runHook preBuild
+          export GIT_SSL_CAINFO="$NIX_SSL_CERT_FILE"
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS="''${target%/*}" GOARCH="''${target#*/}" CGO_ENABLED=0 go list -deps ./cmd/pig > /dev/null
+          done
+          runHook postBuild
+        '';
+        ldflags = [ "-s" "-w" "-X github.com/MichaelKinsy/PiG/coding/cli.Build=${build}" ];
+        doCheck = false;
+        postInstall = ''
+          install -Dm644 -t "$out/share/licenses/pig" LICENSE NOTICE THIRD_PARTY_NOTICES.md
+          cp -r LICENSES "$out/share/licenses/pig/LICENSES"
+        '';
+      };
+    };
+  pig = if system == "x86_64-linux" then pigPreview.package else stockPig;
 in
 {
   languages.go = {
@@ -63,9 +108,18 @@ in
   env.CGO_ENABLED = "1";
   packages = [ pkgs.git pkgs.tmux pig pkgs.jq ];
 
-  scripts.check-pig-extension.exec = ''
-    bash "$DEVENV_ROOT/scripts/check-pig-extension.sh"
-  '';
+  scripts.check-pig-extension.exec =
+    if system == "x86_64-linux" then
+      ''
+        export PIG_LITTER_EXPECTED_PIG=${pigPreview.package}/bin/pig
+        export PIG_LITTER_EXPECTED_PIG_SHA256=${pigPreview.binaryDigest}
+        export PIG_LITTER_EXPECTED_PIG_BUILD=${pigPreview.build}
+        bash "$DEVENV_ROOT/scripts/check-pig-extension.sh" "$@"
+      ''
+    else
+      ''
+        bash "$DEVENV_ROOT/scripts/check-pig-extension.sh" "$@"
+      '';
 
   enterTest = "check-pig-extension";
 }
