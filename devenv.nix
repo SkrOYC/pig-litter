@@ -58,7 +58,7 @@ let
       patch = ./. + "/${pigSource.patch.path}";
       patchDigest = pigSource.patch.sha256;
       build = "pig-litter-patch-${patchDigest}";
-      binaryDigest = "251660ad47328f2e065939f15bb86cf8ec3fa00052d3ffb3b91e9ed412e5ce5d";
+      binaryDigest = "2caddc2bbd78ae4d1887d83d3ae5a5fe54ce86227695407d80a9aafeb4269f1d";
       buildGo = pkgs.buildGo127Module.override { inherit go; };
     in
     assert builtins.hashFile "sha256" patch == patchDigest;

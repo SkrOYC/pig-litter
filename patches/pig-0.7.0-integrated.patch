@@ -2291,6 +2291,23 @@ index 0000000000000000000000000000000000000000..3e578304155cf0f4d3e2f23c3f10e045
 +### Fixed
 +
 +- Let extension timer calls finish while an owning consumer awaits a pending continuation or provider result, while preserving ready-reaction order and native host-call acknowledgement. Unawaited result observers do not release an unrelated active chain. <!-- fix: f65782ca6c8bb6da67ac278997f4ac14dcf3d7ec, 0dd1b353f3fa4f2793d3a6feacc06593e14722f2 -->
+diff --git a/coding/cli/main.go b/coding/cli/main.go
+index 5ca88309ded4a04aaa523498619e18b3174050e1..e23b03636944f5216764f02d6782b226c6c87c85 100644
+--- a/coding/cli/main.go
++++ b/coding/cli/main.go
+@@ -891,6 +891,10 @@ func Main(args []string, options *MainOptions) {
+ 	runMode := processAppMode(flags)
+ 	if runMode == appModePrint || runMode == appModeJSON || runMode == appModeRPC {
+-		// pig additive (D175): print, json and rpc runs collect at GOGC 400 unless the environment sets GOGC, and at 100 again past 64 MiB live.
+-		gcpolicy.Apply()
++		// pig additive (D175): print uses GOGC 400, while json and rpc use 150, unless the environment sets GOGC. All fall back to 100 past 64 MiB live.
++		target := gcpolicy.JSONRPCTargetPercent
++		if runMode == appModePrint {
++			target = gcpolicy.PrintTargetPercent
++		}
++		gcpolicy.Apply(target)
+ 	}
+ 	if runMode == appModeRPC {
 diff --git a/coding/cli/rpc_mode.go b/coding/cli/rpc_mode.go
 index f83c96d0557001e57424764d3d3366adda09bedb..0d2bb181059b8e4dc97dc6875e936711125cabed 100644
 --- a/coding/cli/rpc_mode.go
@@ -40205,6 +40222,32 @@ index 0bc3a26223016178caae9ac668db0243e2619cdb..aebab5449c13c950c2aa3939cecb9465
 +		}
  		return s.startExtensionUserMessage(ctx, text, opts, func(start func()) { start() })
  	}
+diff --git a/docs/additive-features.md b/docs/additive-features.md
+index 6cfc00a2fe42e0b0eb9a27ef86e1fcbc28dc100f..7e77169694ca151ad026fa061678d0fbcf7226da 100644
+--- a/docs/additive-features.md
++++ b/docs/additive-features.md
+@@ -1703,7 +1703,7 @@ Approval: owner, LW roadmap section 3c S24 (2026-10-13), from E12b, approved as
+ SCRUTINIZED:approved
+ 
+-## D175 Print, json and rpc runs collect at GOGC 400 until the live heap passes 64 MiB
++## D175 Print uses GOGC 400, and JSON and RPC use 150, until the live heap passes 64 MiB
+ 
+-Summary: Print, JSON, and RPC runs use a garbage-collection percent of 400 until the live heap passes 64 MiB, unless you set GOGC.
++Summary: Print runs use GOGC 400, and JSON and RPC runs use 150, until the live heap passes 64 MiB, unless you set GOGC.
+ 
+ Audience: runtime
+@@ -1711,9 +1711,9 @@ Audience: runtime
+ Stock disposition: inert capability. It selects no product behavior and a user's `GOGC` turns it off: stdout, session files and model requests are the same; only when the Go collector runs changes.
+ 
+-What: when the environment does not set `GOGC`, `cli.Main` sets the GC percent to 400 for a print (`-p`, or a stdin or stdout that is not a terminal), json (`--mode json`) or rpc (`--mode rpc`) run, before the session loads. After every collection a cleanup on an unreachable sentinel reads `/gc/heap/live:bytes`; the first one that finds more than 64 MiB live sets the percent back to 100 for the rest of the process. Interactive runs are untouched, a user's `GOGC` is never overridden, and neither GOMAXPROCS (D174) nor GOMEMLIMIT is read or set.
++What: when the environment does not set `GOGC`, `cli.Main` sets the GC percent to 400 for a plain print run and to 150 for a JSON (`--mode json`) or RPC (`--mode rpc`) run, before the session loads. Explicit JSON or RPC mode takes precedence over `--print`. After every collection a cleanup on an unreachable sentinel reads `/gc/heap/live:bytes`; the first one that finds more than 64 MiB live sets the percent back to 100 for the rest of the process. Interactive runs are untouched, a user's `GOGC` is never overridden, and neither GOMAXPROCS (D174) nor GOMEMLIMIT is read or set.
+ 
+ Pi source: none. Node's collector has no such setting; the GC target is a Go runtime choice.
+ 
+-Why: a one-shot run allocates a few megabytes and exits, so the default target spends its CPU on collections whose memory the exit returns anyway, and on many-core hosts each cycle wakes idle mark workers. PF1 (research/frontier/PF1-print-cpu.md sections 11-12) measured Pi-Bolt's headless row going from 2-5 GC cycles to none: Linux 0.66 to 0.61x Pi-Bolt CPU and Mac 0.80 to 0.70x Pi-Bolt cycles on top of D174. Process-wide GOGC 400 (E12b) doubled long-session memory, so the target stays out of interactive runs, and the 64 MiB fallback keeps a print run over a large session within the default's peak (`-p --session` on a 66 MB session: +3%).
++Why: a one-shot run allocates a few megabytes and exits, so the default target spends its CPU on collections whose memory the exit returns anyway, and on many-core hosts each cycle wakes idle mark workers. PF1 (research/frontier/PF1-print-cpu.md sections 11-12) measured GOGC 400 on Pi-Bolt's headless row going from 2-5 GC cycles to none: Linux 0.66 to 0.61x Pi-Bolt CPU and Mac 0.80 to 0.70x Pi-Bolt cycles on top of D174. Process-wide GOGC 400 (E12b) doubled long-session memory, so the target stays out of interactive runs, and JSON and RPC use 150 to reduce host memory. The 64 MiB fallback kept a print run over a large session within the default's peak (`-p --session` on a 66 MB session: +3%).
+ 
+ Call-site markers: `internal/gcpolicy/gcpolicy.go` (`Apply`, `checkLiveHeap`), `coding/cli/main.go` (`Main`).
 diff --git a/docs/bug-ledger.json b/docs/bug-ledger.json
 index ab689eab2b32f08c49776694c886304c6279b7a3..a773942d08f880c1b424ad53dcc0c6dfb958f3f4 100644
 --- a/docs/bug-ledger.json
@@ -40252,6 +40295,17 @@ index ab689eab2b32f08c49776694c886304c6279b7a3..a773942d08f880c1b424ad53dcc0c6df
 +    },
      {
        "id": "BF-f68aa40",
+diff --git a/docs/release/0.5.0-release-notes-draft.md b/docs/release/0.5.0-release-notes-draft.md
+index af4940d3844072e99fd95d1f0636b8b33aba6305..639b92b566b329973c2e0b7b54ea5a4a71c9154c 100644
+--- a/docs/release/0.5.0-release-notes-draft.md
++++ b/docs/release/0.5.0-release-notes-draft.md
+@@ -333,5 +333,5 @@
+ - `Context.SetEditorComponent` in the Go SDK takes an `EditorFactory` instead of `any`. The old `any` form accepted only nil, so only an extension that passed another value breaks, and `pig extension upgrade` reports it with the fix.
+ - The host writes each frame to an extension with one socket write and without allocating, which lowers the cost of every extension call and notification.
+-- `pig -p`, `--mode json` and `--mode rpc` runs collect garbage less often when `GOGC` is not set in the environment: the Go GC target is 400 until a collection finds more than 64 MiB live, then the default 100. A short print run then usually finishes without a collection. Measured on Pi-Bolt's headless scenario: about 15% less CPU on a 32-core Linux host and 15% fewer instructions on an Apple M-series Mac, for 2-4 MB more peak memory (up to about 14 MB on a 50-200 KB file write). An RPC session of 200 turns uses about 20% less CPU per turn for about 22 MB more peak memory (Linux arm64, 4 CPUs). Interactive sessions are unchanged, a `GOGC` you set is used as is, and output is unchanged.
++- Plain `pig -p`, `--mode json` and `--mode rpc` runs collect garbage less often when `GOGC` is not set in the environment. The Go GC target is 400 for plain print runs and 150 for JSON or RPC runs until a collection finds more than 64 MiB live, then the default 100. Interactive sessions are unchanged, a `GOGC` you set is used as is, and output is unchanged.
+ - Go API: `mcp/oauth` URLs are `oauth.URL` (WHATWG, as Pi's `URL`) instead of `*url.URL`. `StartAuthorization`, `ResourceURLFromServerURL`, `DiscoveryURL.URL`, `OAuthChallenge.ResourceMetadataURL`, `DiscoveryOptions` and `OAuthFlowOptions.AuthorizationServerMetadataURL`, `OAuthClientProvider.RedirectToAuthorization`, `OnRedirect`, and `coding/mcpext`'s `McpOAuthSettings.AuthServerMetadataURL` and `McpSignInPrompt.ShowAuthorizationURL` take or return it. Build one with `oauth.ParseURL`; `Href()` gives the text `url.Parse` accepts.
+ - A codemode result or console line holding an unpaired surrogate (`return "\ud800"`, `console.log("\ud800")`) keeps it in the tool result, the json events and the session file as Pi does (the escape `\ud800`), instead of turning it into U+FFFD.
 diff --git a/docs/site/docs/bug-ledger.md b/docs/site/docs/bug-ledger.md
 index 651bb01cac75bc7484c319afb2a9feb04edad334..f4551701819c9ea8d828da934c1f5f15a79aeea2 100644
 --- a/docs/site/docs/bug-ledger.md
@@ -40281,6 +40335,86 @@ index 651bb01cac75bc7484c319afb2a9feb04edad334..f4551701819c9ea8d828da934c1f5f15
 +
  ### BF-f68aa40
  
+diff --git a/docs/site/docs/environment-variables.md b/docs/site/docs/environment-variables.md
+index 92180cccb2929fb41327914dd26af21a02a619a6..a0e424bacc0aa1364112296abbc05126ed788d61 100644
+--- a/docs/site/docs/environment-variables.md
++++ b/docs/site/docs/environment-variables.md
+@@ -108,5 +108,5 @@ When a session ends without you asking it to, look in the agent directory (`~/.p
+ |---|---|
+ | `GOMAXPROCS` | Number of processors the Go runtime schedules on. When it is not set, PiG uses at most 2 (fewer when the runtime default is lower), which lowers CPU use during streamed turns. Opening or resuming a session, the `/resume` listing, a batch of parallel tool calls and extension builds still run at the full default width. A value you set is used unchanged. Pi has no such setting, because Node runs JavaScript on one thread (D174) |
+-| `GOGC` | Go garbage collector target. When it is not set, a print (`-p`), JSON (`--mode json`) or RPC (`--mode rpc`) run collects at 400 until more than 64 MiB of heap is live, then at the default 100 for the rest of the run (D175). Interactive runs keep the default. A value you set is used unchanged |
++| `GOGC` | Go garbage collector target. When it is not set, a plain print run collects at 400, and JSON (`--mode json`) or RPC (`--mode rpc`) runs collect at 150, until more than 64 MiB of heap is live. Then they use the default 100 for the rest of the run (D175). Interactive runs keep the default. A value you set is used unchanged |
+ 
+ ## Sessions
+diff --git a/internal/gcpolicy/gcpolicy.go b/internal/gcpolicy/gcpolicy.go
+index 09dbe35864b48728a608189a5bb93cdb7ecaae01..c955fd40322c12060e3fee2e8bdca79d0ffc676a 100644
+--- a/internal/gcpolicy/gcpolicy.go
++++ b/internal/gcpolicy/gcpolicy.go
+@@ -1,8 +1,5 @@
+ // SPDX-License-Identifier: MIT
+ 
+-// Package gcpolicy is PiG's GC target for print, json and rpc runs. pig additive (D175): a print, json or rpc run whose environment does not set GOGC
+-// collects at a GC percent of TargetPercent, so a short run's allocations finish before most of the collections the default target would
+-// start, and goes back to DefaultPercent once a collection finds more than FallbackLiveBytes live, so a run over a large session keeps the
+-// default's memory bound.
++// Package gcpolicy sets a mode-specific GC target for print, json and rpc runs. pig additive (D175): when GOGC is unset, the target returns to DefaultPercent once a collection finds more than FallbackLiveBytes live.
+ package gcpolicy
+ 
+@@ -15,6 +12,8 @@ import (
+ 
+ const (
+-	// TargetPercent is the GC percent of a print, json or rpc run.
+-	TargetPercent = 400
++	// PrintTargetPercent is the GC percent of a print run.
++	PrintTargetPercent = 400
++	// JSONRPCTargetPercent is the GC percent of a json or rpc run.
++	JSONRPCTargetPercent = 150
+ 	// DefaultPercent is the Go runtime's default GC percent, which the run returns to for the rest of the process.
+ 	DefaultPercent = 100
+@@ -25,9 +24,9 @@ const (
+ // Apply sets the GC target unless the environment sets GOGC, which debug.SetGCPercent would otherwise override. It then
+ // checks the live heap after every collection until a check finds more than FallbackLiveBytes, which restores DefaultPercent.
+-func Apply() {
++func Apply(targetPercent int) {
+ 	if _, set := os.LookupEnv("GOGC"); set {
+ 		return
+ 	}
+-	debug.SetGCPercent(TargetPercent)
++	debug.SetGCPercent(targetPercent)
+ 	armLiveHeapCheck()
+ }
+diff --git a/internal/gcpolicy/gcpolicy_test.go b/internal/gcpolicy/gcpolicy_test.go
+index fe21ec38c8b4d8abd21a79927b9caa2dba26510c..c5382be170016911354066ed14587dfbfe61dae5 100644
+--- a/internal/gcpolicy/gcpolicy_test.go
++++ b/internal/gcpolicy/gcpolicy_test.go
+@@ -30,11 +30,11 @@ func TestApplyFallsBackAboveTheLiveHeapLimit(t *testing.T) {
+ 	unsetGOGC(t)
+ 	defer debug.SetGCPercent(debug.SetGCPercent(DefaultPercent))
+-	Apply()
++	Apply(JSONRPCTargetPercent)
+ 	for range 3 {
+ 		runtime.GC()
+ 		time.Sleep(10 * time.Millisecond) // Room for the cleanup of the collection to run.
+ 	}
+-	if got := gcPercent(); got != TargetPercent {
+-		t.Fatalf("GC percent %d after collections of a small heap, want %d", got, TargetPercent)
++	if got := gcPercent(); got != 150 {
++		t.Fatalf("GC percent %d after collections of a small heap, want 150", got)
+ 	}
+ 	live := make([]byte, FallbackLiveBytes+16<<20)
+@@ -54,7 +54,9 @@ func TestApplyLeavesAUserGOGC(t *testing.T) {
+ 	t.Setenv("GOGC", "50")
+ 	defer debug.SetGCPercent(debug.SetGCPercent(50))
+-	Apply()
+-	if got := gcPercent(); got != 50 {
+-		t.Fatalf("GC percent %d with GOGC=50 set, want 50", got)
++	for _, target := range []int{PrintTargetPercent, JSONRPCTargetPercent} {
++		Apply(target)
++		if got := gcPercent(); got != 50 {
++			t.Fatalf("GC percent %d with GOGC=50 and target %d, want 50", got, target)
++		}
+ 	}
+ }
 diff --git a/internal/jsloop/turns.go b/internal/jsloop/turns.go
 index 8a55759377e569c8f2b73b07f1ba6eb7f1bd4111..b1a6e95f32fbe3e04028b0c046ac81688da5c6e5 100644
 --- a/internal/jsloop/turns.go
@@ -40868,3 +41002,47 @@ index 0a52da03463365acdd020d0cac8ef848813b2a66..7339215c92ae707291dbf1915ab96084
 +
  func TestTurnsRunTicksAtTheTickBoundaryBeforeTimers(t *testing.T) {
  	var turns Turns
+diff --git a/test/perfgate/rpc_gc_test.go b/test/perfgate/rpc_gc_test.go
+index a79cb0943aa8a7bc4de08f33840473cfd2158799..a788ffeda07be883fd9e71d6bfd0d330325fab4f 100644
+--- a/test/perfgate/rpc_gc_test.go
++++ b/test/perfgate/rpc_gc_test.go
+@@ -7,11 +7,11 @@ package perfgate
+ import "testing"
+ 
+-// D175: with GOGC unset, an RPC run collects at GOGC 400, as print and json runs do. The process reports the GC percent it exits at; at the default it would be 100. Red without the rpc case in cli.Main: percent 100.
++// D175: with GOGC unset, an RPC run collects at GOGC 150. The process reports the GC percent it exits at; at the default it would be 100. Red without the rpc case in cli.Main: percent 100.
+ func TestRPCModeRaisesGCTarget(t *testing.T) {
+ 	home := newPigHome(t)
+ 	args := []string{"-ne", "--no-session", "--mode", "rpc", "--model", "test-faux/faux-1"}
+ 	home.run(args, nil) // The first start in a new home materializes caches.
+-	if record := home.run(args, rpcTurns(t, 2)); record.GCPercent != 400 {
+-		t.Errorf("rpc run with GOGC unset exited at GC percent %d, want 400 (%+v)", record.GCPercent, record)
++	if record := home.run(args, rpcTurns(t, 2)); record.GCPercent != 150 {
++		t.Errorf("rpc run with GOGC unset exited at GC percent %d, want 150 (%+v)", record.GCPercent, record)
+ 	}
+ }
+@@ -27,2 +27,24 @@ func TestRPCModeKeepsUsersGOGC(t *testing.T) {
+ 	}
+ }
++
++func TestJSONModePrintGCTarget(t *testing.T) {
++	for _, tc := range []struct {
++		name  string
++		env   string
++		value uint64
++	}{
++		{name: "default", value: 150},
++		{name: "user-set", env: "GOGC=73", value: 73},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			home := newPigHome(t)
++			if tc.env != "" {
++				home.env = append(home.env, tc.env)
++			}
++			args := []string{"-ne", "--no-session", "--mode", "json", "--model", "test-faux/faux-1", "--print", "What is 20+22?"}
++			if record := home.run(args, nil); record.GCPercent != tc.value {
++				t.Errorf("json print run exited at GC percent %d, want %d (%+v)", record.GCPercent, tc.value, record)
++			}
++		})
++	}
++}
