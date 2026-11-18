@@ -26,7 +26,8 @@ pig_path="$(command -v pig)"
 temp_dir="$(mktemp -d)"
 trap 'rm -rf "$temp_dir"' EXIT
 if [[ -n "${PIG_LITTER_EXPECTED_PIG:-}" ]]; then
-  [[ "$(perl -MCwd=abs_path -e 'print abs_path($ARGV[0])' "$pig_path")" == "$PIG_LITTER_EXPECTED_PIG" ]] || { printf 'expected preview PiG %s, got %s\n' "$PIG_LITTER_EXPECTED_PIG" "$pig_path" >&2; exit 1; }
+  expected_pig="$(perl -MCwd=abs_path -e 'print abs_path($ARGV[0])' "$PIG_LITTER_EXPECTED_PIG")"
+  [[ "$(perl -MCwd=abs_path -e 'print abs_path($ARGV[0])' "$pig_path")" == "$expected_pig" ]] || { printf 'expected preview PiG %s, got %s\n' "$PIG_LITTER_EXPECTED_PIG" "$pig_path" >&2; exit 1; }
   pig_digest="$(shasum -a 256 "$pig_path" | awk '{ print $1 }')"
   [[ "$pig_digest" == "$PIG_LITTER_EXPECTED_PIG_SHA256" ]] || { printf 'unexpected preview PiG digest: %s\n' "$pig_digest" >&2; exit 1; }
   pig_platform="$(go env GOHOSTOS)/$(go env GOHOSTARCH)"
