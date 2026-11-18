@@ -18,9 +18,10 @@ import (
 )
 
 var controlNames = []string{"litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
-var teamToolNames = []string{"team_spawn", "team_list", "team_send", "team_plan", "team_task_create", "team_task_get", "team_task_list", "team_task_update"}
+var teamToolNames = []string{"team_spawn", "team_list", "team_send", "team_plan", "team_shutdown", "team_task_create", "team_task_get", "team_task_list", "team_task_update"}
 var descriptions = map[string]string{
 	"team_plan":        "Submit, inspect, cancel, or decide a teammate plan.",
+	"team_shutdown":    "Request, inspect, cancel, or respond to a teammate shutdown.",
 	"team_task_create": "Create a shared task with optional dependencies.",
 	"team_task_get":    "Read a shared task by its team-scoped ID.",
 	"team_task_list":   "List shared tasks and whether their dependencies block them.",
@@ -66,12 +67,24 @@ var planIDSchema = object([]string{"member", "sequence"}, map[string]any{
 	"member": memberRefSchema, "sequence": map[string]any{"type": "integer", "minimum": 1}, "nonce": map[string]any{"type": "string", "pattern": "^[0-9a-f]{32}$"},
 })
 
+var shutdownIDSchema = object([]string{"member", "sequence", "nonce"}, map[string]any{
+	"member": memberRefSchema, "sequence": map[string]any{"type": "integer", "minimum": 1}, "nonce": map[string]any{"type": "string", "pattern": "^[0-9a-f]{32}$"},
+})
+
 func planActionSchema(action string, required []string, properties map[string]any) map[string]any {
 	properties["action"] = map[string]any{"type": "string", "enum": []string{action}}
 	return object(append([]string{"action"}, required...), properties)
 }
 
 var schemas = map[string]map[string]any{
+	"team_shutdown": {"oneOf": []any{
+		planActionSchema("request", []string{"member", "submissionId", "reason", "timeoutMs"}, map[string]any{"member": memberRefSchema, "submissionId": text(128), "reason": text(4096), "timeoutMs": integer(1000, 3600000)}),
+		planActionSchema("respond", []string{"requestId", "decision"}, map[string]any{"requestId": shutdownIDSchema, "decision": map[string]any{"type": "string", "enum": []string{"approve"}}}),
+		planActionSchema("respond", []string{"requestId", "decision", "reason"}, map[string]any{"requestId": shutdownIDSchema, "decision": map[string]any{"type": "string", "enum": []string{"reject"}}, "reason": text(4096)}),
+		planActionSchema("get", []string{"requestId"}, map[string]any{"requestId": shutdownIDSchema}),
+		planActionSchema("list", nil, map[string]any{}),
+		planActionSchema("cancel", []string{"requestId"}, map[string]any{"requestId": shutdownIDSchema}),
+	}},
 	"team_plan": {"oneOf": []any{
 		planActionSchema("submit", []string{"submissionId", "text", "timeoutMs"}, map[string]any{"submissionId": text(128), "text": text(4096), "timeoutMs": integer(1000, 3600000)}),
 		planActionSchema("get", []string{"requestId"}, map[string]any{"requestId": planIDSchema}),
@@ -184,6 +197,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 	if name == "team_plan" {
 		return o.planOperation(raw, caller, parent)
 	}
+	if name == "team_shutdown" {
+		return o.shutdownOperation(raw, controlAuthority{caller: caller})
+	}
 	if name == "team_send" {
 		if caller == nil || parent == nil || parent.team == nil {
 			return nil, reject("permission_denied", "a registered teammate is required")
@@ -198,7 +214,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if store == nil {
 			return nil, reject("unavailable", "team store is unavailable")
 		}
+		o.tree.lifecycleMu.Lock()
 		receipt, _, err := store.acceptPeer(parent.team.Ref, request)
+		o.tree.lifecycleMu.Unlock()
 		if err != nil {
 			return nil, err
 		}

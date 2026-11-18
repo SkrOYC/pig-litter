@@ -309,6 +309,7 @@ func (o *owner) finishTeamMember(r *record, selected *run, outcome Outcome) erro
 	o.tree.mu.Lock()
 	current := o.tree.records[r.id] == r && r.run == selected
 	paused := r.paused
+	closing := r.controlPhase == "closing" && selected.shutdown != nil
 	o.tree.mu.Unlock()
 	if !current {
 		return nil
@@ -318,7 +319,9 @@ func (o *owner) finishTeamMember(r *record, selected *run, outcome Outcome) erro
 		return err
 	}
 	state := "unavailable"
-	if outcome.State == Completed {
+	if closing && !paused {
+		state = "closing"
+	} else if outcome.State == Completed {
 		state = "idle"
 	}
 	if paused || outcome.State == Paused {
@@ -367,6 +370,13 @@ func (o *owner) resumeTeamMember(r *record, selected *run) error {
 	store, err := o.teamStoreForRoot()
 	if err != nil {
 		return err
+	}
+	lifecycle, err := store.readLifecycle(r.team.Ref)
+	if err != nil {
+		return err
+	}
+	if lifecycle.Phase != "open" {
+		return reject("unavailable", "teammate shutdown requires recovery")
 	}
 	if err := store.ResumeMember(*r.team, selected.resumePaused); err != nil {
 		return err

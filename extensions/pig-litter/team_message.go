@@ -305,6 +305,9 @@ func (s *teamStore) acceptPeer(sender MemberRef, request peerRequest) (peerRecei
 		if !senderFound || !recipientFound || recipient.Team != sender.Team || recipient == sender {
 			return false, reject("permission_denied", "sender or recipient is not an eligible teammate")
 		}
+		if recipient.State == "closing" || recipient.State == "terminated" {
+			return false, reject("unavailable", "recipient is closing or terminated")
+		}
 		body, err := json.Marshal(peerBody{Text: request.Text, Summary: request.Summary})
 		if err != nil {
 			return false, err

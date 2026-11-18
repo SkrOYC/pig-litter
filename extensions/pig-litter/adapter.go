@@ -67,6 +67,8 @@ type owner struct {
 	persistMu                sync.Mutex
 	teamMu                   sync.Mutex
 	teamStore                *teamStore
+	controlMu                sync.Mutex
+	controlAuth              map[string]controlNotice
 	widgetMu                 sync.Mutex
 	widgetStopped            bool
 	widgetUnsubscribe        func()
@@ -193,6 +195,7 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 	tree.execute, tree.completion, tree.changed = o.executeRun, o.sendCompletion, o.widget
 	tree.teamFinished, tree.teamCanceled, tree.teamPaused = o.finishTeamMember, o.cancelTeamMember, o.pauseTeamMember
 	tree.teamResuming = o.resumeTeamMember
+	tree.teamSettled = o.settleShutdown
 	if err := o.restoreTeamStore(); err != nil {
 		tree.close()
 		services.Close()
@@ -613,6 +616,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	o.tree.mu.Unlock()
 	if teamAncestor {
 		options.BeforeToolCall = append(options.BeforeToolCall, o.planHook(r, run))
+		options.BeforeToolCall = append(options.BeforeToolCall, o.shutdownHook(r, run))
 	}
 	var session *coding.Session
 	if run.resume {
@@ -636,6 +640,30 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.State = Unavailable
 		outcome.Error = err.Error()
 		return
+	}
+	if r.team != nil {
+		previousFinish := session.Agent().FinishTurnHook()
+		session.Agent().SetFinishTurn(func(ctx context.Context, turn agent.AgentTurnContext) (*agent.AgentTurnDecision, error) {
+			var decision *agent.AgentTurnDecision
+			var err error
+			if previousFinish != nil {
+				decision, err = previousFinish(ctx, turn)
+			}
+			if err != nil {
+				return decision, err
+			}
+			o.tree.mu.Lock()
+			closing := r.run == run && !r.paused && r.controlPhase == "closing" && run.shutdown != nil
+			if closing {
+				run.shutdown.Drained = true
+			}
+			o.tree.mu.Unlock()
+			if closing {
+				session.RequestAbort()
+				return &agent.AgentTurnDecision{Action: agent.AgentTurnEnd}, nil
+			}
+			return decision, nil
+		})
 	}
 	eventDrain := make(chan struct{})
 	go func() {
@@ -670,6 +698,9 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		o.tree.observeProgress(run, event)
 		switch event := event.(type) {
 		case agent.TurnStartEvent:
+			if r.team != nil {
+				o.observeControlNotices(r.team.Ref, "member")
+			}
 			o.startRecovery(run)
 			o.confirmCompletions(r)
 			run.mu.Lock()
@@ -695,6 +726,9 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 				session.QueueSteer("<system-notice>\nYou have reached your turn allowance. Return a final response with your partial progress, remaining work, and any request for more turns. Your parent can resume this session to grant a fresh allowance.\n</system-notice>", nil)
 			}
 		case agent.TurnEndEvent:
+			if r.team != nil {
+				o.observeControlNotices(r.team.Ref, "member")
+			}
 			o.retireScope(o.callScope(run))
 			o.confirmCompletions(r)
 		case agent.ToolExecutionEndEvent:
@@ -708,6 +742,18 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			}
 		case agent.MessageEndEvent:
 			if event.Message.Assistant != nil {
+				calls := map[string]string{}
+				for _, block := range event.Message.Assistant.Observe().Content {
+					switch call := block.(type) {
+					case ai.ToolCall:
+						calls[call.ID] = call.Name
+					case *ai.ToolCall:
+						calls[call.ID] = call.Name
+					}
+				}
+				o.tree.mu.Lock()
+				run.batchCalls = calls
+				o.tree.mu.Unlock()
 				if teamGate != nil {
 					teamGate.observe(event.Message.Assistant)
 				}
@@ -725,6 +771,9 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	close(run.ready)
 	run.mu.Unlock()
 	r.deliveryMu.Unlock()
+	if r.team != nil {
+		o.routePendingControls(r.team.Ref)
+	}
 	deliveryContext, stopDelivery := context.WithCancel(run.ctx)
 	deliveryDone := make(chan struct{})
 	go func() {
@@ -929,6 +978,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 	})
 	ext.OnEvent("turn_start", func(ctx sdk.Context, _ map[string]any) (any, error) {
 		return state.observe(ctx, func(o *owner) (any, error) {
+			o.observeLeadControls()
 			state.mu.Lock()
 			if state.owner != o || state.epoch != o.epoch {
 				state.mu.Unlock()
@@ -984,6 +1034,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 	})
 	ext.OnEvent("agent_settled", func(ctx sdk.Context, _ map[string]any) (any, error) {
 		return state.observe(ctx, func(o *owner) (any, error) {
+			o.observeLeadControls()
 			peerErr := o.observeRootPeers()
 			o.tree.root.markAgentEnded(false)
 			o.settleRoot()

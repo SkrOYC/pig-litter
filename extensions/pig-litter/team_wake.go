@@ -78,7 +78,7 @@ func (o *owner) drivePeerWake(recipient MemberRef) {
 			return
 		}
 		version, selected, roomChanged := r.peerWakeVersion, r.run, t.roomChanged
-		if r.paused || t.root.paused || selected == nil {
+		if r.paused || r.controlPhase == "closing" || r.controlPhase == "terminated" || r.controlPhase == "recovery_pending" || t.root.paused || selected == nil {
 			r.peerWakePending = false
 			t.mu.Unlock()
 			return

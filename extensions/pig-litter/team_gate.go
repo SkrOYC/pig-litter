@@ -40,11 +40,12 @@ type planRequest struct {
 }
 
 type planLedger struct {
-	Version   int           `json:"version"`
-	Member    MemberRef     `json:"member"`
-	HighWater uint64        `json:"highWater"`
-	Clock     time.Time     `json:"clock"`
-	Requests  []planRequest `json:"requests"`
+	Version   int              `json:"version"`
+	Member    MemberRef        `json:"member"`
+	HighWater uint64           `json:"highWater"`
+	Clock     time.Time        `json:"clock"`
+	Requests  []planRequest    `json:"requests"`
+	Lifecycle *memberLifecycle `json:"lifecycle,omitempty"`
 }
 
 type uncertainPlanWrite struct {
@@ -60,6 +61,14 @@ func validPlanNonce(nonce string) bool {
 	}
 	_, err := hex.DecodeString(nonce)
 	return err == nil
+}
+
+func newControlNonce() (string, error) {
+	var nonce [16]byte
+	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(nonce[:]), nil
 }
 
 func planPaths(dir string, ref MemberRef) (string, string) {
@@ -83,17 +92,21 @@ func (s *teamStore) reconcilePlanLocked(ref MemberRef, pending *uncertainPlanWri
 }
 
 func (s *teamStore) planTransaction(ref MemberRef, change func(*planLedger) (bool, *PlanRequestID, error)) error {
+	return s.memberControlTransaction(ref, true, change)
+}
+
+func (s *teamStore) memberControlTransaction(ref MemberRef, requirePlan bool, change func(*planLedger) (bool, *PlanRequestID, error)) error {
 	var grantToInstall *PlanRequestID
 	err := s.transact(func(roster *teamRoster) (bool, error) {
 		found := false
 		for _, member := range roster.Members {
-			if member.Ref == ref && member.PlanRequired {
+			if member.Ref == ref && (!requirePlan || member.PlanRequired) {
 				found = true
 				break
 			}
 		}
 		if !found {
-			return false, reject("unavailable", "plan-required teammate is unavailable")
+			return false, reject("unavailable", "teammate control state is unavailable")
 		}
 		lockPath, path := planPaths(s.dir, ref)
 		var lock *flock.Flock
@@ -254,6 +267,11 @@ func validatePlanLedger(ledger planLedger, ref MemberRef) error {
 	if ledger.HighWater != uint64(len(ledger.Requests)) {
 		return errors.New("invalid plan allocation watermark")
 	}
+	if ledger.Lifecycle != nil {
+		if err := validateMemberLifecycle(*ledger.Lifecycle, ref); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -303,12 +321,12 @@ func (s *teamStore) submitPlan(ref MemberRef, execution, submission, text string
 		if len(ledger.Requests) == planRequestLimit || ledger.HighWater == math.MaxUint64 {
 			return changed, nil, reject("capacity", "plan history is full")
 		}
-		var nonce [16]byte
-		if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
+		nonce, err := newControlNonce()
+		if err != nil {
 			return changed, nil, reject("unavailable", "cannot allocate plan request identity")
 		}
 		ledger.HighWater++
-		result = planRequest{ID: PlanRequestID{Member: ref, Sequence: ledger.HighWater, Nonce: hex.EncodeToString(nonce[:])}, SubmissionID: submission, Text: text, Execution: execution, TimeoutMs: timeoutMs, CreatedAt: now, Deadline: now.Add(time.Duration(timeoutMs) * time.Millisecond), State: "pending"}
+		result = planRequest{ID: PlanRequestID{Member: ref, Sequence: ledger.HighWater, Nonce: nonce}, SubmissionID: submission, Text: text, Execution: execution, TimeoutMs: timeoutMs, CreatedAt: now, Deadline: now.Add(time.Duration(timeoutMs) * time.Millisecond), State: "pending"}
 		ledger.Requests = append(ledger.Requests, result)
 		timerDeadline = current.Add(time.Duration(timeoutMs) * time.Millisecond)
 		created = true
@@ -474,6 +492,9 @@ func planReadTool(name string, raw json.RawMessage) bool {
 	case "team_plan":
 		command, err := parsePlanCommand(raw)
 		return err == nil && command.Action != "decide"
+	case "team_shutdown":
+		command, err := parseShutdownCommand(raw)
+		return err == nil && command.Action != "request" && command.Action != "cancel"
 	default:
 		return false
 	}

@@ -331,7 +331,7 @@ func (s *teamStore) Reservations() ([]teamMember, error) {
 }
 
 func (s *teamStore) SetState(ref MemberRef, state string) error {
-	if state != "running" && state != "idle" && state != "interrupted" && state != "unavailable" && state != "paused" && state != "terminated" {
+	if state != "running" && state != "idle" && state != "interrupted" && state != "unavailable" && state != "paused" && state != "closing" && state != "terminated" {
 		return errors.New("invalid team member state transition")
 	}
 	err := s.transact(func(roster *teamRoster) (bool, error) {
@@ -391,7 +391,7 @@ func (s *teamStore) ResumeMember(expected teamMember, wasPaused bool) error {
 			if member.Ref != expected.Ref {
 				continue
 			}
-			if member.AdmissionID != expected.AdmissionID || member.Name != expected.Name || member.Workspace != expected.Workspace {
+			if member.AdmissionID != expected.AdmissionID || member.Name != expected.Name || member.Workspace != expected.Workspace || member.PlanRequired != expected.PlanRequired {
 				return false, reject("unavailable", "teammate identity or workspace changed")
 			}
 			if !wasPaused && member.State == "paused" || member.State != "paused" && member.State != "idle" && member.State != "interrupted" && member.State != "unavailable" {
@@ -826,7 +826,7 @@ func allocatedStoreName(requested, actual string) bool {
 
 func validStoredMemberState(state string) bool {
 	switch state {
-	case "starting", "running", "idle", "interrupted", "unavailable", "paused", "terminated":
+	case "starting", "running", "idle", "interrupted", "unavailable", "paused", "closing", "terminated":
 		return true
 	default:
 		return false
