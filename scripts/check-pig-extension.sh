@@ -59,6 +59,17 @@ case "$pig_version" in
   *) printf 'expected PiG v0.7.0, got %s\n' "$pig_version" >&2; exit 1 ;;
 esac
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -n "${PIG_LITTER_SOURCE_DIR:-}" ]]; then
+  source_dir="$(cd "$PIG_LITTER_SOURCE_DIR" && pwd -P)"
+  for module in github.com/MichaelKinsy/PiG github.com/MichaelKinsy/PiG/extensions/sdk; do
+    expected_dir="$source_dir"
+    name=pig
+    if [[ "$module" == */extensions/sdk ]]; then expected_dir="$source_dir/extensions/sdk"; name=sdk; fi
+    module_info="$(go -C "$root/scripts" list -m -json "$module")"
+    printf '%s\n' "$module_info" | jq --exit-status --arg dir "$expected_dir" '.Main == true and .Dir == $dir and .GoMod == ($dir + "/go.mod")' >/dev/null
+    if [[ -n "$evidence_dir" ]]; then printf '%s\n' "$module_info" > "$evidence_dir/standalone-$name-module.json"; fi
+  done
+fi
 if "$registration_only"; then
   printf 'Registration-only validation does not run unit, race, TUI, or iTerm2 checks.\n'
   mkdir -p "$root/extensions/pig-litter/dist"
@@ -72,6 +83,9 @@ mkdir -p "$workspace/extensions" "$agent_dir"
 cp -R "$root/extensions/pig-litter" "$workspace/extensions/pig-litter"
 cp "$root/piglet.yaml" "$workspace/piglet.yaml"
 cp "$root/litter.yaml" "$workspace/litter.yaml"
+if [[ -n "${source_dir:-}" ]]; then
+  bash "$root/scripts/prepare-pig-workspace.sh" "$source_dir" "$workspace" "$workspace/extensions/pig-litter" > /dev/null
+fi
 cd "$workspace"
 export PIG_HOME="$temp_dir/pig-home"
 export PIG_CODING_AGENT_DIR="$agent_dir"
@@ -87,6 +101,29 @@ for artifact in ./extensions/pig-litter ./extensions/pig-litter/dist/pig-litter;
     and (.tools == ["litter_inspect", "litter_list", "litter_message", "litter_spawn", "litter_stop", "litter_wait"])
     and ((.commands // []) | map(if type == "string" then . else .name end) | index("pig-litter")) != null
   ' >/dev/null
+  if [[ "$form" == factory && -n "${source_dir:-}" ]]; then
+    runner="$(find "$PIG_HOME/cache/cells/go" -type f -name runner -print -quit)"
+    [[ -n "$runner" ]]
+    go version -m "$runner" > "$temp_dir/source-runner-info.txt"
+    awk -F '\t' -v dir="$source_dir" '
+      $2 == "dep" && $3 == "github.com/MichaelKinsy/PiG" { if (getline && $2 == "=>" && $3 == dir) found = 1 }
+      END { exit !found }
+    ' "$temp_dir/source-runner-info.txt"
+    staged_sdk="$(awk -F '\t' '
+      $2 == "dep" && $3 == "github.com/MichaelKinsy/PiG/extensions/sdk" { if (getline && $2 == "=>") print $3 }
+    ' "$temp_dir/source-runner-info.txt")"
+    [[ "$staged_sdk" == "$PIG_HOME/"* && -d "$staged_sdk" ]]
+    awk '/^\/\/go:embed / { for (i = 2; i <= NF; i++) { name = $i; sub(/^\.gz\//, "", name); sub(/\.gz$/, "", name); print name } }' "$source_dir/extensions/sdk/bundle_embed.go" | LC_ALL=C sort > "$temp_dir/expected-sdk-files.txt"
+    (cd "$staged_sdk" && find . -type f ! -name .pig-sdk-version -print | sed 's#^\./##' | LC_ALL=C sort) > "$temp_dir/staged-sdk-files.txt"
+    cmp "$temp_dir/expected-sdk-files.txt" "$temp_dir/staged-sdk-files.txt"
+    while IFS= read -r path; do cmp "$source_dir/extensions/sdk/$path" "$staged_sdk/$path"; done < "$temp_dir/staged-sdk-files.txt"
+    if [[ -n "$evidence_dir" ]]; then
+      cp "$temp_dir/source-runner-info.txt" "$evidence_dir/source-runner-info.txt"
+      cp "$temp_dir/staged-sdk-files.txt" "$evidence_dir/source-staged-sdk-files.txt"
+      printf 'source=%s\nstaged_sdk=%s\nmatched_files=%s\n' "$source_dir" "$staged_sdk" "$(wc -l < "$temp_dir/staged-sdk-files.txt")" > "$evidence_dir/source-module-identity.txt"
+      shasum -a 256 "$runner" > "$evidence_dir/source-runner.sha256"
+    fi
+  fi
   if [[ -n "$evidence_dir" ]]; then
     if [[ "$form" == factory ]]; then name=source; else name=standalone; fi
     printf '%s\n' "$report" > "$evidence_dir/$name-registration.json"
