@@ -1,9 +1,12 @@
 package piglitter
 
 import (
+	"context"
 	"crypto/sha256"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -101,5 +104,108 @@ func TestTeamNamesRejectReservedAndControlAddresses(t *testing.T) {
 	}
 	if err := validateTeamName("Alice-2"); err != nil {
 		t.Fatalf("valid teammate name: %v", err)
+	}
+}
+
+func TestIsolatedWorkspaceRollbackPreservesDirtyOrAmbiguousWork(t *testing.T) {
+	for _, mode := range []string{"clean", "ignored", "committed", "changed-branch"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			repository := filepath.Join(root, "repository")
+			if err := os.Mkdir(repository, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			git := func(args ...string) {
+				t.Helper()
+				command := exec.Command("git", append([]string{"-C", repository}, args...)...)
+				if output, err := command.CombinedOutput(); err != nil {
+					t.Fatalf("git %v: %s: %v", args, output, err)
+				}
+			}
+			git("init", "-q")
+			git("config", "user.name", "Fixture")
+			git("config", "user.email", "fixture@example.invalid")
+			if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("*.secret\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			git("add", ".gitignore")
+			git("commit", "-qm", "fixture")
+			store, err := openTeamStore(filepath.Join(root, "agent"), "018f0000-0000-7000-8000-000000000001")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			id := ChildID("018f0000-0000-7000-8000-000000000002")
+			workspace, err := teamWorktreeIntent(context.Background(), store, repository, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			member, err := store.Reserve(id, "018f0000-0000-7000-8000-000000000003", "Alice", workspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := prepareTeamWorktree(context.Background(), workspace); err != nil {
+				t.Fatal(err)
+			}
+			member, err = store.SetWorkspacePhase(member.Ref, "prepared")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "ignored" {
+				if err := os.WriteFile(filepath.Join(workspace.Cwd, "keep.secret"), []byte("keep me\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "committed" {
+				if err := os.WriteFile(filepath.Join(workspace.Cwd, "keep.txt"), []byte("committed work\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				for _, args := range [][]string{{"add", "keep.txt"}, {"commit", "-qm", "teammate work"}} {
+					command := exec.Command("git", append([]string{"-C", workspace.Cwd}, args...)...)
+					if output, err := command.CombinedOutput(); err != nil {
+						t.Fatalf("commit fixture work: %s: %v", output, err)
+					}
+				}
+			}
+			if mode == "changed-branch" {
+				command := exec.Command("git", "-C", workspace.Cwd, "switch", "--detach", "-q")
+				if output, err := command.CombinedOutput(); err != nil {
+					t.Fatalf("detach fixture: %s: %v", output, err)
+				}
+			}
+			owner := &owner{teamStore: store}
+			err = owner.rollbackTeamMember(&member)
+			if mode == "clean" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Lstat(workspace.Cwd); !os.IsNotExist(err) {
+					t.Fatalf("clean worktree remains: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "preserved isolated workspace") {
+				t.Fatalf("unsafe worktree rollback = %v", err)
+			}
+			if _, err := os.Stat(workspace.Cwd); err != nil {
+				t.Fatalf("preserved worktree is missing: %v", err)
+			}
+			pending, err := store.Reservations()
+			if err != nil || len(pending) != 1 || pending[0].Ref != member.Ref || pending[0].Workspace.Phase != "prepared" {
+				t.Fatalf("preserved ownership = %#v, %v", pending, err)
+			}
+			if mode == "ignored" {
+				data, err := os.ReadFile(filepath.Join(workspace.Cwd, "keep.secret"))
+				if err != nil || string(data) != "keep me\n" {
+					t.Fatalf("ignored work = %q, %v", data, err)
+				}
+			}
+			if mode == "committed" {
+				data, err := os.ReadFile(filepath.Join(workspace.Cwd, "keep.txt"))
+				if err != nil || string(data) != "committed work\n" {
+					t.Fatalf("committed work = %q, %v", data, err)
+				}
+			}
+		})
 	}
 }

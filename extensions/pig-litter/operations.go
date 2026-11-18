@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"sort"
 	"strings"
@@ -19,7 +20,7 @@ import (
 var controlNames = []string{"litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
 var teamToolNames = []string{"team_spawn", "team_list"}
 var descriptions = map[string]string{
-	"team_spawn":     "Start a named teammate with an explicit shared checkout policy.",
+	"team_spawn":     "Start a named teammate with an explicit workspace policy.",
 	"team_list":      "List the lead and committed teammates in this team.",
 	"litter_spawn":   "Start a background child. Use litter_list to discover named agent types.",
 	"litter_list":    "List available agent types and active immediate children.",
@@ -46,7 +47,7 @@ func integer(minimum, maximum int) map[string]any {
 }
 
 var schemas = map[string]map[string]any{
-	"team_spawn":     object([]string{"type", "task", "name", "workspace"}, map[string]any{"type": text(64), "task": text(16384), "name": text(64), "model": text(256), "workspace": object([]string{"kind"}, map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"shared_checkout"}}})}),
+	"team_spawn":     object([]string{"type", "task", "name", "workspace"}, map[string]any{"type": text(64), "task": text(16384), "name": text(64), "model": text(256), "workspace": object([]string{"kind"}, map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"shared_checkout", "isolated_worktree"}}})}),
 	"team_list":      object([]string{}, map[string]any{}),
 	"litter_spawn":   object([]string{"type", "task"}, map[string]any{"type": text(64), "task": text(16384), "name": text(128), "model": text(256), "cwd": text(4096)}),
 	"litter_list":    object([]string{}, map[string]any{"offset": integer(0, 1000000), "limit": integer(1, 50), "agentOffset": integer(0, 1000000), "agentLimit": integer(1, 50)}),
@@ -129,7 +130,13 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if err != nil {
 			return nil, err
 		}
-		team, members, err := store.Snapshot()
+		var team TeamID
+		var members, pending []teamMember
+		if caller == nil {
+			team, members, pending, err = store.SnapshotWithReservations()
+		} else {
+			team, members, err = store.Snapshot()
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -137,15 +144,19 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		for _, member := range members {
 			roster = append(roster, map[string]any{"ref": member.Ref, "name": member.Name, "role": "teammate", "state": member.State, "cwd": member.Workspace.Cwd, "workspace": member.Workspace})
 		}
-		return map[string]any{"state": "listed", "team": team, "members": roster}, nil
+		result := map[string]any{"state": "listed", "team": team, "members": roster}
+		if caller == nil {
+			result["pending"] = pending
+		}
+		return result, nil
 	}
 	if name == "litter_spawn" || name == "team_spawn" {
 		isTeam := name == "team_spawn"
 		if isTeam && caller != nil {
 			return nil, reject("lead_required", "only the team lead can start a teammate")
 		}
-		if isTeam && (args.Name == nil || args.Workspace == nil || args.Workspace.Kind != "shared_checkout" || args.Workspace.Cwd != "") {
-			return nil, reject("rejected", "a teammate needs a name and explicit shared_checkout workspace")
+		if isTeam && (args.Name == nil || args.Workspace == nil || *args.Workspace != (WorkspacePolicy{Kind: args.Workspace.Kind}) || args.Workspace.Kind != "shared_checkout" && args.Workspace.Kind != "isolated_worktree") {
+			return nil, reject("rejected", "a teammate needs a name and explicit workspace policy")
 		}
 		base := o.cwd
 		if parent != nil {
@@ -216,26 +227,57 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			if idErr != nil || operationErr != nil {
 				return nil, reject("unavailable", "cannot allocate teammate identity")
 			}
-			reserved, reserveErr := store.Reserve(ChildID(id), operation, label, WorkspacePolicy{Kind: "shared_checkout", Cwd: cwd})
+			workspace := WorkspacePolicy{Kind: "shared_checkout", Cwd: cwd}
+			if args.Workspace.Kind == "isolated_worktree" {
+				workspace, err = teamWorktreeIntent(ctx, store, cwd, ChildID(id))
+				if err != nil {
+					return nil, err
+				}
+			}
+			reserved, reserveErr := store.Reserve(ChildID(id), operation, label, workspace)
 			if reserveErr != nil {
 				return nil, reserveErr
 			}
 			member, label = &reserved, reserved.Name
+			if workspace.Kind == "isolated_worktree" {
+				cwd = workspace.Cwd
+			}
 		}
 		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, available: available, member: member})
 		if err != nil {
 			if member != nil {
-				_ = store.Rollback(member.AdmissionID)
+				if cleanupErr := o.rollbackTeamMember(member); cleanupErr != nil {
+					return nil, fmt.Errorf("%w; %v", err, cleanupErr)
+				}
 			}
 			return nil, err
 		}
+		if member != nil && member.Workspace.Kind == "isolated_worktree" {
+			if err := prepareTeamWorktree(ctx, member.Workspace); err != nil {
+				return nil, o.cancelTeamStart(execution, err)
+			}
+			prepared, err := store.SetWorkspacePhase(member.Ref, "prepared")
+			if err != nil {
+				return nil, o.cancelTeamStart(execution, err)
+			}
+			member = &prepared
+			o.tree.mu.Lock()
+			execution.owner.team = member
+			o.tree.mu.Unlock()
+			if err := o.current(); err != nil {
+				return nil, o.cancelTeamStart(execution, err)
+			}
+		}
 		if err := o.saveChild(execution.owner); err != nil {
+			if member != nil && member.Workspace.Kind == "isolated_worktree" {
+				return nil, o.cancelTeamStart(execution, err)
+			}
 			o.tree.cancelPending(execution)
 			return nil, err
 		}
 		value := map[string]any{"state": snapshot.State, "child": snapshot}
 		if member != nil {
-			value = map[string]any{"state": "starting", "admission": member.AdmissionID, "member": member.Ref, "name": member.Name, "cwd": member.Workspace.Cwd}
+			value = map[string]any{"state": "starting", "admission": member.AdmissionID, "member": member.Ref, "name": member.Name, "cwd": member.Workspace.Cwd, "workspace": member.Workspace}
 			content, _ := resultContent(name, value, nil)
 			execution.teamResult = sha256.Sum256([]byte(content))
 			execution.teamSessionFile = teamSessionFile

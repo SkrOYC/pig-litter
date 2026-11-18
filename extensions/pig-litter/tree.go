@@ -278,7 +278,9 @@ func (t *Tree) admit(request admission) (Snapshot, *run, error) {
 	}
 	var id ChildID
 	if request.member != nil {
-		if parent != t.root || request.member.Ref.Team.Root != t.root.id || request.member.Workspace.Kind != "shared_checkout" || request.member.Workspace.Cwd != request.cwd {
+		workspace := request.member.Workspace
+		validWorkspace := workspace.Kind == "shared_checkout" || workspace.Kind == "isolated_worktree" && workspace.Phase == "intent"
+		if parent != t.root || request.member.Ref.Team.Root != t.root.id || !validWorkspace || workspace.Cwd != request.cwd {
 			return Snapshot{}, nil, reject("permission_denied", "invalid team workspace admission")
 		}
 		id = request.member.Ref.ID
@@ -288,6 +290,9 @@ func (t *Tree) admit(request admission) (Snapshot, *run, error) {
 			return Snapshot{}, nil, err
 		}
 		id = ChildID(uuid)
+	}
+	if t.records[id] != nil {
+		return Snapshot{}, nil, reject("rejected", "child UUID is already owned")
 	}
 	name := request.name
 	if name == "" {

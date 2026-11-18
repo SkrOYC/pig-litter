@@ -1,9 +1,11 @@
 package piglitter
 
 import (
+	"context"
 	"encoding/json"
 	"regexp"
 	"slices"
+	"time"
 
 	"github.com/MichaelKinsy/PiG/coding"
 )
@@ -161,6 +163,17 @@ func (o *owner) restoreChildren() error {
 			return err
 		}
 		for _, member := range roster {
+			if member.Workspace.Kind == "isolated_worktree" {
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				err := verifyTeamWorktree(ctx, member.Workspace)
+				cancel()
+				if err != nil {
+					if err := o.teamStore.SetState(member.Ref, "unavailable"); err != nil {
+						return err
+					}
+					member.State = "unavailable"
+				}
+			}
 			members[member.Ref.ID] = member
 		}
 	}

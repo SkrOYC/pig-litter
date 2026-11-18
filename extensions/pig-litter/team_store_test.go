@@ -32,6 +32,357 @@ func storeTestOpen(t *testing.T) (*teamStore, string, ChildID, WorkspacePolicy) 
 	return store, dir, root, WorkspacePolicy{Kind: "shared_checkout", Cwd: t.TempDir()}
 }
 
+func storeTestIsolatedWorkspace(t *testing.T, root, id ChildID) WorkspacePolicy {
+	t.Helper()
+	base := t.TempDir()
+	return WorkspacePolicy{
+		Kind:         "isolated_worktree",
+		Cwd:          filepath.Join(base, "worktree"),
+		Repository:   filepath.Join(base, "repository"),
+		GitCommonDir: filepath.Join(base, "repository", ".git"),
+		AllocationID: string(id),
+		Branch:       "pig-litter/" + string(root) + "/" + string(id),
+		BaseCommit:   "0123456789abcdef0123456789abcdef01234567",
+		Phase:        "intent",
+	}
+}
+
+func TestTeamStoreIsolatedReservationLifecycle(t *testing.T) {
+	store, dir, root, shared := storeTestOpen(t)
+	id, admission := storeTestUUID(2), string(storeTestUUID(3))
+	workspace := storeTestIsolatedWorkspace(t, root, id)
+	reservation, err := store.Reserve(id, admission, "isolated", workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "pig-litter", "roots", string(root), "team.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted struct {
+		Reservations []struct {
+			Member teamMember `json:"member"`
+		} `json:"reservations"`
+	}
+	if err := json.Unmarshal(data, &persisted); err != nil || len(persisted.Reservations) != 1 || persisted.Reservations[0].Member != reservation || reservation.Workspace.Phase != "intent" {
+		t.Fatalf("persisted reservation = %#v, %v", persisted.Reservations, err)
+	}
+	if _, err := store.Commit(admission); err == nil {
+		t.Fatal("committed an intent workspace")
+	}
+	if err := store.Rollback(admission); err == nil {
+		t.Fatal("rolled back an intent workspace")
+	}
+	for _, ref := range []MemberRef{
+		{Team: reservation.Ref.Team, ID: id, Generation: reservation.Ref.Generation + 1},
+		{Team: reservation.Ref.Team, ID: storeTestUUID(4), Generation: reservation.Ref.Generation},
+		{Team: TeamID{Root: storeTestUUID(4), Epoch: 1}, ID: id, Generation: reservation.Ref.Generation},
+		{Team: TeamID{Root: root, Epoch: 2}, ID: id, Generation: reservation.Ref.Generation},
+	} {
+		if _, err := store.SetWorkspacePhase(ref, "prepared"); err == nil {
+			t.Fatalf("accepted a different member reference %#v", ref)
+		}
+	}
+	if _, err := store.SetWorkspacePhase(reservation.Ref, "unknown"); err == nil {
+		t.Fatal("accepted an unknown phase")
+	}
+	if retry, err := store.SetWorkspacePhase(reservation.Ref, "intent"); err != nil || retry != reservation {
+		t.Fatalf("intent retry = %#v, %v", retry, err)
+	}
+	prepared, err := store.SetWorkspacePhase(reservation.Ref, "prepared")
+	if err != nil || prepared.Ref != reservation.Ref || prepared.Workspace.Phase != "prepared" {
+		t.Fatalf("prepare = %#v, %v", prepared, err)
+	}
+	if retry, err := store.SetWorkspacePhase(reservation.Ref, "prepared"); err != nil || retry != prepared {
+		t.Fatalf("prepare retry = %#v, %v", retry, err)
+	}
+	if retry, err := store.Reserve(id, admission, "isolated", workspace); err != nil || retry != prepared {
+		t.Fatalf("reservation retry after prepare = %#v, %v", retry, err)
+	}
+	if _, err := store.SetWorkspacePhase(reservation.Ref, "intent"); err == nil {
+		t.Fatal("moved a prepared workspace back to intent")
+	}
+	if err := store.Rollback(admission); err == nil {
+		t.Fatal("rolled back a prepared workspace")
+	}
+	reservations, err := store.Reservations()
+	if err != nil || len(reservations) != 1 || reservations[0] != prepared {
+		t.Fatalf("reservations = %#v, %v", reservations, err)
+	}
+	reservations[0].Name = "changed"
+	again, err := store.Reservations()
+	if err != nil || len(again) != 1 || again[0] != prepared {
+		t.Fatalf("mutated reservations = %#v, %v", again, err)
+	}
+	committed, err := store.Commit(admission)
+	if err != nil || committed.Ref != reservation.Ref || committed.State != "running" || committed.Workspace.Phase != "prepared" {
+		t.Fatalf("commit prepared workspace = %#v, %v", committed, err)
+	}
+	if retry, err := store.Commit(admission); err != nil || retry != committed {
+		t.Fatalf("commit retry = %#v, %v", retry, err)
+	}
+	if _, err := store.SetWorkspacePhase(reservation.Ref, "released"); err == nil {
+		t.Fatal("changed the phase of a committed member")
+	}
+	sharedReservation, err := store.Reserve(storeTestUUID(5), string(storeTestUUID(6)), "shared", shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetWorkspacePhase(sharedReservation.Ref, "released"); err == nil {
+		t.Fatal("changed the phase of a shared workspace")
+	}
+}
+
+func TestTeamStoreIsolatedReleaseBeforeRollback(t *testing.T) {
+	for _, from := range []string{"intent", "prepared"} {
+		t.Run(from, func(t *testing.T) {
+			store, _, root, _ := storeTestOpen(t)
+			id, admission := storeTestUUID(2), string(storeTestUUID(3))
+			workspace := storeTestIsolatedWorkspace(t, root, id)
+			reservation, err := store.Reserve(id, admission, "isolated", workspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if from == "prepared" {
+				if _, err := store.SetWorkspacePhase(reservation.Ref, "prepared"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			released, err := store.SetWorkspacePhase(reservation.Ref, "released")
+			if err != nil || released.Ref != reservation.Ref || released.Workspace.Phase != "released" {
+				t.Fatalf("release = %#v, %v", released, err)
+			}
+			if retry, err := store.SetWorkspacePhase(reservation.Ref, "released"); err != nil || retry != released {
+				t.Fatalf("release retry = %#v, %v", retry, err)
+			}
+			for _, phase := range []string{"intent", "prepared"} {
+				if _, err := store.SetWorkspacePhase(reservation.Ref, phase); err == nil {
+					t.Fatalf("moved released workspace back to %s", phase)
+				}
+			}
+			if _, err := store.Commit(admission); err == nil {
+				t.Fatal("committed a released workspace")
+			}
+			if err := store.Rollback(admission); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Rollback(admission); err != nil {
+				t.Fatalf("rollback retry = %v", err)
+			}
+			if _, err := store.SetWorkspacePhase(reservation.Ref, "released"); err == nil {
+				t.Fatal("changed a removed reservation")
+			}
+		})
+	}
+}
+
+func TestTeamStoreRecoveryRetainsUnsettledIsolatedReservations(t *testing.T) {
+	store, dir, root, shared := storeTestOpen(t)
+	intent, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "intent", storeTestIsolatedWorkspace(t, root, storeTestUUID(2)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "prepared", storeTestIsolatedWorkspace(t, root, storeTestUUID(4)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err = store.SetWorkspacePhase(prepared.Ref, "prepared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	released, err := store.Reserve(storeTestUUID(6), string(storeTestUUID(7)), "released", storeTestIsolatedWorkspace(t, root, storeTestUUID(6)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetWorkspacePhase(released.Ref, "released"); err != nil {
+		t.Fatal(err)
+	}
+	sharedPending, err := store.Reserve(storeTestUUID(8), string(storeTestUUID(9)), "shared", shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := openTeamStore(dir, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+	reservations, err := recovered.Reservations()
+	if err != nil || !slices.Equal(reservations, []teamMember{intent, prepared}) {
+		t.Fatalf("recovered reservations = %#v, %v", reservations, err)
+	}
+	if _, err := recovered.Commit(intent.AdmissionID); err == nil {
+		t.Fatal("committed a recovered intent")
+	}
+	if _, err := recovered.Commit(prepared.AdmissionID); err != nil {
+		t.Fatalf("commit recovered prepared reservation = %v", err)
+	}
+	for _, discarded := range []teamMember{released, sharedPending} {
+		if _, err := recovered.Commit(discarded.AdmissionID); err == nil {
+			t.Fatalf("recovered a discarded reservation %#v", discarded.Ref)
+		}
+	}
+	if _, err := recovered.SetWorkspacePhase(intent.Ref, "released"); err != nil {
+		t.Fatal(err)
+	}
+	if err := recovered.Rollback(intent.AdmissionID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTeamStoreRejectsInvalidIsolatedReservations(t *testing.T) {
+	cases := []struct {
+		name   string
+		change func(*WorkspacePolicy)
+	}{
+		{"relative cwd", func(w *WorkspacePolicy) { w.Cwd = "relative" }},
+		{"unclean cwd", func(w *WorkspacePolicy) { w.Cwd += "/../other" }},
+		{"invalid cwd", func(w *WorkspacePolicy) { w.Cwd += "\x00" }},
+		{"invalid utf8 cwd", func(w *WorkspacePolicy) { w.Cwd += "\xff" }},
+		{"relative repository", func(w *WorkspacePolicy) { w.Repository = "repository" }},
+		{"unclean common directory", func(w *WorkspacePolicy) { w.GitCommonDir += "/." }},
+		{"foreign allocation", func(w *WorkspacePolicy) { w.AllocationID = string(storeTestUUID(4)) }},
+		{"foreign root branch", func(w *WorkspacePolicy) { w.Branch = "pig-litter/" + string(storeTestUUID(4)) + "/" + w.AllocationID }},
+		{"foreign member branch", func(w *WorkspacePolicy) {
+			w.Branch = strings.TrimSuffix(w.Branch, w.AllocationID) + string(storeTestUUID(4))
+		}},
+		{"short commit", func(w *WorkspacePolicy) { w.BaseCommit = w.BaseCommit[:39] }},
+		{"nonhex commit", func(w *WorkspacePolicy) { w.BaseCommit = strings.Repeat("z", 40) }},
+		{"uppercase commit", func(w *WorkspacePolicy) { w.BaseCommit = strings.ToUpper(w.BaseCommit) }},
+		{"prepared reservation", func(w *WorkspacePolicy) { w.Phase = "prepared" }},
+		{"released reservation", func(w *WorkspacePolicy) { w.Phase = "released" }},
+		{"unknown phase", func(w *WorkspacePolicy) { w.Phase = "unknown" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, _, root, _ := storeTestOpen(t)
+			id := storeTestUUID(2)
+			workspace := storeTestIsolatedWorkspace(t, root, id)
+			tc.change(&workspace)
+			if _, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", workspace); err == nil {
+				t.Fatal("accepted an invalid isolated workspace")
+			}
+			valid := storeTestIsolatedWorkspace(t, root, id)
+			member, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", valid)
+			if err != nil || member.Ref.Generation != 1 {
+				t.Fatalf("invalid request changed the roster = %#v, %v", member, err)
+			}
+		})
+	}
+	t.Run("sha256 commit", func(t *testing.T) {
+		store, _, root, _ := storeTestOpen(t)
+		id := storeTestUUID(2)
+		workspace := storeTestIsolatedWorkspace(t, root, id)
+		workspace.BaseCommit = strings.Repeat("a", 64)
+		member, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", workspace)
+		if err != nil || member.Workspace.BaseCommit != strings.Repeat("a", 64) {
+			t.Fatalf("sha256 reservation = %#v, %v", member, err)
+		}
+	})
+}
+
+func TestTeamStoreRefusesCorruptIsolatedMetadata(t *testing.T) {
+	cases := []struct {
+		name   string
+		change func(map[string]any, map[string]any)
+	}{
+		{"missing field", func(_ map[string]any, workspace map[string]any) { delete(workspace, "repository") }},
+		{"unknown field", func(_ map[string]any, workspace map[string]any) { workspace["extra"] = "value" }},
+		{"case variant", func(_ map[string]any, workspace map[string]any) {
+			workspace["AllocationId"] = workspace["allocationId"]
+			delete(workspace, "allocationId")
+		}},
+		{"null field", func(_ map[string]any, workspace map[string]any) { workspace["baseCommit"] = nil }},
+		{"wrong type", func(_ map[string]any, workspace map[string]any) { workspace["cwd"] = false }},
+		{"unknown kind", func(_ map[string]any, workspace map[string]any) { workspace["kind"] = "other" }},
+		{"foreign allocation", func(_ map[string]any, workspace map[string]any) { workspace["allocationId"] = string(storeTestUUID(4)) }},
+		{"foreign branch", func(_ map[string]any, workspace map[string]any) { workspace["branch"] = "pig-litter/foreign/branch" }},
+		{"relative common directory", func(_ map[string]any, workspace map[string]any) { workspace["gitCommonDir"] = "relative" }},
+		{"invalid commit", func(_ map[string]any, workspace map[string]any) { workspace["baseCommit"] = "abcd" }},
+		{"invalid phase", func(_ map[string]any, workspace map[string]any) { workspace["phase"] = "other" }},
+		{"committed intent", func(root map[string]any, _ map[string]any) {
+			reservation := root["reservations"].([]any)[0].(map[string]any)
+			member := reservation["member"].(map[string]any)
+			member["state"] = "running"
+			root["members"] = []any{member}
+			root["reservations"] = []any{}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, dir, root, _ := storeTestOpen(t)
+			id := storeTestUUID(2)
+			if _, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", storeTestIsolatedWorkspace(t, root, id)); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "pig-litter", "roots", string(root), "team.json")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rootObject map[string]any
+			if err := json.Unmarshal(data, &rootObject); err != nil {
+				t.Fatal(err)
+			}
+			workspace := rootObject["reservations"].([]any)[0].(map[string]any)["member"].(map[string]any)["workspace"].(map[string]any)
+			tc.change(rootObject, workspace)
+			corrupt, err := json.Marshal(rootObject)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, corrupt, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := readTeamSnapshot(dir, root); err == nil {
+				t.Fatal("passive snapshot accepted corrupt isolated metadata")
+			}
+			if _, err := openTeamStore(dir, root); err == nil {
+				t.Fatal("owner accepted corrupt isolated metadata")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(after) != string(corrupt) {
+				t.Fatalf("corrupt metadata was overwritten = %q, %v", after, err)
+			}
+		})
+	}
+}
+
+func TestTeamStoreRefusesInvalidUTF8Metadata(t *testing.T) {
+	store, dir, root, _ := storeTestOpen(t)
+	id := storeTestUUID(2)
+	if _, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", storeTestIsolatedWorkspace(t, root, id)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "pig-litter", "roots", string(root), "team.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := strings.Replace(string(data), `"cwd":"/`, "\"cwd\":\"/\xff", 1)
+	if corrupt == string(data) {
+		t.Fatal("workspace path not found in metadata")
+	}
+	if err := os.WriteFile(path, []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openTeamStore(dir, root); err == nil {
+		t.Fatal("owner accepted invalid UTF-8")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != corrupt {
+		t.Fatalf("invalid metadata was overwritten = %q, %v", after, err)
+	}
+}
+
 func TestTeamStorePublishesOnlyCommittedMembers(t *testing.T) {
 	store, dir, root, workspace := storeTestOpen(t)
 	id, admission := storeTestUUID(2), string(storeTestUUID(3))
@@ -376,6 +727,9 @@ func TestTeamStoreRefusesCorruptMetadataWithoutOverwriting(t *testing.T) {
 		{"member state", func(v map[string]any) { v["members"].([]any)[0].(map[string]any)["state"] = "mystery" }},
 		{"workspace", func(v map[string]any) {
 			v["members"].([]any)[0].(map[string]any)["workspace"].(map[string]any)["cwd"] = "relative"
+		}},
+		{"shared workspace extra field", func(v map[string]any) {
+			v["members"].([]any)[0].(map[string]any)["workspace"].(map[string]any)["phase"] = ""
 		}},
 		{"duplicate member", func(v map[string]any) { members := v["members"].([]any); v["members"] = append(members, members[0]) }},
 		{"null reservations", func(v map[string]any) { v["reservations"] = nil }},

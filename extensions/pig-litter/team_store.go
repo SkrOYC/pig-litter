@@ -134,7 +134,10 @@ func (s *teamStore) claimLocked(created bool) error {
 	roster.Revision++
 	roster.OwnerToken = hex.EncodeToString(token)
 	roster.OwnerPID = os.Getpid()
-	roster.Reservations = []teamReservation{}
+	roster.Reservations = slices.DeleteFunc(roster.Reservations, func(reservation teamReservation) bool {
+		workspace := reservation.Member.Workspace
+		return workspace.Kind != "isolated_worktree" || workspace.Phase == "released"
+	})
 	for i := range roster.Members {
 		if roster.Members[i].State == "running" || roster.Members[i].State == "starting" {
 			roster.Members[i].State = "interrupted"
@@ -153,8 +156,15 @@ func (s *teamStore) Reserve(id ChildID, admissionID, name string, workspace Work
 		if err := validateTeamName(name); err != nil {
 			return false, err
 		}
+		if workspace.Kind == "isolated_worktree" && workspace.Phase != "intent" {
+			return false, errors.New("isolated team workspace must begin with intent")
+		}
 		for _, existing := range roster.Reservations {
-			if existing.Member.AdmissionID == admissionID && existing.Member.Ref.ID == id && existing.RequestedName == name && existing.Member.Workspace == workspace {
+			storedWorkspace := existing.Member.Workspace
+			if storedWorkspace.Kind == "isolated_worktree" {
+				storedWorkspace.Phase = "intent"
+			}
+			if existing.Member.AdmissionID == admissionID && existing.Member.Ref.ID == id && existing.RequestedName == name && storedWorkspace == workspace {
 				member = existing.Member
 				return false, nil
 			}
@@ -210,6 +220,9 @@ func (s *teamStore) Commit(admissionID string) (teamMember, error) {
 		}
 		for i, pending := range roster.Reservations {
 			if pending.Member.AdmissionID == admissionID {
+				if pending.Member.Workspace.Kind == "isolated_worktree" && pending.Member.Workspace.Phase != "prepared" {
+					return false, errors.New("isolated team workspace is not prepared")
+				}
 				pending.Member.State = "running"
 				member = pending.Member
 				roster.Reservations = slices.Delete(roster.Reservations, i, i+1)
@@ -231,12 +244,61 @@ func (s *teamStore) Rollback(admissionID string) error {
 		}
 		for i, pending := range roster.Reservations {
 			if pending.Member.AdmissionID == admissionID {
+				if pending.Member.Workspace.Kind == "isolated_worktree" && pending.Member.Workspace.Phase != "released" {
+					return false, errors.New("isolated team workspace is not released")
+				}
 				roster.Reservations = slices.Delete(roster.Reservations, i, i+1)
 				return true, nil
 			}
 		}
 		return false, nil
 	})
+}
+
+func (s *teamStore) SetWorkspacePhase(ref MemberRef, phase string) (teamMember, error) {
+	var member teamMember
+	err := s.transact(func(roster *teamRoster) (bool, error) {
+		for i := range roster.Reservations {
+			pending := &roster.Reservations[i].Member
+			if pending.Ref != ref {
+				continue
+			}
+			if pending.Workspace.Kind != "isolated_worktree" || !validWorkspacePhaseTransition(pending.Workspace.Phase, phase) {
+				return false, errors.New("invalid team workspace phase transition")
+			}
+			changed := pending.Workspace.Phase != phase
+			pending.Workspace.Phase = phase
+			member = *pending
+			return changed, nil
+		}
+		return false, errors.New("team reservation reference not found")
+	})
+	return member, err
+}
+
+func validWorkspacePhaseTransition(from, to string) bool {
+	switch from {
+	case "intent":
+		return to == "intent" || to == "prepared" || to == "released"
+	case "prepared":
+		return to == "prepared" || to == "released"
+	case "released":
+		return to == "released"
+	default:
+		return false
+	}
+}
+
+func (s *teamStore) Reservations() ([]teamMember, error) {
+	var members []teamMember
+	err := s.transact(func(roster *teamRoster) (bool, error) {
+		members = make([]teamMember, 0, len(roster.Reservations))
+		for _, reservation := range roster.Reservations {
+			members = append(members, reservation.Member)
+		}
+		return false, nil
+	})
+	return members, err
 }
 
 func (s *teamStore) SetState(ref MemberRef, state string) error {
@@ -265,6 +327,20 @@ func (s *teamStore) Snapshot() (TeamID, []teamMember, error) {
 		return false, nil
 	})
 	return team, members, err
+}
+
+func (s *teamStore) SnapshotWithReservations() (TeamID, []teamMember, []teamMember, error) {
+	var team TeamID
+	var members, pending []teamMember
+	err := s.transact(func(roster *teamRoster) (bool, error) {
+		team, members = roster.Team, slices.Clone(roster.Members)
+		pending = make([]teamMember, 0, len(roster.Reservations))
+		for _, reservation := range roster.Reservations {
+			pending = append(pending, reservation.Member)
+		}
+		return false, nil
+	})
+	return team, members, pending, err
 }
 
 func (s *teamStore) Close() error {
@@ -461,6 +537,9 @@ func loadTeamRoster(dir string, root ChildID) (teamRoster, error) {
 	if len(data) > teamJSONLimit {
 		return teamRoster{}, errors.New("team metadata exceeds size limit")
 	}
+	if !utf8.Valid(data) {
+		return teamRoster{}, errors.New("invalid team metadata encoding")
+	}
 	if err := checkUniqueJSON(data); err != nil {
 		return teamRoster{}, fmt.Errorf("invalid team metadata: %w", err)
 	}
@@ -507,7 +586,7 @@ func validateTeamRoster(roster teamRoster, root ChildID) error {
 			if err := validateTeamName(member.Name); err != nil || names[strings.ToLower(member.Name)] {
 				return errors.New("invalid or duplicate team name")
 			}
-			if member.Workspace.Kind != "shared_checkout" || !filepath.IsAbs(member.Workspace.Cwd) || filepath.Clean(member.Workspace.Cwd) != member.Workspace.Cwd || len(member.Workspace.Cwd) > 4096 || !utf8.ValidString(member.Workspace.Cwd) || strings.ContainsRune(member.Workspace.Cwd, 0) {
+			if !validTeamWorkspace(member.Workspace, member.Ref, group.pending) {
 				return errors.New("invalid team workspace")
 			}
 			if group.pending && member.State != "starting" || !group.pending && !validStoredMemberState(member.State) {
@@ -519,6 +598,33 @@ func validateTeamRoster(roster teamRoster, root ChildID) error {
 		}
 	}
 	return nil
+}
+
+func validTeamWorkspace(workspace WorkspacePolicy, ref MemberRef, pending bool) bool {
+	if !validTeamWorkspacePath(workspace.Cwd) {
+		return false
+	}
+	switch workspace.Kind {
+	case "shared_checkout":
+		return workspace.Repository == "" && workspace.GitCommonDir == "" && workspace.AllocationID == "" && workspace.Branch == "" && workspace.BaseCommit == "" && workspace.Phase == ""
+	case "isolated_worktree":
+		if !validTeamWorkspacePath(workspace.Repository) || !validTeamWorkspacePath(workspace.GitCommonDir) || workspace.AllocationID != string(ref.ID) || workspace.Branch != "pig-litter/"+string(ref.Team.Root)+"/"+string(ref.ID) {
+			return false
+		}
+		if len(workspace.BaseCommit) != 40 && len(workspace.BaseCommit) != 64 || strings.ToLower(workspace.BaseCommit) != workspace.BaseCommit {
+			return false
+		}
+		if _, err := hex.DecodeString(workspace.BaseCommit); err != nil {
+			return false
+		}
+		return workspace.Phase == "prepared" || pending && (workspace.Phase == "intent" || workspace.Phase == "released")
+	default:
+		return false
+	}
+}
+
+func validTeamWorkspacePath(path string) bool {
+	return filepath.IsAbs(path) && filepath.Clean(path) == path && len(path) <= 4096 && utf8.ValidString(path) && !strings.ContainsRune(path, 0)
 }
 
 func allocatedStoreName(requested, actual string) bool {
@@ -623,7 +729,21 @@ func checkRosterJSONSchema(data []byte) error {
 			if _, err := exactJSONObject(ref["team"], "root", "epoch"); err != nil {
 				return err
 			}
-			if _, err := exactJSONObject(member["workspace"], "kind", "cwd"); err != nil {
+			var workspace struct {
+				Kind string `json:"kind"`
+			}
+			if err := json.Unmarshal(member["workspace"], &workspace); err != nil {
+				return err
+			}
+			switch workspace.Kind {
+			case "shared_checkout":
+				_, err = exactJSONObject(member["workspace"], "kind", "cwd")
+			case "isolated_worktree":
+				_, err = exactJSONObject(member["workspace"], "kind", "cwd", "repository", "gitCommonDir", "allocationId", "branch", "baseCommit", "phase")
+			default:
+				return errors.New("invalid team workspace kind")
+			}
+			if err != nil {
 				return err
 			}
 		}
