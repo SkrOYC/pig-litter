@@ -127,6 +127,34 @@ func TestPeerRecoveredReceiptRequiresAuthenticatedRetry(t *testing.T) {
 	}
 }
 
+func TestPeerAttemptedReceiptRemainsUnresolvedAfterReopen(t *testing.T) {
+	store, dir, root, workspace := storeTestOpen(t)
+	sender, recipient := peerTestMembers(t, store, workspace)
+	request := peerRequest{Recipient: "bob", MessageID: "message-1", Text: "hello", Summary: "greeting"}
+	accepted, _, err := store.acceptPeer(sender.Ref, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offered, _, found, err := store.offerPeer(recipient.Ref); err != nil || !found || offered.State != peerAttempted {
+		t.Fatalf("initial offer = %#v, found=%v, %v", offered, found, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openTeamStore(dir, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	retry, _, err := reopened.acceptPeer(sender.Ref, request)
+	if err != nil || retry.State != peerAttempted || retry.Envelope != accepted.Envelope {
+		t.Fatalf("ambiguous retry = %#v, %v", retry, err)
+	}
+	if _, _, found, err := reopened.offerPeer(recipient.Ref); err != nil || found {
+		t.Fatalf("reopened attempted receipt was offered again: found=%v, %v", found, err)
+	}
+}
+
 func TestPeerObservationRequiresOneMatchingNativeEntry(t *testing.T) {
 	store, _, _, workspace := storeTestOpen(t)
 	sender, recipient := peerTestMembers(t, store, workspace)
