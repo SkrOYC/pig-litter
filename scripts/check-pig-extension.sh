@@ -29,7 +29,15 @@ if [[ -n "${PIG_LITTER_EXPECTED_PIG:-}" ]]; then
   expected_pig="$(perl -MCwd=abs_path -e 'print abs_path($ARGV[0])' "$PIG_LITTER_EXPECTED_PIG")"
   [[ "$(perl -MCwd=abs_path -e 'print abs_path($ARGV[0])' "$pig_path")" == "$expected_pig" ]] || { printf 'expected preview PiG %s, got %s\n' "$PIG_LITTER_EXPECTED_PIG" "$pig_path" >&2; exit 1; }
   pig_digest="$(shasum -a 256 "$pig_path" | awk '{ print $1 }')"
-  [[ "$pig_digest" == "$PIG_LITTER_EXPECTED_PIG_SHA256" ]] || { printf 'unexpected preview PiG digest: %s\n' "$pig_digest" >&2; exit 1; }
+  if [[ -n "${PIG_LITTER_EXPECTED_PIG_SHA256_FILE:-}" ]]; then
+    [[ "$pig_digest" == "$(cat "$PIG_LITTER_EXPECTED_PIG_SHA256_FILE")" ]] || { printf 'unexpected packaged PiG digest: %s\n' "$pig_digest" >&2; exit 1; }
+  fi
+  if [[ -n "${PIG_LITTER_EXPECTED_PIG_SHA256:-}" ]]; then
+    [[ "$pig_digest" == "$PIG_LITTER_EXPECTED_PIG_SHA256" ]] || { printf 'unexpected preview PiG digest: %s\n' "$pig_digest" >&2; exit 1; }
+  elif [[ -z "${PIG_LITTER_EXPECTED_PIG_SHA256_FILE:-}" ]]; then
+    printf 'expected PiG digest is missing\n' >&2
+    exit 1
+  fi
   pig_platform="$(go env GOHOSTOS)/$(go env GOHOSTARCH)"
   mkdir -p "$temp_dir/pig-home/agent"
   pig_identity="$(PIG_HOME="$temp_dir/pig-home" PIG_CODING_AGENT_DIR="$temp_dir/pig-home/agent" PIG_USE_PI_DIRS=0 PIG_OFFLINE=1 PI_OFFLINE=1 pig verify --json)"

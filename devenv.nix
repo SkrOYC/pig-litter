@@ -52,6 +52,7 @@ let
       platforms = builtins.attrNames pigRelease;
     };
   };
+  hasPigSource = builtins.pathExists ./pig-source.json;
   pigSource = builtins.fromJSON (builtins.readFile ./pig-source.json);
   pigSourceDigest = builtins.hashFile "sha256" ./pig-source.json;
   pigSourcePatch = ./. + "/${pigSource.patch.path}";
@@ -105,9 +106,12 @@ let
           cp -r LICENSES "$out/share/licenses/pig/LICENSES"
           install -Dm644 ${./pig-source.json} "$out/share/pig/source.json"
         '';
+        postFixup = ''
+          sha256sum "$out/bin/pig" | cut -d ' ' -f 1 > "$out/share/pig/binary.sha256"
+        '';
       };
     };
-  pig = if system == "x86_64-linux" then pigPreview.package else stockPig;
+  pig = if hasPigSource then pigPreview.package else stockPig;
 in
 {
   languages.go = {
@@ -118,9 +122,10 @@ in
   env = {
     GOTOOLCHAIN = "local";
     CGO_ENABLED = "1";
-  } // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
+  } // pkgs.lib.optionalAttrs hasPigSource {
     PIG_LITTER_EXPECTED_PIG = "${pigPreview.package}/bin/pig";
-    PIG_LITTER_EXPECTED_PIG_SHA256 = pigPreview.binaryDigest;
+    PIG_LITTER_EXPECTED_PIG_SHA256_FILE = "${pigPreview.package}/share/pig/binary.sha256";
+    PIG_LITTER_EXPECTED_PIG_SHA256 = if system == "x86_64-linux" then pigPreview.binaryDigest else "";
     PIG_LITTER_EXPECTED_PIG_BUILD = pigPreview.build;
     PIG_LITTER_SOURCE_DIR = "${patchedPigSource}";
     PIG_LITTER_SDK_DIR = "${patchedPigSource}/extensions/sdk";
@@ -128,7 +133,7 @@ in
   };
   packages = [ pkgs.git pkgs.tmux pig pkgs.jq ];
 
-  enterShell = pkgs.lib.optionalString (system == "x86_64-linux") ''
+  enterShell = pkgs.lib.optionalString hasPigSource ''
     cmp "$DEVENV_ROOT/pig-source.json" "${pigPreview.package}/share/pig/source.json" || exit 1
     PIG_LITTER_WORKSPACE_BRIDGE="$DEVENV_ROOT/extensions/go.work" bash "$DEVENV_ROOT/scripts/prepare-pig-workspace.sh" "$PIG_LITTER_SOURCE_DIR" "$(dirname "$GOWORK")" "$DEVENV_ROOT/scripts" "$DEVENV_ROOT/extensions/pig-litter" > /dev/null || exit 1
   '';
