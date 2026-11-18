@@ -312,19 +312,15 @@ func (o *owner) modelFor(ctx context.Context, name string, runtime *coding.Model
 		return nil, reject("unavailable", "an exact provider/model is required")
 	}
 	provider, modelID, _ := strings.Cut(name, "/")
-	registered, err := o.context.ModelRegistry().GetRegisteredProviderIDs()
+	authority, err := o.context.ModelRegistry().ProviderAvailability(provider)
 	if err != nil {
 		return nil, err
 	}
-	if slices.Contains(registered, provider) {
+	if authority.Registered {
 		return nil, reject("unavailable", "an extension-registered parent provider cannot be reproduced in the independent child")
 	}
-	available, err := o.context.ModelRegistry().GetAvailable()
-	if err != nil {
-		return nil, err
-	}
 	parentAvailable := false
-	for _, model := range available {
+	for _, model := range authority.Models {
 		if model["provider"] == provider && model["id"] == modelID {
 			parentAvailable = true
 		}
