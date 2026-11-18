@@ -122,6 +122,7 @@ type failedSpawn struct {
 
 type fixtureState struct {
 	mu                    sync.Mutex
+	scenario              string
 	requestTotals         map[string]int
 	requestCount          int
 	rawRequestCount       int
@@ -258,6 +259,13 @@ type runSummary struct {
 }
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "--p07-resume-probe" {
+		if err := previewResumeProbe(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 6 && os.Args[1] == "--media-observer" {
 		if err := runCollaborationMediaObserver(os.Args[2], os.Args[3], os.Args[4], os.Args[5]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -314,7 +322,7 @@ func parseOptions(args []string) (options, error) {
 	var result options
 	flags := flag.NewFlagSet("go-tui-proof", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	flags.StringVar(&result.scenario, "scenario", "all", "all, receipt-control, chain, host-idle-message, host-busy-message, or host-tool-veto")
+	flags.StringVar(&result.scenario, "scenario", "all", "all, receipt-control, chain, team-preview, host-idle-message, host-busy-message, or host-tool-veto")
 	caseValue := flags.String("case", "", "direct, source, piglet, or unselected")
 	flags.StringVar(&result.pigPath, "pig", "", "absolute path to the released PiG executable")
 	flags.StringVar(&result.extension, "extension", "", "absolute path to the prebuilt pig-litter executable")
@@ -334,7 +342,7 @@ func parseOptions(args []string) (options, error) {
 	if flags.NArg() != 0 {
 		return options{}, errors.New("positional arguments are not supported")
 	}
-	if result.scenario != "all" && result.scenario != "receipt-control" && result.scenario != "chain" && result.scenario != "host-idle-message" && result.scenario != "host-busy-message" && result.scenario != "host-tool-veto" {
+	if result.scenario != "all" && result.scenario != "receipt-control" && result.scenario != "chain" && result.scenario != "team-preview" && result.scenario != "host-idle-message" && result.scenario != "host-busy-message" && result.scenario != "host-tool-veto" {
 		return options{}, errors.New("unknown terminal scenario")
 	}
 	result.caseName = runCase(*caseValue)
@@ -510,6 +518,14 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		return evidencePath, errors.New("tmux must be available on the host PATH")
 	}
 	childEnv := fixtureEnvironment(options.pigPath, tmuxPath, home, pigHome, agentDir, scratch)
+	resumeTrace := ""
+	if options.scenario == "team-preview" {
+		resumeTrace = filepath.Join(scratch, "resume-trace.log")
+		if err := os.WriteFile(resumeTrace, nil, 0o600); err != nil {
+			return evidencePath, err
+		}
+		childEnv = append(childEnv, "P07_RESUME_TRACE="+resumeTrace)
+	}
 	var messageProbe *collaborationTUIMessageProbe
 	if options.scenario == "host-idle-message" || options.scenario == "host-busy-message" {
 		messageDirectory := filepath.Join(evidencePath, "message-probe")
@@ -539,6 +555,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	}
 	tmuxErrors := make([]tmuxFailure, 0)
 	state := newFixtureState(options.caseName)
+	state.scenario = options.scenario
 	state.fixtureWorkspace = workspace
 	provider, err := startFixtureProvider(state)
 	if err != nil {
@@ -678,7 +695,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	if options.caseName != caseUnselected {
 		panel = &panelProof{idleCommand: idleCommand, idleDirectory: idleDirectory, idleObserver: options.idleObserver, rawActive: func() error {
 			return capture.checkActive()
-		}, workspace: workspace, paneTitle: func() (string, error) { return tmuxCall("display-message", "-p", "-t", session, "#{pane_title}") }, processes: observeOwned, scenario: options.scenario, ctx: ctx, state: state, sendText: sendText, sendKey: sendKey, visible: readVisible, frame: frame, geometry: paneSize, rootSessions: rootSessions, agentDir: agentDir, evidence: evidencePath, configPath: filepath.Join(workspace, "litter.yaml"), resize: func(width, height int) error {
+		}, workspace: workspace, paneTitle: func() (string, error) { return tmuxCall("display-message", "-p", "-t", session, "#{pane_title}") }, processes: observeOwned, scenario: options.scenario, ctx: ctx, state: state, sendText: sendText, sendKey: sendKey, visible: readVisible, frame: frame, geometry: paneSize, rootSessions: rootSessions, agentDir: agentDir, evidence: evidencePath, resumeTrace: resumeTrace, configPath: filepath.Join(workspace, "litter.yaml"), resize: func(width, height int) error {
 			_, err := tmuxCall("resize-window", "-t", session, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
 			return err
 		}}
@@ -987,7 +1004,13 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 					return false, err
 				}
 				text, err := readVisible()
-				return err == nil && liveEditorFrameReady(text), nil
+				if err != nil || !liveEditorFrameReady(text) {
+					return false, nil
+				}
+				if options.scenario == "team-preview" {
+					return strings.Contains(text, "P07_TEAM_READY") && strings.Contains(text, workspace), nil
+				}
+				return true, nil
 			})
 		}
 	}
@@ -1120,6 +1143,16 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	}
 	if messageProbe != nil {
 		if err := runCollaborationTUIMessageScenario(ctx, messageProbe, panel, state, sendText, sendKey, readVisible, frame, media); err != nil {
+			return evidencePath, err
+		}
+		if err := exitHost(); err != nil {
+			return evidencePath, err
+		}
+		paneExited = true
+		return evidencePath, nil
+	}
+	if options.scenario == "team-preview" {
+		if err := panel.teamPreviewProof(); err != nil {
 			return evidencePath, err
 		}
 		if err := exitHost(); err != nil {
@@ -2235,7 +2268,7 @@ func latestRootPrompt(messages []openAIMessage) (marker struct{ marker, text str
 		lines := strings.Split(strings.ReplaceAll(contentText(messages[index].Content), "\r\n", "\n"), "\n")
 		for lineIndex := len(lines) - 1; lineIndex >= 0; lineIndex-- {
 			line := strings.TrimSpace(lines[lineIndex])
-			if line == "START_WIDGET" || line == "UNSELECTED_WIDGET" || line == "QUICK_WIDGET" || line == "RECEIPT_WIDGET" || line == "P02_BUSY_HOLD" || line == "P02_HOOK_ALLOW" || line == "P02_HOOK_DENY" || line == "CHAIN_WIDGET" || line == "ROOT_NOTICE_FIRST" || line == "ROOT_NOTICE_SECOND" || line == "ROOT_RESTART_FIRST" || line == "ROOT_RESTART_SECOND" || line == "ROOT_RESTART_THIRD" || line == "NEW_ROOT_HEADER" || line == "COLD_ROOT_HEADER" {
+			if line == "START_WIDGET" || line == "UNSELECTED_WIDGET" || line == "QUICK_WIDGET" || line == "RECEIPT_WIDGET" || line == "P02_BUSY_HOLD" || line == "P02_HOOK_ALLOW" || line == "P02_HOOK_DENY" || line == "P07_TEAM_PREVIEW" || line == "CHAIN_WIDGET" || line == "ROOT_NOTICE_FIRST" || line == "ROOT_NOTICE_SECOND" || line == "ROOT_RESTART_FIRST" || line == "ROOT_RESTART_SECOND" || line == "ROOT_RESTART_THIRD" || line == "NEW_ROOT_HEADER" || line == "COLD_ROOT_HEADER" {
 				return struct{ marker, text string }{marker: line, text: line}
 			}
 			if strings.HasPrefix(line, "STOP_WIDGET ") {

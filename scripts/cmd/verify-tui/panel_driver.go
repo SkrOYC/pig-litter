@@ -51,6 +51,7 @@ type panelProof struct {
 	geometry                                                      func() (paneGeometry, error)
 	resize                                                        func(int, int) error
 	rootSessions, agentDir, evidence, rootPath, rootID, newRootID string
+	resumeTrace                                                   string
 	configPath                                                    string
 	workspace                                                     string
 	idleCommand, idleDirectory, idleObserver                      string

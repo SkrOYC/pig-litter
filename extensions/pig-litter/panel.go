@@ -21,6 +21,8 @@ const (
 	panelReport
 	panelMessage
 	panelResume
+	panelTranscript
+	panelTasks
 )
 
 type panelChild struct {
@@ -48,6 +50,7 @@ type childPanel struct {
 	pendingCancel      context.CancelFunc
 	pendingSelection   *run
 	invalidate         func()
+	invalidateWG       sync.WaitGroup
 	stop, joined       chan struct{}
 	dispose            sync.Once
 	closed             bool
@@ -57,6 +60,10 @@ type childPanel struct {
 	reportState        State
 	reportWidth        int
 	reportLines        []string
+	team               *teamView
+	member             MemberRef
+	memberSelected     bool
+	teamRequest        uint64
 }
 
 func (t *Tree) panelChildren() []panelChild {
@@ -80,8 +87,9 @@ func (s *extensionState) openPanel(ctx sdk.Context, args string) (err error) {
 		ctx.Notify("Use litter_list to discover named agents and children. Use litter_spawn to start a background child, then inspect, message, stop, or wait by ID.", "info")
 		return nil
 	}
-	if strings.TrimSpace(args) != "" {
-		ctx.Notify("Use /pig-litter to manage retained children, or /pig-litter help for tool instructions.", "info")
+	team := strings.TrimSpace(args) == "team"
+	if strings.TrimSpace(args) != "" && !team {
+		ctx.Notify("Use /pig-litter to manage retained children, /pig-litter team to view teammates, or /pig-litter help for tool instructions.", "info")
 		return nil
 	}
 	if !ctx.HasUI() || ctx.Mode() != "tui" {
@@ -93,6 +101,11 @@ func (s *extensionState) openPanel(ctx sdk.Context, args string) (err error) {
 		return err
 	}
 	panel := newChildPanel(o, ctx.Done(), ctx.Height)
+	if team {
+		panel.mu.Lock()
+		panel.team = newTeamView(panel.ctx, o, panel.requestRender)
+		panel.mu.Unlock()
+	}
 	defer panel.Dispose()
 	_, err = ctx.Custom(panel, sdk.RemoteOverlayOptions{})
 	return err
@@ -113,6 +126,9 @@ func newChildPanel(o *owner, requestDone <-chan struct{}, height func() int) *ch
 			case <-ticker.C:
 				p.mu.Lock()
 				invalidate := p.invalidate
+				if p.team != nil {
+					invalidate = nil
+				}
 				p.mu.Unlock()
 				if invalidate != nil {
 					invalidate()
@@ -129,6 +145,22 @@ func newChildPanel(o *owner, requestDone <-chan struct{}, height func() int) *ch
 		}
 	}()
 	return p
+}
+
+func (p *childPanel) requestRender() {
+	p.mu.Lock()
+	invalidate := p.invalidate
+	if p.closed {
+		invalidate = nil
+	}
+	if invalidate != nil {
+		p.invalidateWG.Add(1)
+	}
+	p.mu.Unlock()
+	if invalidate != nil {
+		invalidate()
+		p.invalidateWG.Done()
+	}
 }
 
 func (p *childPanel) SetInvalidate(fn func()) {
@@ -148,6 +180,10 @@ func (p *childPanel) Dispose() {
 		p.mu.Unlock()
 		close(p.stop)
 		<-p.joined
+		if p.team != nil {
+			p.team.Close()
+		}
+		p.invalidateWG.Wait()
 	})
 }
 
@@ -183,6 +219,9 @@ func (p *childPanel) Render(width int) []string {
 	p.pageRows = 0
 	if width <= 0 {
 		return []string{}
+	}
+	if p.team != nil {
+		return p.renderTeam(width)
 	}
 	height := p.height()
 	if height <= 0 {
@@ -363,6 +402,9 @@ func (p *childPanel) HandleInput(data string) (sdk.RemoteComponentResult, error)
 	if decoded, ok := tui.DecodePrintableKey(data); ok {
 		key = decoded
 	}
+	if p.team != nil {
+		return p.handleTeamInput(data, key), nil
+	}
 	if tui.MatchesKeyID(data, "escape") {
 		if p.mode == panelList {
 			p.cancel()
@@ -540,4 +582,338 @@ func (p *childPanel) draftLine(width int) string {
 		before = remaining
 	}
 	return "Draft " + before + "|" + paintText(p.draft[p.cursor:], false)
+}
+
+func (p *childPanel) teamSelection(frame *teamViewFrame) int {
+	if !p.memberSelected && frame.PreferenceLoaded {
+		if frame.Preference != nil {
+			p.member, p.memberSelected = *frame.Preference, true
+		} else if len(frame.Members) != 0 {
+			p.member, p.memberSelected = frame.Members[0].Member.Ref, true
+		}
+		if p.memberSelected {
+			p.team.Select(p.member)
+		}
+	}
+	if !p.memberSelected {
+		return -1
+	}
+	return slices.IndexFunc(frame.Members, func(member teamMemberView) bool { return member.Member.Ref == p.member })
+}
+
+func (p *childPanel) renderTeam(width int) []string {
+	frame := p.team.Snapshot()
+	index := p.teamSelection(frame)
+	height := p.height()
+	if height <= 0 {
+		height = 24
+	}
+	budget := max(1, height-8)
+	legend := []string{"Up/Down move  Enter detail  v report  t transcript", "k all tasks  [ ] page  Home/End  Esc back/close"}
+	if p.mode != panelList {
+		legend = []string{"Up/Down scroll  [ ] page  Home/End  Esc back"}
+	}
+	if width >= 80 {
+		legend = widthx.WrapTextWithAnsi(paintText(strings.Join(legend, "  "), false), width)
+	}
+	if budget <= 2 {
+		return panelPaint(legend[len(legend)-min(budget, len(legend)):], width)
+	}
+	legendRows := min(len(legend), budget-2)
+	legend = legend[len(legend)-legendRows:]
+	contentBudget := max(0, budget-legendRows-2)
+	p.pageRows = contentBudget
+	title := "Pig Litter | team"
+	var content []string
+	if p.mode == panelList {
+		title += fmt.Sprintf(" (%d/%d)", index+1, len(frame.Members))
+		for _, section := range []struct {
+			name   string
+			health viewHealth
+		}{{"Roster", frame.RosterHealth}, {"Tasks", frame.TaskHealth}, {"Selection", frame.PreferenceHealth}} {
+			if section.health.Error != "" {
+				content = append(content, section.name+" "+section.health.Status+" | "+section.health.Error)
+			}
+		}
+		if frame.Team == nil && frame.RosterHealth.Status == "loading" {
+			content = append(content, "Loading team")
+		} else if frame.Team == nil {
+			content = append(content, "No team")
+		} else if len(frame.Members) == 0 {
+			content = append(content, "No committed teammates")
+		}
+		if p.memberSelected && index < 0 {
+			content = append(content, "Selected member unavailable | "+string(p.member.ID)+fmt.Sprintf(" generation %d", p.member.Generation))
+		}
+		if len(frame.Reservations) != 0 {
+			content = append(content, fmt.Sprintf("Pending reservations %d", len(frame.Reservations)))
+		}
+		reserveRows := min(len(frame.Reservations), max(0, contentBudget-len(content)-1))
+		rows := max(0, contentBudget-len(content)-reserveRows)
+		p.listTop = min(p.listTop, max(0, len(frame.Members)-rows))
+		if index >= 0 && index < p.listTop {
+			p.listTop = index
+		}
+		if rows > 0 && index >= p.listTop+rows {
+			p.listTop = index - rows + 1
+		}
+		for i := p.listTop; i < min(len(frame.Members), p.listTop+rows); i++ {
+			member := frame.Members[i]
+			prefix := "  "
+			if i == index {
+				prefix = "> "
+			}
+			state := "execution unavailable"
+			if member.Execution != nil {
+				state = "execution " + string(member.Execution.Child.State)
+			}
+			assigned := len(frame.Assigned[member.Member.Ref])
+			content = append(content, fmt.Sprintf("%s%s | member %s | %s | tasks %d", prefix, member.Member.Name, member.Member.State, state, assigned))
+		}
+		for _, pending := range frame.Reservations[:reserveRows] {
+			content = append(content, "  "+pending.Name+" | reservation "+pending.State)
+		}
+	} else {
+		switch p.mode {
+		case panelDetail:
+			title += " | detail"
+			content = p.teamDetail(frame, index, width, false)
+		case panelReport:
+			title += " | report"
+			content = p.teamDetail(frame, index, width, true)
+		case panelTranscript:
+			title += " | transcript"
+			content = p.teamTranscriptLines(frame, width)
+		case panelTasks:
+			title += " | tasks"
+			content = teamTaskLines(frame, nil)
+		}
+		var issues []string
+		for _, section := range []struct {
+			name   string
+			health viewHealth
+		}{{"Roster", frame.RosterHealth}, {"Tasks", frame.TaskHealth}, {"Selection", frame.PreferenceHealth}} {
+			if section.health.Error != "" {
+				issues = append(issues, section.name+" "+section.health.Status+" | "+section.health.Error)
+			}
+		}
+		content = append(issues, content...)
+		p.renderedScroll = min(p.scroll, max(0, len(content)-contentBudget))
+		content = content[p.renderedScroll:min(len(content), p.renderedScroll+contentBudget)]
+	}
+	content = content[:min(len(content), contentBudget)]
+	for len(content) < contentBudget {
+		content = append(content, "")
+	}
+	rows := append([]string{title}, content...)
+	rows = append(rows, p.feedback)
+	rows = append(rows, legend...)
+	return panelPaint(rows, width)
+}
+
+func (p *childPanel) teamDetail(frame *teamViewFrame, index, width int, report bool) []string {
+	if index < 0 {
+		return []string{"Selected member is unavailable"}
+	}
+	view := frame.Members[index]
+	member := view.Member
+	metadata := []string{"Name " + member.Name, "UUID " + string(member.Ref.ID), fmt.Sprintf("Team %s epoch %d | generation %d", member.Ref.Team.Root, member.Ref.Team.Epoch, member.Ref.Generation), "Membership " + member.State, "Workspace " + member.Workspace.Cwd}
+	if view.Execution == nil {
+		metadata = append(metadata, "Execution unavailable")
+		if report {
+			return append(metadata, "No settled report")
+		}
+		metadata = append(metadata, "Assigned tasks")
+		return append(metadata, teamTaskLines(frame, &member.Ref)...)
+	}
+	execution := view.Execution
+	metadata = append(metadata, "Execution "+string(execution.Child.State), "Admission "+execution.Admission)
+	outcome := execution.Latest
+	if report {
+		if outcome == nil {
+			return append(metadata, "No settled report")
+		}
+		metadata = append(metadata, "Outcome "+string(outcome.State))
+		if outcome.Error != "" {
+			metadata = append(metadata, "Error "+outcome.Error)
+		}
+		if outcome.ReportProvenance != "" {
+			metadata = append(metadata, "Report provenance "+outcome.ReportProvenance)
+		}
+		if outcome.Usage == (Usage{}) {
+			metadata = append(metadata, "Latest settled usage unknown")
+		} else {
+			usage := outcome.Usage
+			metadata = append(metadata, fmt.Sprintf("Latest settled usage | input %d output %d cache read %d cache write %d total %d cost %.6f", usage.Input, usage.Output, usage.CacheRead, usage.CacheWrite, usage.TotalTokens, usage.Cost))
+		}
+		if outcome.Truncated || outcome.HandbackTruncated {
+			metadata = append(metadata, "Report was truncated")
+		}
+		return toolPaintRows(append(metadata, "Report"), outcome.Text, width)
+	}
+	progress := execution.Progress
+	if progress.activated.IsZero() {
+		metadata = append(metadata, "Elapsed unknown", "Tool starts unknown", "Active tools unknown")
+	} else {
+		end := progress.settled
+		if end.IsZero() {
+			end = time.Now()
+		}
+		metadata = append(metadata, "Elapsed "+end.Sub(progress.activated).Round(time.Second).String(), fmt.Sprintf("Tool starts %d", progress.toolStarts))
+		tools := "none"
+		if len(execution.Tools) != 0 {
+			tools = strings.Join(execution.Tools, ", ")
+		}
+		if progress.toolsClipped {
+			tools += " [additional tool activity omitted]"
+		}
+		metadata = append(metadata, "Active tools "+tools)
+	}
+	metadata = append(metadata, "Assigned tasks")
+	metadata = append(metadata, teamTaskLines(frame, &member.Ref)...)
+	return toolPaintRows(metadata, "", width)
+}
+
+func teamTaskLines(frame *teamViewFrame, owner *MemberRef) []string {
+	var lines []string
+	if frame.TaskHealth.Error != "" {
+		lines = append(lines, "Tasks "+frame.TaskHealth.Status+" | "+frame.TaskHealth.Error)
+	}
+	for _, task := range frame.Tasks {
+		if owner != nil && (task.Owner == nil || *task.Owner != *owner) {
+			continue
+		}
+		assigned := "unassigned"
+		if task.Owner != nil {
+			assigned = string(task.Owner.ID) + fmt.Sprintf(" generation %d", task.Owner.Generation)
+			if i := slices.IndexFunc(frame.Members, func(member teamMemberView) bool { return member.Member.Ref == *task.Owner }); i >= 0 {
+				assigned = frame.Members[i].Member.Name + " | " + assigned
+			}
+		}
+		line := fmt.Sprintf("#%d %s | %s | %s", task.ID.Number, task.Subject, task.State, assigned)
+		if task.Blocked {
+			line += " | blocked"
+		}
+		lines = append(lines, line)
+		if task.Description != "" {
+			lines = append(lines, "  "+task.Description)
+		}
+		if len(task.BlockedBy) != 0 {
+			dependencies := make([]string, len(task.BlockedBy))
+			for i, dependency := range task.BlockedBy {
+				dependencies[i] = fmt.Sprintf("#%d", dependency.Number)
+			}
+			lines = append(lines, "  Depends on "+strings.Join(dependencies, ", "))
+		}
+		keys := make([]string, 0, len(task.Metadata))
+		for key := range task.Metadata {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		for _, key := range keys {
+			lines = append(lines, "  "+key+" "+task.Metadata[key])
+		}
+	}
+	if len(lines) == 0 {
+		return []string{"No tasks"}
+	}
+	return lines
+}
+
+func (p *childPanel) teamTranscriptLines(frame *teamViewFrame, width int) []string {
+	if !slices.ContainsFunc(frame.Members, func(member teamMemberView) bool { return member.Member.Ref == p.member }) {
+		return []string{"Selected member is unavailable"}
+	}
+	transcript := frame.Transcript
+	if transcript.Member != p.member || transcript.Request != p.teamRequest {
+		return []string{"Transcript unavailable for this selection"}
+	}
+	if transcript.Health.Status == "loading" {
+		return []string{"Loading transcript"}
+	}
+	if transcript.Health.Error != "" {
+		return []string{"Transcript unavailable | " + transcript.Health.Error}
+	}
+	var lines []string
+	for _, entry := range transcript.Entries {
+		lines = append(lines, widthx.WrapTextWithAnsi(paintText(entry.Role+" | "+entry.Text, true), width)...)
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "No conversation text")
+	}
+	if transcript.Clipped {
+		lines = append(lines, "[Transcript display clipped]")
+	}
+	return lines
+}
+
+func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult {
+	if tui.MatchesKeyID(data, "escape") {
+		switch p.mode {
+		case panelList:
+			p.cancel()
+			return sdk.RemoteComponentResult{Done: true}
+		case panelReport, panelTranscript:
+			p.mode, p.scroll = p.previous, p.previousScroll
+		default:
+			p.mode, p.scroll = panelList, 0
+		}
+		return sdk.RemoteComponentResult{}
+	}
+	if p.closed {
+		return sdk.RemoteComponentResult{}
+	}
+	frame := p.team.Snapshot()
+	index := p.teamSelection(frame)
+	step := 0
+	switch {
+	case tui.MatchesKeyID(data, "up"):
+		step = -1
+	case tui.MatchesKeyID(data, "down"):
+		step = 1
+	case key == "[" || tui.MatchesKeyID(data, "pageUp"):
+		step = -max(1, p.pageRows-1)
+	case key == "]" || tui.MatchesKeyID(data, "pageDown"):
+		step = max(1, p.pageRows-1)
+	case tui.MatchesKeyID(data, "home"):
+		step = -int(^uint(0) >> 2)
+	case tui.MatchesKeyID(data, "end"):
+		step = int(^uint(0) >> 2)
+	}
+	if step != 0 {
+		if p.mode == panelList && len(frame.Members) != 0 {
+			if index < 0 {
+				index = 0
+				if step < 0 {
+					index = len(frame.Members) - 1
+				}
+			} else {
+				index = min(max(0, index+step), len(frame.Members)-1)
+			}
+			p.member, p.memberSelected = frame.Members[index].Member.Ref, true
+			p.team.Select(p.member)
+		} else {
+			p.scroll = max(0, p.renderedScroll+step)
+		}
+		return sdk.RemoteComponentResult{}
+	}
+	if key == "k" && (p.mode == panelList || p.mode == panelDetail) {
+		p.mode, p.scroll, p.renderedScroll = panelTasks, 0, 0
+		return sdk.RemoteComponentResult{}
+	}
+	if index < 0 {
+		return sdk.RemoteComponentResult{}
+	}
+	switch {
+	case tui.MatchesKeyID(data, "enter") && p.mode == panelList:
+		p.mode, p.scroll, p.renderedScroll = panelDetail, 0, 0
+	case key == "v" && (p.mode == panelList || p.mode == panelDetail):
+		p.previous, p.previousScroll = p.mode, p.scroll
+		p.mode, p.scroll, p.renderedScroll = panelReport, 0, 0
+	case key == "t" && (p.mode == panelList || p.mode == panelDetail):
+		p.previous, p.previousScroll = p.mode, p.scroll
+		p.mode, p.scroll, p.renderedScroll = panelTranscript, 0, 0
+		p.teamRequest = p.team.Inspect(p.member)
+	}
+	return sdk.RemoteComponentResult{}
 }

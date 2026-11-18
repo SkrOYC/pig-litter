@@ -52,6 +52,9 @@ func fixtureReport(prefix string) string {
 }
 
 func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string) (providerTurn, bool, error) {
+	if turn, handled, err := teamPreviewTurn(request); handled {
+		return turn, true, err
+	}
 	text := allMessageText(request.Messages)
 	if request.Model == "quick" && strings.Contains(text, "LIVE_QUICK_RUN") {
 		if !assistantContains(request.Messages, state.quickHistoryMarker) {
@@ -144,7 +147,11 @@ func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string
 		return turn, true, err
 	}
 	if marker == "NEW_ROOT_HEADER" || marker == "COLD_ROOT_HEADER" {
-		if err := requireToolInventory(tools, append(append([]string(nil), fileTools...), controlTools...), []string{"ls"}, "context-only root"); err != nil {
+		required := append(append([]string(nil), fileTools...), controlTools...)
+		if state.scenario == "team-preview" {
+			required = append(required, "team_spawn", "team_list", "team_send", "team_plan", "team_task_create", "team_task_get", "team_task_list", "team_task_update")
+		}
+		if err := requireToolInventory(tools, required, []string{"ls"}, "context-only root"); err != nil {
 			return providerTurn{}, true, err
 		}
 		return providerTurn{kind: "text", text: marker + "_DONE"}, true, nil

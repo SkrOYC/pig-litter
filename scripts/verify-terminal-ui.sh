@@ -2,15 +2,19 @@
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 evidence_root="$root/.pstack/evidence/go-tui"
-case_name= previous=
+case_name= scenario= previous=
 for argument in "$@"; do
   case "$argument" in
     --run-allocation|--run-allocation=*|-run-allocation|-run-allocation=*) printf 'the wrapper owns --run-allocation\n' >&2; exit 2 ;;
   esac
   if [[ "$previous" == --case ]]; then
     case_name="$argument"
+  elif [[ "$previous" == --scenario ]]; then
+    scenario="$argument"
   elif [[ "$argument" == --case=* ]]; then
     case_name="${argument#--case=}"
+  elif [[ "$argument" == --scenario=* ]]; then
+    scenario="${argument#--scenario=}"
   elif [[ "$previous" == --evidence-root ]]; then
     evidence_root="$argument"
   elif [[ "$argument" == --evidence-root=* ]]; then
@@ -33,6 +37,11 @@ mkdir -p "$evidence_root"
 evidence_root="$(cd "$evidence_root" && pwd -P)"
 build_evidence="$(mktemp -d "$evidence_root/build-XXXXXXXX")"
 chmod 700 "$build_evidence"
+snapshot_source() {
+  (cd "$root" && git ls-files --cached --others --exclude-standard -z -- extensions/pig-litter scripts | LC_ALL=C sort -z | xargs -0 -r sha256sum) > "$1"
+}
+snapshot_source "$build_evidence/source-before.sha256"
+git -C "$root" rev-parse HEAD > "$build_evidence/source-head.txt"
 resource_paths=("$run_root")
 resource_identities=("$run_identity")
 for name in bin cache gotmp tmp modules runtime gopath state data; do
@@ -55,12 +64,29 @@ export XDG_CACHE_HOME="$run_root/cache" XDG_RUNTIME_DIR="$run_root/runtime"
 export XDG_STATE_HOME="$run_root/state" XDG_DATA_HOME="$run_root/data"
 export CCACHE_DIR="$run_root/cache/ccache" SCCACHE_DIR="$run_root/cache/sccache"
 cd "$root"
+overlay_args=()
+if [[ "$scenario" == team-preview ]]; then
+  setup_env=("GOPATH=$run_root/gopath" "GOCACHE=$run_root/cache" "GOMODCACHE=$run_root/modules" "GOTMPDIR=$run_root/gotmp" "TMPDIR=$run_root/tmp" GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOTELEMETRY=off)
+  module_dir="$(devenv shell -- env "${setup_env[@]}" go -C "$root/scripts" mod download -modcacherw -json github.com/MichaelKinsy/PiG | jq -r '.Dir')"
+  cp -a "$module_dir" "$run_root/pig-module"
+  cp "$root/scripts/go.mod" "$run_root/p07.mod"
+  cp "$root/scripts/go.sum" "$run_root/p07.sum"
+  devenv shell -- env "${setup_env[@]}" go -C "$root/scripts" mod edit -modfile "$run_root/p07.mod" -replace "github.com/MichaelKinsy/PiG=$run_root/pig-module" -replace "github.com/SkrOYC/pig-litter/extensions/pig-litter=$root/extensions/pig-litter"
+  devenv shell -- env "${setup_env[@]}" bun "$root/scripts/p07-resume-overlay.mjs" "$run_root/pig-module/coding/runtime.go" "$run_root" > "$build_evidence/resume-overlay.json"
+  overlay_args=(-modfile "$run_root/p07.mod" -overlay "$run_root/p07-overlay.json")
+fi
 for command_name in pig-litter verify-tui tui-idle-observer; do
-  build=(devenv shell -- env "GOPATH=$run_root/gopath" "GOCACHE=$run_root/cache" "GOMODCACHE=$run_root/modules" "GOTMPDIR=$run_root/gotmp" go -C "$root/scripts" build -mod=readonly -modcacherw -o "$run_root/bin/$command_name" "./cmd/$command_name")
+  build=(devenv shell -- env "GOPATH=$run_root/gopath" "GOCACHE=$run_root/cache" "GOMODCACHE=$run_root/modules" "GOTMPDIR=$run_root/gotmp" "TMPDIR=$run_root/tmp" GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOTELEMETRY=off go -C "$root/scripts" build "${overlay_args[@]}" -mod=readonly -modcacherw -o "$run_root/bin/$command_name" "./cmd/$command_name")
   printf '%q ' "${build[@]}" >> "$build_evidence/build-commands.txt"
   printf '\n' >> "$build_evidence/build-commands.txt"
   "${build[@]}" 2> >(tee -a "$build_evidence/build.stderr" >&2)
 done
+if [[ "$scenario" == team-preview ]]; then
+  : > "$run_root/resume-probe.log"
+  P07_RESUME_TRACE="$run_root/resume-probe.log" "$run_root/bin/verify-tui" --p07-resume-probe "$run_root"
+  [[ "$(cat "$run_root/resume-probe.log")" == p07-missing-session ]] || { printf 'resume instrumentation positive control failed\n' >&2; exit 1; }
+  cp "$run_root/resume-probe.log" "$build_evidence/resume-probe.log"
+fi
 observer_args=()
 if [[ "$case_name" != unselected ]]; then
   observer_args=(--idle-observer "$run_root/bin/tui-idle-observer")
@@ -75,6 +101,8 @@ fi
 verifier_pid=$!
 wait "$verifier_pid"
 verifier_pid=
+snapshot_source "$build_evidence/source-after.sha256"
+cmp "$build_evidence/source-before.sha256" "$build_evidence/source-after.sha256"
 ack="$build_evidence/cleanup-ack.json"
 jq -e --arg token "$run_token" --arg digest "$allocation_digest" '.token == $token and .allocationSHA256 == $digest and .ok == true' "$ack" >/dev/null
 actual_digest="$(sha256sum "$allocation")"
