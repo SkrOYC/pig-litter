@@ -27,7 +27,7 @@ if [[ -n "${PIG_LITTER_WORKSPACE_BRIDGE:-}" ]]; then
     managed_parent="$(dirname "$workspace")"
     current_hash="$(basename "$workspace")"
     if [[ -e "$marker" || -L "$marker" ]]; then
-      [[ -f "$marker" && "$(cat "$marker")" == "$bridge" ]] || { printf 'workspace bridge is not managed: %s\n' "$bridge" >&2; exit 1; }
+      [[ -f "$marker" && ! -L "$marker" && "$(cat "$marker")" == "$bridge" ]] || { printf 'workspace bridge is not managed: %s\n' "$bridge" >&2; exit 1; }
     elif [[ "$previous" == "$workspace/go.work" && -f "$previous" ]] && cmp -s "$previous" "$tmp/go.work"; then
       reuse_workspace=true
     # This digest-keyed state namespace belongs to the workspace helper.
@@ -41,6 +41,21 @@ if [[ -n "${PIG_LITTER_WORKSPACE_BRIDGE:-}" ]]; then
     fi
   elif [[ -e "$bridge" ]]; then
     printf 'workspace bridge already exists: %s\n' "$bridge" >&2
+    exit 1
+  fi
+fi
+workspace_marker="$workspace/.pig-litter-workspace"
+if [[ -n "${bridge:-}" && ( -e "$workspace_marker" || -L "$workspace_marker" ) ]]; then
+  [[ -f "$workspace_marker" && ! -L "$workspace_marker" && "$(cat "$workspace_marker")" == "$bridge" ]] || { printf 'workspace is not managed: %s\n' "$workspace" >&2; exit 1; }
+fi
+if [[ -e "$workspace/go.work" || -L "$workspace/go.work" ]]; then
+  [[ -f "$workspace/go.work" && ! -L "$workspace/go.work" ]] || { printf 'workspace is not managed: %s\n' "$workspace" >&2; exit 1; }
+  if [[ -n "${bridge:-}" && -f "$workspace_marker" ]]; then
+    :
+  elif cmp -s "$workspace/go.work" "$tmp/go.work"; then
+    reuse_workspace=true
+  else
+    printf 'workspace is not managed: %s\n' "$workspace" >&2
     exit 1
   fi
 fi
