@@ -52,10 +52,11 @@ let
       platforms = builtins.attrNames pigRelease;
     };
   };
+  pigSource = builtins.fromJSON (builtins.readFile ./pig-source.json);
   pigPreview =
     let
-      patch = ./patches/pig-0.7.0-integrated.patch;
-      patchDigest = "69ea09cc455ed4cf79957fec12c2fc804b6f717a40bb502792263dd4563ae4e8";
+      patch = ./. + "/${pigSource.patch.path}";
+      patchDigest = pigSource.patch.sha256;
       build = "pig-litter-patch-${patchDigest}";
       binaryDigest = "938d9e003f41c669fbb45b09068e11a56458fda048f025646466f9c196d25d5e";
       buildGo = pkgs.buildGo127Module.override { inherit go; };
@@ -65,12 +66,12 @@ let
       inherit build binaryDigest;
       package = buildGo {
         pname = "pig-litter-host-preview";
-        version = "0.7.0";
+        version = pigSource.version;
         src = pkgs.fetchurl {
-          url = "https://github.com/MichaelKinsy/PiG/releases/download/v0.7.0/pig-0.7.0-source.tar.gz";
-          hash = "sha256-DjkFioYd0NdveWH9W7xMrO9rnwq17OCZC5lp1qfJULg=";
+          url = pigSource.archive.url;
+          sha256 = pigSource.archive.sha256;
         };
-        sourceRoot = "pig-0.7.0";
+        sourceRoot = pigSource.archive.root;
         proxyVendor = true;
         vendorHash = "sha256-Wa2wOKBr760duMx01Ln5C2Pyw3XXekcVNuS3xpTsqW0=";
         subPackages = [ "cmd/pig" ];
