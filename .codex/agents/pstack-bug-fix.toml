@@ -1,0 +1,6 @@
+# pstack budget: unlimited — keep max
+name = "pstack-bug-fix"
+description = "Pstack bug-fix model role."
+developer_instructions = "Pstack role: bug-fix. Follow the role instructions supplied by the invoking workflow."
+model = "gpt-6.1-terra"
+model_reasoning_effort = "max"

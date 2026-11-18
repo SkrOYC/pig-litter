@@ -46,7 +46,7 @@ func TestFinalIndividualSuccessSurvivesHookReplacementAndOuterFailure(t *testing
 					o.deferActivation(ticket, selected, ctx.Done(), func() bool { return ctx.Err() != nil }, "litter_spawn")
 					return nativeResult("litter_spawn", map[string]any{"child": child}, nil), nil
 				}}
-				final, err := agent.RunToolCall(context.Background(), agent.AgentToolCall{ID: callID, Name: "litter_spawn", Arguments: ai.JsonObject{}}, agent.RunToolCallOptions{Tools: []agent.AgentTool{tool}, ToolCallHooks: agent.ToolCallHooks{AfterToolCall: []agent.AfterToolCallHook{func(context.Context, string, string, json.RawMessage, agent.AgentToolResult) agent.AfterToolCallResult {
+				final, err := agent.RunToolCall(context.Background(), agent.AgentToolCall{ID: callID, Name: "litter_spawn", Arguments: ai.JsonObject{}}, agent.RunToolCallOptions{Tools: []agent.AgentTool{tool}, ToolCallHooks: agent.ToolCallHooks{AfterToolCallHooks: []agent.AfterToolCallHook{func(context.Context, string, string, json.RawMessage, agent.AgentToolResult) agent.AfterToolCallResult {
 					return agent.AfterToolCallResult{Content: []ai.ToolResultMessageContent{ai.TextContent{Text: "replacement output"}}, Details: map[string]any{"hook": "replacement metadata"}, IsError: &hookFailure}
 				}}}})
 				if err != nil {

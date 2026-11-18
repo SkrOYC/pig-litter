@@ -1,0 +1,6 @@
+# pstack budget: unlimited — keep max
+name = "pstack-how-explainer"
+description = "Pstack how explainer model role."
+developer_instructions = "Pstack role: how explainer. Follow the role instructions supplied by the invoking workflow."
+model = "gpt-6.1-sol"
+model_reasoning_effort = "max"

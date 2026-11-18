@@ -199,6 +199,23 @@ func (c *ptyCapture) checkActive() error {
 	return nil
 }
 
+func (c *ptyCapture) containsSince(offset int64, marker []byte) (bool, error) {
+	file, err := os.Open(filepath.Join(c.evidence, "pty.raw"))
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !os.SameFile(info, c.rawInfo) || offset < 0 || info.Size() < offset {
+		return false, errors.New("inconclusive capture: raw file was replaced or truncated")
+	}
+	data, err := io.ReadAll(io.NewSectionReader(file, offset, info.Size()-offset))
+	if err != nil {
+		return false, err
+	}
+	return bytes.Contains(data, marker), nil
+}
+
 func captureBoundary(identity string) []byte {
 	return []byte("\x1eVERIFY_CAPTURE_END_" + identity + "\x1f")
 }

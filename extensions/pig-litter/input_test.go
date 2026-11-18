@@ -44,7 +44,7 @@ func testPendingInitialTask(t *testing.T, interruption string) {
 	if err := os.WriteFile(filepath.Join(directory, "models.json"), []byte(models), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: directory, AgentDir: directory})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: directory, AgentDir: directory})
 	if err != nil {
 		t.Fatal(err)
 	}

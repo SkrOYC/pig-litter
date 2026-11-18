@@ -1,4 +1,8 @@
+# yaml-language-server: $schema=https://devenv.sh/devenv.schema.json
+require_version: '>=2.4'
 inputs:
+  go-src:
+    url: tarball+https://go.dev/dl/go1.27.4.src.tar.gz
+    flake: false
   nixpkgs:
     url: github:cachix/devenv-nixpkgs/rolling
-require_version: ">=2.4"

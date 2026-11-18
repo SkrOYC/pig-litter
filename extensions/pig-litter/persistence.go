@@ -199,7 +199,7 @@ func (o *owner) restoreChildren() error {
 				if parent != o.tree.root {
 					parent.deliveryMu.Lock()
 					err = o.withChildLogLocked(parent, func(log *coding.SessionManager) error {
-						parentEntries, err = rawEntries(log.Entries())
+						parentEntries, err = rawEntries(log.GetEntries())
 						return err
 					})
 					parent.deliveryMu.Unlock()
@@ -264,7 +264,7 @@ func (o *owner) withChildLogLocked(r *record, apply func(*coding.SessionManager)
 		return apply(log)
 	}
 	trusted := true
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: r.cwd, AgentDir: o.agentDir, ProjectTrusted: &trusted})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: r.cwd, AgentDir: o.agentDir, ProjectTrusted: &trusted})
 	if err != nil {
 		return err
 	}
