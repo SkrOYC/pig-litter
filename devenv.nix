@@ -104,22 +104,19 @@ in
     package = go;
   };
 
-  env.GOTOOLCHAIN = "local";
-  env.CGO_ENABLED = "1";
+  env = {
+    GOTOOLCHAIN = "local";
+    CGO_ENABLED = "1";
+  } // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
+    PIG_LITTER_EXPECTED_PIG = "${pigPreview.package}/bin/pig";
+    PIG_LITTER_EXPECTED_PIG_SHA256 = pigPreview.binaryDigest;
+    PIG_LITTER_EXPECTED_PIG_BUILD = pigPreview.build;
+  };
   packages = [ pkgs.git pkgs.tmux pig pkgs.jq ];
 
-  scripts.check-pig-extension.exec =
-    if system == "x86_64-linux" then
-      ''
-        export PIG_LITTER_EXPECTED_PIG=${pigPreview.package}/bin/pig
-        export PIG_LITTER_EXPECTED_PIG_SHA256=${pigPreview.binaryDigest}
-        export PIG_LITTER_EXPECTED_PIG_BUILD=${pigPreview.build}
-        bash "$DEVENV_ROOT/scripts/check-pig-extension.sh" "$@"
-      ''
-    else
-      ''
-        bash "$DEVENV_ROOT/scripts/check-pig-extension.sh" "$@"
-      '';
+  scripts.check-pig-extension.exec = ''
+    bash "$DEVENV_ROOT/scripts/check-pig-extension.sh" "$@"
+  '';
 
   enterTest = "check-pig-extension";
 }
