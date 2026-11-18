@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -151,6 +152,9 @@ func TestCollaborationWrapperRetainsBuildFailure(t *testing.T) {
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(bin, "devenv"), []byte("#!/bin/sh\n[ \"$1\" = shell ] && [ \"$2\" = -- ] || exit 8\nshift 2\nexec \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(bin, "go"), []byte("#!/bin/sh\nif [ -n \"$GOFLAGS\" ] || [ \"$GOWORK\" != off ] || [ \"$GOTOOLCHAIN\" != local ]; then printf 'inherited Go configuration\\n' >&2; exit 9; fi\nprintf 'compiler unavailable\\n' >&2\nexit 7\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -202,6 +206,9 @@ func TestCollaborationWrapperStopsUnresponsiveBuild(t *testing.T) {
 	}
 	bin := filepath.Join(root, "bin")
 	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "devenv"), []byte("#!/bin/sh\n[ \"$1\" = shell ] && [ \"$2\" = -- ] || exit 8\nshift 2\nexec \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\ntrap '' INT TERM\nprintf 'ready\\n'\nwhile :; do sleep 1; done\n"
@@ -332,6 +339,36 @@ func TestCollaborationCLISourceSelectionRejectsChangedFile(t *testing.T) {
 	target := collaborationCLITarget{Checkout: checkout}
 	if err := runner.validateSourceSelection(target, evidence, selectionData); err != nil {
 		t.Fatalf("valid source selection: %v", err)
+	}
+	manifestData := []byte("declared source\n")
+	if err := os.WriteFile(filepath.Join(checkout, "pig-source.json"), manifestData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	selection.PigSource = filepath.Join(checkout, "pig-source")
+	selection.ManifestSHA256 = collaborationTestDataDigest(manifestData)
+	workspaceData := []byte(fmt.Sprintf("go 1.27\n\nuse (\n %q\n %q\n %q\n)\n", selection.Fixture, selection.PigSource, filepath.Join(selection.PigSource, "extensions", "sdk")))
+	selection.WorkspaceSHA256 = collaborationTestDataDigest(workspaceData)
+	selectionData, err = json.Marshal(selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evidence, "source-selection.json"), selectionData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evidence, "source-workspace.go.work"), workspaceData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.validateSourceSelection(target, evidence, selectionData); err != nil {
+		t.Fatalf("valid target workspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(evidence, "source-workspace.go.work"), []byte("altered workspace\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.validateSourceSelection(target, evidence, selectionData); err == nil || !strings.Contains(err.Error(), "workspace differs") {
+		t.Fatalf("changed workspace error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(evidence, "source-workspace.go.work"), workspaceData, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("module example.org/changed\n"), 0o600); err != nil {
 		t.Fatal(err)

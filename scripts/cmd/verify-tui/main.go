@@ -809,6 +809,13 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			if err == nil && digest != report.SourceSelection.SHA256 {
 				addFailure(errors.New("selected source fixture changed during the run"))
 			}
+			if report.SourceSelection.WorkspaceSHA256 != "" {
+				workDigest, err := fileSHA256(filepath.Join(workspace, "go.work"))
+				addFailure(err)
+				if err == nil && workDigest != report.SourceSelection.WorkspaceSHA256 {
+					addFailure(errors.New("selected source workspace changed during the run"))
+				}
+			}
 		}
 		if report.Fixture.Workspace.Path != "" {
 			addFailure(report.Fixture.Workspace.check())
@@ -898,7 +905,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		}
 	}
 	if options.caseName == caseSource {
-		selection, sourceEnv, err := collaborationPrepareSource(options.source, workspace, scratch, evidencePath, childEnv)
+		selection, sourceEnv, err := collaborationPrepareSource(ctx, options.source, workspace, scratch, evidencePath, childEnv)
 		if err != nil {
 			return evidencePath, err
 		}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -23,14 +24,17 @@ type collaborationSourceFile struct {
 }
 
 type collaborationSourceSelection struct {
-	Source       string                    `json:"source"`
-	Fixture      string                    `json:"fixture"`
-	SHA256       string                    `json:"sha256"`
-	Algorithm    string                    `json:"algorithm"`
-	Files        []collaborationSourceFile `json:"files"`
-	Excluded     []string                  `json:"excluded"`
-	GoExecutable string                    `json:"go_executable"`
-	GoSHA256     string                    `json:"go_sha256"`
+	Source          string                    `json:"source"`
+	Fixture         string                    `json:"fixture"`
+	SHA256          string                    `json:"sha256"`
+	Algorithm       string                    `json:"algorithm"`
+	Files           []collaborationSourceFile `json:"files"`
+	Excluded        []string                  `json:"excluded"`
+	GoExecutable    string                    `json:"go_executable"`
+	GoSHA256        string                    `json:"go_sha256"`
+	PigSource       string                    `json:"pig_source,omitempty"`
+	ManifestSHA256  string                    `json:"manifest_sha256,omitempty"`
+	WorkspaceSHA256 string                    `json:"workspace_sha256,omitempty"`
 }
 
 func collaborationSnapshotSource(source, destination string) ([]collaborationSourceFile, string, error) {
@@ -115,7 +119,7 @@ func collaborationSnapshotSource(source, destination string) ([]collaborationSou
 	return files, hex.EncodeToString(digest[:]), nil
 }
 
-func collaborationPrepareSource(source, workspace, scratch, evidence string, environment []string) (collaborationSourceSelection, []string, error) {
+func collaborationPrepareSource(ctx context.Context, source, workspace, scratch, evidence string, environment []string) (collaborationSourceSelection, []string, error) {
 	physical, err := filepath.EvalSymlinks(source)
 	if err != nil {
 		return collaborationSourceSelection{}, nil, err
@@ -125,10 +129,6 @@ func collaborationPrepareSource(source, workspace, scratch, evidence string, env
 		return collaborationSourceSelection{}, nil, errors.New("source selection requires Go on PATH")
 	}
 	goPath, err = filepath.Abs(goPath)
-	if err != nil {
-		return collaborationSourceSelection{}, nil, err
-	}
-	goHash, err := fileSHA256(goPath)
 	if err != nil {
 		return collaborationSourceSelection{}, nil, err
 	}
@@ -157,24 +157,82 @@ func collaborationPrepareSource(source, workspace, scratch, evidence string, env
 	if err := collaborationValidateSourceModule(fixture); err != nil {
 		return collaborationSourceSelection{}, nil, err
 	}
-	selection := collaborationSourceSelection{Source: physical, Fixture: fixture, SHA256: digest, Algorithm: "sha256-json-file-list-v1", Files: files, Excluded: []string{".git", "dist"}, GoExecutable: goPath, GoSHA256: goHash}
-	if err := writeCaptureJSON(filepath.Join(evidence, "source-selection.json"), selection); err != nil {
-		return collaborationSourceSelection{}, nil, err
-	}
 	for _, name := range []string{"source-cache", "source-modules", "source-gopath", "source-tmp"} {
 		if err := os.Mkdir(filepath.Join(scratch, name), 0o700); err != nil {
 			return collaborationSourceSelection{}, nil, err
 		}
+	}
+	selection := collaborationSourceSelection{Source: physical, Fixture: fixture, SHA256: digest, Algorithm: "sha256-json-file-list-v1", Files: files, Excluded: []string{".git", "dist"}}
+	checkout := filepath.Dir(filepath.Dir(physical))
+	manifest := filepath.Join(checkout, "pig-source.json")
+	if filepath.Base(physical) == "pig-litter" && filepath.Base(filepath.Dir(physical)) == "extensions" {
+		if _, err := os.Stat(manifest); err == nil {
+			devenv, err := exec.LookPath("devenv")
+			if err != nil {
+				return collaborationSourceSelection{}, nil, errors.New("source selection requires devenv for the declared PiG source")
+			}
+			script := `set -eu
+export GOPATH="$3/source-gopath" GOCACHE="$3/source-cache" GOMODCACHE="$3/source-modules" GOTMPDIR="$3/source-tmp" GOFLAGS=
+unset PIG_LITTER_WORKSPACE_BRIDGE
+bash "$DEVENV_ROOT/scripts/prepare-pig-workspace.sh" "$PIG_LITTER_SOURCE_DIR" "$1" "$2" >/dev/null
+printf '%s\n%s\n' "$(command -v go)" "$PIG_LITTER_SOURCE_DIR"`
+			command := exec.CommandContext(ctx, devenv, "shell", "--", "bash", "-c", script, "collaboration-source", workspace, fixture, scratch)
+			command.Dir = checkout
+			command.Env = append(append([]string{}, environment...), "PATH="+os.Getenv("PATH"), "GOENV=off", "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local", "GOTELEMETRY=off")
+			output, err := command.Output()
+			if err != nil {
+				var exit *exec.ExitError
+				if errors.As(err, &exit) {
+					return collaborationSourceSelection{}, nil, fmt.Errorf("prepare target source workspace: %w: %s", err, strings.TrimSpace(string(exit.Stderr)))
+				}
+				return collaborationSourceSelection{}, nil, fmt.Errorf("prepare target source workspace: %w", err)
+			}
+			lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+			if len(lines) != 2 || !filepath.IsAbs(lines[0]) || !filepath.IsAbs(lines[1]) {
+				return collaborationSourceSelection{}, nil, errors.New("target source workspace did not identify Go and PiG source")
+			}
+			goPath, selection.PigSource = lines[0], lines[1]
+			selection.ManifestSHA256, err = fileSHA256(manifest)
+			if err != nil {
+				return collaborationSourceSelection{}, nil, err
+			}
+			workData, err := os.ReadFile(filepath.Join(workspace, "go.work"))
+			if err != nil {
+				return collaborationSourceSelection{}, nil, err
+			}
+			workHash := sha256.Sum256(workData)
+			selection.WorkspaceSHA256 = hex.EncodeToString(workHash[:])
+			if err := os.WriteFile(filepath.Join(evidence, "source-workspace.go.work"), workData, 0o600); err != nil {
+				return collaborationSourceSelection{}, nil, err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return collaborationSourceSelection{}, nil, err
+		}
+	}
+	selection.GoExecutable = goPath
+	selection.GoSHA256, err = fileSHA256(goPath)
+	if err != nil {
+		return collaborationSourceSelection{}, nil, err
+	}
+	if err := writeCaptureJSON(filepath.Join(evidence, "source-selection.json"), selection); err != nil {
+		return collaborationSourceSelection{}, nil, err
 	}
 	for i, entry := range environment {
 		if strings.HasPrefix(entry, "PATH=") {
 			environment[i] = "PATH=" + filepath.Dir(goPath) + string(os.PathListSeparator) + strings.TrimPrefix(entry, "PATH=")
 		}
 	}
+	goWork := "off"
+	goFlags := "-mod=readonly -modcacherw -p=2"
+	if selection.PigSource != "" {
+		goWork = filepath.Join(workspace, "go.work")
+		goFlags = "-modcacherw -p=2"
+		environment = append(environment, "PIG_SOURCE_ROOT="+selection.PigSource, "PIG_SDK_GO_ROOT="+filepath.Join(selection.PigSource, "extensions", "sdk"))
+	}
 	environment = append(environment,
 		"GOCACHE="+filepath.Join(scratch, "source-cache"), "GOMODCACHE="+filepath.Join(scratch, "source-modules"),
 		"GOPATH="+filepath.Join(scratch, "source-gopath"), "GOTMPDIR="+filepath.Join(scratch, "source-tmp"),
-		"GOENV=off", "GOTELEMETRY=off", "GOWORK=off", "GOTOOLCHAIN=local", "GOFLAGS=-mod=readonly -modcacherw -p=2")
+		"GOENV=off", "GOTELEMETRY=off", "GOWORK="+goWork, "GOTOOLCHAIN=local", "GOFLAGS="+goFlags)
 	return selection, environment, nil
 }
 

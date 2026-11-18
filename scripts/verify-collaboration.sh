@@ -52,7 +52,8 @@ on_signal() {
 }
 trap on_signal INT TERM
 
-build=(go -C "$root/scripts" build -mod=readonly -modcacherw -buildvcs=false -trimpath -o "$bootstrap/verify-lifecycle" ./cmd/verify-lifecycle)
+cd "$root"
+build=(devenv shell -- env "GOPATH=$bootstrap/gopath" "GOCACHE=$bootstrap/cache" "GOMODCACHE=$bootstrap/modules" "GOTMPDIR=$bootstrap/gotmp" go -C "$root/scripts" build -mod=readonly -modcacherw -buildvcs=false -trimpath -o "$bootstrap/verify-lifecycle" ./cmd/verify-lifecycle)
 if command -v setsid >/dev/null 2>&1; then
   build=(setsid "${build[@]}")
   child_group=true

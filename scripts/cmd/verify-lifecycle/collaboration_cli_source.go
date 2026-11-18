@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+
+	"golang.org/x/mod/modfile"
 )
 
 type collaborationCLISourceFile struct {
@@ -22,14 +24,17 @@ type collaborationCLISourceFile struct {
 }
 
 type collaborationCLISourceSelection struct {
-	Source       string                       `json:"source"`
-	Fixture      string                       `json:"fixture"`
-	SHA256       string                       `json:"sha256"`
-	Algorithm    string                       `json:"algorithm"`
-	Files        []collaborationCLISourceFile `json:"files"`
-	Excluded     []string                     `json:"excluded"`
-	GoExecutable string                       `json:"go_executable"`
-	GoSHA256     string                       `json:"go_sha256"`
+	Source          string                       `json:"source"`
+	Fixture         string                       `json:"fixture"`
+	SHA256          string                       `json:"sha256"`
+	Algorithm       string                       `json:"algorithm"`
+	Files           []collaborationCLISourceFile `json:"files"`
+	Excluded        []string                     `json:"excluded"`
+	GoExecutable    string                       `json:"go_executable"`
+	GoSHA256        string                       `json:"go_sha256"`
+	PigSource       string                       `json:"pig_source,omitempty"`
+	ManifestSHA256  string                       `json:"manifest_sha256,omitempty"`
+	WorkspaceSHA256 string                       `json:"workspace_sha256,omitempty"`
 }
 
 func (runner *collaborationCLIRunner) validateSourceSelection(target collaborationCLITarget, evidence string, data []byte) error {
@@ -48,6 +53,33 @@ func (runner *collaborationCLIRunner) validateSourceSelection(target collaborati
 	goDigest, err := collaborationCLIDigest(selection.GoExecutable)
 	if err != nil || goDigest != selection.GoSHA256 {
 		return errors.New("source selection does not identify its Go executable")
+	}
+	manifest := filepath.Join(target.Checkout, "pig-source.json")
+	if _, err := os.Stat(manifest); err == nil {
+		manifestDigest, err := collaborationCLIDigest(manifest)
+		if err != nil || manifestDigest != selection.ManifestSHA256 || !filepath.IsAbs(selection.PigSource) {
+			return errors.New("source selection does not identify the target's declared PiG source")
+		}
+		workspaceData, err := os.ReadFile(filepath.Join(evidence, "source-workspace.go.work"))
+		if err != nil || collaborationTestDataDigest(workspaceData) != selection.WorkspaceSHA256 {
+			return errors.New("source workspace differs from its receipt")
+		}
+		work, err := modfile.ParseWork("go.work", workspaceData, nil)
+		if err != nil || len(work.Use) != 3 {
+			return errors.New("source workspace has an invalid module closure")
+		}
+		want := map[string]bool{selection.Fixture: true, selection.PigSource: true, filepath.Join(selection.PigSource, "extensions", "sdk"): true}
+		for _, use := range work.Use {
+			if !want[use.Path] {
+				return errors.New("source workspace does not use the target fixture and both PiG modules")
+			}
+			delete(want, use.Path)
+		}
+		if len(want) != 0 {
+			return errors.New("source workspace has duplicate or missing modules")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) || selection.PigSource != "" || selection.ManifestSHA256 != "" || selection.WorkspaceSHA256 != "" {
+		return errors.New("source workspace has no target manifest")
 	}
 	encoded, err := json.Marshal(selection.Files)
 	if err != nil || collaborationTestDataDigest(encoded) != selection.SHA256 {

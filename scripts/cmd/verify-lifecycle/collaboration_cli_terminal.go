@@ -130,6 +130,15 @@ func (runner *collaborationCLIRunner) terminal(ctx context.Context, name string,
 			return err
 		}
 		artifacts = append(artifacts, artifact)
+		if _, err := os.Stat(filepath.Join(target.Checkout, "pig-source.json")); err == nil {
+			artifact, err := runner.artifact(filepath.Join(summary.Evidence, "source-workspace.go.work"), "log")
+			if err != nil {
+				return err
+			}
+			artifacts = append(artifacts, artifact)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	attemptRoot, err := os.OpenRoot(runner.directory)
 	if err != nil {
