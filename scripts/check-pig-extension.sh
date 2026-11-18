@@ -121,7 +121,7 @@ for artifact in ./extensions/pig-litter ./extensions/pig-litter/dist/pig-litter;
   if ! printf '%s\n' "$report" | jq --exit-status --arg language "$language" --arg form "$form" '
     .valid == true and .registered == true and .name == "pig-litter"
     and .definition.language == $language and .definition.form == $form
-    and (.tools == ["litter_inspect", "litter_list", "litter_message", "litter_spawn", "litter_stop", "litter_wait", "team_list", "team_send", "team_spawn", "team_task_create", "team_task_get", "team_task_list", "team_task_update"])
+    and (.tools == ["litter_inspect", "litter_list", "litter_message", "litter_spawn", "litter_stop", "litter_wait", "team_list", "team_plan", "team_send", "team_spawn", "team_task_create", "team_task_get", "team_task_list", "team_task_update"])
     and ((.commands // []) | map(if type == "string" then . else .name end) | index("pig-litter")) != null
   ' >/dev/null; then
     printf 'unexpected %s registration report:\n%s\n' "$name" "$report" >&2

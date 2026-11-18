@@ -130,6 +130,11 @@ type peerWakeInput struct {
 	Recipient MemberRef
 }
 
+type planDenial struct {
+	ID   string
+	Name string
+}
+
 type run struct {
 	ref             Ref
 	noticeID        string
@@ -163,6 +168,7 @@ type run struct {
 	teamSessionFile string
 	teamFinishDone  chan struct{}
 	teamFinishErr   error
+	planDenials     map[planDenial]bool
 }
 
 type Inspection struct {

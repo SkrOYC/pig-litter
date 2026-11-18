@@ -44,11 +44,12 @@ type WorkspacePolicy struct {
 }
 
 type teamMember struct {
-	Ref         MemberRef       `json:"ref"`
-	AdmissionID string          `json:"admissionId"`
-	Name        string          `json:"name"`
-	Workspace   WorkspacePolicy `json:"workspace"`
-	State       string          `json:"state"`
+	Ref          MemberRef       `json:"ref"`
+	AdmissionID  string          `json:"admissionId"`
+	Name         string          `json:"name"`
+	Workspace    WorkspacePolicy `json:"workspace"`
+	State        string          `json:"state"`
+	PlanRequired bool            `json:"planRequired,omitempty"`
 }
 
 var teamNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)

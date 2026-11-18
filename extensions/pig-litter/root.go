@@ -73,12 +73,14 @@ func (o *owner) drainRootAbort(generation *rootGeneration) {
 	generation.applied = true
 	generation.drained = make(chan struct{})
 	o.rootWG.Add(1)
+	o.tree.lifecycleMu.Lock()
 	o.tree.mu.Lock()
 	var pending, fresh []*run
 	if !o.tree.closed {
 		pending, fresh = o.tree.pauseLocked(o.tree.root)
 	}
 	o.tree.mu.Unlock()
+	o.tree.lifecycleMu.Unlock()
 	o.rootMu.Unlock()
 	o.tree.joinPaused(pending, fresh)
 	close(generation.drained)

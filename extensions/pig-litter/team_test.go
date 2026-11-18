@@ -59,7 +59,7 @@ func TestIdleTeamPauseSurvivesLateSettlementAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"})
+	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestIdleTeamPauseReportsStorageFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"})
+	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestTeamRetirementReportsSyncFailureAndReleasesLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"})
+	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestIsolatedWorkspaceRollbackPreservesDirtyOrAmbiguousWork(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			member, err := store.Reserve(id, "018f0000-0000-7000-8000-000000000003", "Alice", workspace)
+			member, err := store.Reserve(id, "018f0000-0000-7000-8000-000000000003", "Alice", workspace, false)
 			if err != nil {
 				t.Fatal(err)
 			}

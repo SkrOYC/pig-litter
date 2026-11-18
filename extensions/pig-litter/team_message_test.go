@@ -14,7 +14,7 @@ func peerTestMembers(t *testing.T, store *teamStore, workspace WorkspacePolicy) 
 	var members [2]teamMember
 	for index, name := range []string{"alice", "bob"} {
 		admission := string(storeTestUUID(20 + index))
-		if _, err := store.Reserve(storeTestUUID(10+index), admission, name, workspace); err != nil {
+		if _, err := store.Reserve(storeTestUUID(10+index), admission, name, workspace, false); err != nil {
 			t.Fatal(err)
 		}
 		member, err := store.Commit(admission)

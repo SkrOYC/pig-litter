@@ -600,7 +600,19 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	scope := &extension.ToolScope{Builtin: &allowedNames, Extensions: map[string]*[]string{extension.McpAdapterEntry: &allowedNames}}
 	options := coding.SessionStartOptions{Model: model, ResourceLoader: loader, ExtraTools: tools, AllowedTools: allowed, ToolScope: scope}
 	if teamGate != nil {
-		options.BeforeToolCall = []agent.BeforeToolCallHook{teamGate.before}
+		options.BeforeToolCall = append(options.BeforeToolCall, teamGate.before)
+	}
+	o.tree.mu.Lock()
+	teamAncestor := false
+	for ancestor := r; ancestor != nil && ancestor != o.tree.root; ancestor = ancestor.parent {
+		if ancestor.team != nil {
+			teamAncestor = true
+			break
+		}
+	}
+	o.tree.mu.Unlock()
+	if teamAncestor {
+		options.BeforeToolCall = append(options.BeforeToolCall, o.planHook(r, run))
 	}
 	var session *coding.Session
 	if run.resume {
@@ -663,6 +675,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			run.mu.Lock()
 			previous := run.calls
 			run.calls = newCallScope()
+			run.planDenials = nil
 			run.mu.Unlock()
 			o.retireScope(previous)
 			observedMu.Lock()
@@ -686,7 +699,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			o.confirmCompletions(r)
 		case agent.ToolExecutionEndEvent:
 			o.observeCall(run, event.ToolName, event.ToolCallID, event.Result, event.IsError)
-			if event.IsError || event.Result.IsError {
+			if (event.IsError || event.Result.IsError) && !consumePlanDenial(run, event.ToolCallID, event.ToolName) {
 				observedMu.Lock()
 				if failure == "" {
 					failure = toolFailure(event.ToolName, event.Result)

@@ -45,17 +45,20 @@ type teamReservation struct {
 }
 
 type teamStore struct {
-	mu         sync.Mutex
-	dir        string
-	root       ChildID
-	ownerEpoch uint64
-	ownerToken string
-	lead       *flock.Flock
-	syncDir    func(string) error
-	closeLock  func(*flock.Flock) error
-	uncertain  *uncertainTeamWrite
-	closed     bool
-	peerAuth   map[string]peerAuthorization
+	mu            sync.Mutex
+	dir           string
+	root          ChildID
+	ownerEpoch    uint64
+	ownerToken    string
+	lead          *flock.Flock
+	syncDir       func(string) error
+	closeLock     func(*flock.Flock) error
+	uncertain     *uncertainTeamWrite
+	planUncertain map[MemberRef]*uncertainPlanWrite
+	planGrants    map[MemberRef]PlanRequestID
+	planDigests   map[MemberRef][32]byte
+	closed        bool
+	peerAuth      map[string]peerAuthorization
 }
 
 type uncertainTeamWrite struct {
@@ -176,7 +179,7 @@ func (s *teamStore) claimLocked(created bool, lock *flock.Flock) error {
 	return nil
 }
 
-func (s *teamStore) Reserve(id ChildID, admissionID, name string, workspace WorkspacePolicy) (teamMember, error) {
+func (s *teamStore) Reserve(id ChildID, admissionID, name string, workspace WorkspacePolicy, planRequired bool) (teamMember, error) {
 	var member teamMember
 	err := s.transact(func(roster *teamRoster) (bool, error) {
 		if err := validateTeamName(name); err != nil {
@@ -190,7 +193,7 @@ func (s *teamStore) Reserve(id ChildID, admissionID, name string, workspace Work
 			if storedWorkspace.Kind == "isolated_worktree" {
 				storedWorkspace.Phase = "intent"
 			}
-			if existing.Member.AdmissionID == admissionID && existing.Member.Ref.ID == id && existing.RequestedName == name && storedWorkspace == workspace {
+			if existing.Member.AdmissionID == admissionID && existing.Member.Ref.ID == id && existing.RequestedName == name && storedWorkspace == workspace && existing.Member.PlanRequired == planRequired {
 				member = existing.Member
 				return false, nil
 			}
@@ -206,7 +209,7 @@ func (s *teamStore) Reserve(id ChildID, admissionID, name string, workspace Work
 			return false, err
 		}
 		roster.Generation++
-		member = teamMember{Ref: MemberRef{Team: roster.Team, ID: id, Generation: roster.Generation}, AdmissionID: admissionID, Name: allocated, Workspace: workspace, State: "starting"}
+		member = teamMember{Ref: MemberRef{Team: roster.Team, ID: id, Generation: roster.Generation}, AdmissionID: admissionID, Name: allocated, Workspace: workspace, State: "starting", PlanRequired: planRequired}
 		roster.Reservations = append(roster.Reservations, teamReservation{Member: member, RequestedName: name})
 		return true, nil
 	})
@@ -436,8 +439,24 @@ func (s *teamStore) Close() error {
 		s.closed = true
 	}
 	var lockErr error
+	for ref, pending := range s.planUncertain {
+		reconcileErr = errors.Join(reconcileErr, s.reconcilePlanLocked(ref, pending))
+		closeErr := s.closeLock(pending.lock)
+		if pending.lock.Locked() {
+			if closeErr == nil {
+				closeErr = errors.New("plan transaction lock remains held")
+			}
+			lockErr = errors.Join(lockErr, closeErr)
+			continue
+		}
+		delete(s.planUncertain, ref)
+		lockErr = errors.Join(lockErr, closeErr)
+	}
+	if len(s.planUncertain) != 0 {
+		return errors.Join(reconcileErr, lockErr)
+	}
 	if s.uncertain != nil {
-		lockErr = s.closeLock(s.uncertain.lock)
+		lockErr = errors.Join(lockErr, s.closeLock(s.uncertain.lock))
 		if s.uncertain.lock.Locked() {
 			if lockErr == nil {
 				lockErr = errors.New("team transaction lock remains held")
@@ -463,7 +482,15 @@ func (s *teamStore) Close() error {
 func (s *teamStore) locksHeld() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.uncertain != nil && s.uncertain.lock.Locked() || s.lead != nil && s.lead.Locked()
+	if s.uncertain != nil && s.uncertain.lock.Locked() || s.lead != nil && s.lead.Locked() {
+		return true
+	}
+	for _, pending := range s.planUncertain {
+		if pending.lock.Locked() {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *teamStore) transact(change func(*teamRoster) (bool, error)) error {
@@ -876,7 +903,18 @@ func checkRosterJSONSchema(data []byte) error {
 				}
 				data = reservation["member"]
 			}
-			member, err := exactJSONObject(data, "ref", "admissionId", "name", "workspace", "state")
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(data, &fields); err != nil {
+				return err
+			}
+			keys := []string{"ref", "admissionId", "name", "workspace", "state"}
+			if mode, ok := fields["planRequired"]; ok {
+				if string(mode) != "true" && string(mode) != "false" {
+					return errors.New("invalid teammate planning mode")
+				}
+				keys = append(keys, "planRequired")
+			}
+			member, err := exactJSONObject(data, keys...)
 			if err != nil {
 				return err
 			}
