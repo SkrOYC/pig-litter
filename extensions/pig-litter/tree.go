@@ -42,11 +42,12 @@ type Tree struct {
 	closedDone   chan struct{}
 	completionWG sync.WaitGroup
 	teamWG       sync.WaitGroup
+	peerWakeWG   sync.WaitGroup
 	execute      func(*record, *run) Outcome
 	completion   func(*record, *run, Outcome)
 	changed      func()
 	persist      func(*record) error
-	teamFinished func(*record, *run, Outcome)
+	teamFinished func(*record, *run, Outcome) error
 	teamCanceled func(*record)
 	teamPaused   func(*record, *run) error
 	dirty        map[ChildID]*record
@@ -242,7 +243,7 @@ func (t *Tree) roomLocked(parent ChildID, writer bool, cwd string, except ChildI
 
 func (t *Tree) newRunLocked(ref Ref, prompt string) *run {
 	ctx, cancel := context.WithCancel(t.ctx)
-	return &run{ref: ref, noticeID: rand.Text(), state: Starting, ctx: ctx, cancel: cancel, prompt: prompt, done: make(chan struct{}), ready: make(chan struct{}), mailbox: make(chan message, t.config.MaxMailbox)}
+	return &run{ref: ref, noticeID: rand.Text(), state: Starting, ctx: ctx, cancel: cancel, prompt: prompt, done: make(chan struct{}), ready: make(chan struct{}), teamFinishDone: make(chan struct{}), mailbox: make(chan message, t.config.MaxMailbox)}
 }
 
 func (t *Tree) admit(request admission) (Snapshot, *run, error) {
@@ -343,7 +344,7 @@ func (t *Tree) activateChecked(selected *run, accept func() error) error {
 	r.admitted = true
 	r.previous = nil
 	previousInputs := slices.Clone(r.pendingInputs)
-	if run.resume {
+	if run.resume && run.peerWake == nil {
 		r.pendingInputs = append(r.pendingInputs, pendingInput{Text: run.continuation})
 	}
 	t.mu.Unlock()
@@ -491,7 +492,13 @@ mailboxDrained:
 	t.mu.Unlock()
 	t.lifecycleMu.Unlock()
 	if r.team != nil && t.teamFinished != nil {
-		t.teamFinished(r, run, raw)
+		err := t.teamFinished(r, run, raw)
+		t.mu.Lock()
+		run.teamFinishErr = err
+		if run.teamFinishDone != nil {
+			close(run.teamFinishDone)
+		}
+		t.mu.Unlock()
 		t.teamWG.Done()
 	}
 	t.notify()
@@ -886,6 +893,7 @@ func (t *Tree) close() {
 	}
 	t.completionWG.Wait()
 	t.teamWG.Wait()
+	t.peerWakeWG.Wait()
 	t.mu.Lock()
 	for selected := range t.pending {
 		delete(t.pending, selected)

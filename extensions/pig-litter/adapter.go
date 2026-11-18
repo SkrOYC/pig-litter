@@ -604,13 +604,13 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	var session *coding.Session
 	if run.resume {
 		session, err = runtime.Resume(string(r.id), options)
-		if err == nil {
+		if err == nil && run.peerWake == nil {
 			run.prompt = run.continuation
 			o.tree.mu.Lock()
 			r.pendingTask = ""
 			o.tree.mu.Unlock()
 		}
-		if err != nil && r.pendingTask != "" && (len(r.pendingInputs) == 0 || r.pendingInputs[0].After == nil) {
+		if err != nil && run.peerWake == nil && r.pendingTask != "" && (len(r.pendingInputs) == 0 || r.pendingInputs[0].After == nil) {
 			options.SessionID = string(r.id)
 			session, err = runtime.New(options)
 		}
@@ -739,7 +739,12 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	if len(pendingTools) != 0 {
 		session.QueueSteer("<system-notice>\nSome allowed tools are still connecting: "+strings.Join(pendingTools, ", ")+". They can become available during this run.\n</system-notice>", nil)
 	}
-	sendErr := o.tree.sendInput(session, run)
+	var sendErr error
+	if run.peerWake != nil {
+		sendErr = o.sendPeerWake(session, r, run)
+	} else {
+		sendErr = o.tree.sendInput(session, run)
+	}
 	stopDelivery()
 	<-deliveryDone
 	session.ClearQueue()

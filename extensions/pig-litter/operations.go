@@ -142,6 +142,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if err != nil {
 			return nil, err
 		}
+		if receipt.State == peerAccepted {
+			o.requestPeerWake(receipt.Envelope.Recipient)
+		}
 		delivery := string(receipt.State)
 		if receipt.State == peerObserved {
 			delivery = "unverified"

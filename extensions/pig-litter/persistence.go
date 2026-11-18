@@ -269,6 +269,7 @@ func (o *owner) restoreChildren() error {
 			r.run.outcome = r.latest
 			r.run.cancel()
 			close(r.run.done)
+			close(r.run.teamFinishDone)
 			o.tree.records[id] = r
 			if saved.Team == nil {
 				o.tree.names[key] = id

@@ -328,7 +328,7 @@ func (s *teamStore) Reservations() ([]teamMember, error) {
 }
 
 func (s *teamStore) SetState(ref MemberRef, state string) error {
-	if state != "idle" && state != "interrupted" && state != "unavailable" && state != "paused" {
+	if state != "running" && state != "idle" && state != "interrupted" && state != "unavailable" && state != "paused" {
 		return errors.New("invalid team member state transition")
 	}
 	return s.transact(func(roster *teamRoster) (bool, error) {

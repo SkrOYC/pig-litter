@@ -327,6 +327,48 @@ func (s *teamStore) offerPeer(recipient MemberRef) (peerReceipt, string, bool, e
 	return offered, content, found, err
 }
 
+func (s *teamStore) peerWakeEligible(recipient MemberRef) (bool, error) {
+	eligible := false
+	err := s.transact(func(roster *teamRoster) (bool, error) {
+		if roster.Team != recipient.Team {
+			return false, reject("unavailable", "team identity changed")
+		}
+		idle := false
+		members := make(map[MemberRef]string, len(roster.Members))
+		for _, member := range roster.Members {
+			members[member.Ref] = member.Name
+			if member.Ref == recipient && member.State == "idle" {
+				idle = true
+			}
+		}
+		if !idle {
+			return false, nil
+		}
+		for key, authenticated := range s.peerAuth {
+			if authenticated.Envelope.Recipient != recipient {
+				continue
+			}
+			if members[authenticated.Envelope.Sender] != authenticated.SenderName {
+				continue
+			}
+			_, path := peerPaths(s.dir, key)
+			receipt, err := readPeerReceipt(path)
+			if err != nil {
+				return false, err
+			}
+			if receipt.Envelope != authenticated.Envelope {
+				return false, errors.New("peer receipt identity changed")
+			}
+			if receipt.State == peerAccepted {
+				eligible = true
+				break
+			}
+		}
+		return false, nil
+	})
+	return eligible, err
+}
+
 func nativePeerEntry(path string, envelope peerEnvelope, content string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {

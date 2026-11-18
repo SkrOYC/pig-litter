@@ -97,6 +97,8 @@ type record struct {
 	receiptMu                            sync.Mutex
 	receipts                             map[*run]*completionReceipt
 	notices                              map[string]*reservation
+	peerWakePending                      bool
+	peerWakeVersion                      uint64
 }
 
 type pendingInput struct {
@@ -124,6 +126,10 @@ type runProgress struct {
 	toolsClipped       bool
 }
 
+type peerWakeInput struct {
+	Recipient MemberRef
+}
+
 type run struct {
 	ref             Ref
 	noticeID        string
@@ -142,6 +148,7 @@ type run struct {
 	continuation    string
 	resumePaused    bool
 	resume          bool
+	peerWake        *peerWakeInput
 	mailbox         chan message
 	mu              sync.Mutex
 	calls           *callScope
@@ -154,6 +161,8 @@ type run struct {
 	reservation     *reservation
 	teamResult      [32]byte
 	teamSessionFile string
+	teamFinishDone  chan struct{}
+	teamFinishErr   error
 }
 
 type Inspection struct {
