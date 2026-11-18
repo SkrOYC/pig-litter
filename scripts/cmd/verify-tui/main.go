@@ -30,6 +30,7 @@ import (
 const (
 	selectedExtensionName = "pig-litter"
 	fixtureAPIKey         = "local-fixture-only"
+	versionBanner         = "v0.7.0+1.5.0"
 	escapeSettle          = 150 * time.Millisecond
 	stageTimeout          = 35 * time.Second
 	runTimeout            = 6 * time.Minute
@@ -779,12 +780,23 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			if err := exitHost(); err != nil {
 				return err
 			}
+			offset := capture.saved
 			process, err := capture.start(append([]string{options.pigPath}, append(append([]string(nil), args...), "--session", path)...))
 			panePID = process.PID
 			if err != nil {
 				return err
 			}
-			return waitFor(ctx, "restarted native PiG TUI", stageTimeout, func() (bool, error) { text, err := readVisible(); return err == nil && startupFrameReady(text), nil })
+			return waitFor(ctx, "restarted native PiG TUI", stageTimeout, func() (bool, error) {
+				if err := capture.checkActive(); err != nil {
+					return false, err
+				}
+				versionSeen, err := capture.containsSince(offset, []byte(versionBanner))
+				if err != nil || !versionSeen {
+					return false, err
+				}
+				text, err := readVisible()
+				return err == nil && liveEditorFrameReady(text), nil
+			})
 		}
 	}
 
@@ -2184,20 +2196,18 @@ func frameHasGeometry(frame string, width, height int) bool {
 }
 
 func startupFrameReady(frame string) bool {
-	if !strings.Contains(frame, "v0.7.0+1.5.0") {
-		return false
-	}
+	return strings.Contains(frame, versionBanner) && liveEditorFrameReady(frame)
+}
+
+func liveEditorFrameReady(frame string) bool {
 	parentFooter := false
-	borders := 0
 	for _, line := range strings.Split(frame, "\n") {
 		if fields := strings.Fields(line); len(fields) > 0 && fields[len(fields)-1] == "parent" {
 			parentFooter = true
 		}
-		if horizontalBorder(line) {
-			borders++
-		}
 	}
-	return parentFooter && borders >= 2
+	_, editor := editorInputText(frame)
+	return parentFooter && editor
 }
 
 func horizontalBorder(line string) bool {

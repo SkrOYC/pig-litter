@@ -295,6 +295,26 @@ func TestWidgetGeometryStartupAndEditorPredicates(t *testing.T) {
 	}
 }
 
+func TestResumedEditorCanBeReadyWithoutVisibleBanner(t *testing.T) {
+	lines := make([]string, 32)
+	lines[27] = strings.Repeat("─", 100)
+	lines[29] = strings.Repeat("─", 100)
+	lines[31] = strings.Repeat(" ", 84) + "parent"
+	resumed := strings.Join(lines, "\n")
+	if startupFrameReady(resumed) || !liveEditorFrameReady(resumed) {
+		t.Fatal("resumed editor did not retain its live footer and editor state")
+	}
+	lines[31] = "other"
+	if liveEditorFrameReady(strings.Join(lines, "\n")) {
+		t.Fatal("editor with the wrong footer was accepted")
+	}
+	lines[31] = "parent"
+	lines[29] = ""
+	if liveEditorFrameReady(strings.Join(lines, "\n")) {
+		t.Fatal("editor without two borders was accepted")
+	}
+}
+
 func TestFixtureEnvironmentDoesNotInheritRuntimeOrProviderSecrets(t *testing.T) {
 	env := fixtureEnvironment("/fixture/bin/pig", "/fixture/tools/tmux", "/private/home", "/private/pig", "/private/agent", "/private")
 	values := make(map[string]string)
