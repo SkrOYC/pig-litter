@@ -165,6 +165,7 @@ if [[ -f "$root_dir/pig-source.json" ]]; then
   export PIG_LITTER_EXPECTED_PIG="$build_dir/bin/pig"
   export PIG_LITTER_EXPECTED_PIG_SHA256="$(shasum -a 256 "$PIG_LITTER_EXPECTED_PIG" | awk '{ print $1 }')"
   export PIG_LITTER_EXPECTED_PIG_BUILD="$pig_build"
+  unset PIG_LITTER_EXPECTED_PIG_SHA256_FILE
   sdk_dir="$(cd "$source_dir/extensions/sdk" && pwd -P)"
   bridge_path="$root_dir/extensions/go.work"
   previous_bridge_target=""
@@ -203,7 +204,7 @@ else
   tar -xzf "$scratch_dir/$archive" -C "$scratch_dir/extract" "$pinned_root/pig"
   install -m 755 "$scratch_dir/extract/$pinned_root/pig" "$scratch_dir/verified-pig-$pig_version/bin/pig"
   export PATH="$scratch_dir/verified-pig-$pig_version/bin:$PATH"
-  unset PIG_LITTER_EXPECTED_PIG PIG_LITTER_EXPECTED_PIG_SHA256 PIG_LITTER_EXPECTED_PIG_BUILD PIG_LITTER_SOURCE_DIR PIG_LITTER_SDK_DIR
+  unset PIG_LITTER_EXPECTED_PIG PIG_LITTER_EXPECTED_PIG_SHA256 PIG_LITTER_EXPECTED_PIG_SHA256_FILE PIG_LITTER_EXPECTED_PIG_BUILD PIG_LITTER_SOURCE_DIR PIG_LITTER_SDK_DIR
 fi
 pig_file="$(file -b "$(command -v pig)")"
 case "$expected_os/$expected_arch" in
