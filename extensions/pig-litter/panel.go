@@ -64,6 +64,7 @@ type childPanel struct {
 	member             MemberRef
 	memberSelected     bool
 	teamRequest        uint64
+	messageTarget      *humanMember
 }
 
 func (t *Tree) panelChildren() []panelChild {
@@ -196,7 +197,7 @@ func (p *childPanel) receive() {
 		p.pendingCancel()
 		p.pendingCancel = nil
 		p.pending = nil
-		if p.selected == p.pendingSelection && result.selected != nil {
+		if p.team == nil && p.selected == p.pendingSelection && result.selected != nil {
 			p.selected = result.selected
 		}
 		if result.err != nil {
@@ -206,6 +207,7 @@ func (p *childPanel) receive() {
 			if p.mode == panelMessage || p.mode == panelResume {
 				p.mode = p.previous
 				p.draft, p.cursor = "", 0
+				p.messageTarget = nil
 			}
 		}
 	default:
@@ -427,23 +429,7 @@ func (p *childPanel) HandleInput(data string) (sdk.RemoteComponentResult, error)
 		return sdk.RemoteComponentResult{}, nil
 	}
 	if p.mode == panelMessage || p.mode == panelResume {
-		if tui.MatchesKeyID(data, "enter") {
-			if strings.TrimSpace(p.draft) != "" {
-				kind := humanMessage
-				if p.mode == panelResume {
-					kind = humanResume
-				}
-				p.submit(humanAction{kind: kind, mode: p.messageMode, text: p.draft})
-			}
-		} else if tui.MatchesKeyID(data, "tab") && p.mode == panelMessage {
-			if p.messageMode == "steer" {
-				p.messageMode = "follow_up"
-			} else {
-				p.messageMode = "steer"
-			}
-		} else {
-			p.edit(data)
-		}
+		p.composerInput(data)
 		return sdk.RemoteComponentResult{}, nil
 	}
 	children := p.owner.tree.panelChildren()
@@ -505,11 +491,46 @@ func (p *childPanel) HandleInput(data string) (sdk.RemoteComponentResult, error)
 	return sdk.RemoteComponentResult{}, nil
 }
 
+func (p *childPanel) composerInput(data string) {
+	if tui.MatchesKeyID(data, "enter") {
+		if strings.TrimSpace(p.draft) != "" {
+			kind := humanMessage
+			if p.mode == panelResume {
+				kind = humanResume
+			}
+			p.submit(humanAction{kind: kind, mode: p.messageMode, text: p.draft})
+		}
+	} else if tui.MatchesKeyID(data, "tab") && p.mode == panelMessage {
+		if p.messageMode == "steer" {
+			p.messageMode = "follow_up"
+		} else {
+			p.messageMode = "steer"
+		}
+	} else {
+		p.edit(data)
+	}
+}
+
 func (p *childPanel) submit(action humanAction) {
-	p.pendingSelection = p.selected
+	selected := p.selected
+	if p.team != nil {
+		if p.messageTarget == nil {
+			p.feedback = "Selected teammate is unavailable"
+			return
+		}
+		member := *p.messageTarget
+		action.member = &member
+		var err error
+		selected, err = p.owner.teamMessageExecution(member)
+		if err != nil {
+			p.feedback = "Action failed | " + err.Error()
+			return
+		}
+	}
+	p.pendingSelection = selected
 	input, cancel := context.WithCancel(p.ctx)
 	p.pendingCancel = cancel
-	p.pending = p.owner.humanAction(input, p.selected, action)
+	p.pending = p.owner.humanAction(input, selected, action)
 }
 
 func previousGrapheme(text string, end int) int {
@@ -609,9 +630,13 @@ func (p *childPanel) renderTeam(width int) []string {
 		height = 24
 	}
 	budget := max(1, height-8)
-	legend := []string{"Up/Down move  Enter detail  v report  t transcript", "k all tasks  [ ] page  Home/End  Esc back/close"}
-	if p.mode != panelList {
+	legend := []string{"Up/Down move  Enter detail  v report  t transcript", "m message active teammate  k all tasks  [ ] page  Home/End  Esc close"}
+	if p.mode == panelMessage {
+		legend = []string{"Enter submit  Esc cancel", "Left/Right edit  Ctrl+U clear  Tab steer/follow_up"}
+	} else if p.mode != panelList && p.mode != panelDetail {
 		legend = []string{"Up/Down scroll  [ ] page  Home/End  Esc back"}
+	} else if p.mode == panelDetail {
+		legend = []string{"Up/Down scroll  v report  t transcript", "m message active teammate  k all tasks  Esc back"}
 	}
 	if width >= 80 {
 		legend = widthx.WrapTextWithAnsi(paintText(strings.Join(legend, "  "), false), width)
@@ -687,6 +712,13 @@ func (p *childPanel) renderTeam(width int) []string {
 		case panelTasks:
 			title += " | tasks"
 			content = teamTaskLines(frame, nil)
+		case panelMessage:
+			title += " | message"
+			content = []string{"Message mode " + p.messageMode}
+			if p.messageTarget != nil {
+				content = append(content, "Target "+p.messageTarget.Name+" | UUID "+string(p.messageTarget.Ref.ID))
+			}
+			content = append(content, p.draftLine(width))
 		}
 		var issues []string
 		for _, section := range []struct {
@@ -706,7 +738,11 @@ func (p *childPanel) renderTeam(width int) []string {
 		content = append(content, "")
 	}
 	rows := append([]string{title}, content...)
-	rows = append(rows, p.feedback)
+	feedback := p.feedback
+	if p.pending != nil {
+		feedback = "Working"
+	}
+	rows = append(rows, feedback)
 	rows = append(rows, legend...)
 	return panelPaint(rows, width)
 }
@@ -855,12 +891,22 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 			return sdk.RemoteComponentResult{Done: true}
 		case panelReport, panelTranscript:
 			p.mode, p.scroll = p.previous, p.previousScroll
+		case panelMessage:
+			if p.pendingCancel != nil {
+				p.pendingCancel()
+			}
+			p.mode, p.scroll = p.previous, p.previousScroll
+			p.draft, p.cursor, p.messageTarget = "", 0, nil
 		default:
 			p.mode, p.scroll = panelList, 0
 		}
 		return sdk.RemoteComponentResult{}
 	}
-	if p.closed {
+	if p.closed || p.pending != nil {
+		return sdk.RemoteComponentResult{}
+	}
+	if p.mode == panelMessage {
+		p.composerInput(data)
 		return sdk.RemoteComponentResult{}
 	}
 	frame := p.team.Snapshot()
@@ -914,6 +960,16 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 		p.previous, p.previousScroll = p.mode, p.scroll
 		p.mode, p.scroll, p.renderedScroll = panelTranscript, 0, 0
 		p.teamRequest = p.team.Inspect(p.member)
+	case key == "m" && (p.mode == panelList || p.mode == panelDetail):
+		member := frame.Members[index]
+		if frame.RosterHealth.Status != "fresh" || member.Member.State != "running" || member.Execution == nil || member.Execution.Child.State != Running || member.Execution.Admission != "ready" {
+			p.feedback = "Selected teammate is not active"
+			return sdk.RemoteComponentResult{}
+		}
+		p.messageTarget = &humanMember{Ref: member.Member.Ref, AdmissionID: member.Member.AdmissionID, Name: member.Member.Name}
+		p.previous, p.previousScroll = p.mode, p.scroll
+		p.mode, p.draft, p.cursor = panelMessage, "", 0
+		p.feedback = ""
 	}
 	return sdk.RemoteComponentResult{}
 }

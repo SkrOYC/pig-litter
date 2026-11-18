@@ -255,3 +255,90 @@ func TestTeamTranscriptRejectsAmbiguousRetainedIdentity(t *testing.T) {
 		t.Fatalf("history inspection changed the source: %v", err)
 	}
 }
+
+func TestHumanMemberRunRequiresFullCommittedIdentityAndLiveExecution(t *testing.T) {
+	o, store, members, runs := teamViewFixture(t)
+	member, selected := members[1], runs[1]
+	if err := store.SetState(member.Ref, "running"); err != nil {
+		t.Fatal(err)
+	}
+	o.tree.mu.Lock()
+	selected.state, selected.admission = Running, admissionReady
+	o.tree.mu.Unlock()
+	defer func() {
+		o.tree.mu.Lock()
+		selected.state = Completed
+		o.tree.mu.Unlock()
+	}()
+	target := humanMember{Ref: member.Ref, AdmissionID: member.AdmissionID, Name: member.Name}
+	if actual, err := o.humanMemberRun(target); err != nil || actual != selected {
+		t.Fatalf("committed live teammate resolved to %p, %v", actual, err)
+	}
+	wrongGeneration := target
+	wrongGeneration.Ref.Generation++
+	wrongTeam := target
+	wrongTeam.Ref.Team.Epoch++
+	wrongAdmission := target
+	wrongAdmission.AdmissionID = members[0].AdmissionID
+	for _, invalid := range []humanMember{wrongGeneration, wrongTeam, wrongAdmission} {
+		if actual, err := o.humanMemberRun(invalid); err == nil || actual != nil {
+			t.Fatalf("different identity resolved to a live teammate: %+v, %p, %v", invalid, actual, err)
+		}
+	}
+	if err := store.SetState(member.Ref, "paused"); err != nil {
+		t.Fatal(err)
+	}
+	if actual, err := o.humanMemberRun(target); err == nil || actual != nil {
+		t.Fatalf("paused roster member accepted a message: %p, %v", actual, err)
+	}
+	if err := store.SetState(member.Ref, "running"); err != nil {
+		t.Fatal(err)
+	}
+	o.tree.mu.Lock()
+	selected.state = Completed
+	o.tree.mu.Unlock()
+	if actual, err := o.humanMemberRun(target); err == nil || actual != nil {
+		t.Fatalf("settled execution accepted a message: %p, %v", actual, err)
+	}
+}
+
+func TestTeamComposerRetainsTargetAndCancelsDraft(t *testing.T) {
+	o, store, members, runs := teamViewFixture(t)
+	member, selected := members[1], runs[1]
+	if err := store.SetState(member.Ref, "running"); err != nil {
+		t.Fatal(err)
+	}
+	o.tree.mu.Lock()
+	selected.state, selected.admission = Running, admissionReady
+	o.tree.mu.Unlock()
+	defer func() {
+		o.tree.mu.Lock()
+		selected.state = Completed
+		o.tree.mu.Unlock()
+	}()
+	panel := newChildPanel(o, nil, func() int { return 32 })
+	panel.mu.Lock()
+	panel.team = newTeamView(panel.ctx, o, panel.requestRender)
+	panel.mu.Unlock()
+	defer panel.Dispose()
+	waitTeamFrame(t, panel.team, func(frame *teamViewFrame) bool {
+		return len(frame.Members) == 2 && frame.Members[1].Execution != nil && frame.Members[1].Execution.Child.State == Running
+	})
+	panel.Render(120)
+	panelKey(t, panel, "\x1b[B")
+	panelKey(t, panel, "m")
+	panelKey(t, panel, "cancelled human draft")
+	text := strings.Join(panel.Render(120), "\n")
+	if panel.mode != panelMessage || !strings.Contains(text, member.Name) || !strings.Contains(text, string(member.Ref.ID)) || !strings.Contains(text, "cancelled human draft") {
+		t.Fatalf("composer lost the selected teammate or draft: %s", text)
+	}
+	panelKey(t, panel, "\x1b")
+	if panel.mode != panelList || panel.pending != nil || panel.draft != "" || panel.messageTarget != nil || panel.member != member.Ref {
+		t.Fatalf("cancel changed the selection or submitted a draft: %+v", panel)
+	}
+	panelKey(t, panel, "m")
+	panelKey(t, panel, "\t")
+	if panel.messageMode != "follow_up" || panel.messageTarget == nil || panel.messageTarget.Ref != member.Ref || panel.messageTarget.AdmissionID != member.AdmissionID {
+		t.Fatalf("composer did not preserve the selected identity and message mode: %+v", panel.messageTarget)
+	}
+}

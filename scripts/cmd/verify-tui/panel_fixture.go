@@ -52,6 +52,9 @@ func fixtureReport(prefix string) string {
 }
 
 func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string) (providerTurn, bool, error) {
+	if turn, handled, err := teamMessageTurn(request); handled {
+		return turn, true, err
+	}
 	if turn, handled, err := teamPreviewTurn(request); handled {
 		return turn, true, err
 	}
@@ -148,7 +151,7 @@ func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string
 	}
 	if marker == "NEW_ROOT_HEADER" || marker == "COLD_ROOT_HEADER" {
 		required := append(append([]string(nil), fileTools...), controlTools...)
-		if state.scenario == "team-preview" {
+		if state.scenario == "team-preview" || state.scenario == "team-message" {
 			required = append(required, "team_spawn", "team_list", "team_send", "team_plan", "team_task_create", "team_task_get", "team_task_list", "team_task_update")
 		}
 		if err := requireToolInventory(tools, required, []string{"ls"}, "context-only root"); err != nil {
