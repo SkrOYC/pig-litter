@@ -571,7 +571,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			allowed[name] = struct{}{}
 		}
 	}
-	extensions, registrations, err := o.childExtensions(r, allowed)
+	extensions, registrations, err := o.childExtensions(r, run, allowed)
 	if err != nil {
 		outcome.Error = err.Error()
 		return

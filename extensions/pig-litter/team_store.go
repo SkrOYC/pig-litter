@@ -55,6 +55,7 @@ type teamStore struct {
 	closeLock  func(*flock.Flock) error
 	uncertain  *uncertainTeamWrite
 	closed     bool
+	peerAuth   map[string]peerAuthorization
 }
 
 type uncertainTeamWrite struct {

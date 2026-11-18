@@ -122,8 +122,11 @@ func waitForChildToolStartup(ctx context.Context, session *coding.Session, allow
 	}
 }
 
-func (o *owner) childExtensions(r *record, allowed map[string]struct{}) ([]extension.Extension, *extension.ExtensionRuntime, error) {
+func (o *owner) childExtensions(r *record, run *run, allowed map[string]struct{}) ([]extension.Extension, *extension.ExtensionRuntime, error) {
 	extensions := []extension.Extension{o.completionHooks(r)}
+	if r.team != nil {
+		extensions = append(extensions, o.peerHooks(r, run))
+	}
 	registrations := extension.CreateExtensionRuntime()
 	mcpAllowed := false
 	for name := range allowed {
