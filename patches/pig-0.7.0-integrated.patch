@@ -2310,28 +2310,44 @@ index 5ca88309ded4a04aaa523498619e18b3174050e1..e23b03636944f5216764f02d6782b226
  	if runMode == appModeRPC {
 diff --git a/coding/cli/native_rpc_agent_end_model_test.go b/coding/cli/native_rpc_agent_end_model_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..9812150089cca1f47847c8feb0d52ea187ff61d3
+index 0000000000000000000000000000000000000000..81db28081a48fc18a7eb1fd46c68b6350e660216
 --- /dev/null
 +++ b/coding/cli/native_rpc_agent_end_model_test.go
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,172 @@
 +package cli
 +
 +import (
++	"crypto/sha256"
 +	"encoding/json"
 +	"fmt"
 +	"io"
 +	"net/http"
 +	"net/http/httptest"
 +	"os"
++	"os/exec"
 +	"path/filepath"
 +	"slices"
++	"strings"
 +	"testing"
 +)
 +
 +func TestNativeRPCModelChangeFromAgentEnd(t *testing.T) {
++	for _, standalone := range []bool{false, true} {
++		name := "source"
++		if standalone {
++			name = "standalone"
++		}
++		t.Run(name, func(t *testing.T) { testNativeRPCModelChangeFromAgentEnd(t, standalone) })
++	}
++}
++
++func testNativeRPCModelChangeFromAgentEnd(t *testing.T, standalone bool) {
 +	dir := t.TempDir()
 +	report := filepath.Join(dir, "markers")
 +	fixture := filepath.Join(dir, "extension")
++	if standalone {
++		fixture = filepath.Join(dir, "source")
++	}
 +	if err := os.MkdirAll(fixture, 0o700); err != nil {
 +		t.Fatal(err)
 +	}
@@ -2339,7 +2355,7 @@ index 0000000000000000000000000000000000000000..9812150089cca1f47847c8feb0d52ea1
 +	if err := os.WriteFile(filepath.Join(fixture, "go.mod"), []byte(mod), 0o600); err != nil {
 +		t.Fatal(err)
 +	}
-+	const source = `package pigmodelorder
++	source := `package pigmodelorder
 +
 +import (
 +  "fmt"
@@ -2375,8 +2391,32 @@ index 0000000000000000000000000000000000000000..9812150089cca1f47847c8feb0d52ea1
 +  return ext
 +}
 +`
++	if standalone {
++		source = strings.Replace(source, "package pigmodelorder", "package main", 1) + `
++func main() {
++  if err := Extension().Run(); err != nil {
++    fmt.Fprintln(os.Stderr, err)
++    os.Exit(1)
++  }
++}
++`
++	}
 +	if err := os.WriteFile(filepath.Join(fixture, "extension.go"), []byte(source), 0o600); err != nil {
 +		t.Fatal(err)
++	}
++	selected := fixture
++	if standalone {
++		selected = testExecutable(filepath.Join(dir, "extension"))
++		build := exec.CommandContext(t.Context(), "go", "build", "-o", selected, ".")
++		build.Dir = fixture
++		if output, err := build.CombinedOutput(); err != nil {
++			t.Fatalf("build standalone extension: %v\n%s", err, output)
++		}
++		binary, err := os.ReadFile(selected)
++		if err != nil {
++			t.Fatal(err)
++		}
++		t.Logf("standalone extension SHA-256: %x", sha256.Sum256(binary))
 +	}
 +	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 +		_, _ = io.Copy(io.Discard, r.Body)
@@ -2403,7 +2443,7 @@ index 0000000000000000000000000000000000000000..9812150089cca1f47847c8feb0d52ea1
 +	if err := os.WriteFile(filepath.Join(agentDir, "models.json"), encoded, 0o600); err != nil {
 +		t.Fatal(err)
 +	}
-+	p := startRPCProcessAt(t, t.TempDir(), []string{"HOME=" + home, "PIG_HOME=" + home, "PIG_CODING_AGENT_DIR=" + agentDir, "PIG_TEST_FAUX=", "PIG_ORDER_MARKERS=" + report}, "--offline", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--system-prompt", "Test", "--model", "fixture/model-one", "-e", fixture)
++	p := startRPCProcessAt(t, t.TempDir(), []string{"HOME=" + home, "PIG_HOME=" + home, "PIG_CODING_AGENT_DIR=" + agentDir, "PIG_TEST_FAUX=", "PIG_ORDER_MARKERS=" + report}, "--offline", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--system-prompt", "Test", "--model", "fixture/model-one", "-e", selected)
 +	defer func() {
 +		if t.Failed() {
 +			markers, _ := os.ReadFile(report)
@@ -2536,11 +2576,220 @@ index 0000000000000000000000000000000000000000..3c41ca1d850957e651371a99bfec8cbb
 +		t.Fatalf("print output = %q, want hello", stdout.String())
 +	}
 +}
+diff --git a/coding/cli/rpc_external_model_agent_end_test.go b/coding/cli/rpc_external_model_agent_end_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7f206ce5e66d86bb9659e0699cee2f5fc9b84d3
+--- /dev/null
++++ b/coding/cli/rpc_external_model_agent_end_test.go
+@@ -0,0 +1,197 @@
++package cli
++
++import (
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"slices"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestRPCExternalModelResponseWaitsForGatedAgentEnd(t *testing.T) {
++	for _, command := range []string{"set_model", "cycle_model"} {
++		t.Run(command, func(t *testing.T) { testRPCExternalModelResponseWaitsForGatedAgentEnd(t, command) })
++	}
++}
++
++func testRPCExternalModelResponseWaitsForGatedAgentEnd(t *testing.T, command string) {
++	dir := t.TempDir()
++	report := filepath.Join(dir, "markers")
++	gate := filepath.Join(dir, "gate")
++	fixture := filepath.Join(dir, "extension")
++	if err := os.MkdirAll(fixture, 0o700); err != nil {
++		t.Fatal(err)
++	}
++	mod := fmt.Sprintf("module example.com/pigmodelorder\n\ngo 1.26\n\nrequire github.com/MichaelKinsy/PiG/extensions/sdk v0.7.0\n\nreplace github.com/MichaelKinsy/PiG/extensions/sdk => %s\n", filepath.ToSlash(filepath.Join(fixtureSourceRoot, "extensions", "sdk")))
++	if err := os.WriteFile(filepath.Join(fixture, "go.mod"), []byte(mod), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	const source = `package pigmodelorder
++
++import (
++  "fmt"
++  "os"
++  "time"
++  sdk "github.com/MichaelKinsy/PiG/extensions/sdk"
++)
++
++func record(line string) error {
++  f, err := os.OpenFile(os.Getenv("PIG_ORDER_MARKERS"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
++  if err != nil { return err }
++  defer f.Close()
++  _, err = fmt.Fprintln(f, line)
++  return err
++}
++
++func Extension() *sdk.Extension {
++  ext := sdk.New("extension")
++  ext.OnEvent(sdk.EventAgentEnd, func(_ sdk.Context, _ map[string]any) (any, error) {
++    return nil, record("first agent_end")
++  })
++  ext.OnEvent(sdk.EventAgentEnd, func(ctx sdk.Context, _ map[string]any) (any, error) {
++    if err := record("handler gated"); err != nil { return nil, err }
++    go func() {
++      if err := record("model change started"); err != nil { return }
++      changed, err := ctx.SetModel("fixture/model-two")
++      if err != nil { _ = record("model change error: " + err.Error()); return }
++      _ = record(fmt.Sprintf("model change returned %t", changed))
++      ctx.Notify("native model returned", "info")
++    }()
++    for {
++      _, err := os.Stat(os.Getenv("PIG_ORDER_GATE"))
++      if err == nil { break }
++      if !os.IsNotExist(err) { return nil, err }
++      time.Sleep(10 * time.Millisecond)
++    }
++    return nil, record("handler released")
++  })
++  ext.OnEvent(sdk.EventModelSelect, func(ctx sdk.Context, event map[string]any) (any, error) {
++    model, _ := event["model"].(map[string]any)
++    if err := record(fmt.Sprintf("model_select %v", model["id"])); err != nil { return nil, err }
++    ctx.Notify("native model_select", "info")
++    if model["id"] == "model-three" {
++      done := ctx.Done()
++      go func() {
++        <-done
++        if _, err := ctx.GetThinkingLevel(); err != nil { _ = record("barrier error: " + err.Error()); return }
++        _ = record("external model_select response read")
++      }()
++    }
++    return nil, nil
++  })
++  return ext
++}
++`
++	if err := os.WriteFile(filepath.Join(fixture, "extension.go"), []byte(source), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = io.Copy(io.Discard, r.Body)
++		w.Header().Set("Content-Type", "text/event-stream")
++		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_fixture\",\"usage\":{\"input_tokens\":25,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":12}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
++	}))
++	t.Cleanup(server.Close)
++	home := filepath.Join(dir, "home")
++	agentDir := filepath.Join(home, "agent")
++	if err := os.MkdirAll(agentDir, 0o700); err != nil {
++		t.Fatal(err)
++	}
++	models := map[string]any{"providers": map[string]any{"fixture": map[string]any{
++		"baseUrl": server.URL, "api": "anthropic-messages", "apiKey": "fixture-key",
++		"models": []any{
++			map[string]any{"id": "model-one", "name": "One", "contextWindow": 200000, "maxTokens": 8192},
++			map[string]any{"id": "model-two", "name": "Two", "contextWindow": 200000, "maxTokens": 8192},
++			map[string]any{"id": "model-three", "name": "Three", "contextWindow": 200000, "maxTokens": 8192},
++		},
++	}}}
++	encoded, err := json.Marshal(models)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(agentDir, "models.json"), encoded, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	p := startRPCProcessAt(t, t.TempDir(), []string{"HOME=" + home, "PIG_HOME=" + home, "PIG_CODING_AGENT_DIR=" + agentDir, "PIG_TEST_FAUX=", "PIG_ORDER_MARKERS=" + report, "PIG_ORDER_GATE=" + gate}, "--offline", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--system-prompt", "Test", "--model", "fixture/model-one", "--models", "fixture/model-one,fixture/model-two,fixture/model-three", "-e", fixture)
++	defer func() {
++		if t.Failed() {
++			markers, _ := os.ReadFile(report)
++			t.Logf("extension markers:\n%s", markers)
++			if !p.exited {
++				t.Logf("pig goroutine dump:\n%s", dumpStalledChild(p.cmd, p.stderr))
++			}
++		}
++	}()
++	awaitReady(p)
++	p.sendJSON(rpcRecord{"id": "prompt", "type": "prompt", "message": "hello"})
++	p.await("internal model return while agent_end is gated", func(record rpcRecord) bool {
++		return record["type"] == "extension_ui_request" && record["method"] == "notify" && record["message"] == "native model returned"
++	})
++	if command == "cycle_model" {
++		p.sendJSON(rpcRecord{"id": "external", "type": "cycle_model"})
++	} else {
++		p.sendJSON(rpcRecord{"id": "external", "type": "set_model", "provider": "fixture", "modelId": "model-three"})
++	}
++	var events []string
++	collect := func(record rpcRecord) {
++		if record["type"] == "response" && record["id"] == "external" {
++			if record["success"] != true {
++				t.Fatalf("external model change failed: %v", record)
++			}
++			events = append(events, "external response")
++		}
++		if record["type"] == "agent_end" {
++			events = append(events, "agent_end")
++		}
++	}
++	ticker := time.NewTicker(10 * time.Millisecond)
++	defer ticker.Stop()
++	timer := time.NewTimer(p.budget)
++	defer timer.Stop()
++	for {
++		markers, _ := os.ReadFile(report)
++		if strings.Contains(string(markers), "external model_select response read") {
++			break
++		}
++		select {
++		case record, ok := <-p.records:
++			if !ok {
++				t.Fatalf("RPC ended before model barrier: %v\n%s", p.outputError(), p.stderr.String())
++			}
++			collect(record)
++		case <-ticker.C:
++		case <-timer.C:
++			t.Fatalf("model response barrier did not arrive; markers:\n%s", markers)
++		}
++	}
++	p.sendJSON(rpcRecord{"id": "barrier", "type": "get_state"})
++	p.await("client barrier after model handler response", func(record rpcRecord) bool {
++		collect(record)
++		return record["type"] == "response" && record["id"] == "barrier"
++	})
++	if _, err := os.Stat(gate); !os.IsNotExist(err) {
++		t.Fatalf("agent_end gate was not closed: %v", err)
++	}
++	before := slices.Clone(events)
++	if err := os.WriteFile(gate, []byte("release"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	p.await("agent_end and external model response", func(record rpcRecord) bool {
++		collect(record)
++		return slices.Contains(events, "agent_end") && slices.Contains(events, "external response")
++	})
++	markers, err := os.ReadFile(report)
++	if err != nil {
++		t.Fatal(err)
++	}
++	p.closeAndWait("after external model response control")
++	t.Logf("before gate release: %q; public event order: %q; markers:\n%s", before, events, markers)
++	if slices.Contains(before, "external response") || slices.Index(events, "external response") < slices.Index(events, "agent_end") {
++		t.Fatalf("external model response preceded public agent_end: %q", events)
++	}
++}
 diff --git a/coding/cli/rpc_mode.go b/coding/cli/rpc_mode.go
-index f83c96d0557001e57424764d3d3366adda09bedb..0d2bb181059b8e4dc97dc6875e936711125cabed 100644
+index f83c96d0557001e57424764d3d3366adda09bedb..9204e875b71d67ce0949c5dbe3a4462a7b3404eb 100644
 --- a/coding/cli/rpc_mode.go
 +++ b/coding/cli/rpc_mode.go
-@@ -597,9 +597,9 @@ func serveRPCMode(ctx context.Context, rt *coding.Runtime, options rpcModeOption
+@@ -28,4 +28,5 @@ import (
+ 	"github.com/MichaelKinsy/PiG/coding/extension/host/invocation"
+ 	"github.com/MichaelKinsy/PiG/coding/extension/host/subprocess"
++	"github.com/MichaelKinsy/PiG/coding/internal/eventorder"
+ 	piglet "github.com/MichaelKinsy/PiG/coding/piglet"
+ 	"github.com/MichaelKinsy/PiG/coding/rpcclient"
+@@ -597,9 +598,9 @@ func serveRPCMode(ctx context.Context, rt *coding.Runtime, options rpcModeOption
  
  	handleCycleModel := func(id rpcRequestID, currentSession *coding.Session, turn *rpcResponseTurn) {
 -		// Pi's `await session.cycleModel()` resumes in microtasks once the model_select listeners returned, so the deferred UI calls of those listeners follow the response (rpcBackgroundGate).
@@ -2548,25 +2797,39 @@ index f83c96d0557001e57424764d3d3366adda09bedb..0d2bb181059b8e4dc97dc6875e936711
  		// build runs in the continuation, where Pi samples the response's state (the thinking level) after its await.
  		answer := func(build func() any) { turn.Microtask(func() { writeRPC(build()); release() }) }
 -		result, complete, err := currentSession.BeginModelCycle(ctx, "forward")
-+		modelCtx := invocation.WithSuspensionAcknowledgment(ctx, release)
++		modelCtx, predecessors := eventorder.WithDependencies(invocation.WithSuspensionAcknowledgment(ctx, release), currentSession)
 +		result, complete, err := currentSession.BeginModelCycle(modelCtx, "forward")
  		if err != nil {
  			answer(func() any { return rpcError(id, "cycle_model", err.Error()) })
-@@ -1073,5 +1073,5 @@ commandLoop:
+@@ -624,5 +625,5 @@ func serveRPCMode(ctx context.Context, rt *coding.Runtime, options rpcModeOption
+ 			publish()
+ 		} else {
+-			goCommand(turn, func() { complete(); publish() })
++			goCommand(turn, func() { complete(); _ = predecessors.Wait(modelCtx); publish() })
+ 		}
+ 	}
+@@ -1073,5 +1074,5 @@ commandLoop:
  			pendingSetModels = append(pendingSetModels, applied)
  			replacementMu.Unlock()
 -			// The response follows the model_select listeners in microtasks, so their deferred UI calls follow it (rpcBackgroundGate).
 +			// A completed listener's deferred UI calls follow the response; a listener that actually suspends lets the loop turn first.
  			release := host.background.hold()
  			checked.then(func(_ struct{}, err error) {
-@@ -1082,5 +1082,6 @@ commandLoop:
+@@ -1082,5 +1083,6 @@ commandLoop:
  					return
  				}
 -				complete, err := currentSession.BeginModelChange(ctx, newModel, extension.ModelSelectSourceUser)
-+				modelCtx := invocation.WithSuspensionAcknowledgment(ctx, release)
++				modelCtx, predecessors := eventorder.WithDependencies(invocation.WithSuspensionAcknowledgment(ctx, release), currentSession)
 +				complete, err := currentSession.BeginModelChange(modelCtx, newModel, extension.ModelSelectSourceUser)
  				if err == nil {
  					err = currentSession.FlushEvents(ctx)
+@@ -1101,5 +1103,5 @@ commandLoop:
+ 					return
+ 				}
+-				goCommand(turn, func() { complete(); close(applied); turn.Microtask(publish) })
++				goCommand(turn, func() { complete(); _ = predecessors.Wait(modelCtx); close(applied); turn.Microtask(publish) })
+ 			})
+ 
 diff --git a/coding/cli/rpc_model_response_suspended_agent_end_test.go b/coding/cli/rpc_model_response_suspended_agent_end_test.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..053bdb6f7a972d8866e4c7da0b3a5ca7cb65cb26
@@ -3621,53 +3884,6 @@ index 4c55f140e1c3da098edd5de19385afc719361023..641284b92086e23ddac9ccb7946657c3
 +			invocation.Complete(dispatchCtx)
  			if handlerResult == nil {
  				continue
-diff --git a/coding/extension/host/subprocess/ack_hold.go b/coding/extension/host/subprocess/ack_hold.go
-index 36d13737abe01d3e7b2f3e27cc8d729465d18f02..0738f5345b77fb555844cc31515101f9a89fd177 100644
---- a/coding/extension/host/subprocess/ack_hold.go
-+++ b/coding/extension/host/subprocess/ack_hold.go
-@@ -50,4 +50,12 @@ func (h *ackHold) announce() {
- }
- 
-+func (h *ackHold) holdAnnounced() {
-+	h.mu.Lock()
-+	if h.announced > 0 {
-+		h.held = true
-+	}
-+	h.mu.Unlock()
-+}
-+
- // applied records that the host applied a call of the request: the call a report announced, or one of the request that no report announced.
- func (h *ackHold) applied() {
-diff --git a/coding/extension/host/subprocess/ack_hold_test.go b/coding/extension/host/subprocess/ack_hold_test.go
-index 02940912ca722b85474797a6e4ea57001aa404b8..70be92fa1c0cf8edd97b0030116e0b46cf5f98a7 100644
---- a/coding/extension/host/subprocess/ack_hold_test.go
-+++ b/coding/extension/host/subprocess/ack_hold_test.go
-@@ -70,3 +70,25 @@ func TestBlockedAcknowledgmentWaitsForTheAnnouncedHostCall(t *testing.T) {
- 		}
- 	})
-+	t.Run("a selected call without a report", func(t *testing.T) {
-+		hold, acknowledged := newRequest()
-+		hold.holdAnnounced()
-+		hold.applied()
-+		if *acknowledged != 0 {
-+			t.Fatalf("an unannounced call acknowledged the invocation %d times, want 0", *acknowledged)
-+		}
-+	})
-+	t.Run("a selected call follows earlier announced calls", func(t *testing.T) {
-+		hold, acknowledged := newRequest()
-+		hold.announce()
-+		hold.announce()
-+		hold.holdAnnounced()
-+		hold.applied()
-+		if *acknowledged != 0 {
-+			t.Fatal("an earlier announced call released the selected call's acknowledgment")
-+		}
-+		hold.applied()
-+		if *acknowledged != 1 {
-+			t.Fatalf("both calls applied and the invocation was acknowledged %d times, want 1", *acknowledged)
-+		}
-+	})
- }
 diff --git a/coding/extension/host/subprocess/conn.go b/coding/extension/host/subprocess/conn.go
 index 61766b14b7e75263b3f221f3c9d8d5058b9113e6..dbf717f45b950900a69b773c700131d5f9aa2812 100644
 --- a/coding/extension/host/subprocess/conn.go
@@ -3946,20 +4162,14 @@ index a185cf0385f279d7d64f95ec2b6c9d6381b66108..62ebc7d63ddd3ace6f0c2fb9f32183e0
  		if event == "session_shutdown" {
  			dispatch := parent
 diff --git a/coding/extension/host/subprocess/host_calls.go b/coding/extension/host/subprocess/host_calls.go
-index 8c776c2bcda366e6728d49373a62b0ff83e36363..db48bb73b1c49eb877cd316d0429ff99e7a81ab1 100644
+index 8c776c2bcda366e6728d49373a62b0ff83e36363..879a3f0b05a8da5a27492e24b5cfa85fe20f3908 100644
 --- a/coding/extension/host/subprocess/host_calls.go
 +++ b/coding/extension/host/subprocess/host_calls.go
-@@ -200,6 +200,16 @@ func (h *Host) queueCall(me *managedExt, conn *Conn, lanes *callLanes, callID st
+@@ -200,6 +200,10 @@ func (h *Host) queueCall(me *managedExt, conn *Conn, lanes *callLanes, callID st
  // handler is suspended on it, which is what the acknowledgment reports.
  func (h *Host) queueCallDone(me *managedExt, conn *Conn, lanes *callLanes, callID string, call *CallPayload, done func()) {
 +	prefix := call.Method == "sendUserMessage" && conn.withSessionRoute(call.ParentRequestID) == nil
 +	scopedAsync := startsAsync(call.Method) && conn.eventScope(call.ParentRequestID) != nil
-+	// Go's setModel blocks its handler; Node reports its own suspension.
-+	if scopedAsync && me.config.RuntimeLanguage == "go" && call.Method == "setModel" {
-+		if hold := conn.requestAckHold(call.ParentRequestID); hold != nil {
-+			hold.holdAnnounced()
-+		}
-+	}
  	if startsAsync(call.Method) {
 -		conn.hostCallApplied(call.ParentRequestID)
 +		if !scopedAsync {
@@ -3967,14 +4177,14 @@ index 8c776c2bcda366e6728d49373a62b0ff83e36363..db48bb73b1c49eb877cd316d0429ff99
 +		}
  	} else {
  		applied := done
-@@ -221,5 +231,5 @@ func (h *Host) queueCallDone(me *managedExt, conn *Conn, lanes *callLanes, callI
+@@ -221,5 +225,5 @@ func (h *Host) queueCallDone(me *managedExt, conn *Conn, lanes *callLanes, callI
  	}
  	var initiated chan struct{}
 -	if startsAsync(call.Method) {
 +	if startsAsync(call.Method) || prefix {
  		initiated = make(chan struct{})
  	}
-@@ -238,5 +248,16 @@ func (h *Host) queueCallDone(me *managedExt, conn *Conn, lanes *callLanes, callI
+@@ -238,5 +242,16 @@ func (h *Host) queueCallDone(me *managedExt, conn *Conn, lanes *callLanes, callI
  		}
  		var once sync.Once
 -		mark := func() { once.Do(func() { close(initiated) }) }
@@ -41180,27 +41390,6 @@ index 0000000000000000000000000000000000000000..63180ca20bf2c1b142eab1e52395e5f2
 +	}
 +	return nil
 +}
-diff --git a/coding/session.go b/coding/session.go
-index 2c6fd17282b2efc5fa0e01d172ae2165cf859f2f..85197cf19d2141647c8d71c6ceb6b70c52e75294 100644
---- a/coding/session.go
-+++ b/coding/session.go
-@@ -25,4 +25,5 @@ import (
- 	"github.com/MichaelKinsy/PiG/coding/extension/host/inproc"
- 	"github.com/MichaelKinsy/PiG/coding/extension/host/invocation"
-+	"github.com/MichaelKinsy/PiG/coding/internal/eventorder"
- 	"github.com/MichaelKinsy/PiG/extensions/sdk/json"
- 	"github.com/MichaelKinsy/PiG/internal/boundarywire"
-@@ -1390,7 +1391,9 @@ func (s *Session) beginModelChangeState(ctx context.Context, m *ai.Model, source
- 			notifyThinking()
- 		}
--		_, _ = runner.Emit(ctx, extension.ModelSelectEvent{
-+		modelCtx, predecessors := eventorder.WithDependencies(ctx, s)
-+		_, _ = runner.Emit(modelCtx, extension.ModelSelectEvent{
- 			Type: icodingagent.EventModelSelect, Model: m, PreviousModel: previous, Source: source,
- 		})
-+		_ = predecessors.Wait(ctx)
- 	}, nil
- }
 diff --git a/coding/session_boundaries.go b/coding/session_boundaries.go
 index 5189e42d3fa567c85f3f5cfe9607fdeedabf8f57..73c172e5d79ebb11311a79ebdf373b3a7f028246 100644
 --- a/coding/session_boundaries.go
@@ -41352,10 +41541,163 @@ index 6cfc00a2fe42e0b0eb9a27ef86e1fcbc28dc100f..7e77169694ca151ad026fa061678d0fb
  
  Call-site markers: `internal/gcpolicy/gcpolicy.go` (`Apply`, `checkLiveHeap`), `coding/cli/main.go` (`Main`).
 diff --git a/docs/bug-ledger.json b/docs/bug-ledger.json
-index ab689eab2b32f08c49776694c886304c6279b7a3..a773942d08f880c1b424ad53dcc0c6dfb958f3f4 100644
+index ab689eab2b32f08c49776694c886304c6279b7a3..945ac557cd940ceb4ec7ffa864275269ab28335a 100644
 --- a/docs/bug-ledger.json
 +++ b/docs/bug-ledger.json
-@@ -43891,4 +43891,42 @@
+@@ -3209,4 +3209,25 @@
+       ]
+     },
++    {
++      "id": "BF-188c471",
++      "title": "fix: release native model wait within agent end",
++      "symptom": "fix: release native model wait within agent end",
++      "rootCause": "",
++      "rootCauseSource": "",
++      "userImpact": "Behavior differed from Pi",
++      "platform": "All platforms",
++      "class": "own",
++      "fixedIn": "Unreleased",
++      "origin": "commit",
++      "commits": [
++        {
++          "hash": "188c471aae",
++          "date": "2026-11-18"
++        }
++      ],
++      "tests": [
++        "coding/extension/host/subprocess/ack_hold_test.go::TestBlockedAcknowledgmentWaitsForTheAnnouncedHostCall"
++      ]
++    },
+     {
+       "id": "BF-1896331",
+@@ -9171,4 +9192,23 @@
+       ]
+     },
++    {
++      "id": "BF-4349028",
++      "title": "fix: limit event publication scope to rpc hosts",
++      "symptom": "fix: limit event publication scope to rpc hosts",
++      "rootCause": "",
++      "rootCauseSource": "",
++      "userImpact": "Behavior differed from Pi",
++      "platform": "All platforms",
++      "class": "own",
++      "fixedIn": "Unreleased",
++      "origin": "commit",
++      "commits": [
++        {
++          "hash": "434902884b",
++          "date": "2026-11-18"
++        }
++      ],
++      "tests": []
++    },
+     {
+       "id": "BF-439c708",
+@@ -11454,4 +11494,23 @@
+       ]
+     },
++    {
++      "id": "BF-50faa52",
++      "title": "fix(ai): reconcile loop waits and reacquire on cancellation",
++      "symptom": "fix(ai): reconcile loop waits and reacquire on cancellation",
++      "rootCause": "",
++      "rootCauseSource": "",
++      "userImpact": "Behavior differed from Pi",
++      "platform": "All platforms",
++      "class": "own",
++      "fixedIn": "Unreleased",
++      "origin": "commit",
++      "commits": [
++        {
++          "hash": "50faa52da9",
++          "date": "2026-11-17"
++        }
++      ],
++      "tests": []
++    },
+     {
+       "id": "BF-5144418",
+@@ -20494,4 +20553,26 @@
+       ]
+     },
++    {
++      "id": "BF-7626cfd",
++      "title": "fix: join event publication at rpc model responses",
++      "symptom": "fix: join event publication at rpc model responses",
++      "rootCause": "",
++      "rootCauseSource": "",
++      "userImpact": "Behavior differed from Pi",
++      "platform": "All platforms",
++      "class": "own",
++      "fixedIn": "Unreleased",
++      "origin": "commit",
++      "commits": [
++        {
++          "hash": "7626cfd15f",
++          "date": "2026-11-18"
++        }
++      ],
++      "tests": [
++        "coding/cli/native_rpc_agent_end_model_test.go::TestNativeRPCModelChangeFromAgentEnd",
++        "coding/cli/rpc_external_model_agent_end_test.go::TestRPCExternalModelResponseWaitsForGatedAgentEnd"
++      ]
++    },
+     {
+       "id": "BF-7633906",
+@@ -21882,4 +21963,23 @@
+       ]
+     },
++    {
++      "id": "BF-805f5b6",
++      "title": "fix(ai): join forced effects before resuming results",
++      "symptom": "fix(ai): join forced effects before resuming results",
++      "rootCause": "",
++      "rootCauseSource": "",
++      "userImpact": "Behavior differed from Pi",
++      "platform": "All platforms",
++      "class": "own",
++      "fixedIn": "Unreleased",
++      "origin": "commit",
++      "commits": [
++        {
++          "hash": "805f5b6f12",
++          "date": "2026-11-17"
++        }
++      ],
++      "tests": []
++    },
+     {
+       "id": "BF-8070fcc",
+@@ -27326,4 +27426,27 @@
+       "tests": []
+     },
++    {
++      "id": "BF-9a3934c",
++      "title": "fix: preserve model response event order",
++      "symptom": "fix: preserve model response event order",
++      "rootCause": "",
++      "rootCauseSource": "",
++      "userImpact": "Wrong output or ordering",
++      "platform": "All platforms",
++      "class": "own",
++      "fixedIn": "Unreleased",
++      "origin": "commit",
++      "commits": [
++        {
++          "hash": "9a3934c88e",
++          "date": "2026-11-18"
++        }
++      ],
++      "tests": [
++        "coding/cli/rpc_model_response_timer_suspension_test.go::TestRPCModelResponseCanReleaseTimerWaitingAgentEnd",
++        "coding/extension/host/subprocess/event_order_test.go::TestEventPredecessorsReleaseOnSuspensionAndStayConnectionScoped",
++        "coding/extension/host/subprocess/event_order_test.go::TestEventResponsePredecessorsFollowConnectionReadOrder"
++      ]
++    },
+     {
+       "id": "BF-9a9dc99",
+@@ -43891,4 +44014,42 @@
        ]
      },
 +    {
@@ -41410,16 +41752,160 @@ index af4940d3844072e99fd95d1f0636b8b33aba6305..639b92b566b329973c2e0b7b54ea5a4a
  - Go API: `mcp/oauth` URLs are `oauth.URL` (WHATWG, as Pi's `URL`) instead of `*url.URL`. `StartAuthorization`, `ResourceURLFromServerURL`, `DiscoveryURL.URL`, `OAuthChallenge.ResourceMetadataURL`, `DiscoveryOptions` and `OAuthFlowOptions.AuthorizationServerMetadataURL`, `OAuthClientProvider.RedirectToAuthorization`, `OnRedirect`, and `coding/mcpext`'s `McpOAuthSettings.AuthServerMetadataURL` and `McpSignInPrompt.ShowAuthorizationURL` take or return it. Build one with `oauth.ParseURL`; `Href()` gives the text `url.Parse` accepts.
  - A codemode result or console line holding an unpaired surrogate (`return "\ud800"`, `console.log("\ud800")`) keeps it in the tool result, the json events and the session file as Pi does (the escape `\ud800`), instead of turning it into U+FFFD.
 diff --git a/docs/site/docs/bug-ledger.md b/docs/site/docs/bug-ledger.md
-index 651bb01cac75bc7484c319afb2a9feb04edad334..f4551701819c9ea8d828da934c1f5f15a79aeea2 100644
+index 651bb01cac75bc7484c319afb2a9feb04edad334..905ba910d734b55086b4bb7ab9c64309894f563d 100644
 --- a/docs/site/docs/bug-ledger.md
 +++ b/docs/site/docs/bug-ledger.md
-@@ -1519,4 +1519,5 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
+@@ -127,4 +127,5 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
+ | [BF-1848633](#bf-1848633) | Extension widgets share one key namespace across extensions, as in Pi: an extension that sets a widget key… | PiG's own defect | All platforms | 0.5.0 |
+ | [BF-184ed40](#bf-184ed40) | fix(hljs): a language's reach does not depend on the first text it highlights; red cases for resumeLimit | PiG's own defect | All platforms | Unreleased |
++| [BF-188c471](#bf-188c471) | fix: release native model wait within agent end | PiG's own defect | All platforms | Unreleased |
+ | [BF-1896331](#bf-1896331) | Changing the thinking level in interactive mode (cycle key, `/thinking`, the settings selector) goes through… | PiG's own defect | All platforms | 0.5.0 |
+ | [BF-18daf7f](#bf-18daf7f) | The Go SDK's typed branch entry keeps the text, thinking and tool calls of an assistant message whose tool… | PiG's own defect | All platforms | 0.5.0 |
+@@ -330,4 +331,5 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
+ | [BF-433d232-3](#bf-433d232-3) | `DefaultResourceLoader.reload`: new live-Pi oracle `TestDefaultResourceLoaderReloadMatchesPi`… | PiG's own defect | All platforms | 0.5.0 |
+ | [BF-433d232-4](#bf-433d232-4) | `ReadOnlyAuthStorage`: new live-Pi oracle `TestReadOnlyAuthStorageMatchesPi`… | PiG's own defect | All platforms | 0.5.0 |
++| [BF-4349028](#bf-4349028) | fix: limit event publication scope to rpc hosts | PiG's own defect | All platforms | Unreleased |
+ | [BF-439c708](#bf-439c708) | Device-code logins (GitHub Copilot, Kimi Code, Meta, Radius) use the `verification_uri` a server sends only… | PiG's own defect | All platforms | 0.7.0 |
+ | [BF-439c708-2](#bf-439c708-2) | A pi-messages event whose `contentIndex` is not an integer naming the next block (for a `_start` event) or an… | PiG's own defect | All platforms | 0.7.0 |
+@@ -410,4 +412,5 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
+ | [BF-50ed346](#bf-50ed346) | fix: merge fallout of the 0.6.0 merge | PiG's own defect | All platforms | Unreleased |
+ | [BF-50f526d](#bf-50f526d) | The Go, Rust and Python SDKs export Pi's `CURRENT_SESSION_VERSION`, `VIRTUAL_MODEL_STATE_ENTRY`… | PiG's own defect | All platforms | 0.5.0 |
++| [BF-50faa52](#bf-50faa52) | fix(ai): reconcile loop waits and reacquire on cancellation | PiG's own defect | All platforms | Unreleased |
+ | [BF-5144418](#bf-5144418) | Fix in shipped code | PiG's own defect | All platforms | Unreleased |
+ | [BF-51c8f1c](#bf-51c8f1c) | The Rust, Python and Lisp extension SDKs now recognize F1-F12 reported with the Kitty keyboard protocol, as… | PiG's own defect | All platforms | 0.7.0 |
+@@ -735,4 +738,5 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
+ | [BF-75c6ccb](#bf-75c6ccb) | fix(codingagent): context edits leave system messages unchanged | PiG's own defect | All platforms | Unreleased |
+ | [BF-761f5a2](#bf-761f5a2) | `/fork` and `/clone` of a very long session no longer decode and rewrite every record of the branch in memory | PiG's own defect | All platforms | 0.7.0 |
++| [BF-7626cfd](#bf-7626cfd) | fix: join event publication at rpc model responses | PiG's own defect | All platforms | Unreleased |
+ | [BF-7633906](#bf-7633906) | On arm64, `tool_search` and `searchTools()` scores use the same natural logarithm as Pi running on Node for… | PiG's own defect | All platforms | 0.5.0 |
+ | [BF-7662334](#bf-7662334) | An extension that writes a large amount to stderr no longer grows its diagnostic log without limit | PiG's own defect | All platforms | 0.5.0 |
+@@ -787,4 +791,5 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
+ | [BF-801cadd](#bf-801cadd) | fix(codingagent): session files decode invalid UTF-8 as Node does | PiG's own defect | All platforms | Unreleased |
+ | [BF-8048c85](#bf-8048c85) | Tool-call header argument preview no longer splits a character: `truncateArg` (`tui/tool_execution.go`) cut… | PiG's own defect | All platforms | 0.5.0 |
++| [BF-805f5b6](#bf-805f5b6) | fix(ai): join forced effects before resuming results | PiG's own defect | All platforms | Unreleased |
+ | [BF-8070fcc](#bf-8070fcc) | OpenAI Codex and Azure OpenAI requests parse their URL as fetch does again: an upper-case scheme, a space or… | PiG's own defect | All platforms | 0.5.0 |
+ | [BF-8085dc0](#bf-8085dc0) | A legacy `oauth.json` or `settings.json` that starts with a byte order mark migrates to `auth.json`, as in Pi | PiG's own defect | All platforms | 0.5.0 |
+@@ -991,4 +996,5 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
+ | [BF-99a06cf](#bf-99a06cf) | Interactive startup paints the editor and footer first and adds the startup header once the terminal reports… | PiG's own defect | All platforms | 0.5.0 |
+ | [BF-99d6e28](#bf-99d6e28) | Resizing an image no longer differs from Photon's by one in a channel of a rare pixel | PiG's own defect | All platforms | 0.7.0 |
++| [BF-9a3934c](#bf-9a3934c) | fix: preserve model response event order | PiG's own defect | All platforms | Unreleased |
+ | [BF-9a9dc99](#bf-9a9dc99) | `WaitForTask` on a task whose terminal commit was adopted no longer fails with "Harness is closed" when a… | PiG's own defect | All platforms | 0.7.0 |
+ | [BF-9abc6ac](#bf-9abc6ac) | Markdown bold and italic next to CJK punctuation render in HTML exports and in Markdown that Node extensions… | PiG's own defect | All platforms | 0.5.2 |
+@@ -1519,4 +1525,5 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
  | [BF-f6305d9](#bf-f6305d9) | A `new_session`, `fork`, `clone` or `switch_session` in the same RPC batch as a `compact` aborts the… | PiG's own defect | All platforms | 0.5.0 |
  | [BF-f6575ff](#bf-f6575ff) | `pig install`, `pig remove` and `pig update --extensions` run npm with `--no-audit --no-fund`, wherever they… | PiG's own defect | All platforms | 0.7.0 |
 +| [BF-f65782c](#bf-f65782c) | Let extension timer calls finish while an owning consumer awaits a pending continuation or provider result… | PiG's own defect | All platforms | Unreleased |
  | [BF-f68aa40](#bf-f68aa40) | A `delta.Tracker` no longer keeps memory alive that Pi's tracker releases | PiG's own defect | All platforms | 0.5.0 |
  | [BF-f68aa40-2](#bf-f68aa40-2) | `delta.CloneJSON`, `chord.CopyJSON` and draft placements report a Go struct or pointer with Pi's message for… | PiG's own defect | All platforms | 0.5.0 |
-@@ -22361,4 +22362,18 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
+@@ -3082,4 +3089,17 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
+ - **Tests:** `tui/highlight_resume_test.go::TestStreamedHighlightEqualsAWholeRun`, `tui/internal/hljs/resume_test.go::TestLanguageReachDoesNotDependOnTheFirstText`, `tui/internal/hljs/resume_test.go::TestResumeLimitHoldsBackPointsLaterTextDecides`
+ 
++### BF-188c471
++
++**fix: release native model wait within agent end**
++
++- **Source:** PiG's own defect
++- **Symptom:** fix: release native model wait within agent end
++- **Root cause:** Not recorded.
++- **User impact:** Behavior differed from Pi
++- **Platform:** All platforms
++- **Fixed in:** Unreleased
++- **Fix commits:** `188c471aae` (2026-11-18)
++- **Tests:** `coding/extension/host/subprocess/ack_hold_test.go::TestBlockedAcknowledgmentWaitsForTheAnnouncedHostCall`
++
+ ### BF-1896331
+ 
+@@ -5880,4 +5900,17 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
+ - **Release note:** `ReadOnlyAuthStorage`: new live-Pi oracle `TestReadOnlyAuthStorageMatchesPi` (`ai/auth_storage_readonly_oracle_test.go`; 800 auth.json files x 1-5 operations over read, list, refused modify and delete, and a file rewrite between operations that a loaded store must not see; valid and invalid credential shapes: non-string key, non-string env value, env null/array, OAuth missing access/refresh/expires or with a string expiry, null/array/scalar entries and roots). Results and thrown messages match; no bug found. 9 mutations red (key/env/OAuth validation, command-key bypass, refused modify, null root, error text). Equivalent mutants: the finite-expiry check (Go's JSON decoder already rejects `1e999`), the empty-key and API-key type guards in Read (`resolveStoredCredential` repeats both). Not compared: V8 text after "Failed to read auth.json: ".
+ 
++### BF-4349028
++
++**fix: limit event publication scope to rpc hosts**
++
++- **Source:** PiG's own defect
++- **Symptom:** fix: limit event publication scope to rpc hosts
++- **Root cause:** Not recorded.
++- **User impact:** Behavior differed from Pi
++- **Platform:** All platforms
++- **Fixed in:** Unreleased
++- **Fix commits:** `434902884b` (2026-11-18)
++- **Tests:** None recorded.
++
+ ### BF-439c708
+ 
+@@ -6980,4 +7013,17 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
+ - **Release note:** The Go, Rust and Python SDKs export Pi's `CURRENT_SESSION_VERSION`, `VIRTUAL_MODEL_STATE_ENTRY`, `getLatestCompactionEntry`, `parseSkillBlock` and `formatSkillsForPrompt`.
+ 
++### BF-50faa52
++
++**fix(ai): reconcile loop waits and reacquire on cancellation**
++
++- **Source:** PiG's own defect
++- **Symptom:** fix(ai): reconcile loop waits and reacquire on cancellation
++- **Root cause:** Not recorded.
++- **User impact:** Behavior differed from Pi
++- **Platform:** All platforms
++- **Fixed in:** Unreleased
++- **Fix commits:** `50faa52da9` (2026-11-17)
++- **Tests:** None recorded.
++
+ ### BF-5144418
+ 
+@@ -11487,4 +11533,17 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
+ - **Release note:** `/fork` and `/clone` of a very long session no longer decode and rewrite every record of the branch in memory. Forking a 427 MB session peaked at 4.8-5.1 GB and now peaks at about 280 MB (settling at about 190 MB); Pi peaks at about 1.2 GB for the same file. The new file holds the same bytes as before and as Pi writes.
+ 
++### BF-7626cfd
++
++**fix: join event publication at rpc model responses**
++
++- **Source:** PiG's own defect
++- **Symptom:** fix: join event publication at rpc model responses
++- **Root cause:** Not recorded.
++- **User impact:** Behavior differed from Pi
++- **Platform:** All platforms
++- **Fixed in:** Unreleased
++- **Fix commits:** `7626cfd15f` (2026-11-18)
++- **Tests:** `coding/cli/native_rpc_agent_end_model_test.go::TestNativeRPCModelChangeFromAgentEnd`, `coding/cli/rpc_external_model_agent_end_test.go::TestRPCExternalModelResponseWaitsForGatedAgentEnd`
++
+ ### BF-7633906
+ 
+@@ -12202,4 +12261,17 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
+ - **Release note:** Tool-call header argument preview no longer splits a character: `truncateArg` (`tui/tool_execution.go`) cut to `max-1` bytes, so a non-ASCII argument longer than the budget ended in a half character that the JSON quoting turned into a visible U+FFFD before the ellipsis (`text:"ééé…é�…"`); it now backs up to the start of a character. Regression `TestFormatToolArgsTruncatesAtACharacterBoundary` (red before: é, 日 and 🙂 at four byte offsets; both mutations, no back-up and cutting at `max`, red); `./tui -race` green (1,139 s). Found by scanning production code for byte `len()` comparisons against limits. `HeaderForTool`'s fallback (`FormatToolArgs`: `name path:"x"`) is PiG's own format for a tool with no builtin formatter and no definition, where Pi renders `formatToolCallWithArgs`; that mismatch is the open "tool card with no definition" ruling request in questions/lg-help-4.md.
+ 
++### BF-805f5b6
++
++**fix(ai): join forced effects before resuming results**
++
++- **Source:** PiG's own defect
++- **Symptom:** fix(ai): join forced effects before resuming results
++- **Root cause:** Not recorded.
++- **User impact:** Behavior differed from Pi
++- **Platform:** All platforms
++- **Fixed in:** Unreleased
++- **Fix commits:** `805f5b6f12` (2026-11-17)
++- **Tests:** None recorded.
++
+ ### BF-8070fcc
+ 
+@@ -15041,4 +15113,17 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
+ - **Release note:** Resizing an image no longer differs from Photon's by one in a channel of a rare pixel. Photon computes the Lanczos weights with libm's single-precision `sinf`, which is not always the correctly rounded sine Go's `math.Sin` gives; PiG now runs the same `sinf`, so the resized pixels, and the PNG and JPEG written from them, are Photon's for every size measured (251 more pictures against Photon, 19 of which differed before).
+ 
++### BF-9a3934c
++
++**fix: preserve model response event order**
++
++- **Source:** PiG's own defect
++- **Symptom:** fix: preserve model response event order
++- **Root cause:** Not recorded.
++- **User impact:** Wrong output or ordering
++- **Platform:** All platforms
++- **Fixed in:** Unreleased
++- **Fix commits:** `9a3934c88e` (2026-11-18)
++- **Tests:** `coding/cli/rpc_model_response_timer_suspension_test.go::TestRPCModelResponseCanReleaseTimerWaitingAgentEnd`, `coding/extension/host/subprocess/event_order_test.go::TestEventPredecessorsReleaseOnSuspensionAndStayConnectionScoped`, `coding/extension/host/subprocess/event_order_test.go::TestEventResponsePredecessorsFollowConnectionReadOrder`
++
+ ### BF-9a9dc99
+ 
+@@ -22361,4 +22446,18 @@ Entries are listed by ID. The page carries no totals, so a pull request that add
  - **Release note:** `pig install`, `pig remove` and `pig update --extensions` run npm with `--no-audit --no-fund`, wherever they already pass `--legacy-peer-deps`, so npm no longer prints audit advice that, followed in the managed package root, would install the host-provided pi packages a second time. bun and pnpm arguments are unchanged.
  
 +### BF-f65782c
@@ -42399,6 +42885,694 @@ index 0a52da03463365acdd020d0cac8ef848813b2a66..7339215c92ae707291dbf1915ab96084
 +
  func TestTurnsRunTicksAtTheTickBoundaryBeforeTimers(t *testing.T) {
  	var turns Turns
+diff --git a/test/parity/interfaces/pig-go.json b/test/parity/interfaces/pig-go.json
+index 181d157d9766d36011cb49e2861ac723f4bd9358..f71bb7e8c591a3f565bd0cc030ab6930fc3e629b 100644
+--- a/test/parity/interfaces/pig-go.json
++++ b/test/parity/interfaces/pig-go.json
+@@ -31,4 +31,5 @@
+     "github.com/MichaelKinsy/PiG/coding/extensionset",
+     "github.com/MichaelKinsy/PiG/coding/hookconfig",
++    "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
+     "github.com/MichaelKinsy/PiG/coding/mcpext",
+     "github.com/MichaelKinsy/PiG/coding/mcpext/mcptui",
+@@ -8861,4 +8862,15 @@
+       "shapeHash": "sha256:caed181fba0f67dabf376781c2bb651796452ac358d73cd977928953af13acb0"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#AssistantMessageEventStream.registerOwnedResult",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "AssistantMessageEventStream.registerOwnedResult",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func(ctx context.Context, executor *continuationExecutor) *ownedResultWait"
++      },
++      "shapeHash": "sha256:b630c376a748c1ff7944f04bcda90f7390903b7c70ea270652a35db5a7089d32"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/ai#AssistantMessageEventStream.resolveResultLocked",
+@@ -36383,4 +36395,15 @@
+       "shapeHash": "sha256:032e891204f123caf14d3d421fa9728efc3f31299c17e98859c219dccddd74fb"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#continuationExecutor.effectsReady",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "continuationExecutor.effectsReady",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func(lease *github.com/MichaelKinsy/PiG/internal/jsloop.WaitLease)"
++      },
++      "shapeHash": "sha256:a4c20c9bed6ce8bb18064ef0026138c4f581bf10b2d32fdd4c46feb249999ed4"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/ai#continuationExecutor.endDrainLocked",
+@@ -36394,4 +36417,15 @@
+       "shapeHash": "sha256:0101fd450518b976ff6d4c8b587124ff552e948f2025ae2f2b52cc5f3bb0a766"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#continuationExecutor.enqueueLocked",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "continuationExecutor.enqueueLocked",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func(queue *continuationQueue, job continuationJob)"
++      },
++      "shapeHash": "sha256:c6a50c560e8e516f6c32e6dd01d5bbfe1c3b3078afe623482fc0304598d4ddca"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/ai#continuationExecutor.idleLocked",
+@@ -36405,4 +36439,15 @@
+       "shapeHash": "sha256:f632619397f10a7f0e472ad47d2824ec7e080d15ac9eb0994e24800757b3fb96"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#continuationExecutor.loopWaitChangesLocked",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "continuationExecutor.loopWaitChangesLocked",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func() bool"
++      },
++      "shapeHash": "sha256:f632619397f10a7f0e472ad47d2824ec7e080d15ac9eb0994e24800757b3fb96"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/ai#continuationExecutor.newDeferredTurn",
+@@ -36526,4 +36571,15 @@
+       "shapeHash": "sha256:19ac1838ef08971e6ee6436824875e0710d2664090e1684dc3fc5339e8fa7450"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#continuationExecutor.reconcileLoopWaitLocked",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "continuationExecutor.reconcileLoopWaitLocked",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func()"
++      },
++      "shapeHash": "sha256:032e891204f123caf14d3d421fa9728efc3f31299c17e98859c219dccddd74fb"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/ai#continuationExecutor.resumeNextLocked",
+@@ -37076,4 +37132,37 @@
+       "shapeHash": "sha256:b5d94537cad247126143cebf6781bb0f989f651b8ffc909290050e60dc65a22d"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#continuationWait",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "continuationWait",
++      "kind": "type",
++      "exported": false,
++      "shape": {
++        "type": "continuationWait"
++      },
++      "shapeHash": "sha256:e7e86738beb287c0b4cf444d87e2390fd623c5862bc5ceb7b6f591347564618c"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#continuationWait.beginDeferred",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "continuationWait.beginDeferred",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func() func()"
++      },
++      "shapeHash": "sha256:207ce74f02e77526c8289eecfae4b3d4c23dfd6f19c6f0d62a67b13cc07ecb07"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#continuationWait.endDeferred",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "continuationWait.endDeferred",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func() func()"
++      },
++      "shapeHash": "sha256:207ce74f02e77526c8289eecfae4b3d4c23dfd6f19c6f0d62a67b13cc07ecb07"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/ai#continuationWatcher",
+@@ -54335,4 +54424,81 @@
+       "shapeHash": "sha256:0906a075c0d348f1ede33b1f2f78610261bedfec64452c31273d0b9ccb91533c"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#ownedResultWait",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "ownedResultWait",
++      "kind": "type",
++      "exported": false,
++      "shape": {
++        "type": "ownedResultWait"
++      },
++      "shapeHash": "sha256:88fe4d84b0aec710f52237c8b376881afa83bc342d36798dabce1c33a6fbbc20"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#ownedResultWait.acquire",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "ownedResultWait.acquire",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func()"
++      },
++      "shapeHash": "sha256:032e891204f123caf14d3d421fa9728efc3f31299c17e98859c219dccddd74fb"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#ownedResultWait.admit",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "ownedResultWait.admit",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func(observation *StreamObservation) bool"
++      },
++      "shapeHash": "sha256:c73cfac0eefe02c6d3097f25437db16a70b2141962d9153dda5e5c25ce586c10"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#ownedResultWait.cancel",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "ownedResultWait.cancel",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func(err error)"
++      },
++      "shapeHash": "sha256:93a6c6c514b3d04f95e2b5274d3e899928348deef941bd76a022f9ea0f5ed2eb"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#ownedResultWait.completeDeferred",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "ownedResultWait.completeDeferred",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func(message *AssistantMessage, err error) func()"
++      },
++      "shapeHash": "sha256:292302606a8e1e8c75c4b42ff43bf9056f52bc5a0ff2cd1a3a489a2d915aae31"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#ownedResultWait.resolveDeferred",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "ownedResultWait.resolveDeferred",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func(message *AssistantMessage) func()"
++      },
++      "shapeHash": "sha256:f078780ffced55abb200fc0cda797f95bc693826f02099b64792b3686be0d856"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#ownedResultWait.result",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "ownedResultWait.result",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func() (*AssistantMessage, error)"
++      },
++      "shapeHash": "sha256:bf7e16ed2adb67e871d5cac8e508e2b043a508f3a5e665f3e457055c9a64c1b5"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/ai#parseAnswers",
+@@ -59032,4 +59198,59 @@
+       "shapeHash": "sha256:7f91f8a1d14c82fa25064e86d3340e86a69571a1031b6bfc3914d316bbc66c7c"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#resultAdmission",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "resultAdmission",
++      "kind": "type",
++      "exported": false,
++      "shape": {
++        "type": "resultAdmission"
++      },
++      "shapeHash": "sha256:ad4f321477273f36ef08fac8b38d9d228f7cd18076d998600d5f315a40010219"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#resultNested",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "resultNested",
++      "kind": "constant",
++      "exported": false,
++      "shape": {
++        "type": "resultAdmission"
++      },
++      "shapeHash": "sha256:ad4f321477273f36ef08fac8b38d9d228f7cd18076d998600d5f315a40010219"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#resultOutcome",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "resultOutcome",
++      "kind": "type",
++      "exported": false,
++      "shape": {
++        "type": "resultOutcome"
++      },
++      "shapeHash": "sha256:4742ea5cedbb9bd8b29ad71d307a84a8e8e606069ebccb054e397651fa6c6cae"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#resultSuspended",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "resultSuspended",
++      "kind": "constant",
++      "exported": false,
++      "shape": {
++        "type": "resultAdmission"
++      },
++      "shapeHash": "sha256:ad4f321477273f36ef08fac8b38d9d228f7cd18076d998600d5f315a40010219"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#resultUnadmitted",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "resultUnadmitted",
++      "kind": "constant",
++      "exported": false,
++      "shape": {
++        "type": "resultAdmission"
++      },
++      "shapeHash": "sha256:ad4f321477273f36ef08fac8b38d9d228f7cd18076d998600d5f315a40010219"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/ai#retainReadOnlyCredentialFields",
+@@ -60484,4 +60705,15 @@
+       "shapeHash": "sha256:d6cb06ca6a24b78903d24abffa1781138492ac198d2c2158a8259f904cdd035c"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/ai#streamResultWaiter",
++      "package": "github.com/MichaelKinsy/PiG/ai",
++      "name": "streamResultWaiter",
++      "kind": "type",
++      "exported": false,
++      "shape": {
++        "type": "streamResultWaiter"
++      },
++      "shapeHash": "sha256:4f56ddae07d11ba6422c00d88545438aefb8de8ea1d2d638f5f715a37fe5c3ce"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/ai#streamSimpleAs",
+@@ -77123,7 +77355,7 @@
+       "exported": false,
+       "shape": {
+-        "type": "func(ev github.com/MichaelKinsy/PiG/agent.AgentEvent)"
++        "type": "func(ev github.com/MichaelKinsy/PiG/agent.AgentEvent, publication *github.com/MichaelKinsy/PiG/coding/internal/eventorder.Scope)"
+       },
+-      "shapeHash": "sha256:c761519baea42fd4a4ccbc2cd9845ee64286378197e85574636b2f76d0fe2f38"
++      "shapeHash": "sha256:97002ce0afe162dd7569dfb5838144d80b02c439b4ef595ea898229235a10558"
+     },
+     {
+@@ -78315,4 +78547,15 @@
+       "shapeHash": "sha256:cc9233eb13a2471618d8b94b43de7651ac9da7e5ff4078fa5e772f95ccde6d0a"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding#Session.sendExtensionUserMessageStaged",
++      "package": "github.com/MichaelKinsy/PiG/coding",
++      "name": "Session.sendExtensionUserMessageStaged",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func(callCtx context.Context, content any, options *github.com/MichaelKinsy/PiG/coding/extension.SendUserMessageOptions, stage *ExtensionRunStage) error"
++      },
++      "shapeHash": "sha256:18a23069370230ea188d92b7ccb887819b5f5ded9b6431ad324fd73d1f191922"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/coding#Session.setActiveToolsByName",
+@@ -126869,4 +127112,15 @@
+       "shapeHash": "sha256:8d1ac9ca231f282f794e86762585ba8ce4e403c456220350cab9ef7447c87a84"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/extension/host/subprocess#Conn.eventScope",
++      "package": "github.com/MichaelKinsy/PiG/coding/extension/host/subprocess",
++      "name": "Conn.eventScope",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func(requestID string) *github.com/MichaelKinsy/PiG/coding/internal/eventorder.Scope"
++      },
++      "shapeHash": "sha256:828d4a4e027bef4245f2ebd2a6d33eaa76d70c17f5b614e53a316c279532ef25"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/coding/extension/host/subprocess#Conn.fail",
+@@ -127001,4 +127255,15 @@
+       "shapeHash": "sha256:31cac5b359d9888bdbe3fe08c486b2e404a728edce6e0aaaa60e59ceafc92fb5"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/extension/host/subprocess#Conn.noteEventResponse",
++      "package": "github.com/MichaelKinsy/PiG/coding/extension/host/subprocess",
++      "name": "Conn.noteEventResponse",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func(id string)"
++      },
++      "shapeHash": "sha256:cfecdc755116fa71eb3b2bdd3bd35e8bff60ec89238fe389c46963b6e90a69dd"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/coding/extension/host/subprocess#Conn.noteHeartbeatIdle",
+@@ -136677,7 +136942,7 @@
+       "exported": false,
+       "shape": {
+-        "type": "func(actions *HostCallbacks, args github.com/MichaelKinsy/PiG/extensions/sdk/json.RawMessage) (*CallResultPayload, error)"
++        "type": "func(ctx context.Context, actions *HostCallbacks, send func(context.Context, any, SendUserMessageOptions) error, args github.com/MichaelKinsy/PiG/extensions/sdk/json.RawMessage) (*CallResultPayload, error)"
+       },
+-      "shapeHash": "sha256:c0d582035738c247c7aaa5c4753ed90d17fd474ce581f7e1e233dbe86365f051"
++      "shapeHash": "sha256:6a6de5b8ad5c861132b6b1aa187eab203aa26cc265791b2c79ff7ebe845de34d"
+     },
+     {
+@@ -138342,4 +138607,15 @@
+       "shapeHash": "sha256:ffa79b2277a97578edb7154cd76c29b32899d1eb9bc77e0c60af10883a735d63"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/extension/host/subprocess#acknowledgesEventSuspension",
++      "package": "github.com/MichaelKinsy/PiG/coding/extension/host/subprocess",
++      "name": "acknowledgesEventSuspension",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func(ctx context.Context, state RequestStatePayload) bool"
++      },
++      "shapeHash": "sha256:861eadff5665b36bebb58b06626fe6383fdf72a2c4467a991a6975f85d71ef82"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/coding/extension/host/subprocess#acquireFrameBuffer",
+@@ -142104,4 +142380,15 @@
+       "shapeHash": "sha256:6e0dd6935f1c114bc602a4be2fdb5f1214abe33a0b85bd2da676eaafdcf450e7"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/extension/host/subprocess#eventResponseOrder",
++      "package": "github.com/MichaelKinsy/PiG/coding/extension/host/subprocess",
++      "name": "eventResponseOrder",
++      "kind": "type",
++      "exported": false,
++      "shape": {
++        "type": "eventResponseOrder"
++      },
++      "shapeHash": "sha256:f552066ebb2e84b69337aa6793afc1fcf38c8d1e8897d15f7aa766b9a0bbb038"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/coding/extension/host/subprocess#execCallKey",
+@@ -146735,4 +147022,15 @@
+       "shapeHash": "sha256:7eabd192b9f1c379102c8dc793881875f1f949f6b752e15a20b93080cb0b311d"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/extension/host/subprocess#notifyHostCallPrefix",
++      "package": "github.com/MichaelKinsy/PiG/coding/extension/host/subprocess",
++      "name": "notifyHostCallPrefix",
++      "kind": "constant",
++      "exported": false,
++      "shape": {
++        "type": "untyped string"
++      },
++      "shapeHash": "sha256:7eabd192b9f1c379102c8dc793881875f1f949f6b752e15a20b93080cb0b311d"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/coding/extension/host/subprocess#notifyOAuthSignalRelease",
+@@ -160903,4 +161201,191 @@
+       "shapeHash": "sha256:8d1a5323a25c87a5678217f076c31a62e950d20da31c4d4515229c99e169cc7d"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#Dependencies",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "Dependencies",
++      "kind": "type",
++      "exported": true,
++      "shape": {
++        "type": "Dependencies"
++      },
++      "shapeHash": "sha256:e38c534866aa7c18e9306fb62ec83d4e7554316c8f8c206e16f0f69cefb750d6"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#Dependencies.Add",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "Dependencies.Add",
++      "kind": "function",
++      "exported": true,
++      "shape": {
++        "type": "func(scope *Scope, segment *Segment)"
++      },
++      "shapeHash": "sha256:dd924fdc5263ccdbb8f1e3c174ba794f8e778df0895bae5f95264fcb8708bc4a"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#Dependencies.Wait",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "Dependencies.Wait",
++      "kind": "function",
++      "exported": true,
++      "shape": {
++        "type": "func(ctx context.Context) error"
++      },
++      "shapeHash": "sha256:1308e2e58e033a63ea9692ed75c8c737d1759c4953f8048cc0018fe7148bf370"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#DependenciesFrom",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "DependenciesFrom",
++      "kind": "function",
++      "exported": true,
++      "shape": {
++        "type": "func(ctx context.Context) *Dependencies"
++      },
++      "shapeHash": "sha256:7e89cb0ba746ca1d7c812fe3570d2c69504b138cc2a51a314f4eeffdc7bdf330"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#NewScope",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "NewScope",
++      "kind": "function",
++      "exported": true,
++      "shape": {
++        "type": "func(owner any) *Scope"
++      },
++      "shapeHash": "sha256:26db2d190993e0f8b9c83d0fae710d955e9047167b1467861fe9d677850f24fe"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#Scope",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "Scope",
++      "kind": "type",
++      "exported": true,
++      "shape": {
++        "type": "Scope"
++      },
++      "shapeHash": "sha256:64176320b3b364d53c31fc65fbb84bb60dac412cc5f3f4668ec9c098ace4871e"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#Scope.Answered",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "Scope.Answered",
++      "kind": "function",
++      "exported": true,
++      "shape": {
++        "type": "func() *Segment"
++      },
++      "shapeHash": "sha256:ac78161beaa37dc277e9c57444f30810440398ea67c4ed7689b683eadaf241a0"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#Scope.Finish",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "Scope.Finish",
++      "kind": "function",
++      "exported": true,
++      "shape": {
++        "type": "func()"
++      },
++      "shapeHash": "sha256:032e891204f123caf14d3d421fa9728efc3f31299c17e98859c219dccddd74fb"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#Scope.Suspend",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "Scope.Suspend",
++      "kind": "function",
++      "exported": true,
++      "shape": {
++        "type": "func()"
++      },
++      "shapeHash": "sha256:032e891204f123caf14d3d421fa9728efc3f31299c17e98859c219dccddd74fb"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#ScopeFrom",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "ScopeFrom",
++      "kind": "function",
++      "exported": true,
++      "shape": {
++        "type": "func(ctx context.Context) *Scope"
++      },
++      "shapeHash": "sha256:a08ddcb33e4d72554529d37ae733a20669ea0309f1fe93315397f29884fe72cb"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#Segment",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "Segment",
++      "kind": "type",
++      "exported": true,
++      "shape": {
++        "type": "Segment"
++      },
++      "shapeHash": "sha256:dd4e537218f45485becf513f2e4fe0f61abe1413543057c3edd8935b02845c8e"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#Segment.OnFinish",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "Segment.OnFinish",
++      "kind": "function",
++      "exported": true,
++      "shape": {
++        "type": "func(callback func())"
++      },
++      "shapeHash": "sha256:22e51b60772afd00ceef91eac259eba07e7c5c4be584a620c46748e2c8355185"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#Segment.finish",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "Segment.finish",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func()"
++      },
++      "shapeHash": "sha256:032e891204f123caf14d3d421fa9728efc3f31299c17e98859c219dccddd74fb"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#WithDependencies",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "WithDependencies",
++      "kind": "function",
++      "exported": true,
++      "shape": {
++        "type": "func(ctx context.Context, owner any) (context.Context, *Dependencies)"
++      },
++      "shapeHash": "sha256:0e290941fdee6d7b9481bd964fc993439e33dac817ea9a090ead3115e566c90a"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#WithScope",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "WithScope",
++      "kind": "function",
++      "exported": true,
++      "shape": {
++        "type": "func(ctx context.Context, scope *Scope) context.Context"
++      },
++      "shapeHash": "sha256:79f610f3060299c8694fe3c34a6ae3b06b1525a5a256101a0e401e5506ccd628"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#dependenciesKey",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "dependenciesKey",
++      "kind": "type",
++      "exported": false,
++      "shape": {
++        "type": "dependenciesKey"
++      },
++      "shapeHash": "sha256:5d58ea2888e0b85bbab6df0d6989645df1ee3239d5a4288f21fa1b941e85edd3"
++    },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#scopeKey",
++      "package": "github.com/MichaelKinsy/PiG/coding/internal/eventorder",
++      "name": "scopeKey",
++      "kind": "type",
++      "exported": false,
++      "shape": {
++        "type": "scopeKey"
++      },
++      "shapeHash": "sha256:2554995100c70313460d2c9d60ede6d0efe995aac66bc16a1dc8f0891a88ef06"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/coding/mcpext#API",
+@@ -195597,4 +196082,15 @@
+       "shapeHash": "sha256:47d0946cb9cfc03cb28759fef164e8964399bea22c112c0a47119918d7e23d6a"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/extensions/sdk#ModelRegistry.ProviderAvailability",
++      "package": "github.com/MichaelKinsy/PiG/extensions/sdk",
++      "name": "ModelRegistry.ProviderAvailability",
++      "kind": "function",
++      "exported": true,
++      "shape": {
++        "type": "func(provider string) (ProviderAvailability, error)"
++      },
++      "shapeHash": "sha256:b7941cad9891efd97449cc38b5f4afe1d59b25a28fd58c4dd53f029911558d0d"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/extensions/sdk#ModelRegistry.Refresh",
+@@ -197995,4 +198491,15 @@
+       "shapeHash": "sha256:4980e60eb28df6329de6d9f992434fb9a35371732d417b31c13802758d629eef"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/extensions/sdk#ProviderAvailability",
++      "package": "github.com/MichaelKinsy/PiG/extensions/sdk",
++      "name": "ProviderAvailability",
++      "kind": "type",
++      "exported": true,
++      "shape": {
++        "type": "ProviderAvailability"
++      },
++      "shapeHash": "sha256:d483c55cefb5db34af509cbf23d11fa9263847f206790fbc634a60b20cfcf773"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/extensions/sdk#ProviderClassifyFunc",
+@@ -207279,4 +207786,15 @@
+       "shapeHash": "sha256:00f45316cb08b3cb0c3b33382915953cbd0ceb56795f86d07c28e18033d108e3"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/extensions/sdk#availableModels",
++      "package": "github.com/MichaelKinsy/PiG/extensions/sdk",
++      "name": "availableModels",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func(state registryState) []map[string]any"
++      },
++      "shapeHash": "sha256:8a04b216d78863feeccc90f5fbe828dafab6086c79b7a85d6697934a031a9d57"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/extensions/sdk#bashExecutionToText",
+@@ -213032,4 +213550,15 @@
+       "shapeHash": "sha256:d95701383332f0ecdbbdde83b8c399ad06340674b052fb1389deba6e1e1a748c"
+     },
++    {
++      "id": "go:github.com/MichaelKinsy/PiG/extensions/sdk#providerModels",
++      "package": "github.com/MichaelKinsy/PiG/extensions/sdk",
++      "name": "providerModels",
++      "kind": "function",
++      "exported": false,
++      "shape": {
++        "type": "func(models []map[string]any, provider string) []map[string]any"
++      },
++      "shapeHash": "sha256:85da5a2401af9770677831e0fd57d194aab2770446a1b3999c55494a05bb09ce"
++    },
+     {
+       "id": "go:github.com/MichaelKinsy/PiG/extensions/sdk#providerOAuthConfig",
+diff --git a/test/parity/interfaces/recommendations-v1.5.0.json b/test/parity/interfaces/recommendations-v1.5.0.json
+index 8ee2936f610641b2ad4f91a2934cac59dc0e2278..3d56d23e0e061c155a8e062a82d16eaa752de65d 100644
+--- a/test/parity/interfaces/recommendations-v1.5.0.json
++++ b/test/parity/interfaces/recommendations-v1.5.0.json
+@@ -171069,5 +171069,5 @@
+       "confidence": "low",
+       "basis": [
+-        "105 normalized-name Pig candidates are ambiguous."
++        "106 normalized-name Pig candidates are ambiguous."
+       ],
+       "alternatives": [
+@@ -171110,4 +171110,5 @@
+         "go:github.com/MichaelKinsy/PiG/coding/extension/host/subprocess#toolRenderCardSeq.Add",
+         "go:github.com/MichaelKinsy/PiG/coding/extension/host/subprocess#viewScrollComponent.Add",
++        "go:github.com/MichaelKinsy/PiG/coding/internal/eventorder#Dependencies.Add",
+         "go:github.com/MichaelKinsy/PiG/coding/mcpext#mcpCLI.add",
+         "go:github.com/MichaelKinsy/PiG/coding/mcpext#toolSet.add",
+@@ -324094,5 +324095,5 @@
+       "confidence": "low",
+       "basis": [
+-        "11 normalized-name Pig candidates are ambiguous."
++        "12 normalized-name Pig candidates are ambiguous."
+       ],
+       "alternatives": [
+@@ -324107,4 +324108,5 @@
+         "go:github.com/MichaelKinsy/PiG/ai#AssistantMessageEventStream.Result",
+         "go:github.com/MichaelKinsy/PiG/ai#EventStream.Result",
++        "go:github.com/MichaelKinsy/PiG/ai#ownedResultWait.result",
+         "go:github.com/MichaelKinsy/PiG/coding/piglet/release#Result",
+         "go:github.com/MichaelKinsy/PiG/extensions/sdk#ModelEventStream.Result",
 diff --git a/test/perfgate/rpc_gc_test.go b/test/perfgate/rpc_gc_test.go
 index a79cb0943aa8a7bc4de08f33840473cfd2158799..a788ffeda07be883fd9e71d6bfd0d330325fab4f 100644
 --- a/test/perfgate/rpc_gc_test.go
