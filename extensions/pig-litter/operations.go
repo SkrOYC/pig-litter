@@ -63,7 +63,7 @@ var memberRefSchema = object([]string{"team", "id", "generation"}, map[string]an
 })
 
 var planIDSchema = object([]string{"member", "sequence"}, map[string]any{
-	"member": memberRefSchema, "sequence": map[string]any{"type": "integer", "minimum": 1},
+	"member": memberRefSchema, "sequence": map[string]any{"type": "integer", "minimum": 1}, "nonce": map[string]any{"type": "string", "pattern": "^[0-9a-f]{32}$"},
 })
 
 func planActionSchema(action string, required []string, properties map[string]any) map[string]any {

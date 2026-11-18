@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding"
 )
 
@@ -158,6 +159,10 @@ func spawnStored(entries []json.RawMessage, id ChildID) bool {
 func teamAdmissionMode(entries []json.RawMessage, member teamMember) (bool, bool, error) {
 	calls := map[string]bool{}
 	var mode, found bool
+	schema, err := json.Marshal(schemas["team_spawn"])
+	if err != nil {
+		return false, false, err
+	}
 	for _, raw := range entries {
 		var entry struct {
 			Message struct {
@@ -172,6 +177,7 @@ func teamAdmissionMode(entries []json.RawMessage, member teamMember) (bool, bool
 			continue
 		}
 		if entry.Message.Role == "assistant" {
+			calls = map[string]bool{}
 			for _, block := range entry.Message.Content {
 				var call struct {
 					Type      string          `json:"type"`
@@ -182,18 +188,17 @@ func teamAdmissionMode(entries []json.RawMessage, member teamMember) (bool, bool
 				if json.Unmarshal(block, &call) != nil || call.Type != "toolCall" || call.Name != "team_spawn" || call.ID == "" || checkUniqueJSON(call.Arguments) != nil {
 					continue
 				}
-				var args map[string]json.RawMessage
-				if json.Unmarshal(call.Arguments, &args) != nil {
+				normalized, err := ai.ValidateToolArgumentsJSON("team_spawn", schema, call.Arguments)
+				if err != nil {
 					continue
 				}
-				required := false
-				if value, ok := args["planRequired"]; ok {
-					if string(value) != "true" && string(value) != "false" {
-						continue
-					}
-					required = string(value) == "true"
+				var args struct {
+					PlanRequired bool `json:"planRequired"`
 				}
-				calls[call.ID] = required
+				if json.Unmarshal(normalized, &args) != nil {
+					continue
+				}
+				calls[call.ID] = args.PlanRequired
 			}
 			continue
 		}
@@ -260,6 +265,11 @@ func (o *owner) restoreChildren() error {
 	}
 	latest := map[ChildID]savedChild{}
 	invalidTeam := map[ChildID]bool{}
+	type admissionProof struct {
+		mode, known bool
+		err         error
+	}
+	proofs := map[ChildID]admissionProof{}
 	order := []ChildID{}
 	for _, entry := range entries {
 		if entry["customType"] != childEntryType {
@@ -278,8 +288,12 @@ func (o *owner) restoreChildren() error {
 		}
 		if saved.Team != nil {
 			member, exists := members[saved.ID]
-			mode, known, modeErr := teamAdmissionMode(raw, member)
-			if !exists || invalidTeam[saved.ID] || saved.ParentID != o.tree.root.id || member.Ref != saved.Team.Ref || member.AdmissionID != saved.Team.AdmissionID || member.Name != saved.Name || member.Workspace.Cwd != saved.Cwd || member.Workspace != saved.Team.Workspace || member.PlanRequired != saved.Team.PlanRequired || modeErr != nil || known && mode != member.PlanRequired || !known && member.PlanRequired {
+			proof, cached := proofs[saved.ID]
+			if exists && !cached {
+				proof.mode, proof.known, proof.err = teamAdmissionMode(raw, member)
+				proofs[saved.ID] = proof
+			}
+			if !exists || invalidTeam[saved.ID] || saved.ParentID != o.tree.root.id || member.Ref != saved.Team.Ref || member.AdmissionID != saved.Team.AdmissionID || member.Name != saved.Name || member.Workspace.Cwd != saved.Cwd || member.Workspace != saved.Team.Workspace || member.PlanRequired != saved.Team.PlanRequired || proof.err != nil || proof.known && proof.mode != member.PlanRequired || !proof.known && member.PlanRequired {
 				invalidTeam[saved.ID] = true
 				delete(latest, saved.ID)
 				continue

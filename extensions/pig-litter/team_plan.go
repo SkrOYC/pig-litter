@@ -60,7 +60,18 @@ func parsePlanCommand(raw json.RawMessage) (planCommand, error) {
 		}
 	}
 	if command.Action == "get" || command.Action == "cancel" || command.Action == "decide" {
-		request, err := exactJSONObject(fields["requestId"], "member", "sequence")
+		var requestFields map[string]json.RawMessage
+		if json.Unmarshal(fields["requestId"], &requestFields) != nil {
+			return command, reject("rejected", "invalid plan request identity")
+		}
+		requestKeys := []string{"member", "sequence"}
+		if _, present := requestFields["nonce"]; present {
+			requestKeys = append(requestKeys, "nonce")
+			if !validPlanNonce(command.RequestID.Nonce) {
+				return command, reject("rejected", "invalid plan request identity")
+			}
+		}
+		request, err := exactJSONObject(fields["requestId"], requestKeys...)
 		if err != nil {
 			return command, reject("rejected", "invalid plan request identity")
 		}
@@ -128,7 +139,18 @@ func (o *owner) planOperation(raw json.RawMessage, caller *run, parent *record) 
 	switch command.Action {
 	case "submit":
 		request, err := store.submitPlan(parent.team.Ref, caller.noticeID, command.SubmissionID, command.Text, command.TimeoutMs)
-		return map[string]any{"state": request.State, "request": request, "gate": "closed"}, err
+		if err != nil {
+			return nil, err
+		}
+		granted, err := store.planGranted(parent.team.Ref)
+		if err != nil {
+			return nil, err
+		}
+		gate := "closed"
+		if granted {
+			gate = "granted"
+		}
+		return map[string]any{"state": request.State, "request": request, "gate": gate}, nil
 	case "decide":
 		request, err := store.decidePlan(command.RequestID, execution, command.Decision, command.Reason)
 		gate := "closed"

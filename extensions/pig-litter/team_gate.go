@@ -3,10 +3,13 @@ package piglitter
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -21,6 +24,7 @@ import (
 type PlanRequestID struct {
 	Member   MemberRef `json:"member"`
 	Sequence uint64    `json:"sequence"`
+	Nonce    string    `json:"nonce,omitempty"`
 }
 
 type planRequest struct {
@@ -49,6 +53,14 @@ type uncertainPlanWrite struct {
 }
 
 const planRequestLimit = 24
+
+func validPlanNonce(nonce string) bool {
+	if len(nonce) != 32 || strings.ToLower(nonce) != nonce {
+		return false
+	}
+	_, err := hex.DecodeString(nonce)
+	return err == nil
+}
 
 func planPaths(dir string, ref MemberRef) (string, string) {
 	name := fmt.Sprintf("plan-%s-%d", ref.ID, ref.Generation)
@@ -222,7 +234,7 @@ func validatePlanLedger(ledger planLedger, ref MemberRef) error {
 	}
 	seen := map[string]bool{}
 	for index, request := range ledger.Requests {
-		if request.ID.Member != ref || request.ID.Sequence != uint64(index+1) || request.ID.Sequence > ledger.HighWater || seen[request.SubmissionID] || !peerMessageIDPattern.MatchString(request.SubmissionID) || request.Execution == "" || strings.TrimSpace(request.Text) == "" || len(request.Text) > 4096 || !utf8.ValidString(request.Text) || request.TimeoutMs < 1000 || request.TimeoutMs > 3600000 || request.CreatedAt.IsZero() || !request.Deadline.Equal(request.CreatedAt.Add(time.Duration(request.TimeoutMs)*time.Millisecond)) {
+		if request.ID.Member != ref || request.ID.Sequence != uint64(index+1) || request.ID.Sequence > ledger.HighWater || request.ID.Nonce != "" && !validPlanNonce(request.ID.Nonce) || seen[request.SubmissionID] || !peerMessageIDPattern.MatchString(request.SubmissionID) || request.Execution == "" || strings.TrimSpace(request.Text) == "" || len(request.Text) > 4096 || !utf8.ValidString(request.Text) || request.TimeoutMs < 1000 || request.TimeoutMs > 3600000 || request.CreatedAt.IsZero() || !request.Deadline.Equal(request.CreatedAt.Add(time.Duration(request.TimeoutMs)*time.Millisecond)) {
 			return errors.New("invalid plan request")
 		}
 		switch request.State {
@@ -291,8 +303,12 @@ func (s *teamStore) submitPlan(ref MemberRef, execution, submission, text string
 		if len(ledger.Requests) == planRequestLimit || ledger.HighWater == math.MaxUint64 {
 			return changed, nil, reject("capacity", "plan history is full")
 		}
+		var nonce [16]byte
+		if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
+			return changed, nil, reject("unavailable", "cannot allocate plan request identity")
+		}
 		ledger.HighWater++
-		result = planRequest{ID: PlanRequestID{Member: ref, Sequence: ledger.HighWater}, SubmissionID: submission, Text: text, Execution: execution, TimeoutMs: timeoutMs, CreatedAt: now, Deadline: now.Add(time.Duration(timeoutMs) * time.Millisecond), State: "pending"}
+		result = planRequest{ID: PlanRequestID{Member: ref, Sequence: ledger.HighWater, Nonce: hex.EncodeToString(nonce[:])}, SubmissionID: submission, Text: text, Execution: execution, TimeoutMs: timeoutMs, CreatedAt: now, Deadline: now.Add(time.Duration(timeoutMs) * time.Millisecond), State: "pending"}
 		ledger.Requests = append(ledger.Requests, result)
 		timerDeadline = current.Add(time.Duration(timeoutMs) * time.Millisecond)
 		created = true

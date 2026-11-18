@@ -33,7 +33,7 @@ func planTestMember(t *testing.T) (*teamStore, string, teamMember) {
 func TestPlanSubmissionAndDecisionAuthority(t *testing.T) {
 	store, _, member := planTestMember(t)
 	request, err := store.submitPlan(member.Ref, "run-1", "proposal-1", "Write the marker.", 60000)
-	if err != nil || request.State != "pending" || request.ID != (PlanRequestID{Member: member.Ref, Sequence: 1}) {
+	if err != nil || request.State != "pending" || request.ID.Member != member.Ref || request.ID.Sequence != 1 || !validPlanNonce(request.ID.Nonce) {
 		t.Fatalf("submission = %#v, %v", request, err)
 	}
 	retry, err := store.submitPlan(member.Ref, "run-1", "proposal-1", "Write the marker.", 60000)
@@ -316,7 +316,7 @@ func TestPlanCommandRejectsAmbiguousActions(t *testing.T) {
 
 func TestTeamAdmissionModeRequiresMatchingLeadCallAndResult(t *testing.T) {
 	_, _, member := planTestMember(t)
-	call := `{"message":{"role":"assistant","content":[{"type":"toolCall","id":"spawn","name":"team_spawn","arguments":{"planRequired":true}}]}}`
+	call := `{"message":{"role":"assistant","content":[{"type":"toolCall","id":"spawn","name":"team_spawn","arguments":{"type":"worker","task":"Plan","name":"planner","workspace":{"kind":"shared_checkout"},"planRequired":true}}]}}`
 	result, err := json.Marshal(map[string]any{"operation": "team_spawn", "state": "starting", "admission": member.AdmissionID, "member": member.Ref, "planRequired": true})
 	if err != nil {
 		t.Fatal(err)
