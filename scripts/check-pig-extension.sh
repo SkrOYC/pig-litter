@@ -121,7 +121,7 @@ for artifact in ./extensions/pig-litter ./extensions/pig-litter/dist/pig-litter;
   if ! printf '%s\n' "$report" | jq --exit-status --arg language "$language" --arg form "$form" '
     .valid == true and .registered == true and .name == "pig-litter"
     and .definition.language == $language and .definition.form == $form
-    and (.tools == ["litter_inspect", "litter_list", "litter_message", "litter_spawn", "litter_stop", "litter_wait", "team_list", "team_send", "team_spawn"])
+    and (.tools == ["litter_inspect", "litter_list", "litter_message", "litter_spawn", "litter_stop", "litter_wait", "team_list", "team_send", "team_spawn", "team_task_create", "team_task_list", "team_task_update"])
     and ((.commands // []) | map(if type == "string" then . else .name end) | index("pig-litter")) != null
   ' >/dev/null; then
     printf 'unexpected %s registration report:\n%s\n' "$name" "$report" >&2
@@ -169,4 +169,5 @@ fi
 for path in "$agent_dir/settings.json" "$workspace/.pig/settings.json"; do
   if [[ -e "$path" ]]; then printf 'validation wrote settings: %s\n' "$path" >&2; exit 1; fi
 done
-printf 'PiG %s (%s host) registered the Go Resource and prebuilt standalone with six child tools and three team tools and validated the Piglet\n' "$pig_version" "$pig_kind"
+team_count="$(printf '%s\n' "$report" | jq '.tools | length - 6')"
+printf 'PiG %s (%s host) registered the Go Resource and prebuilt standalone with six child tools and %s team tools and validated the Piglet\n' "$pig_version" "$pig_kind" "$team_count"

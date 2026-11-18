@@ -12,7 +12,7 @@ type toolInventory struct {
 }
 
 var controlTools = []string{"litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
-var teamTools = []string{"team_spawn", "team_list"}
+var teamTools = []string{"team_spawn", "team_list", "team_send", "team_task_create", "team_task_list", "team_task_update"}
 
 var toolInventories = map[string]toolInventory{
 	"scout":           {name: "scout leaf", required: []string{"read"}, optional: []string{"ls"}},
@@ -21,8 +21,8 @@ var toolInventories = map[string]toolInventory{
 	"worker_native":   {name: "native-settings worker", required: append([]string{"read", "ls", "write", "edit", "bash"}, controlTools...)},
 	"worker_child":    {name: "full child worker", required: append([]string{"read", "ls", "write", "edit", "bash"}, controlTools...), optional: []string{"codemode", "tool_search"}},
 	"worker_codemode": {name: "full worker with codemode", required: append([]string{"read", "write", "edit", "bash", "codemode"}, controlTools...)},
-	"lead":            {name: "root lead", required: append([]string{"read", "write", "edit", "bash"}, controlTools...), optional: []string{"ls", "team_spawn", "team_list"}},
-	"lead_codemode":   {name: "root lead with codemode", required: append([]string{"read", "write", "edit", "bash", "codemode"}, controlTools...), optional: []string{"team_spawn", "team_list"}},
+	"lead":            {name: "root lead", required: append([]string{"read", "write", "edit", "bash"}, controlTools...), optional: append([]string{"ls"}, teamTools...)},
+	"lead_codemode":   {name: "root lead with codemode", required: append([]string{"read", "write", "edit", "bash", "codemode"}, controlTools...), optional: append([]string(nil), teamTools...)},
 	"team_lead":       {name: "team fixture lead", required: append(append([]string{"read", "write", "edit", "bash"}, controlTools...), teamTools...), optional: []string{"ls"}},
 	"teammate":        {name: "team member", required: append(append([]string{"read", "ls", "write", "edit", "bash"}, controlTools...), teamTools...), optional: []string{"codemode", "tool_search"}},
 }
@@ -32,13 +32,14 @@ var fixtureModelInventories = map[string]string{
 	"parent_checks": "lead", "parent_admission": "lead", "parent_shadow": "lead", "parent_messages": "lead", "parent_lifecycle": "lead", "parent_pause": "lead", "parent_completion": "lead", "parent_codemode": "lead_codemode",
 	"parent_persistence": "lead", "parent_team_roster": "team_lead", "parent_team_worktree": "team_lead", "persistence_child": "scout",
 	"team_alpha": "teammate", "team_beta": "teammate", "team_gamma": "teammate", "team_isolated": "teammate",
+	"parent_team_tasks": "team_lead", "task_alpha": "teammate", "task_beta": "teammate",
 	"held": "scout", "lifecycle_child": "scout", "completion_child": "scout", "missing_file": "scout", "roles": "scout", "history": "scout", "message_child": "scout", "provider_error": "scout", "cwd_nested": "scout", "nested_sibling": "scout",
 	"codemode_child": "scout",
 	"denied":         "worker", "worker": "worker_child", "cwd_worker": "worker_native", "unbounded_child": "worker_child",
 	"nester": "coordinator", "grandchild": "coordinator",
 }
 
-var fixtureModelIDs = []string{"parent", "held", "worker", "parent_cwd", "cwd_worker", "cwd_nested", "parent_unbounded", "unbounded_child", "parent_nested", "nester", "grandchild", "nested_sibling", "parent_checks", "parent_admission", "denied", "provider_error", "missing_file", "roles", "history", "parent_messages", "message_child", "parent_lifecycle", "parent_pause", "lifecycle_child", "parent_completion", "completion_child", "parent_codemode", "codemode_child", "parent_persistence", "persistence_child", "parent_team_roster", "team_alpha", "team_beta", "team_gamma", "parent_team_worktree", "team_isolated"}
+var fixtureModelIDs = []string{"parent", "held", "worker", "parent_cwd", "cwd_worker", "cwd_nested", "parent_unbounded", "unbounded_child", "parent_nested", "nester", "grandchild", "nested_sibling", "parent_checks", "parent_admission", "denied", "provider_error", "missing_file", "roles", "history", "parent_messages", "message_child", "parent_lifecycle", "parent_pause", "lifecycle_child", "parent_completion", "completion_child", "parent_codemode", "codemode_child", "parent_persistence", "persistence_child", "parent_team_roster", "team_alpha", "team_beta", "team_gamma", "parent_team_worktree", "team_isolated", "parent_team_tasks", "task_alpha", "task_beta"}
 
 func requireToolInventory(request modelRequest, inventory toolInventory) error {
 	allowed := make(map[string]bool, len(inventory.required)+len(inventory.optional))

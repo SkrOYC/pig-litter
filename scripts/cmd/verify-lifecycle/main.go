@@ -92,6 +92,7 @@ type fixture struct {
 	stage                                                                   int
 	team                                                                    *teamRosterFixture
 	worktree                                                                *teamWorktreeFixture
+	taskGraph                                                               *teamTaskFixture
 	runs                                                                    []ref
 	resumed, worker, stopped                                                ref
 	nestedParent, grandchild, sibling, admissionProvisional                 ref
@@ -767,6 +768,10 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 		text, calls, err = f.parentTeamWorktree(request.Context(), body)
 	case "team_isolated":
 		text, calls, err = f.teamWorktreeMember(request.Context(), body)
+	case "parent_team_tasks":
+		text, calls, err = f.parentTeamTasks(request.Context(), body)
+	case "task_alpha", "task_beta":
+		text, calls, err = f.teamTaskMember(request.Context(), body)
 	case "persistence_child":
 		text, calls, err = f.persistenceChild(body)
 	case "parent_admission":
@@ -994,6 +999,9 @@ func runWithContext(parent context.Context, directory, pig, extension, scenario 
 	}
 	if scenario == "team-worktree" {
 		return f.runTeamWorktree(ctx, directory, workspace, agentDir, pig, extension, stdout, stderr)
+	}
+	if scenario == "team-tasks" {
+		return f.runTeamTasks(ctx, directory, workspace, agentDir, pig, extension, stdout, stderr)
 	}
 	model := "fixture/parent"
 	if scenario == "unbounded" {
