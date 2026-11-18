@@ -34,20 +34,22 @@ type fixtureTaskResult struct {
 }
 
 type teamTaskFixture struct {
-	leadMu         sync.Mutex
-	stage          int
-	done           bool
-	tasks          map[string]fixtureTask
-	refs           map[string]fixtureMemberRef
-	saw            map[string]bool
-	got            map[string]bool
-	blocked        map[string]bool
-	claims         map[string]fixtureTaskResult
-	assigned       fixtureTask
-	completed      bool
-	unblockedClaim fixtureTaskResult
-	deleted        fixtureTask
-	afterReopen    fixtureTask
+	leadMu          sync.Mutex
+	stage           int
+	done            bool
+	tasks           map[string]fixtureTask
+	refs            map[string]fixtureMemberRef
+	saw             map[string]bool
+	got             map[string]bool
+	blocked         map[string]bool
+	claims          map[string]fixtureTaskResult
+	assigned        fixtureTask
+	completed       bool
+	unblockedClaim  fixtureTaskResult
+	completion      fixtureTaskResult
+	completionRetry fixtureTaskResult
+	deleted         fixtureTask
+	afterReopen     fixtureTask
 }
 
 var fixtureTaskNames = []string{"alpha", "beta"}
@@ -173,14 +175,19 @@ func (f *fixture) parentTeamTasks(ctx context.Context, body modelRequest) (strin
 		g.completed = true
 		f.signalLocked()
 		f.mu.Unlock()
-		if err := f.wait(ctx, func() bool { return g.unblockedClaim.State != "" }); err != nil {
-			return "", nil, fmt.Errorf("teammate did not claim the unblocked task: %w", err)
+		if err := f.wait(ctx, func() bool { return g.completionRetry.State != "" }); err != nil {
+			return "", nil, fmt.Errorf("teammate did not complete the unblocked task twice: %w", err)
 		}
 		f.mu.Lock()
 		claim := g.unblockedClaim
+		completion := g.completion
+		retry := g.completionRetry
 		f.mu.Unlock()
 		if claim.State != "claimed" || claim.Task.Blocked || claim.Task.Owner == nil || *claim.Task.Owner != g.refs["alpha"] || claim.Task.ID != g.tasks["unblockable"].ID {
 			return "", nil, fmt.Errorf("unblocked claim failed: %#v", claim)
+		}
+		if completion.State != "completed" || retry.State != "already_completed" || completion.Task.ID != claim.Task.ID || retry.Task.ID != claim.Task.ID || completion.Task.State != "completed" || retry.Task.State != "completed" {
+			return "", nil, fmt.Errorf("owner completion or retry failed: %#v, %#v", completion, retry)
 		}
 		g.stage = 8
 		return "", []call{{"team_task_create", map[string]any{"subject": "delete-highest"}}}, nil
@@ -297,6 +304,25 @@ func (f *fixture) teamTaskMember(ctx context.Context, body modelRequest) (string
 		g.unblockedClaim = result
 		f.signalLocked()
 		f.mu.Unlock()
+		return "", []call{{"team_task_update", map[string]any{"taskId": g.tasks["unblockable"].ID, "action": "complete"}}}, nil
+	case 6:
+		result, err := parseTaskResult(tools[5])
+		if name != "alpha" || err != nil || result.State != "completed" || result.Task.ID != g.tasks["unblockable"].ID || result.Task.State != "completed" {
+			return "", nil, fmt.Errorf("teammate completion failed: %#v, %v", result, err)
+		}
+		f.mu.Lock()
+		g.completion = result
+		f.mu.Unlock()
+		return "", []call{{"team_task_update", map[string]any{"taskId": g.tasks["unblockable"].ID, "action": "complete"}}}, nil
+	case 7:
+		result, err := parseTaskResult(tools[6])
+		if name != "alpha" || err != nil || result.State != "already_completed" || result.Task.ID != g.tasks["unblockable"].ID || result.Task.State != "completed" {
+			return "", nil, fmt.Errorf("teammate completion retry failed: %#v, %v", result, err)
+		}
+		f.mu.Lock()
+		g.completionRetry = result
+		f.signalLocked()
+		f.mu.Unlock()
 		return "TEAM_TASK_ALPHA_DONE", nil, nil
 	}
 	return "", nil, fmt.Errorf("unexpected teammate %s task turn %d", name, len(tools))
@@ -344,5 +370,5 @@ func (f *fixture) runTeamTasks(ctx context.Context, directory, workspace, agentD
 	if !f.taskGraph.done {
 		return fmt.Errorf("team tasks fixture stopped at stage %d", f.taskGraph.stage)
 	}
-	return writeJSON(filepath.Join(directory, "team-tasks.json"), map[string]any{"firstArgv": append([]string{pig}, firstArgs...), "reopenArgv": append([]string{pig}, reopenArgs...), "tasks": f.taskGraph.tasks, "members": f.taskGraph.refs, "saw": f.taskGraph.saw, "got": f.taskGraph.got, "blocked": f.taskGraph.blocked, "claims": f.taskGraph.claims, "assigned": f.taskGraph.assigned, "unblockedClaim": f.taskGraph.unblockedClaim, "deleted": f.taskGraph.deleted, "afterReopen": f.taskGraph.afterReopen})
+	return writeJSON(filepath.Join(directory, "team-tasks.json"), map[string]any{"firstArgv": append([]string{pig}, firstArgs...), "reopenArgv": append([]string{pig}, reopenArgs...), "tasks": f.taskGraph.tasks, "members": f.taskGraph.refs, "saw": f.taskGraph.saw, "got": f.taskGraph.got, "blocked": f.taskGraph.blocked, "claims": f.taskGraph.claims, "assigned": f.taskGraph.assigned, "unblockedClaim": f.taskGraph.unblockedClaim, "completion": f.taskGraph.completion, "completionRetry": f.taskGraph.completionRetry, "deleted": f.taskGraph.deleted, "afterReopen": f.taskGraph.afterReopen})
 }

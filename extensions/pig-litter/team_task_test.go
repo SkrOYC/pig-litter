@@ -65,6 +65,14 @@ func TestTeamTasksCompetingClaimsAndBlockedAssignment(t *testing.T) {
 	if err != nil || len(tasks) != 3 || tasks[1].Blocked {
 		t.Fatalf("tasks after prerequisite completion = %#v, %v", tasks, err)
 	}
+	result, state, err = store.completeTask(blocked.ID, &members[0])
+	if err != nil || state != "completed" || result.State != TaskCompleted || result.Blocked {
+		t.Fatalf("owner completion = %#v, %q, %v", result, state, err)
+	}
+	_, state, err = store.completeTask(blocked.ID, &members[0])
+	if err != nil || state != "already_completed" {
+		t.Fatalf("owner completion retry = %q, %v", state, err)
+	}
 	type claim struct {
 		task  teamTaskView
 		state string
