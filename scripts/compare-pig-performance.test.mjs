@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { onTestFinished, test } from 'bun:test';
 import { fileURLToPath } from 'node:url';
-import { evaluate, finalizeEvidence, percentile, runnerIdentity, schedule, summarize } from './compare-pig-performance.mjs';
+import { evaluate, finalizeEvidence, percentile, runnerIdentity, schedule, summarize, validatePackagedHost } from './compare-pig-performance.mjs';
 
 const identities = {
   driver: 'a'.repeat(64), bash: 'b'.repeat(64),
@@ -21,6 +21,17 @@ function samples(baseline, candidate) {
 }
 
 const defaultValues = { startup_ns: 500_000_000, spawn_to_first_request_ns: 500_000_000, peak_tree_rss_bytes: 50 * 1024 * 1024 };
+
+test('packaged host identity binds the declared path, digest, and Build to the shell binary', () => {
+  const expected = { path: '/nix/store/abc-pig-litter-host-preview-0.7.0/bin/pig', sha256: 'a'.repeat(64), build: 'pig-litter-patch-example' };
+  const actual = { path: expected.path, sha256: expected.sha256 };
+  const report = { verified: true, identity: { pigVersion: '0.7.0', go: 'go1.27.4', platform: 'linux/amd64', build: expected.build }, targets: [{ kind: 'binary', ...actual }] };
+  assert.deepEqual(validatePackagedHost(expected, actual, report, 'go1.27.4', '0.7.0'), { kind: 'package', ...expected });
+  assert.throws(() => validatePackagedHost(expected, { ...actual, path: '/nix/store/other/bin/pig' }, report, 'go1.27.4', '0.7.0'), /identity mismatch/);
+  assert.throws(() => validatePackagedHost(expected, { ...actual, sha256: 'b'.repeat(64) }, report, 'go1.27.4', '0.7.0'), /identity mismatch/);
+  assert.throws(() => validatePackagedHost(expected, actual, { ...report, identity: { ...report.identity, build: 'wrong' } }, 'go1.27.4', '0.7.0'), /identity mismatch/);
+  assert.throws(() => validatePackagedHost(expected, actual, report, 'go1.27.3', '0.7.0'), /identity mismatch/);
+});
 
 test('runner identity records the Bun executable version and revision', () => {
   const runtime = runnerIdentity().runtime;
@@ -227,6 +238,22 @@ test('summarization recomputes a complete artifact and detects a changed retaine
   const result = summarize(dir);
   assert.equal(result.status, 'passed');
   assert.equal(result.gates.startup_ns.baseline_p95, 500_000_000);
+  const packagePath = '/nix/store/abc-pig-litter-host-preview-0.7.0/bin/pig';
+  const build = 'pig-litter-patch-example';
+  provenance.candidate.host_identity = { kind: 'package', path: packagePath, sha256: actual.candidate.pig, build };
+  provenance.candidate.shell_pig = packagePath;
+  provenance.candidate.compiler = { version: 'go1.27.4' };
+  provenance.candidate.declaration = { version: '0.7.0' };
+  const report = { verified: true, identity: { pigVersion: '0.7.0', go: 'go1.27.4', platform: 'linux/amd64', build }, targets: [{ kind: 'binary', path: packagePath, sha256: actual.candidate.pig }] };
+  mkdirSync(path.join(dir, 'setup'));
+  writeJSON(path.join(dir, 'provenance.json'), provenance);
+  writeJSON(path.join(dir, 'setup', 'candidate-pig-identity.json'), report);
+  assert.equal(summarize(dir).status, 'passed');
+  report.identity.build = 'wrong';
+  writeJSON(path.join(dir, 'setup', 'candidate-pig-identity.json'), report);
+  assert.equal(summarize(dir).status, 'incomplete');
+  report.identity.build = build;
+  writeJSON(path.join(dir, 'setup', 'candidate-pig-identity.json'), report);
   const script = fileURLToPath(new URL('./compare-pig-performance.mjs', import.meta.url));
   const cli = spawnSync(process.execPath, [script, 'summarize', dir], { encoding: 'utf8' });
   assert.equal(cli.status, 0);

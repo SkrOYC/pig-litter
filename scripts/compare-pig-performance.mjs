@@ -195,34 +195,30 @@ function releaseDeclaration(cwd) {
   return { archive, archiveRoot, sri, version: match[1] };
 }
 
+export function validatePackagedHost(expected, actual, report, goVersion, version) {
+  const target = report?.targets?.[0];
+  if (!/^\/nix\/store\/[^/]+\/bin\/pig$/.test(expected.path) || !validHash(expected.sha256) || !expected.build ||
+      actual.path !== expected.path || actual.sha256 !== expected.sha256 || report?.verified !== true ||
+      report.identity?.pigVersion !== version || report.identity?.go !== goVersion ||
+      report.identity?.platform !== 'linux/amd64' || report.identity?.build !== expected.build ||
+      report.targets?.length !== 1 || target?.kind !== 'binary' || target.path !== actual.path || target.sha256 !== actual.sha256) {
+    throw new Error('packaged PiG identity mismatch');
+  }
+  return { kind: 'package', ...expected };
+}
+
 async function prepareSide(side, cwd, scratch, evidence, buildDriver) {
   const setup = path.join(evidence, 'setup'), binaries = path.join(evidence, 'binaries'), releases = path.join(evidence, 'releases');
   const sideScratch = path.join(scratch, `build-${side}`);
   for (const dir of ['tmp', 'go-build', 'go-mod', 'go']) mkdir(path.join(sideScratch, dir));
   const declaration = releaseDeclaration(cwd);
-  const url = `https://github.com/MichaelKinsy/PiG/releases/download/v${declaration.version}`;
-  const archive = path.join(releases, `${side}-${declaration.archive}`);
-  const sums = path.join(releases, `${side}-SHA256SUMS`);
-  await command('curl', ['--fail', '--silent', '--show-error', '--location', '--retry', '3', `${url}/SHA256SUMS`, '-o', sums]);
-  await command('curl', ['--fail', '--silent', '--show-error', '--location', '--retry', '3', `${url}/${declaration.archive}`, '-o', archive]);
-  const entries = readFileSync(sums, 'utf8').split(/\r?\n/).map(line => line.match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/)).filter(match => match?.[2] === declaration.archive);
-  const archiveHash = sha256(archive);
-  const actualSRI = `sha256-${Buffer.from(archiveHash, 'hex').toString('base64')}`;
-  if (entries.length !== 1 || entries[0][1].toLowerCase() !== archiveHash || actualSRI !== declaration.sri) throw new Error(`${side} archive checksum mismatch`);
-  const listing = (await command('tar', ['-tzf', archive])).split('\n');
-  if (listing.filter(item => item === `${declaration.archiveRoot}/pig`).length !== 1) throw new Error(`${side} release binary is missing or duplicated`);
-  const extract = path.join(sideScratch, 'extract'); mkdir(extract);
-  await command('tar', ['-xzf', archive, '-C', extract, `${declaration.archiveRoot}/pig`]);
-  const extracted = path.join(extract, declaration.archiveRoot, 'pig');
   const pigDir = path.join(binaries, `${side}-pig-bin`); mkdir(pigDir);
-  const pig = path.join(pigDir, 'pig'); copyFileSync(extracted, pig);
-  const elf = readFileSync(pig).subarray(0, 20);
-  if (elf.length < 20 || !elf.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) || elf[4] !== 2 || elf[5] !== 1 || elf.readUInt16LE(18) !== 62) throw new Error(`${side} PiG is not native x86-64 ELF`);
+  const pig = path.join(pigDir, 'pig');
   const prep = path.join(sideScratch, 'prepare.sh');
   const extension = extensionPath(evidence, side);
   mkdir(path.dirname(extension));
   const driver = path.join(binaries, 'verify-lifecycle');
-  writeFileSync(prep, `set -eu\ncd "$1"\ncommand -v go > "$2/go-path"\ncommand -v bash > "$2/bash-path"\ncommand -v pig > "$2/pig-path"\ngo version > "$2/go-version"\ngo env -json GOVERSION GOHOSTOS GOHOSTARCH GOOS GOARCH CGO_ENABLED GOTOOLCHAIN GOROOT > "$2/go-env.json"\ngo -C scripts mod download\ngo -C extensions/pig-litter mod download\nGOPROXY=off go -C scripts build -mod=readonly -o "$3" ./cmd/pig-litter\nif [ "$5" = yes ]; then\n  GOPROXY=off go -C scripts test -mod=readonly ./cmd/verify-lifecycle -run 'TestPerformance|TestResident' -count=1\n  GOPROXY=off go -C scripts build -mod=readonly -o "$4" ./cmd/verify-lifecycle\nfi\ngo version -m "$3" > "$2/build-info"\n`, { mode: 0o700 });
+  writeFileSync(prep, `set -eu\ncd "$1"\ncommand -v go > "$2/go-path"\ncommand -v bash > "$2/bash-path"\ncommand -v pig > "$2/pig-path"\nprintf '%s' "\${PIG_LITTER_EXPECTED_PIG-}" > "$2/expected-pig-path"\nprintf '%s' "\${PIG_LITTER_EXPECTED_PIG_SHA256-}" > "$2/expected-pig-sha256"\nprintf '%s' "\${PIG_LITTER_EXPECTED_PIG_BUILD-}" > "$2/expected-pig-build"\ngo version > "$2/go-version"\ngo env -json GOVERSION GOHOSTOS GOHOSTARCH GOOS GOARCH CGO_ENABLED GOTOOLCHAIN GOROOT > "$2/go-env.json"\ngo -C scripts mod download\ngo -C extensions/pig-litter mod download\nGOPROXY=off go -C scripts build -mod=readonly -o "$3" ./cmd/pig-litter\nif [ "$5" = yes ]; then\n  GOPROXY=off go -C scripts test -mod=readonly ./cmd/verify-lifecycle -run 'TestPerformance|TestResident' -count=1\n  GOPROXY=off go -C scripts build -mod=readonly -o "$4" ./cmd/verify-lifecycle\nfi\ngo version -m "$3" > "$2/build-info"\n`, { mode: 0o700 });
   const env = setupEnvironment(sideScratch);
   await command('devenv', ['shell', '--', 'bash', prep, cwd, sideScratch, extension, driver, buildDriver ? 'yes' : 'no'], { cwd, env, log: path.join(setup, `${side}.log`) });
   const goEnv = json(path.join(sideScratch, 'go-env.json'));
@@ -231,10 +227,46 @@ async function prepareSide(side, cwd, scratch, evidence, buildDriver) {
   const goPath = realpathSync(readFileSync(path.join(sideScratch, 'go-path'), 'utf8').trim());
   const bashPath = realpathSync(readFileSync(path.join(sideScratch, 'bash-path'), 'utf8').trim());
   const shellPig = realpathSync(readFileSync(path.join(sideScratch, 'pig-path'), 'utf8').trim());
-  if (sha256(shellPig) !== sha256(pig)) throw new Error(`${side} shell PiG differs from the verified archive`);
+  const expected = {
+    path: readFileSync(path.join(sideScratch, 'expected-pig-path'), 'utf8'),
+    sha256: readFileSync(path.join(sideScratch, 'expected-pig-sha256'), 'utf8'),
+    build: readFileSync(path.join(sideScratch, 'expected-pig-build'), 'utf8'),
+  };
+  let hostIdentity, archiveIdentity = {};
+  if (side === 'candidate') {
+    if (Object.values(expected).some(value => !value)) throw new Error('candidate has incomplete package identity');
+    const actual = { path: shellPig, sha256: sha256(shellPig) };
+    if (actual.path !== expected.path || actual.sha256 !== expected.sha256) throw new Error('packaged PiG path or digest mismatch');
+    const pigHome = path.join(sideScratch, 'pig-home'); mkdir(path.join(pigHome, 'agent'));
+    const report = JSON.parse(await command(shellPig, ['verify', '--json'], { env: { ...env, PIG_HOME: pigHome, PIG_CODING_AGENT_DIR: path.join(pigHome, 'agent'), PIG_USE_PI_DIRS: '0', PIG_OFFLINE: '1', PI_OFFLINE: '1' } }));
+    hostIdentity = validatePackagedHost(expected, actual, report, goEnv.GOVERSION, declaration.version);
+    atomicJSON(path.join(setup, `${side}-pig-identity.json`), report);
+    copyFileSync(shellPig, pig);
+  } else {
+    if (Object.values(expected).some(Boolean)) throw new Error('baseline has unexpected package identity');
+    const url = `https://github.com/MichaelKinsy/PiG/releases/download/v${declaration.version}`;
+    const archive = path.join(releases, `${side}-${declaration.archive}`);
+    const sums = path.join(releases, `${side}-SHA256SUMS`);
+    await command('curl', ['--fail', '--silent', '--show-error', '--location', '--retry', '3', `${url}/SHA256SUMS`, '-o', sums]);
+    await command('curl', ['--fail', '--silent', '--show-error', '--location', '--retry', '3', `${url}/${declaration.archive}`, '-o', archive]);
+    const entries = readFileSync(sums, 'utf8').split(/\r?\n/).map(line => line.match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/)).filter(match => match?.[2] === declaration.archive);
+    const archiveHash = sha256(archive);
+    const actualSRI = `sha256-${Buffer.from(archiveHash, 'hex').toString('base64')}`;
+    if (entries.length !== 1 || entries[0][1].toLowerCase() !== archiveHash || actualSRI !== declaration.sri) throw new Error(`${side} archive checksum mismatch`);
+    const listing = (await command('tar', ['-tzf', archive])).split('\n');
+    if (listing.filter(item => item === `${declaration.archiveRoot}/pig`).length !== 1) throw new Error(`${side} release binary is missing or duplicated`);
+    const extract = path.join(sideScratch, 'extract'); mkdir(extract);
+    await command('tar', ['-xzf', archive, '-C', extract, `${declaration.archiveRoot}/pig`]);
+    copyFileSync(path.join(extract, declaration.archiveRoot, 'pig'), pig);
+    if (sha256(shellPig) !== sha256(pig)) throw new Error(`${side} shell PiG differs from the verified archive`);
+    hostIdentity = { kind: 'stock', path: shellPig, sha256: sha256(shellPig) };
+    archiveIdentity = { archive_sha256: archiveHash, official_sha256: entries[0][1].toLowerCase() };
+  }
+  const elf = readFileSync(pig).subarray(0, 20);
+  if (elf.length < 20 || !elf.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) || elf[4] !== 2 || elf[5] !== 1 || elf.readUInt16LE(18) !== 62) throw new Error(`${side} PiG is not native x86-64 ELF`);
   copyFileSync(path.join(sideScratch, 'go-env.json'), path.join(setup, `${side}-go-env.json`));
   copyFileSync(path.join(sideScratch, 'build-info'), path.join(setup, `${side}-build-info.txt`));
-  return { declaration, archive_sha256: archiveHash, official_sha256: entries[0][1].toLowerCase(), pig, pig_sha256: sha256(pig), extension, extension_sha256: sha256(extension), compiler: { path: goPath, sha256: sha256(goPath), version: goEnv.GOVERSION, environment: goEnv }, shell_pig: shellPig, bash: bashPath, bash_sha256: sha256(bashPath), build_command: 'GOPROXY=off go -C scripts build -mod=readonly ./cmd/pig-litter' };
+  return { declaration, ...archiveIdentity, host_identity: hostIdentity, pig, pig_sha256: sha256(pig), extension, extension_sha256: sha256(extension), compiler: { path: goPath, sha256: sha256(goPath), version: goEnv.GOVERSION, environment: goEnv }, shell_pig: shellPig, bash: bashPath, bash_sha256: sha256(bashPath), build_command: 'GOPROXY=off go -C scripts build -mod=readonly ./cmd/pig-litter' };
 }
 
 function validateObservation(performance, trace) {
@@ -306,6 +338,9 @@ export function summarize(evidence) {
     if (plan.baseline !== baselineSHA || !validSHA(plan.candidate) || !same(plan.schedule, schedule()) || plan.candidate !== provenance.candidate.source.sha) throw new Error('invalid plan or source identity');
     for (const side of ['baseline', 'candidate']) {
       if (sha256(path.join(evidence, 'binaries', `${side}-pig-bin`, 'pig')) !== provenance[side].pig_sha256 || sha256(extensionPath(evidence, side)) !== provenance[side].extension_sha256) throw new Error(`${side} retained binary identity changed`);
+    }
+    if (provenance.candidate.host_identity?.kind === 'package') {
+      validatePackagedHost(provenance.candidate.host_identity, { path: provenance.candidate.shell_pig, sha256: provenance.candidate.pig_sha256 }, json(path.join(evidence, 'setup', 'candidate-pig-identity.json')), provenance.candidate.compiler.version, provenance.candidate.declaration.version);
     }
     if (sha256(path.join(evidence, 'binaries', 'verify-lifecycle')) !== provenance.driver.sha256) throw new Error('retained driver identity changed');
     const identities = identitiesFor(provenance);
