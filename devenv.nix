@@ -76,7 +76,7 @@ let
     let
       patchDigest = pigSource.patch.sha256;
       build = "pig-litter-patch-${patchDigest}";
-      binaryDigest = "19b6546c283370cdf51314d81686bd2fb802e9db209651a1812fc4c40101e412";
+      binaryDigest = "3f7166356394cdc400688471cd870364007c97a43d7d97bf20f5b977d8f5d937";
       buildGo = pkgs.buildGo127Module.override { inherit go; };
     in
     {
