@@ -55,12 +55,14 @@ else
 fi
 
 scratch_dir="$(mktemp -d /tmp/pig-platform.XXXXXXXX)"
+scratch_dir="$(cd "$scratch_dir" && pwd -P)"
 printf 'scratch_dir=%s\n' "$scratch_dir" >> "$evidence_dir/runner.txt"
 if [[ -n "${PIG_PLATFORM_CACHE_DIR:-}" ]]; then
   build_dir="$(mktemp -d "$PIG_PLATFORM_CACHE_DIR/pig-platform.XXXXXXXX")"
 else
   build_dir="$scratch_dir"
 fi
+build_dir="$(cd "$build_dir" && pwd -P)"
 printf 'build_dir=%s\n' "$build_dir" >> "$evidence_dir/runner.txt"
 mkdir -p "$scratch_dir/tmp" "$build_dir/go-build" "$build_dir/go-mod" "$build_dir/go-tmp" "$scratch_dir/pig-home/agent"
 export TMPDIR="$scratch_dir/tmp" GOCACHE="$build_dir/go-build" GOMODCACHE="$build_dir/go-mod" GOTMPDIR="$build_dir/go-tmp"
