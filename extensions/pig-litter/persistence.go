@@ -208,6 +208,9 @@ func (o *owner) restoreChildren() error {
 				continue
 			}
 			saved.Team = &member
+			if member.State == "paused" {
+				saved.Paused = true
+			}
 		}
 		if _, exists := latest[saved.ID]; !exists {
 			order = append(order, saved.ID)

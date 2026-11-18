@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,10 +51,22 @@ type teamStore struct {
 	ownerEpoch uint64
 	ownerToken string
 	lead       *flock.Flock
+	syncDir    func(string) error
+	closeLock  func(*flock.Flock) error
+	uncertain  *uncertainTeamWrite
 	closed     bool
 }
 
+type uncertainTeamWrite struct {
+	lock   *flock.Flock
+	roster teamRoster
+}
+
 func openTeamStore(agentDir string, root ChildID) (*teamStore, error) {
+	return openTeamStoreWithSync(agentDir, root, syncDir)
+}
+
+func openTeamStoreWithSync(agentDir string, root ChildID, syncDirectory func(string) error) (*teamStore, error) {
 	if !childUUID.MatchString(string(root)) {
 		return nil, errors.New("invalid team root UUID")
 	}
@@ -65,8 +78,11 @@ func openTeamStore(agentDir string, root ChildID) (*teamStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("acquire team owner lease: %w", err)
 	}
-	store := &teamStore{dir: dir, root: root, lead: lead}
+	store := &teamStore{dir: dir, root: root, lead: lead, syncDir: syncDirectory, closeLock: (*flock.Flock).Close}
 	if err := store.claim(created); err != nil {
+		if store.uncertain != nil {
+			err = errors.Join(err, store.uncertain.lock.Close())
+		}
 		return nil, errors.Join(err, lead.Close())
 	}
 	return store, nil
@@ -88,6 +104,9 @@ func readTeamSnapshot(agentDir string, root ChildID) (TeamID, []teamMember, erro
 		return TeamID{}, nil, err
 	}
 	roster, readErr := loadTeamRoster(dir, root)
+	if readErr == nil {
+		readErr = syncDir(dir)
+	}
 	if err := errors.Join(readErr, lock.Close()); err != nil {
 		return TeamID{}, nil, err
 	}
@@ -99,14 +118,17 @@ func (s *teamStore) claim(created bool) error {
 	if err != nil {
 		return err
 	}
-	err = s.claimLocked(created)
+	err = s.claimLocked(created, lock)
+	if s.uncertain != nil {
+		return err
+	}
 	if closeErr := lock.Close(); closeErr != nil {
 		return errors.Join(err, closeErr)
 	}
 	return err
 }
 
-func (s *teamStore) claimLocked(created bool) error {
+func (s *teamStore) claimLocked(created bool, lock *flock.Flock) error {
 	var roster teamRoster
 	var err error
 	if created {
@@ -120,6 +142,9 @@ func (s *teamStore) claimLocked(created bool) error {
 	} else {
 		roster, err = loadTeamRoster(s.dir, s.root)
 		if err != nil {
+			return err
+		}
+		if err := s.syncDir(s.dir); err != nil {
 			return err
 		}
 	}
@@ -143,7 +168,7 @@ func (s *teamStore) claimLocked(created bool) error {
 			roster.Members[i].State = "interrupted"
 		}
 	}
-	if err := saveTeamRoster(s.dir, roster); err != nil {
+	if err := s.saveLocked(lock, roster); err != nil {
 		return err
 	}
 	s.ownerEpoch, s.ownerToken = roster.OwnerEpoch, roster.OwnerToken
@@ -319,6 +344,32 @@ func (s *teamStore) SetState(ref MemberRef, state string) error {
 	})
 }
 
+func (s *teamStore) PauseMember(ref MemberRef) (bool, error) {
+	committed := false
+	err := s.transact(func(roster *teamRoster) (bool, error) {
+		for i := range roster.Members {
+			if roster.Members[i].Ref == ref {
+				committed = true
+				if roster.Members[i].State == "paused" {
+					return false, nil
+				}
+				roster.Members[i].State = "paused"
+				return true, nil
+			}
+		}
+		for _, reservation := range roster.Reservations {
+			if reservation.Member.Ref == ref {
+				return false, nil
+			}
+		}
+		return false, errors.New("team member reference not found")
+	})
+	if err != nil {
+		return false, err
+	}
+	return committed, nil
+}
+
 func (s *teamStore) Snapshot() (TeamID, []teamMember, error) {
 	var team TeamID
 	var members []teamMember
@@ -346,14 +397,42 @@ func (s *teamStore) SnapshotWithReservations() (TeamID, []teamMember, []teamMemb
 func (s *teamStore) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
-		return nil
+	var reconcileErr error
+	if !s.closed {
+		if s.uncertain != nil {
+			reconcileErr = s.reconcileLocked()
+		}
+		s.closed = true
 	}
-	if err := s.lead.Close(); err != nil {
-		return err
+	var lockErr error
+	if s.uncertain != nil {
+		lockErr = s.closeLock(s.uncertain.lock)
+		if s.uncertain.lock.Locked() {
+			if lockErr == nil {
+				lockErr = errors.New("team transaction lock remains held")
+			}
+			return errors.Join(reconcileErr, lockErr)
+		}
+		s.uncertain = nil
 	}
-	s.closed = true
-	return nil
+	if s.lead == nil {
+		return errors.Join(reconcileErr, lockErr)
+	}
+	leadErr := s.closeLock(s.lead)
+	if s.lead.Locked() {
+		if leadErr == nil {
+			leadErr = errors.New("team owner lease remains held")
+		}
+	} else {
+		s.lead = nil
+	}
+	return errors.Join(reconcileErr, lockErr, leadErr)
+}
+
+func (s *teamStore) locksHeld() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.uncertain != nil && s.uncertain.lock.Locked() || s.lead != nil && s.lead.Locked()
 }
 
 func (s *teamStore) transact(change func(*teamRoster) (bool, error)) error {
@@ -365,11 +444,21 @@ func (s *teamStore) transact(change func(*teamRoster) (bool, error)) error {
 	if err := checkLockedFile(s.lead); err != nil {
 		return fmt.Errorf("team owner lease: %w", err)
 	}
-	lock, err := lockTeamFile(filepath.Join(s.dir, "team.lock"), false)
-	if err != nil {
-		return err
+	var lock *flock.Flock
+	if s.uncertain != nil {
+		if err := s.reconcileLocked(); err != nil {
+			return err
+		}
+		lock = s.uncertain.lock
+		s.uncertain = nil
+	} else {
+		var err error
+		lock, err = lockTeamFile(filepath.Join(s.dir, "team.lock"), false)
+		if err != nil {
+			return err
+		}
 	}
-	err = func() error {
+	err := func() error {
 		roster, err := loadTeamRoster(s.dir, s.root)
 		if err != nil {
 			return err
@@ -388,12 +477,48 @@ func (s *teamStore) transact(change func(*teamRoster) (bool, error)) error {
 		if err := validateTeamRoster(roster, s.root); err != nil {
 			return err
 		}
-		return saveTeamRoster(s.dir, roster)
+		return s.saveLocked(lock, roster)
 	}()
+	if s.uncertain != nil {
+		return err
+	}
 	if closeErr := lock.Close(); closeErr != nil {
 		return errors.Join(err, closeErr)
 	}
 	return err
+}
+
+func (s *teamStore) saveLocked(lock *flock.Flock, roster teamRoster) error {
+	renamed, err := saveTeamRoster(s.dir, roster, s.syncDir)
+	if err == nil || !renamed {
+		return err
+	}
+	s.uncertain = &uncertainTeamWrite{lock: lock, roster: roster}
+	if reconcileErr := s.reconcileLocked(); reconcileErr != nil {
+		return errors.Join(err, reconcileErr)
+	}
+	s.uncertain = nil
+	return nil
+}
+
+func (s *teamStore) reconcileLocked() error {
+	if err := checkLockedFile(s.lead); err != nil {
+		return fmt.Errorf("team owner lease: %w", err)
+	}
+	if err := checkLockedFile(s.uncertain.lock); err != nil {
+		return fmt.Errorf("team transaction lock: %w", err)
+	}
+	roster, err := loadTeamRoster(s.dir, s.root)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(roster, s.uncertain.roster) {
+		return errors.New("uncertain team roster identity changed")
+	}
+	if err := s.syncDir(s.dir); err != nil {
+		return fmt.Errorf("reconcile team roster revision %d: %w", roster.Revision, err)
+	}
+	return nil
 }
 
 func createTeamDir(agentDir string, root ChildID) (string, bool, error) {
@@ -648,30 +773,30 @@ func validStoredMemberState(state string) bool {
 	}
 }
 
-func saveTeamRoster(dir string, roster teamRoster) error {
+func saveTeamRoster(dir string, roster teamRoster, syncDirectory func(string) error) (bool, error) {
 	data, err := json.Marshal(roster)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(data) > teamJSONLimit {
-		return errors.New("team metadata exceeds size limit")
+		return false, errors.New("team metadata exceeds size limit")
 	}
 	file, err := os.CreateTemp(dir, ".team-*.tmp")
 	if err != nil {
-		return err
+		return false, err
 	}
 	name := file.Name()
 	defer os.Remove(name)
 	if _, err := file.Write(data); err != nil {
-		return errors.Join(err, file.Close())
+		return false, errors.Join(err, file.Close())
 	}
 	if err := errors.Join(file.Sync(), file.Close()); err != nil {
-		return err
+		return false, err
 	}
 	if err := os.Rename(name, filepath.Join(dir, "team.json")); err != nil {
-		return err
+		return false, err
 	}
-	return syncDir(dir)
+	return true, syncDirectory(dir)
 }
 
 func syncDir(path string) error {

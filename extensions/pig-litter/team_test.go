@@ -3,11 +3,16 @@ package piglitter
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/MichaelKinsy/PiG/coding"
+	"github.com/gofrs/flock"
 )
 
 func TestTeamAdmissionReadsToolResultAfterStringMessage(t *testing.T) {
@@ -30,6 +35,212 @@ func TestTeamAdmissionReadsToolResultAfterStringMessage(t *testing.T) {
 	if owner.teamResultStored(&callTicket{callID: "call-1"}, selected) {
 		t.Fatal("a different root matched the stored result")
 	}
+}
+
+func TestTeamAdmissionReadsToolResultAfterLargeNativeEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	transcript := `{"type":"session","id":"root-uuid"}` + "\n" +
+		`{"type":"message","message":{"role":"user","content":"` + strings.Repeat("x", 17<<20) + `"}}` + "\n" +
+		`{"type":"message","message":{"role":"toolResult","toolCallId":"call-1","toolName":"team_spawn","content":[{"type":"text","text":"accepted receipt"}],"isError":false}}` + "\n"
+	if err := os.WriteFile(path, []byte(transcript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	owner := &owner{sessionID: "root-uuid"}
+	selected := &run{teamSessionFile: path, teamResult: sha256.Sum256([]byte("accepted receipt"))}
+	if !owner.teamResultStored(&callTicket{callID: "call-1"}, selected) {
+		t.Fatal("the matching stored team result after a 17 MiB native entry was not recognized")
+	}
+}
+
+func TestIdleTeamPauseSurvivesLateSettlementAndRestart(t *testing.T) {
+	agentDir := t.TempDir()
+	root := ChildID("018f0000-0000-7000-8000-000000000001")
+	store, err := openTeamStore(agentDir, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Commit(member.AdmissionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetState(member.Ref, "idle"); err != nil {
+		t.Fatal(err)
+	}
+	tree := newTree(defaultConfig())
+	tree.root.id = root
+	owner := &owner{tree: tree, teamStore: store}
+	tree.teamPaused = owner.pauseTeamMember
+	settling := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	tree.teamFinished = func(r *record, selected *run, outcome Outcome) {
+		close(settling)
+		<-release
+		owner.finishTeamMember(r, selected, outcome)
+	}
+	worker, _ := agentDefaults("worker")
+	_, selected, err := tree.admit(admission{kind: "worker", name: member.Name, cwd: "/work", task: "work", agent: worker, member: &member})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		tree.finish(selected.owner, selected, Outcome{State: Completed, Text: "finished"})
+		close(finished)
+	}()
+	<-settling
+	if _, _, err := tree.stop(nil, selected); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	_, roster, err := store.Snapshot()
+	if err != nil || len(roster) != 1 || roster[0].Ref != member.Ref || roster[0].State != "paused" {
+		close(release)
+		t.Fatalf("pause was not durable before stop returned: %#v, %v", roster, err)
+	}
+	close(release)
+	<-finished
+	_, roster, err = store.Snapshot()
+	if err != nil || len(roster) != 1 || roster[0].State != "paused" {
+		t.Fatalf("late settlement overwrote the pause: %#v, %v", roster, err)
+	}
+	tree.close()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openTeamStore(agentDir, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	_, roster, err = reopened.Snapshot()
+	if err != nil || len(roster) != 1 || roster[0].Ref != member.Ref || roster[0].State != "paused" {
+		t.Fatalf("reopened pause = %#v, %v", roster, err)
+	}
+}
+
+func TestIdleTeamPauseReportsStorageFailure(t *testing.T) {
+	root := ChildID("018f0000-0000-7000-8000-000000000001")
+	store, err := openTeamStore(t.TempDir(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Commit(member.AdmissionID); err != nil {
+		t.Fatal(err)
+	}
+	tree := newTree(defaultConfig())
+	tree.root.id = root
+	owner := &owner{tree: tree, teamStore: store}
+	tree.teamPaused = owner.pauseTeamMember
+	worker, _ := agentDefaults("worker")
+	_, selected, err := tree.admit(admission{kind: "worker", name: member.Name, cwd: "/work", task: "work", agent: worker, member: &member})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree.finish(selected.owner, selected, Outcome{State: Completed})
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := tree.stop(nil, selected); err == nil {
+		t.Fatal("pause reported success with a closed team store")
+	}
+	inspection, err := tree.inspect(member.Ref.ID)
+	if err != nil || inspection.Child.State != Paused {
+		t.Fatalf("failed pause did not retain its in-memory intent: %#v, %v", inspection, err)
+	}
+	tree.close()
+}
+
+func TestTeamRetirementReportsSyncFailureAndReleasesLease(t *testing.T) {
+	root := ChildID("018f0000-0000-7000-8000-000000000001")
+	agentDir := t.TempDir()
+	store, err := openTeamStore(agentDir, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncFailure := errors.New("injected directory sync failure")
+	store.syncDir = func(string) error { return syncFailure }
+	if _, err := store.Commit(member.AdmissionID); !errors.Is(err, syncFailure) {
+		t.Fatalf("uncertain commit = %v", err)
+	}
+	tree := newTree(defaultConfig())
+	tree.root.id = root
+	withCompletionHost(t, tree, func(owner *owner) {
+		trusted := true
+		services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: t.TempDir(), AgentDir: agentDir, ProjectTrusted: &trusted})
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner.services, owner.teamStore = services, store
+		if err := owner.state.retire(); !errors.Is(err, syncFailure) {
+			t.Fatalf("retirement did not report sync failure: %v", err)
+		}
+		if owner.teamStore != nil || store.locksHeld() {
+			t.Fatal("retirement retained released team locks")
+		}
+	}, func(string, json.RawMessage) json.RawMessage { return json.RawMessage(`null`) })
+	reopened, err := openTeamStore(agentDir, root)
+	if err != nil {
+		t.Fatalf("a new owner could not reconcile after release: %v", err)
+	}
+	defer reopened.Close()
+	_, members, err := reopened.Snapshot()
+	if err != nil || len(members) != 1 || members[0].Ref != member.Ref || members[0].State != "interrupted" {
+		t.Fatalf("reconciled roster = %#v, %v", members, err)
+	}
+}
+
+func TestTeamRetirementRetainsHeldLeaseForRetry(t *testing.T) {
+	root := ChildID("018f0000-0000-7000-8000-000000000001")
+	agentDir := t.TempDir()
+	store, err := openTeamStore(agentDir, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlockFailure := errors.New("injected owner unlock failure")
+	failUnlock := true
+	store.closeLock = func(lock *flock.Flock) error {
+		if failUnlock && filepath.Base(lock.Path()) == "lead.lock" {
+			return unlockFailure
+		}
+		return lock.Close()
+	}
+	tree := newTree(defaultConfig())
+	tree.root.id = root
+	withCompletionHost(t, tree, func(owner *owner) {
+		trusted := true
+		services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: t.TempDir(), AgentDir: agentDir, ProjectTrusted: &trusted})
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner.services, owner.teamStore = services, store
+		if err := owner.state.retire(); !errors.Is(err, unlockFailure) {
+			t.Fatalf("retirement did not report held lease: %v", err)
+		}
+		if owner.teamStore != store || !store.locksHeld() || owner.state.owner != owner || owner.epoch == owner.state.epoch {
+			t.Fatal("failed unlock did not retain a fenced owner for retry")
+		}
+		if err := owner.current(); err == nil {
+			t.Fatal("retained owner remained usable")
+		}
+		failUnlock = false
+		if err := owner.state.retire(); err != nil {
+			t.Fatalf("retry retirement: %v", err)
+		}
+		if owner.teamStore != nil || store.locksHeld() || owner.state.owner != nil {
+			t.Fatal("successful retry retained the owner lease")
+		}
+	}, func(string, json.RawMessage) json.RawMessage { return json.RawMessage(`null`) })
 }
 
 func TestTeamWritersKeepOrdinaryOwnershipAndNameIndex(t *testing.T) {

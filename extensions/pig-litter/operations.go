@@ -349,7 +349,13 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"state": outcome.State, "outcome": outcome, "stoppedCount": count}, nil
+		state := outcome.State
+		o.tree.mu.Lock()
+		if selected.owner.team != nil && selected.owner.paused {
+			state = Paused
+		}
+		o.tree.mu.Unlock()
+		return map[string]any{"state": state, "outcome": outcome, "stoppedCount": count}, nil
 	}
 	if name == "litter_message" {
 		mode := args.Mode

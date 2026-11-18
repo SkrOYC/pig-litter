@@ -32,6 +32,7 @@ type fixtureTeamResult struct {
 	Name      string           `json:"name"`
 	Member    fixtureMemberRef `json:"member"`
 	Team      fixtureTeamID    `json:"team"`
+	Child     child            `json:"child"`
 	Members   []struct {
 		Ref       fixtureMemberRef `json:"ref"`
 		Name      string           `json:"name"`
@@ -47,14 +48,16 @@ type fixtureTeamResult struct {
 }
 
 type teamRosterFixture struct {
-	leadMu  sync.Mutex
-	stage   int
-	done    bool
-	refs    map[string]fixtureMemberRef
-	started map[string]bool
-	wrote   map[string]bool
-	saw     map[string]bool
-	polls   int
+	leadMu      sync.Mutex
+	stage       int
+	done        bool
+	refs        map[string]fixtureMemberRef
+	started     map[string]bool
+	wrote       map[string]bool
+	saw         map[string]bool
+	polls       int
+	pauseBefore string
+	pauseAfter  string
 }
 
 var fixtureTeamNames = []string{"alpha", "beta", "gamma"}
@@ -65,7 +68,7 @@ func parseTeamResult(message message) (fixtureTeamResult, error) {
 	return result, err
 }
 
-func (f *fixture) checkTeamRoster(result fixtureTeamResult, requireIdle bool) error {
+func (f *fixture) checkTeamRoster(result fixtureTeamResult, states map[string]string) error {
 	if result.Operation != "team_list" || result.State != "listed" || len(result.Members) != 4 {
 		return fmt.Errorf("unexpected team roster: %#v", result)
 	}
@@ -88,7 +91,7 @@ func (f *fixture) checkTeamRoster(result fixtureTeamResult, requireIdle bool) er
 		if !ok || seen[member.Name] || member.Role != "teammate" || member.Ref != ref || member.Ref.Team != result.Team || member.Cwd != f.expectedCWD || member.Workspace.Kind != "shared_checkout" || member.Workspace.Cwd != f.expectedCWD {
 			return fmt.Errorf("invalid teammate roster entry: %#v", member)
 		}
-		if requireIdle && member.State != "idle" {
+		if expected := states[member.Name]; expected != "" && member.State != expected {
 			return fmt.Errorf("teammate %s is %s", member.Name, member.State)
 		}
 		seen[member.Name] = true
@@ -141,7 +144,7 @@ func (f *fixture) parentTeamRoster(ctx context.Context, body modelRequest) (stri
 		if err != nil {
 			return "", nil, err
 		}
-		if err := f.checkTeamRoster(value, true); err != nil {
+		if err := f.checkTeamRoster(value, map[string]string{"alpha": "idle", "beta": "idle", "gamma": "idle"}); err != nil {
 			f.team.polls++
 			if f.team.polls > 50 || !strings.Contains(err.Error(), " is running") {
 				return "", nil, err
@@ -156,11 +159,15 @@ func (f *fixture) parentTeamRoster(ctx context.Context, body modelRequest) (stri
 		if err != nil || value.Operation != "litter_list" || len(value.Children) != 0 {
 			return "", nil, fmt.Errorf("team members entered ordinary child list: %#v, %v", value, err)
 		}
+		f.mu.Lock()
+		alpha := f.team.refs["alpha"]
+		f.mu.Unlock()
 		f.team.stage = 4
-		return "TEAM_ROSTER_FIRST_DONE", nil, nil
+		return "", []call{{"litter_stop", map[string]any{"id": alpha.ID}}}, nil
 	case 4:
-		if !strings.Contains(userText(body), "ROOT_TEAM_RESTART") {
-			return "", nil, errors.New("root team fixture continued before restart")
+		value, err := parseTeamResult(tools[len(tools)-1])
+		if err != nil || value.Operation != "litter_stop" || value.State != "paused" {
+			return "", nil, fmt.Errorf("idle teammate pause failed: %#v, %v", value, err)
 		}
 		f.team.stage = 5
 		return "", []call{{"team_list", map[string]any{}}}, nil
@@ -169,10 +176,49 @@ func (f *fixture) parentTeamRoster(ctx context.Context, body modelRequest) (stri
 		if err != nil {
 			return "", nil, err
 		}
-		if err := f.checkTeamRoster(value, true); err != nil {
+		if err := f.checkTeamRoster(value, map[string]string{"alpha": "paused", "beta": "idle", "gamma": "idle"}); err != nil {
+			return "", nil, fmt.Errorf("paused team roster: %w", err)
+		}
+		for _, member := range value.Members {
+			if member.Name == "alpha" {
+				f.team.pauseBefore = member.State
+			}
+		}
+		f.team.stage = 6
+		return "TEAM_ROSTER_FIRST_DONE", nil, nil
+	case 6:
+		if !strings.Contains(userText(body), "ROOT_TEAM_RESTART") {
+			return "", nil, errors.New("root team fixture continued before restart")
+		}
+		f.team.stage = 7
+		return "", []call{{"team_list", map[string]any{}}}, nil
+	case 7:
+		value, err := parseTeamResult(tools[len(tools)-1])
+		if err != nil {
+			return "", nil, err
+		}
+		if err := f.checkTeamRoster(value, map[string]string{"alpha": "paused", "beta": "idle", "gamma": "idle"}); err != nil {
 			return "", nil, fmt.Errorf("reopened team roster: %w", err)
 		}
-		f.team.stage, f.team.done = 6, true
+		for _, member := range value.Members {
+			if member.Name == "alpha" {
+				f.team.pauseAfter = member.State
+			}
+		}
+		f.mu.Lock()
+		alpha := f.team.refs["alpha"]
+		f.mu.Unlock()
+		f.team.stage = 8
+		return "", []call{{"litter_inspect", map[string]any{"id": alpha.ID}}}, nil
+	case 8:
+		value, err := parseTeamResult(tools[len(tools)-1])
+		f.mu.Lock()
+		alpha := f.team.refs["alpha"]
+		f.mu.Unlock()
+		if err != nil || value.Operation != "litter_inspect" || value.Child.ID != alpha.ID || value.Child.State != "paused" {
+			return "", nil, fmt.Errorf("reopened teammate pause was not enforced: %#v, %v", value, err)
+		}
+		f.team.stage, f.team.done = 9, true
 		return "TEAM_ROSTER_REOPENED", nil, nil
 	}
 	return "", nil, fmt.Errorf("unexpected team roster lead stage %d", f.team.stage)
@@ -213,7 +259,7 @@ func (f *fixture) teamRosterMember(ctx context.Context, body modelRequest) (stri
 		if err != nil {
 			return "", nil, err
 		}
-		if err := f.checkTeamRoster(value, false); err != nil {
+		if err := f.checkTeamRoster(value, nil); err != nil {
 			return "", nil, err
 		}
 		f.mu.Lock()
@@ -252,7 +298,7 @@ func (f *fixture) runTeamRoster(ctx context.Context, directory, workspace, agent
 	f.team.leadMu.Lock()
 	stage := f.team.stage
 	f.team.leadMu.Unlock()
-	if stage != 4 {
+	if stage != 6 {
 		return fmt.Errorf("first team fixture stopped at stage %d", stage)
 	}
 	file, err := os.Open(stdout.Name())
@@ -279,7 +325,7 @@ func (f *fixture) runTeamRoster(ctx context.Context, directory, workspace, agent
 		return err
 	}
 	f.team.leadMu.Lock()
-	done := f.team.done
+	done, pauseBefore, pauseAfter := f.team.done, f.team.pauseBefore, f.team.pauseAfter
 	f.team.leadMu.Unlock()
 	if !done || f.teamRequests() != before {
 		return errors.New("reopening the roster changed membership or started a teammate")
@@ -287,7 +333,7 @@ func (f *fixture) runTeamRoster(ctx context.Context, directory, workspace, agent
 	f.mu.Lock()
 	refs, started, wrote, saw := maps.Clone(f.team.refs), maps.Clone(f.team.started), maps.Clone(f.team.wrote), maps.Clone(f.team.saw)
 	f.mu.Unlock()
-	return writeJSON(filepath.Join(directory, "team-roster.json"), map[string]any{"root": root, "members": refs, "started": started, "wrote": wrote, "saw": saw, "memberRequestsBeforeReopen": before, "memberRequestsAfterReopen": f.teamRequests(), "firstArgv": append([]string{pig}, firstArgs...), "reopenArgv": append([]string{pig}, reopenArgs...)})
+	return writeJSON(filepath.Join(directory, "team-roster.json"), map[string]any{"root": root, "members": refs, "started": started, "wrote": wrote, "saw": saw, "pausedMember": refs["alpha"], "pauseStateBeforeReopen": pauseBefore, "pauseStateAfterReopen": pauseAfter, "memberRequestsBeforeReopen": before, "memberRequestsAfterReopen": f.teamRequests(), "firstArgv": append([]string{pig}, firstArgs...), "reopenArgv": append([]string{pig}, reopenArgs...)})
 }
 
 func (f *fixture) teamRequests() int {

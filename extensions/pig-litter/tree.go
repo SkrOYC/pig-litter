@@ -48,6 +48,7 @@ type Tree struct {
 	persist      func(*record) error
 	teamFinished func(*record, *run, Outcome)
 	teamCanceled func(*record)
+	teamPaused   func(*record, *run) error
 	dirty        map[ChildID]*record
 }
 
@@ -767,7 +768,9 @@ func (t *Tree) stopAs(authority controlAuthority, selected *run) (*Outcome, int,
 	}
 	pending, fresh := t.pauseLocked(target)
 	t.mu.Unlock()
-	t.joinPaused(pending, fresh)
+	if err := t.joinPaused(pending, fresh); err != nil {
+		return nil, len(fresh), err
+	}
 	if settled != nil {
 		return settled, len(fresh), nil
 	}
@@ -786,6 +789,9 @@ func (t *Tree) pauseLocked(target *record) ([]*run, []*run) {
 		t.dirty[r.id] = r
 		run := r.run
 		if run.state.terminal() {
+			if r.team != nil {
+				pending = append(pending, run)
+			}
 			continue
 		}
 		pending = append(pending, run)
@@ -797,7 +803,20 @@ func (t *Tree) pauseLocked(target *record) ([]*run, []*run) {
 	return pending, fresh
 }
 
-func (t *Tree) joinPaused(pending, fresh []*run) {
+func (t *Tree) joinPaused(pending, fresh []*run) error {
+	var failure error
+	hasTeam := false
+	for _, run := range pending {
+		t.mu.Lock()
+		isTeam := run.owner.team != nil
+		t.mu.Unlock()
+		if isTeam && t.teamPaused != nil {
+			hasTeam = true
+			if err := t.teamPaused(run.owner, run); err != nil && failure == nil {
+				failure = err
+			}
+		}
+	}
 	for _, run := range fresh {
 		run.cancel()
 		run.abort()
@@ -811,7 +830,10 @@ func (t *Tree) joinPaused(pending, fresh []*run) {
 	for _, run := range pending {
 		<-run.done
 	}
-	t.notify()
+	if err := t.notify(); err != nil && hasTeam && failure == nil {
+		failure = err
+	}
+	return failure
 }
 
 func (t *Tree) pauseRoot() {
@@ -822,7 +844,7 @@ func (t *Tree) pauseRoot() {
 	}
 	pending, fresh := t.pauseLocked(t.root)
 	t.mu.Unlock()
-	t.joinPaused(pending, fresh)
+	_ = t.joinPaused(pending, fresh)
 }
 
 func (t *Tree) close() {

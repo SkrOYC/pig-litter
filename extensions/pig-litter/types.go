@@ -92,6 +92,7 @@ type record struct {
 	paused                               bool
 	latest                               *Outcome
 	deliveryMu                           sync.Mutex
+	teamStateMu                          sync.Mutex
 	agentEnded                           bool
 	receiptMu                            sync.Mutex
 	receipts                             map[*run]*completionReceipt

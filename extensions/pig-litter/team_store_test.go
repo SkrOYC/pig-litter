@@ -2,7 +2,9 @@ package piglitter
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,9 +12,11 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/gofrs/flock"
 )
 
@@ -44,6 +48,287 @@ func storeTestIsolatedWorkspace(t *testing.T, root, id ChildID) WorkspacePolicy 
 		Branch:       "pig-litter/" + string(root) + "/" + string(id),
 		BaseCommit:   "0123456789abcdef0123456789abcdef01234567",
 		Phase:        "intent",
+	}
+}
+
+func TestTeamStoreUncertainCommitBlocksCompetingFirstTools(t *testing.T) {
+	store, dir, root, workspace := storeTestOpen(t)
+	id, admission := storeTestUUID(2), string(storeTestUUID(3))
+	reserved, err := store.Reserve(id, admission, "first", workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failSync atomic.Bool
+	failSync.Store(true)
+	injected := errors.New("injected directory sync failure")
+	store.syncDir = func(path string) error {
+		if failSync.Load() {
+			return injected
+		}
+		return syncDir(path)
+	}
+	t.Cleanup(func() { failSync.Store(false) })
+
+	tree := testTree(t, defaultConfig())
+	selected := &run{ref: Ref{ID: id}, state: Starting, ctx: context.Background()}
+	record := &record{id: id, team: &reserved, run: selected, readOnly: true}
+	tree.records[id] = record
+	var first, second bool
+	var snapshotErr, passiveErr, reserveErr, retryErr error
+	var identityErrors []error
+	var tamperErr error
+	var recovered bool
+	var members []teamMember
+	var committed, next teamMember
+	var commitErr, nextErr error
+	withCompletionHost(t, tree, func(o *owner) {
+		o.teamStore = store
+		gate := &teamAdmissionGate{
+			owner: o, record: record, run: selected,
+			seen: true, stop: ai.StopReasonToolUse,
+			calls: map[string]string{"first": "read", "second": "write"},
+		}
+		results := make(chan bool, 2)
+		for id, name := range gate.calls {
+			go func() { results <- gate.before(context.Background(), id, name, nil).Block }()
+		}
+		first, second = <-results, <-results
+		_, _, snapshotErr = store.Snapshot()
+		_, _, passiveErr = readTeamSnapshot(dir, root)
+		_, reserveErr = store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "next", workspace)
+		_, retryErr = store.Commit(admission)
+		failSync.Store(false)
+		path := filepath.Join(store.dir, "team.json")
+		original, readErr := os.ReadFile(path)
+		if readErr != nil {
+			tamperErr = readErr
+			return
+		}
+		writeRoster := func(data []byte) error {
+			file, openErr := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
+			if openErr != nil {
+				return openErr
+			}
+			if _, writeErr := file.Write(data); writeErr != nil {
+				return errors.Join(writeErr, file.Close())
+			}
+			return errors.Join(file.Sync(), file.Close())
+		}
+		restoreOriginal := true
+		defer func() {
+			if restoreOriginal {
+				if writeErr := writeRoster(original); writeErr != nil {
+					tamperErr = writeErr
+				}
+			}
+		}()
+		for _, alter := range []func(*teamRoster){
+			func(roster *teamRoster) { roster.Revision++ },
+			func(roster *teamRoster) { roster.Members[0].Name = "altered" },
+		} {
+			var roster teamRoster
+			if tamperErr = json.Unmarshal(original, &roster); tamperErr != nil {
+				return
+			}
+			if len(roster.Members) != 1 {
+				tamperErr = errors.New("expected the renamed roster to contain one member")
+				return
+			}
+			alter(&roster)
+			data, marshalErr := json.Marshal(roster)
+			if marshalErr != nil {
+				tamperErr = marshalErr
+				return
+			}
+			if tamperErr = writeRoster(data); tamperErr != nil {
+				return
+			}
+			_, identityErr := store.Commit(admission)
+			identityErrors = append(identityErrors, identityErr)
+		}
+		if tamperErr = writeRoster(original); tamperErr != nil {
+			return
+		}
+		restoreOriginal = false
+		recovered = !gate.before(context.Background(), "first", "read", nil).Block
+		committed, commitErr = store.Commit(admission)
+		_, members, err = store.Snapshot()
+		next, nextErr = store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "next", workspace)
+	}, func(string, json.RawMessage) json.RawMessage { return json.RawMessage(`"fixture"`) })
+	if !first || !second {
+		t.Errorf("competing first tools blocked = %v, %v, want both blocked", first, second)
+	}
+	for name, got := range map[string]error{"snapshot": snapshotErr, "passive snapshot": passiveErr, "new reservation": reserveErr, "commit retry": retryErr} {
+		if got == nil {
+			t.Errorf("%s succeeded with an uncertain roster", name)
+		}
+	}
+	if tamperErr != nil || len(identityErrors) != 2 || identityErrors[0] == nil || identityErrors[1] == nil {
+		t.Errorf("changed roster identity errors = %v, tamper = %v", identityErrors, tamperErr)
+	}
+	if !recovered || commitErr != nil || committed.Ref != reserved.Ref || committed.AdmissionID != admission || committed.State != "running" {
+		t.Errorf("recovered commit = %#v, %v, hook allowed = %v", committed, commitErr, recovered)
+	}
+	if err != nil || len(members) != 1 || members[0] != committed {
+		t.Errorf("recovered snapshot = %#v, %v", members, err)
+	}
+	if nextErr != nil || next.Ref.Generation != reserved.Ref.Generation+1 {
+		t.Errorf("next reservation = %#v, %v", next, nextErr)
+	}
+}
+
+func TestTeamStoreFailedCloseRequiresNewOwnerBarrier(t *testing.T) {
+	store, dir, root, workspace := storeTestOpen(t)
+	reserved, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "first", workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("injected directory sync failure")
+	var failSync atomic.Bool
+	failSync.Store(true)
+	syncDirectory := func(path string) error {
+		if failSync.Load() {
+			return injected
+		}
+		return syncDir(path)
+	}
+	store.syncDir = syncDirectory
+	t.Cleanup(func() { failSync.Store(false) })
+	if _, err := store.Commit(reserved.AdmissionID); !errors.Is(err, injected) {
+		t.Fatalf("uncertain commit = %v", err)
+	}
+	if err := store.Close(); !errors.Is(err, injected) {
+		t.Fatalf("close during failed reconciliation = %v", err)
+	}
+	if store.locksHeld() {
+		t.Fatal("sync failure left a lock held")
+	}
+	if _, _, err := store.Snapshot(); err == nil {
+		t.Fatal("closed store returned a snapshot")
+	}
+	path := filepath.Join(store.dir, "team.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openTeamStoreWithSync(dir, root, syncDirectory); !errors.Is(err, injected) {
+		t.Fatalf("new owner without a successful barrier = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !slices.Equal(before, after) {
+		t.Fatalf("failed owner claim changed the roster: %v", err)
+	}
+	failSync.Store(false)
+	recovered, err := openTeamStoreWithSync(dir, root, syncDirectory)
+	if err != nil {
+		t.Fatalf("new owner after successful barrier: %v", err)
+	}
+	defer recovered.Close()
+	_, members, err := recovered.Snapshot()
+	if err != nil || len(members) != 1 || members[0].Ref != reserved.Ref || members[0].AdmissionID != reserved.AdmissionID || members[0].State != "interrupted" {
+		t.Fatalf("recovered roster = %#v, %v", members, err)
+	}
+}
+
+func TestTeamStoreCloseRetriesHeldLocks(t *testing.T) {
+	for _, target := range []string{"team.lock", "lead.lock"} {
+		t.Run(target, func(t *testing.T) {
+			store, dir, root, workspace := storeTestOpen(t)
+			reserved, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "first", workspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			syncFailure := errors.New("injected directory sync failure")
+			unlockFailure := errors.New("injected unlock failure")
+			var failSync, failUnlock atomic.Bool
+			failSync.Store(true)
+			failUnlock.Store(true)
+			syncDirectory := func(path string) error {
+				if failSync.Load() {
+					return syncFailure
+				}
+				return syncDir(path)
+			}
+			store.syncDir = syncDirectory
+			store.closeLock = func(lock *flock.Flock) error {
+				if failUnlock.Load() && filepath.Base(lock.Path()) == target {
+					return unlockFailure
+				}
+				return lock.Close()
+			}
+			t.Cleanup(func() {
+				failSync.Store(false)
+				failUnlock.Store(false)
+			})
+			if _, err := store.Commit(reserved.AdmissionID); !errors.Is(err, syncFailure) {
+				t.Fatalf("uncertain commit = %v", err)
+			}
+			if err := store.Close(); !errors.Is(err, syncFailure) || !errors.Is(err, unlockFailure) {
+				t.Fatalf("close with held %s = %v", target, err)
+			}
+			if !store.locksHeld() {
+				t.Fatalf("failed unlock of %s reported no held lock", target)
+			}
+			if _, _, err := store.Snapshot(); err == nil {
+				t.Fatal("closed store returned a snapshot")
+			}
+			if _, err := openTeamStoreWithSync(dir, root, syncDirectory); err == nil || errors.Is(err, syncFailure) {
+				t.Fatalf("new owner acquired the retained lease: %v", err)
+			}
+			failUnlock.Store(false)
+			if err := store.Close(); err != nil || store.locksHeld() {
+				t.Fatalf("release retry = %v, locks held = %v", err, store.locksHeld())
+			}
+			if _, err := openTeamStoreWithSync(dir, root, syncDirectory); !errors.Is(err, syncFailure) {
+				t.Fatalf("new owner without a successful barrier = %v", err)
+			}
+			failSync.Store(false)
+			recovered, err := openTeamStoreWithSync(dir, root, syncDirectory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer recovered.Close()
+			_, members, err := recovered.Snapshot()
+			if err != nil || len(members) != 1 || members[0].Ref != reserved.Ref || members[0].State != "interrupted" {
+				t.Fatalf("recovered roster = %#v, %v", members, err)
+			}
+		})
+	}
+}
+
+func TestTeamStorePauseMember(t *testing.T) {
+	store, _, root, workspace := storeTestOpen(t)
+	committed, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "committed", workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Commit(committed.AdmissionID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "pending", workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paused, err := store.PauseMember(pending.Ref); err != nil || paused {
+		t.Fatalf("pause provisional member = %v, %v", paused, err)
+	}
+	for _, ref := range []MemberRef{
+		{Team: committed.Ref.Team, ID: committed.Ref.ID, Generation: committed.Ref.Generation + 1},
+		{Team: TeamID{Root: root, Epoch: committed.Ref.Team.Epoch + 1}, ID: committed.Ref.ID, Generation: committed.Ref.Generation},
+		{Team: committed.Ref.Team, ID: storeTestUUID(6), Generation: committed.Ref.Generation},
+	} {
+		if paused, err := store.PauseMember(ref); err == nil || paused {
+			t.Fatalf("pause foreign or stale member %#v = %v, %v", ref, paused, err)
+		}
+	}
+	for range 2 {
+		if paused, err := store.PauseMember(committed.Ref); err != nil || !paused {
+			t.Fatalf("pause committed member = %v, %v", paused, err)
+		}
+	}
+	_, members, pendingMembers, err := store.SnapshotWithReservations()
+	if err != nil || len(members) != 1 || members[0].Ref != committed.Ref || members[0].State != "paused" || len(pendingMembers) != 1 || pendingMembers[0] != pending {
+		t.Fatalf("paused roster = %#v, %#v, %v", members, pendingMembers, err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -280,20 +281,37 @@ func (o *owner) restoreTeamStore() error {
 	return err
 }
 
-func (o *owner) closeTeamStore() {
+func (o *owner) closeTeamStore() (bool, error) {
 	o.teamMu.Lock()
 	defer o.teamMu.Unlock()
-	if o.teamStore != nil {
-		_ = o.teamStore.Close()
+	if o.teamStore == nil {
+		return false, nil
+	}
+	err := o.teamStore.Close()
+	held := o.teamStore.locksHeld()
+	if !held {
 		o.teamStore = nil
 	}
+	if held && err == nil {
+		err = errors.New("team store locks remain held")
+	}
+	return held, err
 }
 
 func (o *owner) cancelTeamMember(r *record) {
 	_ = o.rollbackTeamMember(r.team)
 }
 
-func (o *owner) finishTeamMember(r *record, _ *run, outcome Outcome) {
+func (o *owner) finishTeamMember(r *record, selected *run, outcome Outcome) {
+	r.teamStateMu.Lock()
+	defer r.teamStateMu.Unlock()
+	o.tree.mu.Lock()
+	current := o.tree.records[r.id] == r && r.run == selected
+	paused := r.paused
+	o.tree.mu.Unlock()
+	if !current {
+		return
+	}
 	store, err := o.teamStoreForRoot()
 	if err != nil {
 		return
@@ -301,12 +319,34 @@ func (o *owner) finishTeamMember(r *record, _ *run, outcome Outcome) {
 	state := "unavailable"
 	if outcome.State == Completed {
 		state = "idle"
-	} else if outcome.State == Paused {
+	}
+	if paused || outcome.State == Paused {
 		state = "paused"
 	}
 	if err := store.SetState(r.team.Ref, state); err != nil {
 		_ = o.rollbackTeamMember(r.team)
 	}
+}
+
+func (o *owner) pauseTeamMember(r *record, selected *run) error {
+	r.teamStateMu.Lock()
+	defer r.teamStateMu.Unlock()
+	o.tree.mu.Lock()
+	current := o.tree.records[r.id] == r && r.run == selected && r.paused && r.team != nil
+	var ref MemberRef
+	if current {
+		ref = r.team.Ref
+	}
+	o.tree.mu.Unlock()
+	if !current {
+		return reject("unavailable", "teammate pause is no longer current")
+	}
+	store, err := o.teamStoreForRoot()
+	if err != nil {
+		return err
+	}
+	_, err = store.PauseMember(ref)
+	return err
 }
 
 func (o *owner) rollbackTeamMember(member *teamMember) error {
@@ -367,10 +407,13 @@ func (o *owner) teamResultStored(ticket *callTicket, selected *run) bool {
 		return false
 	}
 	defer input.Close()
-	scanner := bufio.NewScanner(input)
-	scanner.Buffer(make([]byte, 4096), 4*1024*1024)
+	reader := bufio.NewReaderSize(input, 64*1024)
 	root := false
-	for scanner.Scan() {
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) || len(line) == 0 {
+			return false
+		}
 		var entry struct {
 			Type    string `json:"type"`
 			ID      string `json:"id"`
@@ -382,7 +425,7 @@ func (o *owner) teamResultStored(ticket *callTicket, selected *run) bool {
 				Content    json.RawMessage `json:"content"`
 			} `json:"message"`
 		}
-		if json.Unmarshal(scanner.Bytes(), &entry) != nil {
+		if json.Unmarshal(line, &entry) != nil {
 			return false
 		}
 		if entry.Type == "session" {
@@ -405,7 +448,6 @@ func (o *owner) teamResultStored(ticket *callTicket, selected *run) bool {
 			}
 		}
 	}
-	return false
 }
 
 func (o *owner) activateTeamWhenStored(ticket *callTicket, selected *run) {
@@ -461,12 +503,14 @@ func (g *teamAdmissionGate) observe(message *agent.AssistantMessage) {
 }
 
 func (g *teamAdmissionGate) commit(ctx context.Context) error {
+	g.record.teamStateMu.Lock()
+	defer g.record.teamStateMu.Unlock()
 	if err := g.owner.current(); err != nil {
 		return err
 	}
 	g.owner.tree.mu.Lock()
 	r, err := g.owner.tree.currentLocked(g.run)
-	if err == nil && (r != g.record || g.run.ctx.Err() != nil) {
+	if err == nil && (r != g.record || r.paused || g.run.ctx.Err() != nil) {
 		err = reject("unavailable", "teammate execution is no longer current")
 	}
 	if err == nil && !r.readOnly {
