@@ -16,6 +16,22 @@ mkdir -p "$evidence_dir"
 finish() {
   result_code=$?
   trap - EXIT
+  if [[ -n "${native_bridge_target:-}" ]]; then
+    if [[ -L "$bridge_path" && "$(readlink "$bridge_path")" == "$native_bridge_target" ]]; then
+      if [[ -n "$previous_bridge_target" ]]; then
+        restore_path="$root_dir/extensions/.pig-go-work.restore.$$"
+        if ! ln -s "$previous_bridge_target" "$restore_path" || ! mv -f "$restore_path" "$bridge_path"; then
+          printf 'failed to restore workspace bridge: %s\n' "$bridge_path" >&2
+          result_code=1
+        fi
+      elif ! rm "$bridge_path"; then
+        result_code=1
+      fi
+    else
+      printf 'workspace bridge changed during verification: %s\n' "$bridge_path" >&2
+      result_code=1
+    fi
+  fi
   printf 'exit_code=%s\n' "$result_code" > "$evidence_dir/result.txt"
   if [[ "$result_code" -ne 0 ]]; then
     git -C "$root_dir" status --short > "$evidence_dir/failure-git-status.txt" || true
@@ -84,6 +100,7 @@ sdk_module="$(awk '$1 == "github.com/MichaelKinsy/PiG/extensions/sdk" { print $2
 [[ "$pig_module" == v0.7.0 && "$sdk_module" == "$pig_module" ]]
 pig_version="${pig_module#v}"
 archive="pig-$pig_version-$expected_os-$expected_arch.tar.gz"
+sdk_dir=""
 
 if [[ -f "$root_dir/pig-source.json" ]]; then
   source_input="$root_dir/pig-source.json"
@@ -123,6 +140,17 @@ if [[ -f "$root_dir/pig-source.json" ]]; then
   source_dir="$build_dir/$source_root"
   git -C "$source_dir" apply --check "$root_dir/$patch_path"
   git -C "$source_dir" apply "$root_dir/$patch_path"
+  source_repo="$build_dir/source-identity.git"
+  source_index="$build_dir/source.index"
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git init --quiet --bare "$source_repo"
+  source_tree() {
+    GIT_INDEX_FILE="$source_index" GIT_WORK_TREE="$source_dir" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git --git-dir="$source_repo" -c core.autocrlf=false add --all --force .
+    GIT_INDEX_FILE="$source_index" git --git-dir="$source_repo" write-tree
+  }
+  source_tree_before="$(source_tree)"
+  [[ "$source_tree_before" == "$(jq -er '.patch.tree' "$source_input")" ]]
+  sdk_tree_before="$(git --git-dir="$source_repo" rev-parse "${source_tree_before}:extensions/sdk")"
   go -C "$source_dir" env -json GOWORK > "$evidence_dir/source-workspace.json"
   [[ "$(go -C "$source_dir" env GOWORK)" == "$source_dir/go.work" ]]
   pig_build="pig-litter-patch-$patch_sha"
@@ -137,6 +165,14 @@ if [[ -f "$root_dir/pig-source.json" ]]; then
   export PIG_LITTER_EXPECTED_PIG="$build_dir/bin/pig"
   export PIG_LITTER_EXPECTED_PIG_SHA256="$(shasum -a 256 "$PIG_LITTER_EXPECTED_PIG" | awk '{ print $1 }')"
   export PIG_LITTER_EXPECTED_PIG_BUILD="$pig_build"
+  sdk_dir="$(cd "$source_dir/extensions/sdk" && pwd -P)"
+  bridge_path="$root_dir/extensions/go.work"
+  previous_bridge_target=""
+  if [[ -L "$bridge_path" ]]; then previous_bridge_target="$(readlink "$bridge_path")"; fi
+  export GOWORK="$(PIG_LITTER_WORKSPACE_BRIDGE="$bridge_path" bash "$root_dir/scripts/prepare-pig-workspace.sh" "$source_dir" "$build_dir/workspace" "$root_dir/scripts" "$root_dir/extensions/pig-litter")"
+  native_bridge_target="$GOWORK"
+  export PIG_LITTER_SOURCE_DIR="$source_dir" PIG_LITTER_SDK_DIR="$sdk_dir"
+  printf 'source_dir=%s\nsource_tree=%s\nsdk_dir=%s\nsdk_tree=%s\nsource_sha256=%s\npatch_sha256=%s\n' "$source_dir" "$source_tree_before" "$sdk_dir" "$sdk_tree_before" "$source_sha" "$patch_sha" > "$evidence_dir/sdk-source-identity.txt"
 else
   printf 'stock-release-archive\n' > "$evidence_dir/evidence-kind.txt"
   nix_value() {
@@ -167,7 +203,7 @@ else
   tar -xzf "$scratch_dir/$archive" -C "$scratch_dir/extract" "$pinned_root/pig"
   install -m 755 "$scratch_dir/extract/$pinned_root/pig" "$scratch_dir/verified-pig-$pig_version/bin/pig"
   export PATH="$scratch_dir/verified-pig-$pig_version/bin:$PATH"
-  unset PIG_LITTER_EXPECTED_PIG PIG_LITTER_EXPECTED_PIG_SHA256 PIG_LITTER_EXPECTED_PIG_BUILD
+  unset PIG_LITTER_EXPECTED_PIG PIG_LITTER_EXPECTED_PIG_SHA256 PIG_LITTER_EXPECTED_PIG_BUILD PIG_LITTER_SOURCE_DIR PIG_LITTER_SDK_DIR
 fi
 pig_file="$(file -b "$(command -v pig)")"
 case "$expected_os/$expected_arch" in
@@ -180,13 +216,31 @@ printf '%s\n' "$pig_file" > "$evidence_dir/pig-binary.txt"
 shasum -a 256 "$(command -v pig)" >> "$evidence_dir/pig-binary.txt"
 pig --version | tee -a "$evidence_dir/pig-binary.txt"
 
-go -C "$root_dir/extensions/pig-litter" mod download
-go -C "$root_dir/scripts" mod download
+if [[ -n "$sdk_dir" ]]; then
+  go -C "$root_dir/scripts" list -mod=readonly -deps ./cmd/pig-litter > "$evidence_dir/standalone-dependencies.txt"
+else
+  go -C "$root_dir/extensions/pig-litter" mod download
+  go -C "$root_dir/scripts" mod download
+fi
 export GOPROXY=off
-resolved_pig="$(go -C "$root_dir/scripts" list -m -f '{{.Version}}' github.com/MichaelKinsy/PiG)"
-resolved_sdk="$(go -C "$root_dir/scripts" list -m -f '{{.Version}}' github.com/MichaelKinsy/PiG/extensions/sdk)"
-printf 'pig=%s\nsdk=%s\n' "$resolved_pig" "$resolved_sdk" > "$evidence_dir/modules.txt"
-[[ "$resolved_pig" == "$pig_module" && "$resolved_sdk" == "$sdk_module" ]]
+if [[ -n "$sdk_dir" ]]; then
+  go -C "$root_dir/scripts" list -m -json github.com/MichaelKinsy/PiG > "$evidence_dir/pig-module.json"
+  go -C "$root_dir/scripts" list -m -json github.com/MichaelKinsy/PiG/extensions/sdk > "$evidence_dir/sdk-module.json"
+  jq --exit-status --arg dir "$source_dir" '
+    .Path == "github.com/MichaelKinsy/PiG" and .Main == true
+    and .Dir == $dir and .GoMod == ($dir + "/go.mod")
+  ' "$evidence_dir/pig-module.json" >/dev/null
+  jq --exit-status --arg dir "$sdk_dir" '
+    .Path == "github.com/MichaelKinsy/PiG/extensions/sdk" and .Main == true
+    and .Dir == $dir and .GoMod == ($dir + "/go.mod")
+  ' "$evidence_dir/sdk-module.json" >/dev/null
+  printf 'pig=patched-source\nsdk=patched-source\n' > "$evidence_dir/modules.txt"
+else
+  resolved_pig="$(go -C "$root_dir/scripts" list -m -f '{{.Version}}' github.com/MichaelKinsy/PiG)"
+  resolved_sdk="$(go -C "$root_dir/scripts" list -m -f '{{.Version}}' github.com/MichaelKinsy/PiG/extensions/sdk)"
+  printf 'pig=%s\nsdk=%s\n' "$resolved_pig" "$resolved_sdk" > "$evidence_dir/modules.txt"
+  [[ "$resolved_pig" == "$pig_module" && "$resolved_sdk" == "$sdk_module" ]]
+fi
 
 bash "$root_dir/scripts/check-pig-extension.sh" --registration-only --evidence-dir "$evidence_dir" 2>&1 | tee "$evidence_dir/check-pig-extension.log"
 
@@ -227,6 +281,11 @@ pig --piglet "$root_dir/piglet.yaml" -e "$scratch_dir/pig-platform-observer" --m
 jq --exit-status '[.[] | .name | select(startswith("litter_"))] | sort == ["litter_inspect", "litter_list", "litter_message", "litter_spawn", "litter_stop", "litter_wait"]' "$evidence_dir/piglet-tools.json" >/dev/null
 jq --slurp --exit-status 'any(.[]; .id == "commands" and .success == true and any(.data.commands[]?; .name == "pig-litter" and .source == "extension")) and any(.[]; .id == "extensions" and .success == true and any(.data.paths[]?; endswith("/extensions/pig-litter")))' "$evidence_dir/piglet-rpc.jsonl" >/dev/null
 
+if [[ -n "$sdk_dir" ]]; then
+  source_tree_after="$(source_tree)"
+  printf 'source_tree_after=%s\n' "$source_tree_after" >> "$evidence_dir/sdk-source-identity.txt"
+  [[ "$source_tree_after" == "$source_tree_before" ]]
+fi
 [[ "$(git -C "$root_dir" rev-parse HEAD)" == "$candidate_sha" ]]
 [[ -z "$(git -C "$root_dir" status --porcelain --untracked-files=all)" ]]
 printf 'verified candidate %s on %s/%s\n' "$candidate_sha" "$expected_os" "$expected_arch"

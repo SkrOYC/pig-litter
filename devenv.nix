@@ -1,4 +1,4 @@
-{ pkgs, inputs, ... }:
+{ pkgs, inputs, config, ... }:
 let
   go = pkgs.go_1_27.overrideAttrs (_: {
     version = "1.27.4";
@@ -53,34 +53,43 @@ let
     };
   };
   pigSource = builtins.fromJSON (builtins.readFile ./pig-source.json);
+  pigSourceDigest = builtins.hashFile "sha256" ./pig-source.json;
+  pigSourcePatch = ./. + "/${pigSource.patch.path}";
+  pigSourceArchive = pkgs.fetchurl {
+    url = pigSource.archive.url;
+    sha256 = pigSource.archive.sha256;
+  };
+  patchedPigSource =
+    assert builtins.hashFile "sha256" pigSourcePatch == pigSource.patch.sha256;
+    pkgs.runCommand "pig-${pigSource.version}" {
+      nativeBuildInputs = [ pkgs.gitMinimal pkgs.gnutar pkgs.gzip ];
+    } ''
+      tar -xzf ${pigSourceArchive}
+      cd ${pkgs.lib.escapeShellArg pigSource.archive.root}
+      git apply --check ${pigSourcePatch}
+      git apply ${pigSourcePatch}
+      mkdir -p "$out"
+      cp -R . "$out/"
+    '';
   pigPreview =
     let
-      patch = ./. + "/${pigSource.patch.path}";
       patchDigest = pigSource.patch.sha256;
       build = "pig-litter-patch-${patchDigest}";
-      binaryDigest = "2caddc2bbd78ae4d1887d83d3ae5a5fe54ce86227695407d80a9aafeb4269f1d";
+      binaryDigest = "19b6546c283370cdf51314d81686bd2fb802e9db209651a1812fc4c40101e412";
       buildGo = pkgs.buildGo127Module.override { inherit go; };
     in
-    assert builtins.hashFile "sha256" patch == patchDigest;
     {
       inherit build binaryDigest;
       package = buildGo {
         pname = "pig-litter-host-preview";
         version = pigSource.version;
-        src = pkgs.fetchurl {
-          url = pigSource.archive.url;
-          sha256 = pigSource.archive.sha256;
-        };
+        src = patchedPigSource;
         sourceRoot = pigSource.archive.root;
         proxyVendor = true;
         vendorHash = "sha256-Wa2wOKBr760duMx01Ln5C2Pyw3XXekcVNuS3xpTsqW0=";
         subPackages = [ "cmd/pig" ];
         nativeBuildInputs = [ pkgs.gitMinimal ];
         env.CGO_ENABLED = "0";
-        postPatch = ''
-          git apply --check ${patch}
-          git apply ${patch}
-        '';
         modBuildPhase = ''
           runHook preBuild
           export GIT_SSL_CAINFO="$NIX_SSL_CERT_FILE"
@@ -94,6 +103,7 @@ let
         postInstall = ''
           install -Dm644 -t "$out/share/licenses/pig" LICENSE NOTICE THIRD_PARTY_NOTICES.md
           cp -r LICENSES "$out/share/licenses/pig/LICENSES"
+          install -Dm644 ${./pig-source.json} "$out/share/pig/source.json"
         '';
       };
     };
@@ -112,8 +122,16 @@ in
     PIG_LITTER_EXPECTED_PIG = "${pigPreview.package}/bin/pig";
     PIG_LITTER_EXPECTED_PIG_SHA256 = pigPreview.binaryDigest;
     PIG_LITTER_EXPECTED_PIG_BUILD = pigPreview.build;
+    PIG_LITTER_SOURCE_DIR = "${patchedPigSource}";
+    PIG_LITTER_SDK_DIR = "${patchedPigSource}/extensions/sdk";
+    GOWORK = "${config.devenv.state}/pig-sdk/${pigSourceDigest}/go.work";
   };
   packages = [ pkgs.git pkgs.tmux pig pkgs.jq ];
+
+  enterShell = pkgs.lib.optionalString (system == "x86_64-linux") ''
+    cmp "$DEVENV_ROOT/pig-source.json" "${pigPreview.package}/share/pig/source.json" || exit 1
+    PIG_LITTER_WORKSPACE_BRIDGE="$DEVENV_ROOT/extensions/go.work" bash "$DEVENV_ROOT/scripts/prepare-pig-workspace.sh" "$PIG_LITTER_SOURCE_DIR" "$(dirname "$GOWORK")" "$DEVENV_ROOT/scripts" "$DEVENV_ROOT/extensions/pig-litter" > /dev/null || exit 1
+  '';
 
   scripts.check-pig-extension.exec = ''
     bash "$DEVENV_ROOT/scripts/check-pig-extension.sh" "$@"
