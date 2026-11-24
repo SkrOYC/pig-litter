@@ -3,3 +3,5 @@
 devenv.local.nix
 devenv.local.yaml
 .direnv/
+/extensions/go.work
+/extensions/go.work.sum

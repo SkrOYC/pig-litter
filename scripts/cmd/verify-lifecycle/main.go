@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -105,6 +106,7 @@ type fixture struct {
 	checks                                                                  map[string]bool
 	aborted                                                                 map[string]bool
 	sequence                                                                atomic.Uint64
+	performance                                                             *performance
 }
 
 func content(raw json.RawMessage) string {
@@ -253,6 +255,14 @@ func (f *fixture) answer(w http.ResponseWriter, model, text string, calls []call
 	base["usage"] = map[string]int{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
 	last, _ := json.Marshal(base)
 	w.Header().Set("Content-Type", "text/event-stream")
+	if f.performance != nil {
+		for _, call := range calls {
+			if model == "parent" && call.name == "litter_spawn" {
+				f.performance.markSpawn(time.Now())
+				break
+			}
+		}
+	}
 	_, _ = fmt.Fprintf(w, "data: %s\n\ndata: %s\n\ndata: [DONE]\n\n", first, last)
 }
 
@@ -620,6 +630,10 @@ func (f *fixture) cwdNestedRequest(body modelRequest) (string, []call, error) {
 }
 
 func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
+	var arrival time.Time
+	if f.performance != nil {
+		arrival = time.Now()
+	}
 	defer request.Body.Close()
 	var body modelRequest
 	err := json.NewDecoder(io.LimitReader(request.Body, 8<<20)).Decode(&body)
@@ -705,6 +719,9 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 			f.fail(w, errors.New("worker tool ceiling lost direct child controls"))
 			return
 		}
+	}
+	if f.performance != nil {
+		f.performance.markRequest(body.Model, arrival)
 	}
 	var text string
 	var calls []call
@@ -833,7 +850,7 @@ func fixtureConfigFiles(workspace, configDir, scenario string) map[string]string
 	return files
 }
 
-func run(directory, pig, extension, scenario string) error {
+func run(directory, pig, extension, scenario string, perf *performance) error {
 	workspace, agentDir := filepath.Join(directory, "workspace"), filepath.Join(directory, "agent")
 	configDir := agentDir
 	if scenario == "cwd" {
@@ -898,7 +915,7 @@ func run(directory, pig, extension, scenario string) error {
 	if err != nil {
 		return err
 	}
-	f := &fixture{scenario: scenario, held: map[string]chan struct{}{}, changed: make(chan struct{}), checks: map[string]bool{}, aborted: map[string]bool{}, expectedCWD: expectedCWD, relativeCWD: relativeCWD, absoluteTarget: absoluteTarget, homeTarget: homeTarget, homeOutput: homeOutput, bashPath: bashPath}
+	f := &fixture{scenario: scenario, held: map[string]chan struct{}{}, changed: make(chan struct{}), checks: map[string]bool{}, aborted: map[string]bool{}, expectedCWD: expectedCWD, relativeCWD: relativeCWD, absoluteTarget: absoluteTarget, homeTarget: homeTarget, homeOutput: homeOutput, bashPath: bashPath, performance: perf}
 	server := &http.Server{Handler: http.HandlerFunc(f.serve), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = server.Serve(listener) }()
 	defer func() {
@@ -944,7 +961,13 @@ func run(directory, pig, extension, scenario string) error {
 	if scenario == "unbounded" {
 		timeout = 180 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	parentContext := context.Background()
+	if perf != nil {
+		var stop context.CancelFunc
+		parentContext, stop = signal.NotifyContext(parentContext, performanceSignals()...)
+		defer stop()
+	}
+	ctx, cancel := context.WithTimeout(parentContext, timeout)
 	defer cancel()
 	if scenario == "lifecycle" || scenario == "pause" || scenario == "completion" {
 		return f.runLifecycle(ctx, directory, workspace, agentDir, pig, extension, stdout, stderr)
@@ -998,7 +1021,9 @@ func run(directory, pig, extension, scenario string) error {
 	}
 	command := exec.CommandContext(ctx, pig, arguments...)
 	prepareProcess(command)
-	defer stopProcess(command)
+	if perf == nil {
+		defer stopProcess(command)
+	}
 	command.Dir = workspace
 	command.Env = fixtureEnvironment(pig, bashPath, directory, agentDir)
 	if scenario == "codemode" {
@@ -1011,7 +1036,7 @@ func run(directory, pig, extension, scenario string) error {
 		command.Env = append(command.Env, "LITTER_FIXTURE_SHADOW_BASE=http://"+listener.Addr().String()+"/v1")
 	}
 	command.Stdout, command.Stderr = stdout, stderr
-	if err := command.Run(); err != nil {
+	if err := observePerformance(command, perf, directory); err != nil {
 		return fmt.Errorf("released host exit: %w", err)
 	}
 	f.mu.Lock()
@@ -1070,7 +1095,7 @@ func run(directory, pig, extension, scenario string) error {
 			}
 		}
 	}
-	return writeJSON(filepath.Join(directory, "result.json"), map[string]any{"passed": true, "scenario": scenario, "runs": f.runs, "resumed": f.resumed, "stopped": f.stopped, "nestedParent": f.nestedParent, "grandchild": f.grandchild, "depthRejected": f.depthRejected, "checks": f.checks, "exitCode": command.ProcessState.ExitCode(), "isolatedEnvironment": true})
+	return publishFixtureResult(directory, perf, map[string]any{"passed": true, "scenario": scenario, "runs": f.runs, "resumed": f.resumed, "stopped": f.stopped, "nestedParent": f.nestedParent, "grandchild": f.grandchild, "depthRejected": f.depthRejected, "checks": f.checks, "exitCode": command.ProcessState.ExitCode(), "isolatedEnvironment": true})
 }
 
 func main() {
@@ -1089,8 +1114,28 @@ func main() {
 	pig := flag.String("pig-bin", "", "Released PiG binary")
 	extension := flag.String("extension", filepath.Join(filepath.Dir(self), "pig-litter"), "Built pig-litter standalone")
 	scenario := flag.String("scenario", "core", "core, cwd, unbounded, nested, checks, admission, messages, lifecycle, pause, completion, shadow, codemode, or persistence")
+	measurePerformance := flag.Bool("measure-performance", false, "Record Linux core fixture performance")
 	evidenceRoot := flag.String("evidence-root", filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(self)))), ".verification", "evidence", "go-lifecycle"), "Evidence directory")
 	flag.Parse()
+	if *measurePerformance && (*scenario != "core" || !performanceSupported()) {
+		fmt.Fprintln(os.Stderr, "performance measurement requires the core scenario on Linux")
+		os.Exit(1)
+	}
+	if *measurePerformance {
+		provided := map[string]bool{}
+		flag.Visit(func(value *flag.Flag) { provided[value.Name] = true })
+		if flag.NArg() != 0 || !provided["pig-bin"] || !provided["extension"] || !filepath.IsAbs(*pig) || !filepath.IsAbs(*extension) {
+			fmt.Fprintln(os.Stderr, "performance measurement requires explicit absolute --pig-bin and --extension paths")
+			os.Exit(1)
+		}
+		for _, path := range []string{*pig, *extension} {
+			info, err := os.Stat(path)
+			if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+				fmt.Fprintln(os.Stderr, "performance binaries must be executable regular files")
+				os.Exit(1)
+			}
+		}
+	}
 	if *pig == "" {
 		*pig, err = exec.LookPath("pig")
 	}
@@ -1112,7 +1157,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	err = run(directory, *pig, *extension, *scenario)
+	var perf *performance
+	if *measurePerformance {
+		perf, err = newPerformance()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+	err = run(directory, *pig, *extension, *scenario, perf)
 	result := map[string]any{"directory": directory, "passed": err == nil, "scenario": *scenario}
 	if err != nil {
 		result["error"] = err.Error()

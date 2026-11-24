@@ -274,7 +274,7 @@ func TestConfiguredAgentDirectoryResolvesTheParentsExactModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	trusted := true
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: dir, AgentDir: configuredAgentDir(), ProjectTrusted: &trusted})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: dir, AgentDir: configuredAgentDir(), ProjectTrusted: &trusted})
 	if err != nil {
 		t.Fatal(err)
 	}

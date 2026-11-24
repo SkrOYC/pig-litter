@@ -238,13 +238,13 @@ func TestScopedRecoveryNeedsGenuineCurrentActiveChildAndLeavesRootReceipt(t *tes
 		if !rootUntouched {
 			t.Fatal("genuine child activity consumed the root receipt")
 		}
-		entries, _ := json.Marshal(next.owner.activeLog.Entries())
+		entries, _ := json.Marshal(next.owner.activeLog.GetEntries())
 		if strings.Count(string(entries), "NESTED_RECOVERY_REPORT") != 1 || strings.Contains(string(entries), "ROOT_MUST_STAY_PASSIVE") {
 			t.Fatalf("genuine child did not recover its native mailbox exactly once: %s", entries)
 		}
 		o.startRecovery(next)
 		tree.completionWG.Wait()
-		again, _ := json.Marshal(next.owner.activeLog.Entries())
+		again, _ := json.Marshal(next.owner.activeLog.GetEntries())
 		if string(entries) != string(again) {
 			t.Fatal("the same genuine child turn replayed restored recovery")
 		}

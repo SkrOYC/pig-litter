@@ -1,16 +1,13 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 )
@@ -29,6 +26,13 @@ const (
 )
 
 func main() {
+	if len(os.Args) == 4 && os.Args[1] == "--boundary-socket-helper" {
+		if err := boundarySocketHelper(boundaryGateAction(os.Args[2]), os.Args[3]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	directory := os.Getenv("LITTER_FIXTURE_EVIDENCE")
 	if directory == "" {
 		fmt.Fprintln(os.Stderr, "LITTER_FIXTURE_EVIDENCE is required")
@@ -109,36 +113,7 @@ func holdBoundaryForFixture(ctx sdk.Context, data map[string]any) (any, error) {
 	if err := os.WriteFile(os.Getenv("LITTER_FIXTURE_BOUNDARY_GATE_EVIDENCE"), entry, 0o600); err != nil {
 		return nil, err
 	}
-	conn, err := net.DialTimeout("unix", os.Getenv("LITTER_FIXTURE_BOUNDARY_GATE_SOCKET"), 5*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	if _, err := fmt.Fprintln(conn, "entered"); err != nil {
-		return nil, err
-	}
-	reader := bufio.NewReader(conn)
-	if action == boundaryGateSDKAbort {
-		command, err := reader.ReadString('\n')
-		if err != nil {
-			return nil, err
-		}
-		if command != "abort\n" {
-			return nil, fmt.Errorf("unexpected boundary gate command %q", command)
-		}
-		ctx.Abort()
-		if _, err := fmt.Fprintln(conn, "abort-returned"); err != nil {
-			return nil, err
-		}
-	}
-	release, err := reader.ReadString('\n')
-	if err != nil {
-		return nil, err
-	}
-	if release != "release\n" {
-		return nil, fmt.Errorf("unexpected boundary gate command %q", release)
-	}
-	return nil, nil
+	return holdBoundaryViaExec(ctx, action)
 }
 
 func finalSpawnResultFailure(data map[string]any) (any, error) {

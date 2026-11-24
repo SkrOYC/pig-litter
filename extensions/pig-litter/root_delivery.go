@@ -29,7 +29,7 @@ func (s *extensionState) rootContext(ctx sdk.Context, data map[string]any) (_ an
 			o.startRecovery(nil)
 			return o.reconcileRootContext(messages)
 		}
-		return map[string]any{"messages": o.completionContext(o.tree.root, messages)}, nil
+		return map[string]any{"messages": completionContext(o, o.tree.root, messages)}, nil
 	})
 }
 
@@ -138,5 +138,5 @@ func (o *owner) reconcileRootContext(messages []any) (any, error) {
 		}
 		kept = append(kept, message)
 	}
-	return map[string]any{"messages": o.completionContext(o.tree.root, kept)}, nil
+	return map[string]any{"messages": completionContext(o, o.tree.root, kept)}, nil
 }

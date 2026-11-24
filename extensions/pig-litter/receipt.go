@@ -169,7 +169,7 @@ func (o *owner) persistedCompletionEntries(parentID ChildID) ([]json.RawMessage,
 		}
 	}
 	trusted := true
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: cwd, AgentDir: o.agentDir, ProjectTrusted: &trusted})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: cwd, AgentDir: o.agentDir, ProjectTrusted: &trusted})
 	if err != nil {
 		return nil, err
 	}
@@ -191,5 +191,5 @@ func (o *owner) persistedCompletionEntries(parentID ChildID) ([]json.RawMessage,
 		}
 	}()
 	defer func() { _ = session.Close(); <-drained }()
-	return rawEntries(session.SessionManager().Entries())
+	return rawEntries(session.SessionManager().GetEntries())
 }

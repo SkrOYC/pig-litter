@@ -1,10 +1,12 @@
 # Pig Litter
 
-Pig Litter is a selected Go Resource for released PiG 0.4.1. It starts independent background Sessions through the published Go SDK. Plain PiG has no Pig Litter tools.
+Pig Litter is a selected Go Resource for released PiG 0.7.0. It starts independent background Sessions through the published Go SDK. Plain PiG has no Pig Litter tools.
 
 ## Build and select the Resource
 
-The developer environment pins PiG 0.4.1 and Go 1.27.1 with CGO enabled. Build inside the devenv shell so Go can use its C compiler. With [direnv](https://direnv.net) installed, run `direnv allow` once and [.envrc](.envrc) loads that shell on entry.
+The developer environment pins PiG 0.7.0 and Go 1.27.4 with CGO enabled. Build inside the devenv shell so Go can use its C compiler. With [direnv](https://direnv.net) installed, run `direnv allow` once and [.envrc](.envrc) loads that shell on entry.
+
+PiG 0.7.0 migrates older Durable stores. Earlier PiG releases cannot read stores written in the new format. See the [PiG 0.7.0 release notes](https://github.com/MichaelKinsy/PiG/releases/tag/v0.7.0) before rolling back.
 
 ```sh
 devenv shell
@@ -113,7 +115,7 @@ A successful individual spawn starts its child independently of the enclosing sc
 
 Root cancellation cascades while PiG exposes an active run's cancellation signal. In PiG 0.4.1, an SDK abort while a settlement handler waits after `agent_end` stops native continuation without publishing a parent pause. Explicit `litter_stop` still pauses the selected subtree.
 
-PiG 0.4.1's public resource loader discovers directory settings, context, skills, templates, and prompt resources. It does not automatically load arbitrary CLI extensions or themes. Parent-only hooks and extension providers are not automatically inherited. Pig Litter loads the native codemode, tool-search, and MCP extensions explicitly. The child uses the embedded SDK's native pipeline and its explicit tool policy.
+The child resource loader discovers directory settings, context, skills, templates, and prompt resources. Pig Litter disables automatic extension and theme loading for child sessions. Parent-only hooks and extension providers are not automatically inherited. Pig Litter loads the native codemode, tool-search, and MCP extensions explicitly. The child uses the embedded SDK's native pipeline and its explicit tool policy.
 
 Delegation authorizes native project settings in the selected child directory. The embedded SDK uses those settings without a separate trust-store prompt. MCP configuration follows the root's own trust selection, so a root-untrusted project override cannot replace a root-registered server. Role and inherited tool ceilings still apply.
 
