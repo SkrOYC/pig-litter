@@ -44,9 +44,10 @@ func (o *owner) prepareNativeResume(ctx context.Context, r *record, selected *ru
 	}
 	o.tree.mu.Unlock()
 	var store *teamStore
-	unstarted := false
+	unstarted := prior != nil && prior.LaunchPhase == "reserved" && prior.Pane == nil
+	advanceSession := false
 	previousLaunch := ""
-	if conflict {
+	if conflict || unstarted {
 		if prior == nil || member == nil || !validMemberSession(session, r.id, r.cwd, r.model) || filepath.Dir(session.File) != prior.SessionDirectory || !slices.Equal(session.Tools, prior.Tools) {
 			return nil, reject("unavailable", "native launch reservation requires reconciliation")
 		}
@@ -56,17 +57,27 @@ func (o *owner) prepareNativeResume(ctx context.Context, r *record, selected *ru
 		if err != nil {
 			return nil, err
 		}
-		_, reservations, err := store.recoverySnapshot()
+		members, reservations, err := store.recoverySnapshot()
 		if err != nil {
 			return nil, err
 		}
-		matched := slices.ContainsFunc(reservations, func(reservation teamReservation) bool {
-			return reservation.Member.Ref == member.Ref && reservation.Member.AdmissionID == member.AdmissionID && reservation.Member.Workspace == member.Workspace && reservation.NativeLaunch == session.Launch
+		sameMember := func(value teamMember) bool {
+			return value.Ref == member.Ref && value.AdmissionID == member.AdmissionID && value.Name == member.Name && value.Workspace == member.Workspace && value.PlanRequired == member.PlanRequired
+		}
+		committed := slices.ContainsFunc(members, sameMember)
+		index := slices.IndexFunc(reservations, func(reservation teamReservation) bool {
+			return sameMember(reservation.Member)
 		})
-		if !matched {
+		if committed == (index >= 0) || committed && (!unstarted || conflict) {
 			return nil, reject("unavailable", "native launch reservation changed during reconciliation")
 		}
-		unstarted = prior.LaunchPhase == "reserved" && prior.Pane == nil
+		if !committed {
+			launch := reservations[index].NativeLaunch
+			if conflict && launch != session.Launch || !conflict && launch != prior.Launch {
+				return nil, reject("unavailable", "native launch reservation changed during reconciliation")
+			}
+			advanceSession = unstarted && !conflict
+		}
 	}
 	if prior != nil {
 		var err error
@@ -117,6 +128,10 @@ func (o *owner) prepareNativeResume(ctx context.Context, r *record, selected *ru
 		clearedSession := session
 		if unstarted {
 			clearedSession = nil
+			if advanceSession {
+				clearedSession = cloneMemberSession(session)
+				clearedSession.Launch = prior.Launch
+			}
 		}
 		if err := o.clearMemberOwnership(ctx, r, selected, ownership, prior, clearedSession); err != nil {
 			return nil, err

@@ -200,4 +200,100 @@ func TestReservedNativeLaunchConflictCanRecoverWithoutTouchingPanes(t *testing.T
 			t.Fatalf("dispatched reconciliation = %#v, %#v, %v", restored, reservations, err)
 		}
 	}, func(method string, raw json.RawMessage) json.RawMessage { return secondHost.call(t, method, raw) })
+
+	for _, test := range []struct {
+		name, marker, phase, wantLaunch string
+		committed, wantResume, live     bool
+	}{
+		{name: "provisional matching reserved", marker: newLaunch, phase: "reserved", wantResume: true, wantLaunch: newLaunch},
+		{name: "provisional matching live pane", marker: newLaunch, phase: "reserved", live: true},
+		{name: "provisional mismatched reserved", marker: oldLaunch, phase: "reserved", wantResume: true, wantLaunch: oldLaunch},
+		{name: "committed reserved", committed: true, phase: "reserved", wantResume: true, wantLaunch: oldLaunch},
+		{name: "provisional unrelated marker", marker: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", phase: "reserved"},
+		{name: "provisional matching armed", marker: newLaunch, phase: "armed"},
+		{name: "provisional mismatched armed", marker: oldLaunch, phase: "armed"},
+		{name: "committed armed", committed: true, phase: "armed"},
+		{name: "provisional matching legacy", marker: newLaunch},
+		{name: "provisional mismatched legacy", marker: oldLaunch},
+		{name: "committed legacy", committed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			matrixStore, matrixAgent, matrixRoot, matrixWorkspace := storeTestOpen(t)
+			matrixMember, err := matrixStore.Reserve(storeTestUUID(20), string(storeTestUUID(21)), "matrix", matrixWorkspace, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.committed {
+				matrixMember, err = matrixStore.Commit(matrixMember.AdmissionID)
+			} else {
+				err = matrixStore.markNativeLaunch(matrixMember, test.marker)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			matrixPath := filepath.Join(matrixAgent, "history_"+string(matrixMember.Ref.ID)+".jsonl")
+			matrixHeader, _ := json.Marshal(map[string]any{"type": "session", "version": 3, "id": matrixMember.Ref.ID, "timestamp": "2026-11-24T00:00:00Z", "cwd": matrixWorkspace.Cwd})
+			if err := os.WriteFile(matrixPath, append(append(append(matrixHeader, '\n'), entry...), '\n'), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			matrixSession := &memberSession{File: matrixPath, Model: "fixture/fixed", Tools: []string{"read"}, Launch: oldLaunch}
+			matrixOwnership := cloneMemberOwnership(ownership)
+			matrixOwnership.Member, matrixOwnership.Admission = matrixMember.Ref, matrixMember.AdmissionID
+			matrixOwnership.Cwd, matrixOwnership.SessionDirectory, matrixOwnership.LaunchPhase = matrixWorkspace.Cwd, matrixAgent, test.phase
+			if test.live {
+				pane := tmux("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", server.target, "--", matrixOwnership.Executable, "--pig-litter-member", matrixOwnership.Manifest)
+				defer tmux("kill-pane", "-t", pane)
+				defer func() {
+					if panes := tmux("list-panes", "-a", "-F", "#{pane_id}"); !strings.Contains(panes, pane) || !strings.Contains(panes, unrelated) {
+						t.Errorf("reconciliation changed live panes: %s", panes)
+					}
+				}()
+			}
+			matrixSaved := savedChild{RootID: matrixRoot, ID: matrixMember.Ref.ID, ParentID: matrixRoot, Name: matrixMember.Name, Kind: "worker", Model: matrixSession.Model, Cwd: matrixWorkspace.Cwd, Tools: []string{"read"}, Admitted: true, State: Unavailable, NoticeID: "execution", Team: &matrixMember, Backend: backendTmux, Native: matrixOwnership, NativeSession: matrixSession}
+			matrixHost := &runtimeHost{tools: []string{"read"}, entries: []map[string]any{{"customType": childEntryType, "data": matrixSaved}}}
+			matrixTree := testTree(t, defaultConfig())
+			matrixTree.root.id = matrixRoot
+			withCompletionHost(t, matrixTree, func(o *owner) {
+				o.teamStore, o.agentDir, o.cwd = matrixStore, matrixAgent, matrixWorkspace.Cwd
+				if err := o.restoreChildren(); err != nil {
+					t.Errorf("restore failed: %v", err)
+					return
+				}
+				matrixTree.mu.Lock()
+				restored := matrixTree.records[matrixMember.Ref.ID]
+				matrixTree.mu.Unlock()
+				if restored == nil || !restored.paused {
+					t.Errorf("restored member = %#v", restored)
+					return
+				}
+				pin, err := o.prepareNativeResume(ctx, restored, restored.run)
+				if (err == nil) != test.wantResume {
+					t.Errorf("reconcile = %#v, %v; want resume %v", pin, err, test.wantResume)
+					return
+				}
+				if test.wantResume {
+					if pin == nil || pin.log.path != matrixPath || restored.nativeOwnership != nil || restored.nativeSession.Launch != test.wantLaunch {
+						t.Errorf("reconciled identity = %#v, %#v", restored, pin)
+						return
+					}
+					_, resumed, err := matrixTree.resume(nil, restored.run, "continue")
+					if err != nil {
+						t.Errorf("explicit resume: %v", err)
+						return
+					}
+					resumed.mu.Lock()
+					resumed.nativeResume = pin
+					resumed.mu.Unlock()
+					if err := o.resumeTeamMember(restored, resumed); err != nil {
+						t.Errorf("resume admission lost its session association: %v", err)
+					}
+				} else if restored.nativeOwnership == nil || restored.nativeSession.Launch != oldLaunch {
+					t.Errorf("unproved ownership was released: %#v", restored)
+				}
+				if _, err := os.Stat(matrixWorkspace.Cwd); err != nil {
+					t.Errorf("workspace was removed: %v", err)
+				}
+			}, func(method string, raw json.RawMessage) json.RawMessage { return matrixHost.call(t, method, raw) })
+		})
+	}
 }
