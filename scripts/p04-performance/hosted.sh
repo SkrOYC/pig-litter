@@ -3,8 +3,8 @@ set -euo pipefail
 umask 077
 
 candidate=${CANDIDATE_SHA:?}
-parent=e40b6bbe985c5663ebea7756f175f210402044fd
-product=b5b79f231903bd90ed0cf43fd8eaa5960125f312
+parent=bea36acff7b55ea4ed0f4a4feccde6b638eea4db
+product=e52ab08e3efd31eb74e405bb745350fa463d7da1
 repo=${CANDIDATE_CHECKOUT:?}
 base=${BASELINE_CHECKOUT:?}
 evidence=${EVIDENCE_DIR:?}

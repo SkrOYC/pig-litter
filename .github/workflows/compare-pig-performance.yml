@@ -350,7 +350,7 @@ jobs:
     env:
       CANDIDATE_SHA: ${{ inputs.candidate_sha }}
       P04_RELEASE: ${{ inputs.p04_release }}
-      BASELINE_SHA: e40b6bbe985c5663ebea7756f175f210402044fd
+      BASELINE_SHA: bea36acff7b55ea4ed0f4a4feccde6b638eea4db
       CANDIDATE_CHECKOUT: ${{ github.workspace }}/candidate
       BASELINE_CHECKOUT: ${{ github.workspace }}/baseline
     steps:

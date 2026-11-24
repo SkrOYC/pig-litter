@@ -1,6 +1,8 @@
 # Measure P04 message performance
 
-The `collaboration-message-performance` workflow job compares the exact P03 parent `e40b6bbe985c5663ebea7756f175f210402044fd` with the selected P04 branch head on a GitHub-hosted Linux runner. The candidate must descend from product commit `b5b79f231903bd90ed0cf43fd8eaa5960125f312`. Only this harness and the performance workflow may change after that commit. The extension tree at that product commit matches the previously verified product commit `25e1af5adc9ef0cbf29d1c52645c7c1f45735f81`.
+The `collaboration-message-performance` workflow job compares the squash-merged P03 parent `bea36acff7b55ea4ed0f4a4feccde6b638eea4db` with the selected P04 branch head on a GitHub-hosted Linux runner. The candidate must descend from `e52ab08e3efd31eb74e405bb745350fa463d7da1`. Only this harness and the performance workflow may change after that commit. Its extension tree matches the reviewed P04 product commit `87ecbd7b60f62282b2565b9f09d633477ba5ca5c`.
+
+The previous P03 baseline `e40b6bbe985c5663ebea7756f175f210402044fd` and the merged baseline have identical extension and product-command trees. Their diff is limited to platform verification scripts and their workflow. It does not change Go files, module or workspace manifests, the PiG source declaration or patch, or devenv inputs. Inspect it with `git diff --name-status e40b6bbe985c5663ebea7756f175f210402044fd bea36acff7b55ea4ed0f4a4feccde6b638eea4db`.
 
 Dispatch `compare-pig-performance.yml` on `feat/collaboration-P04-message-receipts` with `candidate_sha` set to the exact branch head and `p04_release` set to `true`. The default `false` value prevents measurement. The job checks the dispatch SHA and parent, builds each checkout serially inside its declared devenv environment, and runs a paired functional smoke before it releases measurement. It retains control and scenario artifacts even when a step fails. It does not upload build caches.
 
