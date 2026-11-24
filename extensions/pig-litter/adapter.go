@@ -68,6 +68,9 @@ type owner struct {
 	persistMu                sync.Mutex
 	teamMu                   sync.Mutex
 	teamStore                *teamStore
+	localMu                  sync.Mutex
+	local                    *localRuntime
+	localClosed              bool
 	controlMu                sync.Mutex
 	controlAuth              map[string]controlNotice
 	turnAuth                 map[string]turnNotice
@@ -343,6 +346,7 @@ func (s *extensionState) retire() error {
 	}
 	previous.actionMu.Unlock()
 	previous.actionWG.Wait()
+	localErr := previous.stopLocal()
 	previous.retireScope(previous.rootCalls)
 	previous.ackMu.Lock()
 	acks := previous.acks
@@ -373,7 +377,7 @@ func (s *extensionState) retire() error {
 		s.retainClosingOwner(previous)
 	}
 	close(retirement)
-	return err
+	return errors.Join(localErr, err)
 }
 
 func (o *owner) modelFor(ctx context.Context, name string, runtime *coding.ModelRuntime) (*ai.Model, error) {
@@ -1063,7 +1067,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 		return state.observe(ctx, func(o *owner) (any, error) {
 			o.watchRoot(ctx.Signal())
 			o.startRecovery(nil)
-			return nil, nil
+			return nil, o.setLocalBusy(true)
 		})
 	})
 	ext.OnEvent("agent_settled", func(ctx sdk.Context, _ map[string]any) (any, error) {
@@ -1071,10 +1075,11 @@ func newExtension(state *extensionState) *sdk.Extension {
 			o.observeLeadControls()
 			peerErr := o.observeRootPeers()
 			o.tree.root.markAgentEnded(false)
+			localErr := o.setLocalBusy(false)
 			o.settleRoot()
 			o.retireScope(o.callScope(nil))
 			o.retireReceipts(o.tree.root)
-			return nil, peerErr
+			return nil, errors.Join(peerErr, localErr)
 		})
 	})
 	ext.OnSessionStart(func(ctx sdk.Context, _ map[string]any) (any, error) {
@@ -1082,7 +1087,21 @@ func newExtension(state *extensionState) *sdk.Extension {
 		state.mu.Lock()
 		state.sessionContext = &ctx
 		state.mu.Unlock()
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
+		enabled, accept, err := localOptIn()
+		if err != nil || !enabled {
+			return nil, err
+		}
+		o, err := state.acquire(ctx, false)
+		if err != nil {
+			return nil, err
+		}
+		if err := o.startLocal(accept); err != nil {
+			return nil, withRetirementError(err, state.retire())
+		}
+		return nil, nil
 	})
 	ext.OnSessionShutdown(func(_ sdk.Context, _ map[string]any) (any, error) { return nil, state.retire() })
 	ext.Command("pig-litter", "Show Pig Litter child controls", state.openPanel)

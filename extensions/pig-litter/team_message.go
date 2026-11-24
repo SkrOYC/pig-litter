@@ -152,10 +152,14 @@ func (s *teamStore) classifyPeer(roster *teamRoster, members map[MemberRef]strin
 		return item
 	}
 	if envelope.Sender == teamLeadRef(roster.Team) {
-		item.Provenance, item.Reason = peerForged, "team lead cannot be a peer sender"
-		return item
+		item.SenderName = "team-lead"
+		if _, ok := s.peerAuth[key]; !ok {
+			item.Provenance, item.Reason = peerForged, "team lead sender is not authenticated"
+			return item
+		}
+	} else {
+		item.SenderName = members[envelope.Sender]
 	}
-	item.SenderName = members[envelope.Sender]
 	if item.SenderName == "" {
 		item.Reason = "sender is not a committed teammate"
 		return item
@@ -284,6 +288,10 @@ func publishPeerFile(path string, data []byte, replace bool) error {
 }
 
 func (s *teamStore) acceptPeer(sender MemberRef, request peerRequest) (peerReceipt, string, error) {
+	return s.acceptPeerTo(sender, request, nil)
+}
+
+func (s *teamStore) acceptPeerTo(sender MemberRef, request peerRequest, expected *MemberRef) (peerReceipt, string, error) {
 	var accepted peerReceipt
 	var senderName string
 	err := s.transact(func(roster *teamRoster) (bool, error) {
@@ -295,6 +303,9 @@ func (s *teamStore) acceptPeer(sender MemberRef, request peerRequest) (peerRecei
 		if strings.EqualFold(request.Recipient, "team-lead") {
 			recipientFound, recipient = true, teamMember{Ref: teamLeadRef(roster.Team)}
 		}
+		if sender == teamLeadRef(roster.Team) {
+			senderFound, senderName = true, "team-lead"
+		}
 		for _, member := range roster.Members {
 			if member.Ref == sender {
 				senderFound, senderName = true, member.Name
@@ -305,6 +316,9 @@ func (s *teamStore) acceptPeer(sender MemberRef, request peerRequest) (peerRecei
 		}
 		if !senderFound || !recipientFound || recipient.Ref.Team != sender.Team || recipient.Ref == sender {
 			return false, reject("permission_denied", "sender or recipient is not an eligible teammate")
+		}
+		if expected != nil && recipient.Ref != *expected {
+			return false, reject("stale_identity", "teammate identity changed during address resolution")
 		}
 		if recipient.State == "closing" || recipient.State == "terminated" {
 			return false, reject("unavailable", "recipient is closing or terminated")
@@ -433,6 +447,7 @@ func (s *teamStore) offerPeerAttempt(recipient MemberRef, attempt *peerDeliveryA
 		if _, ok := members[recipient]; !ok && recipient != teamLeadRef(roster.Team) {
 			return false, reject("permission_denied", "recipient is not a committed teammate")
 		}
+		members[MemberRef{Team: roster.Team, ID: roster.Team.Root, Generation: 1}] = "team-lead"
 		entries, err := os.ReadDir(s.dir)
 		if err != nil {
 			return false, err
@@ -522,6 +537,7 @@ func (s *teamStore) peerWakeEligible(recipient MemberRef) (bool, error) {
 				idle = true
 			}
 		}
+		members[MemberRef{Team: roster.Team, ID: roster.Team.Root, Generation: 1}] = "team-lead"
 		if !idle {
 			return false, nil
 		}
@@ -639,6 +655,7 @@ func (s *teamStore) observePeerEntries(recipient MemberRef, find func(peerEnvelo
 		if _, ok := members[recipient]; !ok && recipient != teamLeadRef(roster.Team) {
 			return false, reject("permission_denied", "recipient is not a committed teammate")
 		}
+		members[MemberRef{Team: roster.Team, ID: roster.Team.Root, Generation: 1}] = "team-lead"
 		entries, err := os.ReadDir(s.dir)
 		if err != nil {
 			return false, err
