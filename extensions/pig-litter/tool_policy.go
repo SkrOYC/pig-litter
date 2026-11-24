@@ -60,6 +60,28 @@ func withinParent(parent, root *record, name string) bool {
 	return true
 }
 
+func childAllowedTools(r, root *record, available []string) map[string]struct{} {
+	allowed := map[string]struct{}{}
+	for _, name := range expandTools(r.tools, available) {
+		if !slices.Contains(teamToolNames, name) && (r.canDelegate || !slices.Contains(controlNames, name)) && withinParent(r.parent, root, name) {
+			allowed[name] = struct{}{}
+		}
+	}
+	var names []string
+	if r.canDelegate {
+		names = append(names, controlNames...)
+	}
+	if r.team != nil {
+		names = append(names, teamToolNames...)
+	}
+	for _, name := range names {
+		if slices.Contains(available, name) {
+			allowed[name] = struct{}{}
+		}
+	}
+	return allowed
+}
+
 func (o *owner) rootToolNames() ([]string, error) {
 	tools, err := o.context.GetAllTools()
 	if err != nil {

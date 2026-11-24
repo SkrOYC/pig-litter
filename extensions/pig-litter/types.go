@@ -88,6 +88,8 @@ type record struct {
 	canDelegate, readOnly                bool
 	admitted                             bool
 	activeLog                            *coding.SessionManager
+	native                               *memberBinding
+	nativeOwnership                      *memberOwnership
 	run                                  *run
 	previous                             *run
 	paused                               bool
@@ -170,6 +172,7 @@ type run struct {
 	messageMu       sync.Mutex
 	pendingMessages int
 	session         *coding.Session
+	member          memberControl
 	disposing       bool
 	ready           chan struct{}
 	deliveryError   string

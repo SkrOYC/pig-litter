@@ -79,3 +79,30 @@ func TestScoutPatternsCannotGrantOtherTools(t *testing.T) {
 		t.Fatalf("scout lost its read-only tool set: %#v %v", config, err)
 	}
 }
+
+func TestNativeAndEmbeddedUseTheSameAncestryCeiling(t *testing.T) {
+	root := &record{}
+	parent := &record{parent: root, tools: []string{"read", "mcp__docs__*"}, canDelegate: true}
+	child := &record{parent: parent, tools: []string{"read", "write", "mcp__*", "litter_*"}}
+	available := []string{"read", "write", "mcp__docs__search", "mcp__other__write", "litter_wait", "team_send"}
+	allowed := childAllowedTools(child, root, available)
+	if len(allowed) != 2 {
+		t.Fatalf("nested tool ceiling = %v", allowed)
+	}
+	if _, ok := allowed["read"]; !ok {
+		t.Fatal("nested read was removed")
+	}
+	if _, ok := allowed["mcp__docs__search"]; !ok {
+		t.Fatal("nested authorized MCP tool was removed")
+	}
+	member := &record{parent: root, team: &teamMember{}, tools: []string{"read"}, canDelegate: true}
+	allowed = childAllowedTools(member, root, available)
+	if len(allowed) != 3 {
+		t.Fatalf("teammate tool ceiling = %v", allowed)
+	}
+	for _, name := range []string{"read", "litter_wait", "team_send"} {
+		if _, ok := allowed[name]; !ok {
+			t.Fatalf("teammate lost %s", name)
+		}
+	}
+}

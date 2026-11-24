@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding"
 	"github.com/MichaelKinsy/PiG/coding/cli"
 	"github.com/MichaelKinsy/PiG/coding/extension"
@@ -21,6 +22,7 @@ import (
 var logMu sync.Mutex
 var boundaryMu sync.Mutex
 var boundaryCounter uint64
+var approvedBoundary uint64
 
 func record(name string, data any) {
 	logMu.Lock()
@@ -39,6 +41,9 @@ type decision struct {
 	Kind     string `json:"kind"`
 	Revision string `json:"revision"`
 	Boundary uint64 `json:"boundary"`
+	Result   string `json:"result"`
+	Feedback string `json:"feedback"`
+	Continue bool   `json:"continue"`
 }
 
 func rootDecision(kind string, detail any) decision {
@@ -58,7 +63,7 @@ func rootDecision(kind string, detail any) decision {
 	return result
 }
 
-func watchRoot(ctx context.Context) {
+func watchRoot(ctx context.Context, api extension.API) {
 	lost := func() {
 		record("events", map[string]any{"event": "root_lost"})
 		if ext := extension.FromContext(ctx); ext != nil {
@@ -76,7 +81,56 @@ func watchRoot(ctx context.Context) {
 		lost()
 		return
 	}
-	_, _ = io.Copy(io.Discard, conn)
+	decoder := json.NewDecoder(conn)
+	for {
+		var control struct {
+			ID      string          `json:"id"`
+			Kind    string          `json:"kind"`
+			Content string          `json:"content"`
+			Details json.RawMessage `json:"details"`
+			Audit   json.RawMessage `json:"audit"`
+		}
+		if decoder.Decode(&control) != nil {
+			break
+		}
+		switch control.Kind {
+		case "completion":
+			trigger := false
+			api.SendMessage(extension.SendMessagePayload{CustomType: "litter_completion", Content: control.Content, Details: control.Details}, &extension.SendMessageOptions{TriggerTurn: &trigger})
+		case "audit":
+			api.AppendEntry("litter_completion", control.Audit)
+		case "queue":
+			ext := extension.FromContext(ctx)
+			idle, _ := ext.IsIdle()
+			before, _ := ext.HasPendingMessages()
+			api.SendUserMessage(control.Content, &extension.SendUserMessageOptions{DeliverAs: extension.DeliverAsFollowUp})
+			after, _ := ext.HasPendingMessages()
+			record("events", map[string]any{"event": "control_applied", "id": control.ID, "kind": control.Kind, "idle": idle, "before": before, "after": after})
+			continue
+		case "inspect":
+			ext := extension.FromContext(ctx)
+			idle, _ := ext.IsIdle()
+			pending, _ := ext.HasPendingMessages()
+			record("events", map[string]any{"event": "control_applied", "id": control.ID, "kind": control.Kind, "idle": idle, "pending": pending})
+			continue
+		case "queue-hold":
+			go func() {
+				ext := extension.FromContext(ctx)
+				idle, _ := ext.IsIdle()
+				pending, _ := ext.HasPendingMessages()
+				record("events", map[string]any{"event": "queue_checked", "id": control.ID, "idle": idle, "pending": pending})
+				for rootDecision("queue-release", nil).Kind != "allow" {
+					time.Sleep(10 * time.Millisecond)
+				}
+				api.SendUserMessage(control.Content, &extension.SendUserMessageOptions{DeliverAs: extension.DeliverAsFollowUp})
+				record("events", map[string]any{"event": "control_applied", "id": control.ID, "kind": control.Kind})
+			}()
+			continue
+		default:
+			continue
+		}
+		record("events", map[string]any{"event": "control_applied", "id": control.ID, "kind": control.Kind})
+	}
 	conn.Close()
 	lost()
 }
@@ -98,7 +152,7 @@ func identity(ctx context.Context) map[string]any {
 func factory(api extension.API) error {
 	api.OnSessionStart(func(ctx context.Context, event extension.SessionStartEvent) error {
 		record("events", map[string]any{"event": "session_start", "reason": event.Reason, "identity": identity(ctx)})
-		go watchRoot(ctx)
+		go watchRoot(ctx, api)
 		return nil
 	})
 	api.OnInput(func(ctx context.Context, event extension.InputEvent) (extension.InputEventResult, error) {
@@ -106,6 +160,15 @@ func factory(api extension.API) error {
 		record("events", map[string]any{"event": "input", "text": event.Text, "decision": decision})
 		if decision.Kind != "allow" {
 			return extension.InputEventResultHandled{}, nil
+		}
+		if event.Text == "QUEUED_ONE" {
+			for rootDecision("queue-input", nil).Kind != "allow" {
+				select {
+				case <-ctx.Done():
+					return extension.InputEventResultHandled{}, nil
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
 		}
 		return extension.InputEventResultContinue{}, nil
 	})
@@ -119,6 +182,30 @@ func factory(api extension.API) error {
 			return extension.ToolCallEventResult{Block: true, Reason: "PROBE_POLICY_DENIED"}, nil
 		}
 		return extension.ToolCallEventResult{}, nil
+	})
+	for _, name := range []string{"litter_spawn", "litter_wait"} {
+		api.RegisterTool(extension.ToolDefinition{
+			Name: name, Label: name, Description: name,
+			Parameters: json.RawMessage(`{"type":"object","properties":{"type":{"type":"string"},"task":{"type":"string"},"id":{"type":"string"},"timeoutMs":{"type":"integer"}},"additionalProperties":false}`),
+			Execute: func(ctx context.Context, callID string, params json.RawMessage, _ extension.AgentToolUpdateCallback) (extension.AgentToolResult, error) {
+				manager, err := extension.FromContext(ctx).SessionManager()
+				if err != nil {
+					return extension.AgentToolResult{}, err
+				}
+				leaf := ""
+				if id := manager.GetLeafID(); id != nil {
+					leaf = *id
+				}
+				decision := rootDecision(name, map[string]any{"call": callID, "leaf": leaf, "args": params})
+				return extension.AgentToolResult{Content: []ai.ToolResultMessageContent{ai.TextContent{Text: decision.Result}}, IsError: decision.Kind != "allow"}, nil
+			},
+		})
+	}
+	api.OnToolExecutionEnd(func(ctx context.Context, event extension.ToolExecutionEndEvent) error {
+		if event.ToolName == "litter_spawn" || event.ToolName == "litter_wait" {
+			rootDecision("tool-end", map[string]any{"call": event.ToolCallID, "name": event.ToolName, "result": event.Result, "isError": event.IsError})
+		}
+		return nil
 	})
 	api.OnUserBash(func(ctx context.Context, event extension.UserBashEvent) (extension.UserBashEventResult, error) {
 		record("events", map[string]any{"event": "user_bash", "command": event.Command})
@@ -134,23 +221,64 @@ func factory(api extension.API) error {
 		return extension.SessionBeforeTreeResult{Cancel: true}, nil
 	})
 	api.OnAgentBeforeSettle(func(ctx context.Context, event *extension.AgentBeforeSettleEvent) (extension.AgentBeforeSettleEventResult, error) {
+		if event.Outcome != extension.AgentActivityCompleted || event.Continue {
+			return extension.BoundaryResult{}, nil
+		}
 		boundaryMu.Lock()
 		boundaryCounter++
 		boundary := boundaryCounter
 		boundaryMu.Unlock()
-		decision := rootDecision("settle", map[string]any{"boundary": boundary, "outcome": event.Outcome, "canContinue": event.Context.CanContinue})
+		report := ""
+		for index := len(event.Context.ContextMessages) - 1; index >= 0; index-- {
+			message := event.Context.ContextMessages[index].Assistant
+			if message == nil {
+				continue
+			}
+			for _, block := range message.Content {
+				if text, ok := block.(ai.TextContent); ok {
+					report += text.Text
+				}
+			}
+			break
+		}
+		decision := rootDecision("settle", map[string]any{"boundary": boundary, "outcome": event.Outcome, "continuing": event.Continue, "canContinue": event.Context.CanContinue, "report": report})
 		record("events", map[string]any{"event": "before_settle", "decision": decision, "outcome": event.Outcome, "canContinue": event.Context.CanContinue})
 		if decision.Kind != "allow" || decision.Boundary != boundary {
+			if decision.Kind == "allow" && decision.Boundary != boundary {
+				go func() { _ = extension.FromContext(ctx).Abort(); _ = extension.FromContext(ctx).Shutdown() }()
+				return extension.BoundaryResult{}, nil
+			}
+			if !decision.Continue {
+				return extension.BoundaryResult{}, nil
+			}
 			entries := append([]extension.SessionBoundaryDraft{}, event.Entries...)
-			entries = append(entries, extension.SessionBoundaryDraft{Type: extension.SessionBoundaryDraftCustomMessage, CustomType: "probe-policy", Content: "POLICY_REFUSED: Continue the work.", Display: true, Details: map[string]any{"decision": decision.Kind, "revision": decision.Revision}})
+			entries = append(entries, extension.SessionBoundaryDraft{Type: extension.SessionBoundaryDraftCustomMessage, CustomType: "probe-policy", Content: "POLICY_REFUSED: " + decision.Feedback + " Continue the work.", Display: true, Details: map[string]any{"decision": decision.Kind, "revision": decision.Revision}})
 			cont := true
 			return extension.BoundaryResult{Entries: &entries, Continue: &cont}, nil
 		}
-		record("events", map[string]any{"event": "root_settle_approved", "revision": decision.Revision})
+		boundaryMu.Lock()
+		approvedBoundary = boundary
+		boundaryMu.Unlock()
+		record("events", map[string]any{"event": "root_settle_candidate", "revision": decision.Revision, "boundary": boundary})
 		return extension.BoundaryResult{}, nil
 	})
 	api.OnAgentSettled(func(ctx context.Context, event extension.AgentSettledEvent) error {
-		record("events", map[string]any{"event": "native_settled", "aborted": event.Aborted, "identity": identity(ctx)})
+		boundaryMu.Lock()
+		boundary := approvedBoundary
+		approvedBoundary = 0
+		boundaryMu.Unlock()
+		decision := decision{Kind: "observed"}
+		if boundary != 0 {
+			decision = rootDecision("settled", map[string]any{"boundary": boundary, "aborted": event.Aborted})
+		}
+		record("events", map[string]any{"event": "native_settled", "aborted": event.Aborted, "boundary": boundary, "decision": decision, "identity": identity(ctx)})
+		if decision.Kind == "allow" && boundary != 0 {
+			record("events", map[string]any{"event": "root_settle_approved", "boundary": boundary})
+		}
+		if decision.Kind == "deny" && decision.Continue && decision.Feedback != "" {
+			api.SendUserMessage("POLICY_REFUSED: "+decision.Feedback, nil)
+			record("events", map[string]any{"event": "stale_continued", "boundary": boundary})
+		}
 		return nil
 	})
 	return nil
@@ -204,6 +332,42 @@ func fixture() {
 		var text string
 		if json.Unmarshal(last.Content, &text) != nil {
 			text = string(last.Content)
+		}
+		if strings.Contains(text, "CHILD_WAIT_GATE") {
+			for rootDecision("child-gate", nil).Kind != "allow" {
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+			response(w, request.Model, "CHILD_COMPLETED", "", nil)
+			return
+		}
+		if strings.Contains(text, "QUEUE_GATE") {
+			record("provider", map[string]any{"event": "queue_gate_wait"})
+			for rootDecision("queue-provider", nil).Kind != "allow" {
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+			response(w, request.Model, "QUEUE_GATE_DONE", "", nil)
+			return
+		}
+		if strings.Contains(text, "case spawn-child") {
+			response(w, request.Model, "", "litter_spawn", map[string]any{"type": "scout", "task": "CHILD_WAIT_GATE"})
+			return
+		}
+		if strings.Contains(text, "case spawn-notice") {
+			response(w, request.Model, "", "litter_spawn", map[string]any{"type": "scout", "task": "NOTICE_CHILD"})
+			return
+		}
+		if strings.Contains(text, "case wait-child") {
+			child := rootDecision("child-id", nil).Result
+			response(w, request.Model, "", "litter_wait", map[string]any{"id": child, "timeoutMs": 10000})
+			return
 		}
 		name := ""
 		for _, candidate := range []string{"direct-write-allow", "direct-write-deny", "codemode-write-allow", "codemode-write-deny", "direct-write-lost"} {

@@ -24,6 +24,8 @@ type reservation struct {
 	auditMu         sync.Mutex
 	auditStored     bool
 	auditErr        error
+	auditAttempted  bool
+	nativeAttempted bool
 }
 
 type Tree struct {
@@ -400,9 +402,13 @@ func (t *Tree) activateChecked(selected *run, accept func() error) error {
 func (r *run) abort() {
 	r.mu.Lock()
 	session := r.session
+	member := r.member
 	r.mu.Unlock()
 	if session != nil {
 		session.RequestAbort()
+	}
+	if member != nil {
+		member.Cancel()
 	}
 }
 
@@ -678,6 +684,10 @@ func (t *Tree) resumeAs(authority controlAuthority, selected *run, text string) 
 	if err != nil {
 		t.mu.Unlock()
 		return Snapshot{}, nil, err
+	}
+	if r.nativeOwnership != nil {
+		t.mu.Unlock()
+		return Snapshot{}, nil, reject("unavailable", "native pane ownership requires reconciliation before resume")
 	}
 	for ancestor := r.parent; ancestor != nil && ancestor != t.root; ancestor = ancestor.parent {
 		if ancestor.controlPhase == "closing" || ancestor.controlPhase == "terminated" || ancestor.controlPhase == "recovery_pending" {

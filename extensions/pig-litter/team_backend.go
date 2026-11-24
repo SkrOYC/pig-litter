@@ -1,12 +1,141 @@
 package piglitter
 
-import "fmt"
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"sync"
+)
+
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (reader contextReader) Read(data []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return reader.r.Read(data)
+}
 
 type backendRequest string
 
 type backendChoice struct {
 	kind     backendRequest
 	fallback string
+}
+
+type memberInput interface{ memberInput() }
+
+type memberTextInput struct{ mode, text string }
+
+type memberCompletionInput struct {
+	details completionDetails
+	content string
+	mode    string
+	trigger bool
+}
+
+func (memberTextInput) memberInput()       {}
+func (memberCompletionInput) memberInput() {}
+
+type memberInputDisposition uint8
+
+const (
+	memberInputQueued memberInputDisposition = iota + 1
+	memberInputHandled
+	memberInputUncertain
+)
+
+type memberPhase uint8
+
+const (
+	memberStarting memberPhase = iota
+	memberStreaming
+	memberSettling
+	memberIdle
+	memberClosed
+)
+
+type memberHistoryBound struct{ entries, bytes int }
+
+type memberSnapshot struct {
+	session ChildID
+	cwd     string
+	model   string
+	tools   []string
+	phase   memberPhase
+	pending int
+	entries []json.RawMessage
+	leaf    *string
+	clipped bool
+}
+
+type memberControl interface {
+	Queue(context.Context, memberInput) (memberInputDisposition, error)
+	Snapshot(context.Context, memberHistoryBound) (memberSnapshot, error)
+	RecordCompletion(context.Context, completionAudit) error
+	Cancel()
+	Focus(context.Context) error
+}
+
+type memberLogPin struct {
+	path, cwd string
+	session   ChildID
+	file      os.FileInfo
+}
+
+type memberServerIdentity struct {
+	Socket string `json:"socket"`
+	PID    int    `json:"pid"`
+	Birth  string `json:"birth"`
+	Target string `json:"target"`
+}
+
+type memberPaneIdentity struct {
+	ID      string `json:"id"`
+	PID     int    `json:"pid"`
+	Birth   string `json:"birth"`
+	Command string `json:"command"`
+}
+
+type memberOwnership struct {
+	Backend          backendRequest       `json:"backend"`
+	Member           MemberRef            `json:"member"`
+	Admission        string               `json:"admission"`
+	Execution        string               `json:"execution"`
+	OwnerEpoch       uint64               `json:"ownerEpoch"`
+	Launch           string               `json:"launch"`
+	Cwd              string               `json:"cwd"`
+	Model            string               `json:"model"`
+	Tools            []string             `json:"tools"`
+	SessionDirectory string               `json:"sessionDirectory"`
+	Executable       string               `json:"executable"`
+	ExecutableSHA256 string               `json:"executableSha256"`
+	Manifest         string               `json:"manifest"`
+	Server           memberServerIdentity `json:"server"`
+	Pane             *memberPaneIdentity  `json:"pane,omitempty"`
+}
+
+type memberBinding struct {
+	record     *record
+	run        *run
+	member     MemberRef
+	admission  string
+	execution  string
+	ownerEpoch uint64
+	launch     string
+	log        memberLogPin
+	ownership  *memberOwnership
+	owned      *memberOwnership
+	control    memberControl
+	settleMu   sync.Mutex
+	boundary   uint64
+	evaluating bool
+	settlement *memberSettlement
 }
 
 const (

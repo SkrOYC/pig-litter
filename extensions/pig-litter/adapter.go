@@ -552,12 +552,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		return
 	}
 	tools := []agent.AgentTool{}
-	allowed := map[string]struct{}{}
-	for _, name := range expandTools(r.tools, available) {
-		if !slices.Contains(teamToolNames, name) && withinParent(r.parent, o.tree.root, name) {
-			allowed[name] = struct{}{}
-		}
-	}
+	allowed := childAllowedTools(r, o.tree.root, available)
 	if r.canDelegate || r.team != nil {
 		names := []string{}
 		if r.canDelegate {
@@ -578,7 +573,6 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 				value, err := o.operation(ctx, raw, ticket, nil)
 				return nativeResult(name, value, err), nil
 			}})
-			allowed[name] = struct{}{}
 		}
 	}
 	extensions, registrations, err := o.childExtensions(r, run, allowed)

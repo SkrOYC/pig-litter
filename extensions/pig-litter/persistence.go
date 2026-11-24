@@ -16,33 +16,36 @@ const childEntryType = "litter_child_v1"
 var childUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type savedNotice struct {
-	Nonce    string           `json:"nonce"`
-	Outcome  Outcome          `json:"outcome"`
-	Consumed bool             `json:"consumed"`
-	Handback *outcomeHandback `json:"handback,omitempty"`
+	Nonce           string           `json:"nonce"`
+	Outcome         Outcome          `json:"outcome"`
+	Consumed        bool             `json:"consumed"`
+	Handback        *outcomeHandback `json:"handback,omitempty"`
+	AuditAttempted  bool             `json:"auditAttempted,omitempty"`
+	NativeAttempted bool             `json:"nativeAttempted,omitempty"`
 }
 
 type savedChild struct {
-	RootID        ChildID        `json:"rootId"`
-	ID            ChildID        `json:"id"`
-	ParentID      ChildID        `json:"parentId"`
-	Name          string         `json:"name"`
-	Kind          string         `json:"kind"`
-	Model         string         `json:"model"`
-	Cwd           string         `json:"cwd"`
-	Instructions  string         `json:"instructions"`
-	Tools         []string       `json:"tools"`
-	CanDelegate   bool           `json:"canDelegate"`
-	ReadOnly      bool           `json:"readOnly"`
-	PendingTask   string         `json:"pendingTask"`
-	PendingInputs []pendingInput `json:"pendingInputs,omitempty"`
-	Admitted      bool           `json:"admitted"`
-	State         State          `json:"state"`
-	Paused        bool           `json:"paused"`
-	NoticeID      string         `json:"noticeId"`
-	Latest        *Outcome       `json:"latest,omitempty"`
-	Notices       []savedNotice  `json:"notices,omitempty"`
-	Team          *teamMember    `json:"team,omitempty"`
+	RootID        ChildID          `json:"rootId"`
+	ID            ChildID          `json:"id"`
+	ParentID      ChildID          `json:"parentId"`
+	Name          string           `json:"name"`
+	Kind          string           `json:"kind"`
+	Model         string           `json:"model"`
+	Cwd           string           `json:"cwd"`
+	Instructions  string           `json:"instructions"`
+	Tools         []string         `json:"tools"`
+	CanDelegate   bool             `json:"canDelegate"`
+	ReadOnly      bool             `json:"readOnly"`
+	PendingTask   string           `json:"pendingTask"`
+	PendingInputs []pendingInput   `json:"pendingInputs,omitempty"`
+	Admitted      bool             `json:"admitted"`
+	State         State            `json:"state"`
+	Paused        bool             `json:"paused"`
+	NoticeID      string           `json:"noticeId"`
+	Latest        *Outcome         `json:"latest,omitempty"`
+	Notices       []savedNotice    `json:"notices,omitempty"`
+	Team          *teamMember      `json:"team,omitempty"`
+	Native        *memberOwnership `json:"native,omitempty"`
 }
 
 func (o *owner) saveChild(r *record) error {
@@ -73,6 +76,7 @@ func (o *owner) saveChildState(r *record, terminated *run) error {
 		copy := *r.team
 		saved.Team = &copy
 	}
+	saved.Native = cloneMemberOwnership(r.nativeOwnership)
 	saved.PendingInputs = slices.Clone(r.pendingInputs)
 	if r.latest != nil {
 		copy := *r.latest
@@ -83,7 +87,7 @@ func (o *owner) saveChildState(r *record, terminated *run) error {
 	}
 	for pending, receipt := range o.tree.pending {
 		if pending.owner == r && pending.outcome != nil {
-			saved.Notices = append(saved.Notices, savedNotice{Nonce: receipt.nonce, Outcome: *pending.outcome, Consumed: receipt.outcomeObserved, Handback: receipt.handback})
+			saved.Notices = append(saved.Notices, savedNotice{Nonce: receipt.nonce, Outcome: *pending.outcome, Consumed: receipt.outcomeObserved, Handback: receipt.handback, AuditAttempted: receipt.auditAttempted, NativeAttempted: receipt.nativeAttempted})
 		}
 	}
 	o.tree.mu.Unlock()
@@ -317,6 +321,9 @@ func (o *owner) restoreChildren() error {
 				saved.Paused = true
 			}
 		}
+		if saved.Native != nil && !validMemberOwnership(saved.Native, saved.Team, saved.Cwd, saved.Model, saved.NoticeID) {
+			return reject("unavailable", "stored native member ownership is invalid")
+		}
 		if _, exists := latest[saved.ID]; !exists {
 			order = append(order, saved.ID)
 		}
@@ -348,6 +355,23 @@ func (o *owner) restoreChildren() error {
 		}
 	}
 	order = slices.DeleteFunc(order, func(id ChildID) bool { return invalidTeam[id] })
+	for id, saved := range latest {
+		if saved.Native == nil {
+			continue
+		}
+		member := members[id]
+		if member.State != "terminated" {
+			if err := o.teamStore.SetState(member.Ref, "unavailable"); err != nil {
+				return err
+			}
+			member.State = "unavailable"
+			saved.State = Unavailable
+		}
+		saved.Paused = true
+		saved.Team = &member
+		saved.Latest = &Outcome{Run: Ref{id}, Model: saved.Model, State: saved.State, Error: "native pane ownership requires reconciliation"}
+		latest[id] = saved
+	}
 	for len(order) != 0 {
 		remaining := []ChildID{}
 		for _, id := range order {
@@ -385,7 +409,7 @@ func (o *owner) restoreChildren() error {
 			if _, exists := o.tree.names[key]; exists && saved.Team == nil {
 				return reject("unavailable", "stored child names conflict")
 			}
-			r := &record{id: id, team: saved.Team, parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest, controlPhase: controlPhases[id]}
+			r := &record{id: id, team: saved.Team, nativeOwnership: cloneMemberOwnership(saved.Native), parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest, controlPhase: controlPhases[id]}
 			r.pendingInputs = saved.PendingInputs
 			r.run = o.tree.newRunLocked(Ref{id}, "")
 			r.run.owner, r.run.noticeID, r.run.state = r, saved.NoticeID, saved.State
@@ -419,7 +443,7 @@ func (o *owner) restoreChildren() error {
 				}
 				outcome := notice.Outcome
 				selected.outcome = &outcome
-				selected.reservation = &reservation{parent: parent.id, nonce: notice.Nonce, selected: selected, outcomeObserved: notice.Consumed, handback: notice.Handback}
+				selected.reservation = &reservation{parent: parent.id, nonce: notice.Nonce, selected: selected, outcomeObserved: notice.Consumed, handback: notice.Handback, auditAttempted: notice.AuditAttempted, nativeAttempted: notice.NativeAttempted}
 				o.tree.pending[selected] = selected.reservation
 			}
 		}
@@ -439,7 +463,12 @@ func (o *owner) restoreChildren() error {
 func (o *owner) withChildLogLocked(r *record, apply func(*coding.SessionManager) error) error {
 	o.tree.mu.Lock()
 	log := r.activeLog
+	native := r.native
+	ownership := r.nativeOwnership
 	o.tree.mu.Unlock()
+	if native != nil || ownership != nil {
+		return reject("unavailable", "the native member still owns its session log")
+	}
 	if log != nil {
 		return apply(log)
 	}
