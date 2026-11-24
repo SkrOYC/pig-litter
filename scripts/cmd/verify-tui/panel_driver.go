@@ -41,6 +41,7 @@ type panelProof struct {
 	events                                                        []panelEvent
 	replacements                                                  []ownerReplacement
 	scenario                                                      string
+	reviewPace                                                    time.Duration
 	firstRow                                                      string
 	ctx                                                           context.Context
 	state                                                         *fixtureState
@@ -93,8 +94,19 @@ func (p *panelProof) action(label string, send func() error, ready func(string) 
 		return err
 	}
 	p.timings = append(p.timings, panelTiming{Action: label, SentAt: started.UTC().Format(time.RFC3339Nano), VisibleAt: observed.UTC().Format(time.RFC3339Nano), Milliseconds: float64(observed.Sub(started)) / float64(time.Millisecond), Width: geometry.width, Height: geometry.height})
-	_, err = p.frame(label)
-	return err
+	if _, err := p.frame(label); err != nil {
+		return err
+	}
+	if p.reviewPace != 0 {
+		timer := time.NewTimer(p.reviewPace)
+		defer timer.Stop()
+		select {
+		case <-p.ctx.Done():
+			return p.ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil
 }
 
 func (p *panelProof) key(label, key string, ready func(string) bool) error {

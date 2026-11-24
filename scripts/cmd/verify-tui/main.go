@@ -76,6 +76,7 @@ type options struct {
 	mediaXterm     string
 	mediaFFmpeg    string
 	mediaFFprobe   string
+	reviewPace     time.Duration
 }
 
 type childRef struct {
@@ -332,6 +333,7 @@ func parseOptions(args []string) (options, error) {
 	flags.StringVar(&result.evidenceRoot, "evidence-root", "", "absolute directory for private evidence")
 	flags.StringVar(&result.allocationFile, "run-allocation", "", "private wrapper allocation record")
 	flags.BoolVar(&result.media, "media", false, "record the live terminal as video and a screenshot")
+	flags.DurationVar(&result.reviewPace, "review-pace", 0, "hold each policy-review frame for this duration")
 	flags.StringVar(&result.mediaXvfb, "media-xvfb", "Xvfb", "Xvfb executable")
 	flags.StringVar(&result.mediaXterm, "media-xterm", "xterm", "xterm executable")
 	flags.StringVar(&result.mediaFFmpeg, "media-ffmpeg", "ffmpeg", "FFmpeg executable with x11grab")
@@ -354,6 +356,9 @@ func parseOptions(args []string) (options, error) {
 	}
 	if result.scenario == "host-tool-veto" && (result.caseName != caseDirect || !result.media) {
 		return options{}, errors.New("host hook scenario requires the direct case and live media")
+	}
+	if result.reviewPace != 0 && (!result.media || result.scenario != "team-policy" || result.reviewPace < time.Second || result.reviewPace > 10*time.Second) {
+		return options{}, errors.New("review pacing requires team-policy media and a duration from 1 to 10 seconds")
 	}
 	if result.caseName == caseSource {
 		if !filepath.IsAbs(result.source) {
@@ -695,7 +700,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	if options.caseName != caseUnselected {
 		panel = &panelProof{idleCommand: idleCommand, idleDirectory: idleDirectory, idleObserver: options.idleObserver, rawActive: func() error {
 			return capture.checkActive()
-		}, workspace: workspace, paneTitle: func() (string, error) { return tmuxCall("display-message", "-p", "-t", session, "#{pane_title}") }, processes: observeOwned, scenario: options.scenario, ctx: ctx, state: state, sendText: sendText, sendKey: sendKey, visible: readVisible, frame: frame, geometry: paneSize, rootSessions: rootSessions, agentDir: agentDir, evidence: evidencePath, resumeTrace: resumeTrace, configPath: filepath.Join(workspace, "litter.yaml"), resize: func(width, height int) error {
+		}, workspace: workspace, paneTitle: func() (string, error) { return tmuxCall("display-message", "-p", "-t", session, "#{pane_title}") }, processes: observeOwned, scenario: options.scenario, reviewPace: options.reviewPace, ctx: ctx, state: state, sendText: sendText, sendKey: sendKey, visible: readVisible, frame: frame, geometry: paneSize, rootSessions: rootSessions, agentDir: agentDir, evidence: evidencePath, resumeTrace: resumeTrace, configPath: filepath.Join(workspace, "litter.yaml"), resize: func(width, height int) error {
 			_, err := tmuxCall("resize-window", "-t", session, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
 			return err
 		}}

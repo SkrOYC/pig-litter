@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -421,22 +422,38 @@ func (media *collaborationMedia) awaitEncodedObservation(ctx context.Context) er
 	})
 }
 
-func (media *collaborationMedia) markPanelObservation(ctx context.Context) error {
-	// The observer is a separate terminal, so let it paint before and after the sampled frame.
-	for step := 0; step < 2; step++ {
-		timer := time.NewTimer(250 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-		}
-		if step == 0 {
-			if err := media.markObservation(); err != nil {
-				return err
-			}
-		}
+var mediaFramePattern = regexp.MustCompile(`frame=\s*([0-9]+)`)
+
+func (media *collaborationMedia) encodedFrames() (int, error) {
+	data, err := os.ReadFile(filepath.Join(media.directory, "ffmpeg.log"))
+	if err != nil {
+		return 0, err
 	}
+	matches := mediaFramePattern.FindAllSubmatch(data, -1)
+	if len(matches) == 0 {
+		return 0, nil
+	}
+	return strconv.Atoi(string(matches[len(matches)-1][1]))
+}
+
+func (media *collaborationMedia) markPanelObservation(ctx context.Context) error {
+	before, err := media.encodedFrames()
+	if err != nil {
+		return err
+	}
+	frames := before
+	if err := waitFor(ctx, "recorded panel frame", 12*time.Second, func() (bool, error) {
+		if !observedAlive(media.children["ffmpeg"].record.Identity) {
+			return false, errors.New("media recorder exited before the panel frame")
+		}
+		var err error
+		frames, err = media.encodedFrames()
+		return frames >= before+30, err
+	}); err != nil {
+		return err
+	}
+	stamp := int64(frames-6) * 1000 / 15
+	media.receipt.Screenshot.SourceTimestampMS = &stamp
 	return nil
 }
 
