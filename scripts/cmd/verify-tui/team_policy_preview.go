@@ -27,6 +27,7 @@ func (p *panelProof) teamPolicyProof(media *collaborationMedia) error {
 	}
 	path := filepath.Join(p.agentDir, "pig-litter", "roots", p.rootID, "tasks.json")
 	var before []byte
+	var members []previewMember
 	if err := waitFor(p.ctx, "task policy fixture", stageTimeout, func() (bool, error) {
 		if err := p.state.providerFailure(); err != nil {
 			return false, err
@@ -55,12 +56,16 @@ func (p *panelProof) teamPolicyProof(media *collaborationMedia) error {
 				return false, nil
 			}
 		}
+		members = roster.Members
 		before = data
 		return true, nil
 	}); err != nil {
 		return err
 	}
 	if err := p.awaitRootIdle("P07_TASK_CONTROL"); err != nil {
+		return err
+	}
+	if err := p.captureTurnNotices(members); err != nil {
 		return err
 	}
 	requests, memberRequests := p.state.totalRequests(), p.state.modelRequests("quick")

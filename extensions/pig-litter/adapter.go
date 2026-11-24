@@ -955,6 +955,8 @@ func Run() (err error) {
 
 func newExtension(state *extensionState) *sdk.Extension {
 	ext := sdk.New("pig-litter")
+	ext.MessageRenderer("pig_litter_team_turn", teamTurnNoticeRenderer(state))
+	ext.MessageRenderer("pig_litter_control", teamControlNoticeRenderer(state))
 	for _, name := range append(slices.Clone(controlNames), teamToolNames...) {
 		renderCall, renderResult := toolCallRenderer(name), toolResultRenderer(name)
 		if slices.Contains(teamToolNames, name) {

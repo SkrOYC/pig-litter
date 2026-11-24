@@ -233,6 +233,15 @@ func (p *panelProof) teamShutdownProof(media *collaborationMedia) error {
 	if err := writePrivate(filepath.Join(p.evidence, "p07-shutdown-terminated.json"), terminatedData); err != nil {
 		return err
 	}
+	if err := p.close("p07-shutdown-notices-close"); err != nil {
+		return err
+	}
+	if err := p.captureShutdownNotices(bob); err != nil {
+		return err
+	}
+	if err := p.openTeam("p07-shutdown-notices-reopen"); err != nil {
+		return err
+	}
 	aliceAfter, err := p.childNative(alice.Ref.ID)
 	if err != nil || !bytes.Equal(aliceBefore.Raw, aliceAfter.Raw) || !p.state.holding("p07-shutdown-alice") {
 		return fmt.Errorf("shutdown changed the other active teammate: %v", err)
