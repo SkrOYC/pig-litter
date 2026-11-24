@@ -107,10 +107,37 @@ func TestTeamSendWakesIdleRecipientWhenSenderReleasesCapacity(t *testing.T) {
 			t.Error("accepted peer message remained stranded after the sender released capacity")
 		}
 	}, func(method string, raw json.RawMessage) json.RawMessage {
-		if method != "sessionRead" {
-			t.Fatalf("unexpected host call %s", method)
+		switch method {
+		case "sessionRead":
+			var query struct{ Method string }
+			if err := json.Unmarshal(raw, &query); err != nil {
+				t.Errorf("invalid session read: %v", err)
+				return nil
+			}
+			if query.Method == "getEntries" {
+				return json.RawMessage(`[]`)
+			}
+			value, _ := json.Marshal(root)
+			return value
+		case "sendMessage":
+			var args struct {
+				Message struct {
+					CustomType string `json:"customType"`
+					Details    struct {
+						Notice turnNotice `json:"notice"`
+					} `json:"details"`
+				} `json:"message"`
+				Options struct {
+					TriggerTurn *bool `json:"triggerTurn"`
+				} `json:"options"`
+			}
+			if err := json.Unmarshal(raw, &args); err != nil || args.Message.CustomType != "pig_litter_team_turn" || args.Options.TriggerTurn == nil || *args.Options.TriggerTurn || (args.Message.Details.Notice.Member != sender.Ref && args.Message.Details.Notice.Member != recipient.Ref) {
+				t.Errorf("unexpected host message %s: %v", raw, err)
+			}
+			return json.RawMessage(`{}`)
+		default:
+			t.Errorf("unexpected host call %s", method)
+			return nil
 		}
-		value, _ := json.Marshal(root)
-		return value
 	})
 }

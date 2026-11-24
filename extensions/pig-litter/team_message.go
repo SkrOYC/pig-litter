@@ -290,19 +290,19 @@ func (s *teamStore) acceptPeer(sender MemberRef, request peerRequest) (peerRecei
 			return false, reject("permission_denied", "sender is not in the current team")
 		}
 		var senderFound, recipientFound bool
-		var recipient MemberRef
+		var recipient teamMember
 		if strings.EqualFold(request.Recipient, "team-lead") {
-			recipientFound, recipient = true, teamLeadRef(roster.Team)
+			recipientFound, recipient = true, teamMember{Ref: teamLeadRef(roster.Team)}
 		}
 		for _, member := range roster.Members {
 			if member.Ref == sender {
 				senderFound, senderName = true, member.Name
 			}
 			if strings.EqualFold(member.Name, request.Recipient) {
-				recipientFound, recipient = true, member.Ref
+				recipientFound, recipient = true, member
 			}
 		}
-		if !senderFound || !recipientFound || recipient.Team != sender.Team || recipient == sender {
+		if !senderFound || !recipientFound || recipient.Ref.Team != sender.Team || recipient.Ref == sender {
 			return false, reject("permission_denied", "sender or recipient is not an eligible teammate")
 		}
 		if recipient.State == "closing" || recipient.State == "terminated" {
@@ -313,7 +313,7 @@ func (s *teamStore) acceptPeer(sender MemberRef, request peerRequest) (peerRecei
 			return false, err
 		}
 		bodyHash := sha256.Sum256(body)
-		envelope := peerEnvelope{Team: roster.Team, MessageID: request.MessageID, Sender: sender, Recipient: recipient, BodySHA256: hex.EncodeToString(bodyHash[:])}
+		envelope := peerEnvelope{Team: roster.Team, MessageID: request.MessageID, Sender: sender, Recipient: recipient.Ref, BodySHA256: hex.EncodeToString(bodyHash[:])}
 		key, err := peerKey(envelope)
 		if err != nil {
 			return false, err
@@ -364,7 +364,7 @@ func (s *teamStore) acceptPeer(sender MemberRef, request peerRequest) (peerRecei
 				count++
 				continue
 			}
-			if receipt.Envelope.Recipient == recipient && receipt.State != peerObserved {
+			if receipt.Envelope.Recipient == recipient.Ref && receipt.State != peerObserved {
 				count++
 			}
 		}

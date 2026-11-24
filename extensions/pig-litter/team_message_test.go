@@ -71,7 +71,7 @@ func TestPeerMessageAddressesPublishedTeamLead(t *testing.T) {
 		store, _, root, workspace := storeTestOpen(t)
 		sender, _ := peerTestMembers(t, store, workspace)
 		request := peerRequest{Recipient: "team-lead", MessageID: "lead-1", Text: "hello lead", Summary: "greeting"}
-		if _, err := store.Reserve(storeTestUUID(50), string(storeTestUUID(51)), "team-lead", workspace); err == nil {
+		if _, err := store.Reserve(storeTestUUID(50), string(storeTestUUID(51)), "team-lead", workspace, false); err == nil {
 			t.Fatal("allocated the reserved lead name to a teammate")
 		}
 		receipt, name, err := store.acceptPeer(sender.Ref, request)
@@ -91,6 +91,31 @@ func TestPeerMessageAddressesPublishedTeamLead(t *testing.T) {
 			t.Fatalf("lead retry = %#v, %v", again, err)
 		}
 	})
+}
+
+func TestPeerMessageRespectsRecipientLifecycleAndLead(t *testing.T) {
+	for _, state := range []string{"running", "closing", "terminated"} {
+		t.Run(state, func(t *testing.T) {
+			store, _, _, workspace := storeTestOpen(t)
+			sender, recipient := peerTestMembers(t, store, workspace)
+			if err := store.SetState(recipient.Ref, state); err != nil {
+				t.Fatal(err)
+			}
+			request := peerRequest{Recipient: recipient.Name, MessageID: "peer-1", Text: "hello", Summary: "greeting"}
+			_, _, err := store.acceptPeer(sender.Ref, request)
+			if state == "running" && err != nil {
+				t.Fatalf("running teammate rejected: %v", err)
+			}
+			if state != "running" && (err == nil || !strings.Contains(err.Error(), "recipient is closing or terminated")) {
+				t.Fatalf("%s teammate acceptance error = %v", state, err)
+			}
+			request.Recipient = "team-lead"
+			request.MessageID = "lead-1"
+			if _, _, err := store.acceptPeer(sender.Ref, request); err != nil {
+				t.Fatalf("lead message rejected with a %s teammate: %v", state, err)
+			}
+		})
+	}
 }
 
 func TestPeerLeadReceiptRequiresCurrentIdentityAndAuthenticatedRetry(t *testing.T) {
