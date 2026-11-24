@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -851,6 +852,10 @@ func fixtureConfigFiles(workspace, configDir, scenario string) map[string]string
 }
 
 func run(directory, pig, extension, scenario string, perf *performance) error {
+	return runWithContext(context.Background(), directory, pig, extension, scenario, perf)
+}
+
+func runWithContext(parent context.Context, directory, pig, extension, scenario string, perf *performance) error {
 	workspace, agentDir := filepath.Join(directory, "workspace"), filepath.Join(directory, "agent")
 	configDir := agentDir
 	if scenario == "cwd" {
@@ -961,13 +966,12 @@ func run(directory, pig, extension, scenario string, perf *performance) error {
 	if scenario == "unbounded" {
 		timeout = 180 * time.Second
 	}
-	parentContext := context.Background()
 	if perf != nil {
 		var stop context.CancelFunc
-		parentContext, stop = signal.NotifyContext(parentContext, performanceSignals()...)
+		parent, stop = signal.NotifyContext(parent, performanceSignals()...)
 		defer stop()
 	}
-	ctx, cancel := context.WithTimeout(parentContext, timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	if scenario == "lifecycle" || scenario == "pause" || scenario == "completion" {
 		return f.runLifecycle(ctx, directory, workspace, agentDir, pig, extension, stdout, stderr)
@@ -1099,6 +1103,9 @@ func run(directory, pig, extension, scenario string, perf *performance) error {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "collaboration" {
+		os.Exit(collaborationMain(os.Args[2:]))
+	}
 	if target := os.Getenv("LITTER_FIXTURE_PROXY_TARGET"); target != "" {
 		if err := proxyCompletionExtension(target, os.Getenv("LITTER_FIXTURE_EVIDENCE")); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -1165,7 +1172,9 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	err = run(directory, *pig, *extension, *scenario, perf)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	err = runWithContext(ctx, directory, *pig, *extension, *scenario, perf)
 	result := map[string]any{"directory": directory, "passed": err == nil, "scenario": *scenario}
 	if err != nil {
 		result["error"] = err.Error()

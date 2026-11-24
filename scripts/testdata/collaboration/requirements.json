@@ -1,0 +1,2309 @@
+{
+  "schema_version": 1,
+  "reference_version": "Pig Litter collaboration contract v1",
+  "description": "Pig Litter collaboration requirements and acceptance scenarios.",
+  "evidence_states": [
+    "matched",
+    "deliberately_different",
+    "blocked",
+    "unsupported",
+    "unverified"
+  ],
+  "source_kinds": [
+    "static_implementation",
+    "captured_runtime",
+    "reconstructed_screen",
+    "proposal"
+  ],
+  "requirements": [
+    {
+      "id": "TEAM-001",
+      "title": "Team identity and roster",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TEAM-001",
+        "confidence": "high",
+        "observation": "Keep one versioned team roster per root session."
+      },
+      "proposed_behavior": "Keep one versioned team roster per root session.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "All members see the same team and member identities.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-002",
+      "title": "Flat teammate membership",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TEAM-002",
+        "confidence": "high",
+        "observation": "Allow only the lead to create teammates while retaining ordinary child delegation."
+      },
+      "proposed_behavior": "Allow only the lead to create teammates while retaining ordinary child delegation.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A teammate cannot create a teammate and can still use authorized ordinary delegation.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-003",
+      "title": "Named subagents and teammates",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TEAM-003",
+        "confidence": "high",
+        "observation": "Use explicit team creation and keep named litter children as ordinary children."
+      },
+      "proposed_behavior": "Use explicit team creation and keep named litter children as ordinary children.",
+      "reference_relationship": {
+        "state": "deliberately_different",
+        "reason": "Use explicit team creation and keep named litter children as ordinary children."
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A named ordinary child remains a child and team_spawn creates a teammate.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-004",
+      "title": "Names and reserved addresses",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TEAM-004",
+        "confidence": "high",
+        "observation": "Validate reserved names and control characters, and document the teammate collision rule."
+      },
+      "proposed_behavior": "Validate reserved names and control characters, and document the teammate collision rule.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "Reserved and invalid names fail; duplicate requests follow the documented collision rule without impersonation.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-005",
+      "title": "Member identity and generation",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TEAM-005",
+        "confidence": "high",
+        "observation": "Bind members and privileged responses to a team and member generation."
+      },
+      "proposed_behavior": "Bind members and privileged responses to a team and member generation.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A response for an earlier member generation cannot affect its replacement.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-006",
+      "title": "Roster persistence and recovery",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TEAM-006",
+        "confidence": "high",
+        "observation": "Persist versioned membership and detect stale leaders on recovery."
+      },
+      "proposed_behavior": "Persist versioned membership and detect stale leaders on recovery.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "Restart recovers the intended roster without reviving a stale leader.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-007",
+      "title": "Startup rollback",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TEAM-007",
+        "confidence": "high",
+        "observation": "Roll back provisional membership when teammate startup fails."
+      },
+      "proposed_behavior": "Roll back provisional membership when teammate startup fails.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A failed launch leaves no member or owned process behind.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-008",
+      "title": "Shared team workspace",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TEAM-008",
+        "confidence": "high",
+        "observation": "Allow concurrent writers only for explicit team membership."
+      },
+      "proposed_behavior": "Allow concurrent writers only for explicit team membership.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "Two teammates can write in one checkout while ordinary child writer guards still apply.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-009",
+      "title": "Optional isolated worktrees",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TEAM-009",
+        "confidence": "high",
+        "observation": "Track worktree ownership and preserve uncommitted changes."
+      },
+      "proposed_behavior": "Track worktree ownership and preserve uncommitted changes.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "Teammate edits stay in their worktrees and cleanup preserves uncommitted work.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-010",
+      "title": "Idle teammate lifetime",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TEAM-010",
+        "confidence": "high",
+        "observation": "Keep an idle teammate addressable and wake it on a peer message; preserve explicit pause."
+      },
+      "proposed_behavior": "Keep an idle teammate addressable and wake it on a peer message; preserve explicit pause.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A message wakes an idle member but does not resume an explicitly paused member.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-011",
+      "title": "Teammate tool registration",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TEAM-011",
+        "confidence": "high",
+        "observation": "Register team tools in member runtimes without widening ordinary child controls."
+      },
+      "proposed_behavior": "Register team tools in member runtimes without widening ordinary child controls.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A teammate has the team tools and an ordinary unselected session does not.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-012",
+      "title": "Member and child authority",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TEAM-012",
+        "confidence": "high",
+        "observation": "Keep team messaging separate from immediate-parent child control."
+      },
+      "proposed_behavior": "Keep team messaging separate from immediate-parent child control.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A sibling cannot inspect, pause, wait for, or resume another member through child controls.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TEAM-013",
+      "title": "Spawn policy hooks",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TEAM-013",
+        "confidence": "high",
+        "observation": "Honor enforceable spawn policy without publishing a denied member."
+      },
+      "proposed_behavior": "Honor enforceable spawn policy without publishing a denied member.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P03",
+      "acceptance_scenario": "team-roster",
+      "acceptance_assertion": "A denied spawn returns feedback and leaves no published member.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-001",
+      "title": "Attributed ordinary messages",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "MSG-001",
+        "confidence": "high",
+        "observation": "Deliver attributed peer text to the addressed member."
+      },
+      "proposed_behavior": "Deliver attributed peer text to the addressed member.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "The recipient sees the sender and body once without a lead provider request.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-002",
+      "title": "Single-recipient addressing",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "MSG-002",
+        "confidence": "high",
+        "observation": "Require one resolved destination for each send."
+      },
+      "proposed_behavior": "Require one resolved destination for each send.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "A broadcast address is refused and individual sends reach only their intended recipients.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-003",
+      "title": "Message content validation",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "MSG-003",
+        "confidence": "high",
+        "observation": "Validate target and body at the send boundary."
+      },
+      "proposed_behavior": "Validate target and body at the send boundary.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "Empty content, invalid targets, and protocol-shaped ordinary text fail with no delivery.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-004",
+      "title": "Message queue and backpressure",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "MSG-004",
+        "confidence": "high",
+        "observation": "Bound pending inboxes and report capacity without losing accepted messages."
+      },
+      "proposed_behavior": "Bound pending inboxes and report capacity without losing accepted messages.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "The first over-capacity send fails while prior accepted messages remain recoverable.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-005",
+      "title": "Acceptance and transcript acknowledgement",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "MSG-005",
+        "confidence": "high",
+        "observation": "Acknowledge acceptance after persistence and consumption after observed native transcript storage."
+      },
+      "proposed_behavior": "Acknowledge acceptance after persistence and consumption after observed native transcript storage.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "A crash after acceptance and before transcript acknowledgement recovers one delivery.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-006",
+      "title": "Replay and duplicate suppression",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "MSG-006",
+        "confidence": "high",
+        "observation": "Retain stable message IDs and delivery receipts across restart."
+      },
+      "proposed_behavior": "Retain stable message IDs and delivery receipts across restart.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "Replaying the same ID after restart cannot append a duplicate recipient message.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-007",
+      "title": "Sender provenance",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "MSG-007",
+        "confidence": "high",
+        "observation": "Derive sender identity from the execution and expose provenance without treating a writable ledger as authentication."
+      },
+      "proposed_behavior": "Derive sender identity from the execution and expose provenance without treating a writable ledger as authentication.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-forgery",
+      "acceptance_assertion": "A forged sender is marked and cannot authorize a privileged action.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-008",
+      "title": "Peer text is not authority",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "MSG-008",
+        "confidence": "high",
+        "observation": "Treat attributed peer text as data, never as user consent or permission."
+      },
+      "proposed_behavior": "Treat attributed peer text as data, never as user consent or permission.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-forgery",
+      "acceptance_assertion": "A peer message requesting permission or imitating a lead decision does not grant it.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-009",
+      "title": "Message wrapper escaping",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "MSG-009",
+        "confidence": "high",
+        "observation": "Keep untrusted text inside its attribution boundary."
+      },
+      "proposed_behavior": "Keep untrusted text inside its attribution boundary.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-forgery",
+      "acceptance_assertion": "Wrapper-closing text remains visible as peer content and cannot escape its attribution.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-010",
+      "title": "Delivery failures",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "MSG-010",
+        "confidence": "high",
+        "observation": "Return explicit failure or uncertainty instead of claiming an unconfirmed delivery."
+      },
+      "proposed_behavior": "Return explicit failure or uncertainty instead of claiming an unconfirmed delivery.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "Persistence and delivery faults produce distinct non-success results without dropping accepted messages.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-011",
+      "title": "No lead inference relay",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "MSG-011",
+        "confidence": "high",
+        "observation": "Route teammate messages through runtime services without a lead model request."
+      },
+      "proposed_behavior": "Route teammate messages through runtime services without a lead model request.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "A sibling message arrives while the lead provider request count remains unchanged.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "MSG-012",
+      "title": "Completion and handback",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "MSG-012",
+        "confidence": "high",
+        "observation": "Preserve existing child completion and retained report semantics."
+      },
+      "proposed_behavior": "Preserve existing child completion and retained report semantics.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P04",
+      "acceptance_scenario": "team-messages",
+      "acceptance_assertion": "An ordinary child completes and its report arrives once after team support is enabled.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-001",
+      "title": "Shared task records",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TASK-001",
+        "confidence": "high",
+        "observation": "Maintain a shared task graph separate from membership and inboxes."
+      },
+      "proposed_behavior": "Maintain a shared task graph separate from membership and inboxes.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "Different teammates create, read, update, and list the same task.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-002",
+      "title": "Task states and metadata",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TASK-002",
+        "confidence": "high",
+        "observation": "Implement the planned task transitions and metadata changes."
+      },
+      "proposed_behavior": "Implement the planned task transitions and metadata changes.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "Valid state and metadata updates persist and appear in task reads.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-003",
+      "title": "Dependency-aware claims",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TASK-003",
+        "confidence": "high",
+        "observation": "Reject blocked self-claims and preserve explicit lead assignment as a separate rule."
+      },
+      "proposed_behavior": "Reject blocked self-claims and preserve explicit lead assignment as a separate rule.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "A blocked self-claim fails, a lead assignment remains visible, and completion unblocks the dependent task.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-004",
+      "title": "Atomic claims",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TASK-004",
+        "confidence": "high",
+        "observation": "Allow one successful claimant for each available task."
+      },
+      "proposed_behavior": "Allow one successful claimant for each available task.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "Four concurrent claimants produce exactly one owner.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-005",
+      "title": "Monotonic task IDs",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TASK-005",
+        "confidence": "high",
+        "observation": "Persist a task ID watermark across deletion and restart."
+      },
+      "proposed_behavior": "Persist a task ID watermark across deletion and restart.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "Deleting the largest task and restarting still yields a greater new ID.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-006",
+      "title": "Task dependency validation",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TASK-006",
+        "confidence": "high",
+        "observation": "Reject cycles and cross-team or missing task references without partial updates."
+      },
+      "proposed_behavior": "Reject cycles and cross-team or missing task references without partial updates.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "A cyclic or foreign dependency fails and leaves the graph unchanged.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-007",
+      "title": "Task ownership recovery",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TASK-007",
+        "confidence": "high",
+        "observation": "Release unfinished task ownership when a teammate terminates."
+      },
+      "proposed_behavior": "Release unfinished task ownership when a teammate terminates.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "After termination, unfinished work is pending and available for a new owner.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-008",
+      "title": "Task lifecycle notices",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TASK-008",
+        "confidence": "high",
+        "observation": "Publish idempotent assignment and completion notices."
+      },
+      "proposed_behavior": "Publish idempotent assignment and completion notices.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "Replayed task notices do not repeat a transition or duplicate a visible result.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-009",
+      "title": "Task policy hook",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TASK-009",
+        "confidence": "high",
+        "observation": "Run enforceable completion policy before accepting a task completion."
+      },
+      "proposed_behavior": "Run enforceable completion policy before accepting a task completion.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-hooks",
+      "acceptance_assertion": "A rejecting completion hook leaves the task pending and returns feedback.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-010",
+      "title": "Stop background work",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TASK-010",
+        "confidence": "high",
+        "observation": "Keep force-pause of owned work distinct from the teammate graceful shutdown handshake."
+      },
+      "proposed_behavior": "Keep force-pause of owned work distinct from the teammate graceful shutdown handshake.",
+      "reference_relationship": {
+        "state": "deliberately_different",
+        "reason": "Keep force-pause of owned work distinct from the teammate graceful shutdown handshake."
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "Pause retains resumable child state while approved teammate shutdown reaches its separate terminal state.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "TASK-011",
+      "title": "Task creation hook",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "TASK-011",
+        "confidence": "high",
+        "observation": "Record task-creation hook support separately from task-completion policy and keep it unverified until established."
+      },
+      "proposed_behavior": "Record task-creation hook support separately from task-completion policy and keep it unverified until established.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-hooks",
+      "acceptance_assertion": "The report shows whether task creation has an enforceable hook and cites the applicable host evidence.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-001",
+      "title": "Plan approval authority",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "GATE-001",
+        "confidence": "high",
+        "observation": "Bind plan decisions to the lead, request ID, member generation, and deadline."
+      },
+      "proposed_behavior": "Bind plan decisions to the lead, request ID, member generation, and deadline.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "Wrong-sender, stale, replayed, and self-approved responses do not authorize implementation.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-002",
+      "title": "Plan rejection and revision",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "GATE-002",
+        "confidence": "high",
+        "observation": "Return feedback and require a new request for a revision."
+      },
+      "proposed_behavior": "Return feedback and require a new request for a revision.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A rejected plan reaches its author and the revision receives a fresh request ID.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-003",
+      "title": "Plan enforcement at tool boundary",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "GATE-003",
+        "confidence": "high",
+        "observation": "Reject prohibited mutation before every enforceable tool call while approval is pending."
+      },
+      "proposed_behavior": "Reject prohibited mutation before every enforceable tool call while approval is pending.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "Write, shell, codemode, MCP, and delegated mutation have no side effects and report refusal.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-004",
+      "title": "Permission and sandbox separation",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "GATE-004",
+        "confidence": "high",
+        "observation": "Bridge each permission only when a public host contract enforces it."
+      },
+      "proposed_behavior": "Bridge each permission only when a public host contract enforces it.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "Permission and sandbox decisions cannot substitute for plan approval or each other.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-005",
+      "title": "Graceful shutdown",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "GATE-005",
+        "confidence": "high",
+        "observation": "Provide a shutdown handshake distinct from force pause."
+      },
+      "proposed_behavior": "Provide a shutdown handshake distinct from force pause.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "Approval ends the correct member once; rejection retains it and reports a reason.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-006",
+      "title": "Request expiry and restart",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "GATE-006",
+        "confidence": "high",
+        "observation": "Expire or visibly cancel unanswered requests without granting approval."
+      },
+      "proposed_behavior": "Expire or visibly cancel unanswered requests without granting approval.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "Timeout and restart leave no request implicitly approved.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-007",
+      "title": "Teammate idle notices",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "GATE-007",
+        "confidence": "high",
+        "observation": "Emit an attributed idle result or failure once per settled turn."
+      },
+      "proposed_behavior": "Emit an attributed idle result or failure once per settled turn.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-idle",
+      "acceptance_assertion": "Separate successful, interrupted, and failed turns produce the correct notice once.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "GATE-008",
+      "title": "Teammate idle policy hook",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "GATE-008",
+        "confidence": "high",
+        "observation": "Run enforceable idle policy without discarding pending work."
+      },
+      "proposed_behavior": "Run enforceable idle policy without discarding pending work.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-hooks",
+      "acceptance_assertion": "A rejecting idle hook preserves pending work and returns feedback.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "FRAME-001",
+      "title": "plan_approval_request",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-001",
+        "confidence": "high",
+        "observation": "Preserve the plan_approval_request behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the plan_approval_request behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A plan request carries the requester and a correlated request ID.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "plan_approval_request",
+        "role": "mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-002",
+      "title": "plan_approval_response",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-002",
+        "confidence": "high",
+        "observation": "Preserve the plan_approval_response behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the plan_approval_response behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A lead response resolves only its matching pending plan.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "plan_approval_response",
+        "role": "mailbox frame and structured input"
+      }
+    },
+    {
+      "id": "FRAME-003",
+      "title": "shutdown_request",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-003",
+        "confidence": "high",
+        "observation": "Preserve the shutdown_request behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the shutdown_request behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "A shutdown request reaches the intended member with its request ID.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "shutdown_request",
+        "role": "mailbox frame and structured input"
+      }
+    },
+    {
+      "id": "FRAME-004",
+      "title": "shutdown_response",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-004",
+        "confidence": "high",
+        "observation": "Preserve the shutdown_response behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the shutdown_response behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "A teammate response is correlated and produces an approval or rejection outcome.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "shutdown_response",
+        "role": "structured input and classifier form"
+      }
+    },
+    {
+      "id": "FRAME-005",
+      "title": "shutdown_approved",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-005",
+        "confidence": "high",
+        "observation": "Preserve the shutdown_approved behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the shutdown_approved behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "Approval ends the matching teammate and acknowledges the request once.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "shutdown_approved",
+        "role": "mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-006",
+      "title": "shutdown_rejected",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-006",
+        "confidence": "high",
+        "observation": "Preserve the shutdown_rejected behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the shutdown_rejected behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "Rejection keeps the teammate addressable and returns its reason.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "shutdown_rejected",
+        "role": "mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-007",
+      "title": "task_assignment",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-007",
+        "confidence": "high",
+        "observation": "Preserve the task_assignment behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the task_assignment behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "A task assignment identifies the task and its assigner.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "task_assignment",
+        "role": "mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-008",
+      "title": "task_completed",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-008",
+        "confidence": "high",
+        "observation": "Preserve the task_completed behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the task_completed behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P05",
+      "acceptance_scenario": "team-tasks",
+      "acceptance_assertion": "A task completion identifies the completed task and cannot be applied twice.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "task_completed",
+        "role": "mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-009",
+      "title": "teammate_terminated",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-009",
+        "confidence": "high",
+        "observation": "Preserve the teammate_terminated behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the teammate_terminated behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-shutdown",
+      "acceptance_assertion": "A termination notice identifies the member lifecycle outcome.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "teammate_terminated",
+        "role": "mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-010",
+      "title": "idle_notification",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-010",
+        "confidence": "high",
+        "observation": "Preserve the idle_notification behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the idle_notification behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-idle",
+      "acceptance_assertion": "An idle notice carries the member and its available, interrupted, or failed result.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "idle_notification",
+        "role": "mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-011",
+      "title": "permission_request",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-011",
+        "confidence": "high",
+        "observation": "Preserve the permission_request behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the permission_request behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A tool permission request is correlated to the originating tool call.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "permission_request",
+        "role": "out-of-band mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-012",
+      "title": "permission_response",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-012",
+        "confidence": "high",
+        "observation": "Preserve the permission_response behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the permission_response behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A permission response is accepted only from the authorized responder for its request.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "permission_response",
+        "role": "out-of-band mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-013",
+      "title": "sandbox_permission_request",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-013",
+        "confidence": "high",
+        "observation": "Preserve the sandbox_permission_request behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the sandbox_permission_request behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A sandbox request remains distinct from the tool permission request.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "sandbox_permission_request",
+        "role": "out-of-band mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-014",
+      "title": "sandbox_permission_response",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-014",
+        "confidence": "high",
+        "observation": "Preserve the sandbox_permission_response behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the sandbox_permission_response behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A sandbox response resolves only its matching sandbox request.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "sandbox_permission_response",
+        "role": "out-of-band mailbox frame"
+      }
+    },
+    {
+      "id": "FRAME-015",
+      "title": "team_permission_update",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-015",
+        "confidence": "high",
+        "observation": "Preserve the team_permission_update behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the team_permission_update behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "A permission update cannot widen authority without an enforceable host contract.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "team_permission_update",
+        "role": "out-of-band classifier form"
+      }
+    },
+    {
+      "id": "FRAME-016",
+      "title": "mode_set_request",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FRAME-016",
+        "confidence": "high",
+        "observation": "Preserve the mode_set_request behavior where its host contract is enforceable and report any deliberate difference."
+      },
+      "proposed_behavior": "Preserve the mode_set_request behavior where its host contract is enforceable and report any deliberate difference.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P06",
+      "acceptance_scenario": "team-plan",
+      "acceptance_assertion": "An inbox mode-change request is rejected rather than silently granting a mode.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      },
+      "frame": {
+        "variant": "mode_set_request",
+        "role": "out-of-band classifier form"
+      }
+    },
+    {
+      "id": "PEER-001",
+      "title": "Independent session discovery",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "PEER-001",
+        "confidence": "high",
+        "observation": "Discover opted-in independent local PiG sessions with separate identity and authority."
+      },
+      "proposed_behavior": "Discover opted-in independent local PiG sessions with separate identity and authority.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "Two independent sessions discover each other without joining the same team.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-002",
+      "title": "Names, references, and collisions",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "PEER-002",
+        "confidence": "high",
+        "observation": "Resolve names deterministically and support explicit pinned references."
+      },
+      "proposed_behavior": "Resolve names deterministically and support explicit pinned references.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "A child, teammate, and independent session with the same name remain individually addressable.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-003",
+      "title": "Pinned session identity",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "PEER-003",
+        "confidence": "high",
+        "observation": "Retain a peer identity pin and reject silent retargeting after a restart."
+      },
+      "proposed_behavior": "Retain a peer identity pin and reject silent retargeting after a restart.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "A stale or replaced endpoint cannot silently receive a pinned peer message.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-004",
+      "title": "Local transport outcomes",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "PEER-004",
+        "confidence": "high",
+        "observation": "Return route-specific non-success and uncertainty results."
+      },
+      "proposed_behavior": "Return route-specific non-success and uncertainty results.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "Stale, busy, oversized, paced, and uncertain sends do not report confirmed delivery.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-005",
+      "title": "Inbound peer approval",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "PEER-005",
+        "confidence": "high",
+        "observation": "Require inbound acceptance or denial before enabling a peer route."
+      },
+      "proposed_behavior": "Require inbound acceptance or denial before enabling a peer route.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "A denied inbound message never reaches the recipient model.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-006",
+      "title": "One-shot idle subscription",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "PEER-006",
+        "confidence": "high",
+        "observation": "Support one idle or exit notice from a main conversation to an independent local session."
+      },
+      "proposed_behavior": "Support one idle or exit notice from a main conversation to an independent local session.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "The subscription fires once and teammate or subagent subscription attempts are refused.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-007",
+      "title": "Local peers have no child controls",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "PEER-007",
+        "confidence": "high",
+        "observation": "Forbid child lifecycle controls on independent peers."
+      },
+      "proposed_behavior": "Forbid child lifecycle controls on independent peers.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "A local peer cannot be inspected, stopped, or resumed as a child.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-008",
+      "title": "Proprietary remote routes",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "PEER-008",
+        "confidence": "high",
+        "observation": "Report those proprietary routes as unsupported rather than claiming global parity."
+      },
+      "proposed_behavior": "Report those proprietary routes as unsupported rather than claiming global parity.",
+      "reference_relationship": {
+        "state": "deliberately_different",
+        "reason": "Report those proprietary routes as unsupported rather than claiming global parity."
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "The report shows each unavailable proprietary route as unsupported with a reason.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-009",
+      "title": "Discovery limits",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "PEER-009",
+        "confidence": "high",
+        "observation": "Expose truncated and partial discovery results without treating them as a complete roster."
+      },
+      "proposed_behavior": "Expose truncated and partial discovery results without treating them as a complete roster.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "A discovery failure or limit is visible and does not hide already verified rows.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "PEER-010",
+      "title": "Cross-session file transfer",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "PEER-010",
+        "confidence": "high",
+        "observation": "Track file transfer separately from peer text delivery and retain an unverified status until its scope and evidence are established."
+      },
+      "proposed_behavior": "Track file transfer separately from peer text delivery and retain an unverified status until its scope and evidence are established.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "The report identifies file-transfer evidence separately and does not infer support from peer text delivery.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "FILE-001",
+      "title": "User file delivery",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "FILE-001",
+        "confidence": "high",
+        "observation": "Track user-directed file delivery separately from cross-session messaging and file transfer."
+      },
+      "proposed_behavior": "Track user-directed file delivery separately from cross-session messaging and file transfer.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-parity-report",
+      "acceptance_assertion": "The report records the status and evidence of user-directed file delivery independently of peer text messaging.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "OBS-001",
+      "title": "Observer pairing",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "OBS-001",
+        "confidence": "high",
+        "observation": "Bind each observer to both an observed member and a report destination."
+      },
+      "proposed_behavior": "Bind each observer to both an observed member and a report destination.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-observers",
+      "acceptance_assertion": "Reports reach the configured observed member or coordinator and no other destination.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "OBS-002",
+      "title": "Observer report tool",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "OBS-002",
+        "confidence": "high",
+        "observation": "Expose a dedicated observer report without granting ordinary mutation."
+      },
+      "proposed_behavior": "Expose a dedicated observer report without granting ordinary mutation.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-observers",
+      "acceptance_assertion": "An observer can submit its report while unrelated writes remain refused.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "OBS-003",
+      "title": "Observer tool restrictions",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "OBS-003",
+        "confidence": "high",
+        "observation": "Enforce observer restrictions at the runtime tool boundary, including the plan requirement to deny unrelated mutation."
+      },
+      "proposed_behavior": "Enforce observer restrictions at the runtime tool boundary, including the plan requirement to deny unrelated mutation.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-observers",
+      "acceptance_assertion": "Observer mutation, delegation, and ordinary peer sends fail while inspection remains available.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "OBS-004",
+      "title": "Bounded observer activity",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "OBS-004",
+        "confidence": "high",
+        "observation": "Bound observer activity digests and permit silence."
+      },
+      "proposed_behavior": "Bound observer activity digests and permit silence.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-observers",
+      "acceptance_assertion": "A paired observer receives a bounded digest and can finish without sending a report.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "OBS-005",
+      "title": "Observer pairing lifecycle",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "OBS-005",
+        "confidence": "high",
+        "observation": "Retain an armed or retired pairing and reject reports from inactive pairings."
+      },
+      "proposed_behavior": "Retain an armed or retired pairing and reject reports from inactive pairings.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-observers",
+      "acceptance_assertion": "An armed pairing delivers to its target and a retired pairing refuses later reports.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "OBS-006",
+      "title": "Observer creation trigger",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "OBS-006",
+        "confidence": "high",
+        "observation": "Document whether observer creation is automatic or explicit and preserve that distinction in the parity report."
+      },
+      "proposed_behavior": "Document whether observer creation is automatic or explicit and preserve that distinction in the parity report.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P10",
+      "acceptance_scenario": "team-observers",
+      "acceptance_assertion": "The observed creation trigger matches the documented policy and any difference from automatic creation remains visible.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-001",
+      "title": "Teammate overview",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "UI-001",
+        "confidence": "high",
+        "observation": "Show member identity, state, current work, and overflow in the terminal."
+      },
+      "proposed_behavior": "Show member identity, state, current work, and overflow in the terminal.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "The view distinguishes busy, idle, paused, failed, and terminated members at supported widths.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-002",
+      "title": "Member navigation and detail",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "UI-002",
+        "confidence": "high",
+        "observation": "Allow selection and passive inspection without waking a member."
+      },
+      "proposed_behavior": "Allow selection and passive inspection without waking a member.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "Selecting a member shows its own transcript and does not trigger a provider request.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-003",
+      "title": "Task and decision controls",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "UI-003",
+        "confidence": "high",
+        "observation": "Expose tasks and correlated plan or shutdown decisions in the terminal."
+      },
+      "proposed_behavior": "Expose tasks and correlated plan or shutdown decisions in the terminal.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "A user resolves the selected request and sees the corresponding task or gate state.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-004",
+      "title": "Direct terminal messaging",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "UI-004",
+        "confidence": "high",
+        "observation": "Provide direct terminal messaging through a verified host input hook or an explicit command."
+      },
+      "proposed_behavior": "Provide direct terminal messaging through a verified host input hook or an explicit command.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "A user message reaches only the selected teammate with user attribution.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-005",
+      "title": "Accessible states and widths",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "UI-005",
+        "confidence": "high",
+        "observation": "Use text labels alongside color and keep controls usable at 80, 120, and 150 columns."
+      },
+      "proposed_behavior": "Use text labels alongside color and keep controls usable at 80, 120, and 150 columns.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "States are understandable without color and rendered rows fit each tested width.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-006",
+      "title": "Captured background empty state",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "UI-006",
+        "confidence": "high",
+        "observation": "Preserve an understandable empty state in the existing terminal controls."
+      },
+      "proposed_behavior": "Preserve an understandable empty state in the existing terminal controls.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "An empty team or child view remains navigable and contains no phantom members.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-007",
+      "title": "Captured session listing",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "UI-007",
+        "confidence": "high",
+        "observation": "Distinguish independent session entries from team and child entries."
+      },
+      "proposed_behavior": "Distinguish independent session entries from team and child entries.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P09",
+      "acceptance_scenario": "team-local-peers",
+      "acceptance_assertion": "A local session list labels session identity and relationship correctly.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-008",
+      "title": "Lifecycle and delivery notices",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "UI-008",
+        "confidence": "high",
+        "observation": "Show member lifecycle changes and explicit message failure."
+      },
+      "proposed_behavior": "Show member lifecycle changes and explicit message failure.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "A failed send and a terminated member produce visible, distinguishable results.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "UI-009",
+      "title": "Terminal input and recovery",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "UI-009",
+        "confidence": "high",
+        "observation": "Preserve keys, selection, and retained child controls across reload and resize."
+      },
+      "proposed_behavior": "Preserve keys, selection, and retained child controls across reload and resize.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P07",
+      "acceptance_scenario": "team-view",
+      "acceptance_assertion": "Arrows, Enter, Escape, scrolling, resize, and reload preserve the selected identity.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "BACKEND-001",
+      "title": "Embedded teammate backend",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "BACKEND-001",
+        "confidence": "high",
+        "observation": "Run embedded teammates with the same team identity and protocol as pane members."
+      },
+      "proposed_behavior": "Run embedded teammates with the same team identity and protocol as pane members.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P08",
+      "acceptance_scenario": "team-backends",
+      "acceptance_assertion": "An embedded teammate reaches ready state and participates in the shared team.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "BACKEND-002",
+      "title": "tmux backend",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "BACKEND-002",
+        "confidence": "high",
+        "observation": "Launch selected teammates in owned tmux panes with explicit process identity."
+      },
+      "proposed_behavior": "Launch selected teammates in owned tmux panes with explicit process identity.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P08",
+      "acceptance_scenario": "team-backends",
+      "acceptance_assertion": "Two tmux members use their intended directories and leave no owned panes after shutdown.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "BACKEND-003",
+      "title": "iTerm2 backend",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "BACKEND-003",
+        "confidence": "high",
+        "observation": "Launch and clean up iTerm2 teammates on a real supported macOS host."
+      },
+      "proposed_behavior": "Launch and clean up iTerm2 teammates on a real supported macOS host.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P08",
+      "acceptance_scenario": "team-backends",
+      "acceptance_assertion": "A real iTerm2 pane starts, exchanges a message, and closes under the same member identity.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "BACKEND-004",
+      "title": "Backend selection and fallback",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "BACKEND-004",
+        "confidence": "high",
+        "observation": "Show automatic embedded fallback and reject an explicitly unavailable backend."
+      },
+      "proposed_behavior": "Show automatic embedded fallback and reject an explicitly unavailable backend.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P08",
+      "acceptance_scenario": "team-backends",
+      "acceptance_assertion": "Unavailable auto mode falls back visibly; explicit unavailable mode fails with no orphan member.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "BACKEND-005",
+      "title": "Pane cleanup and ownership",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "BACKEND-005",
+        "confidence": "high",
+        "observation": "Track owned process and pane identity and leave unrelated sessions untouched."
+      },
+      "proposed_behavior": "Track owned process and pane identity and leave unrelated sessions untouched.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P08",
+      "acceptance_scenario": "team-backends",
+      "acceptance_assertion": "Killing or restarting a pane reports its state and cleanup affects only owned resources.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "BACKEND-006",
+      "title": "Independent selected extension process",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "BACKEND-006",
+        "confidence": "high",
+        "observation": "Launch a separate selected PiG process using the verified host contract."
+      },
+      "proposed_behavior": "Launch a separate selected PiG process using the verified host contract.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P08",
+      "acceptance_scenario": "team-backends",
+      "acceptance_assertion": "The process identity and registered extension tools appear in retained runtime evidence.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    },
+    {
+      "id": "BACKEND-007",
+      "title": "Backend-specific workspaces",
+      "reference": {
+        "kind": "proposal",
+        "path": "scripts/testdata/collaboration/requirements.json",
+        "section": "BACKEND-007",
+        "confidence": "high",
+        "observation": "Pass the selected directory and ownership record to each backend."
+      },
+      "proposed_behavior": "Pass the selected directory and ownership record to each backend.",
+      "reference_relationship": {
+        "state": "unreviewed"
+      },
+      "owner": "P08",
+      "acceptance_scenario": "team-backends",
+      "acceptance_assertion": "Quoted directories are preserved and separate worktrees retain uncommitted edits.",
+      "product_evidence": {
+        "state": "unverified",
+        "records": []
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "team-roster",
+      "owner": "P03",
+      "status": "planned",
+      "expected": "Members share a flat roster while ordinary child ownership remains intact."
+    },
+    {
+      "id": "team-messages",
+      "owner": "P04",
+      "status": "planned",
+      "expected": "Attributed peer messages reach their intended recipients with durable, observable outcomes."
+    },
+    {
+      "id": "team-forgery",
+      "owner": "P04",
+      "status": "planned",
+      "expected": "Forged identities and protocol-shaped text cannot grant authority."
+    },
+    {
+      "id": "team-tasks",
+      "owner": "P05",
+      "status": "planned",
+      "expected": "Members coordinate through a consistent task graph with atomic claims."
+    },
+    {
+      "id": "team-plan",
+      "owner": "P06",
+      "status": "planned",
+      "expected": "Plan and permission decisions remain correlated and enforceable."
+    },
+    {
+      "id": "team-shutdown",
+      "owner": "P06",
+      "status": "planned",
+      "expected": "Graceful shutdown requests produce the correct correlated lifecycle outcome."
+    },
+    {
+      "id": "team-idle",
+      "owner": "P06",
+      "status": "planned",
+      "expected": "Idle notices identify the member and settled outcome."
+    },
+    {
+      "id": "team-hooks",
+      "owner": "P06",
+      "status": "planned",
+      "expected": "Rejecting policy hooks preserve work and return their refusal."
+    },
+    {
+      "id": "team-view",
+      "owner": "P07",
+      "status": "planned",
+      "expected": "Terminal controls show the selected team state and preserve existing navigation."
+    },
+    {
+      "id": "team-backends",
+      "owner": "P08",
+      "status": "planned",
+      "expected": "Embedded and selected pane backends preserve member identity and lifecycle."
+    },
+    {
+      "id": "team-local-peers",
+      "owner": "P09",
+      "status": "planned",
+      "expected": "Independent opted-in sessions use explicit discovery and route outcomes."
+    },
+    {
+      "id": "team-observers",
+      "owner": "P10",
+      "status": "planned",
+      "expected": "An observer receives bounded activity and reports only to its paired destination."
+    },
+    {
+      "id": "team-parity-report",
+      "owner": "P10",
+      "status": "planned",
+      "expected": "The report distinguishes reference capabilities, product evidence, and unsupported routes."
+    },
+    {
+      "id": "baseline",
+      "owner": "P02",
+      "status": "implemented",
+      "expected": "Direct child spawn and wait produce the same result with and without evidence capture."
+    },
+    {
+      "id": "startup-source",
+      "owner": "P02",
+      "status": "implemented",
+      "expected": "A real source-selected process records its binary, extension selection, registration, and terminal capture."
+    },
+    {
+      "id": "startup-standalone",
+      "owner": "P02",
+      "status": "implemented",
+      "expected": "A real standalone-selected process records its executable identity and extension registration."
+    },
+    {
+      "id": "startup-piglet",
+      "owner": "P02",
+      "status": "implemented",
+      "expected": "A real Piglet-selected process registers the extension and completes a worker task."
+    },
+    {
+      "id": "startup-unselected",
+      "owner": "P02",
+      "status": "implemented",
+      "expected": "An unselected process starts without collaboration registrations."
+    },
+    {
+      "id": "host-busy-message",
+      "owner": "P02",
+      "status": "implemented",
+      "expected": "Record busy custom-message delivery, provider requests, and native transcript storage in the captured session. Separate scenarios cover acknowledgement, crash recovery, and same-ID replay."
+    },
+    {
+      "id": "host-idle-message",
+      "owner": "P02",
+      "status": "implemented",
+      "expected": "Record idle custom-message delivery and distinguish transcript storage from inference and acknowledgement."
+    },
+    {
+      "id": "host-crash-after-acceptance",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Interrupt after acceptance and before native transcript append, then retain the restarted session observation."
+    },
+    {
+      "id": "host-crash-after-append",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Interrupt after native transcript append and before acknowledgement, then inspect the restarted transcript."
+    },
+    {
+      "id": "host-crash-after-acknowledgement",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Interrupt after acknowledgement and inspect the retained session after restart."
+    },
+    {
+      "id": "host-same-id-replay",
+      "owner": "P02",
+      "status": "planned",
+      "expected": "Retry the same message ID after restart and count the actual native transcript entries."
+    },
+    {
+      "id": "host-tool-veto",
+      "owner": "P02",
+      "status": "implemented",
+      "expected": "A real rejecting tool hook refuses direct and nested fixture writes before their side effects, or records a reproducible unsupported result."
+    },
+    {
+      "id": "host-independent-process",
+      "owner": "P02",
+      "status": "implemented",
+      "expected": "An independently started PiG process exposes explicitly selected extension tools and its session identity, or records a reproducible unsupported result."
+    },
+    {
+      "id": "fixture-isolation",
+      "owner": "P02",
+      "status": "implemented",
+      "expected": "Concurrent fixtures with the same task names retain separate ports, files, session IDs, and captures."
+    },
+    {
+      "id": "fixture-interrupt",
+      "owner": "P02",
+      "status": "implemented",
+      "expected": "An interrupted child attempt remains inconclusive and retains its diagnostic artifacts."
+    },
+    {
+      "id": "capture-performance",
+      "owner": "P02",
+      "status": "implemented",
+      "expected": "Compare interleaved startup samples and separately record capture overhead and evidence serialization time."
+    }
+  ]
+}
