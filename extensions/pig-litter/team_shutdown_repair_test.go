@@ -274,3 +274,86 @@ func shutdownRepairHost(method string, raw json.RawMessage) json.RawMessage {
 	}
 	return json.RawMessage(`{}`)
 }
+
+func TestShutdownRequestWakesWhenEitherCapacitySlotReturns(t *testing.T) {
+	for _, release := range []string{"finish", "cancel"} {
+		for _, first := range []int{0, 1} {
+			t.Run(fmt.Sprintf("%s/blocker-%d", release, first+1), func(t *testing.T) {
+				store, _, root, workspace := storeTestOpen(t)
+				member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "worker", workspace, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				member, err = store.Commit(member.AdmissionID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				config := defaultConfig()
+				config.Concurrency = 2
+				tree := testTree(t, config)
+				tree.root.id = root
+				_, previous, err := tree.admit(admission{kind: "worker", name: member.Name, cwd: workspace.Cwd, task: "work", agent: AgentDefinition{Role: "worker", Tools: []string{"read"}}, member: &member})
+				if err != nil {
+					t.Fatal(err)
+				}
+				previous.owner.admitted = true
+				var exerciseErr error
+				withCompletionHost(t, tree, func(o *owner) {
+					o.teamStore = store
+					tree.teamFinished = o.finishTeamMember
+					tree.finish(previous.owner, previous, Outcome{State: Completed, Text: "Ready."})
+					tree.teamWG.Wait()
+					select {
+					case <-previous.teamFinishDone:
+					default:
+						exerciseErr = fmt.Errorf("target roster settlement did not finish")
+						return
+					}
+					blockers := make([]*run, 2)
+					for i := range blockers {
+						_, blockers[i], err = tree.admit(admission{kind: "scout", name: fmt.Sprintf("blocker-%d", i+1), cwd: workspace.Cwd, task: "inspect", agent: AgentDefinition{Role: "scout", Tools: []string{"read"}}})
+						if err != nil {
+							exerciseErr = err
+							return
+						}
+					}
+					started, allowFinish := make(chan *run, 1), make(chan struct{})
+					defer func() { close(allowFinish); tree.close() }()
+					tree.execute = func(_ *record, selected *run) Outcome {
+						started <- selected
+						<-allowFinish
+						return Outcome{State: Completed}
+					}
+					value, err := o.applyShutdown(controlAuthority{human: func() error { return nil }}, shutdownCommand{Action: "request", Member: member.Ref, SubmissionID: "two-slot-retry", Reason: "Please stop", TimeoutMs: 60000})
+					if err != nil {
+						exerciseErr = err
+						return
+					}
+					request := value["request"].(shutdownRequest)
+					waitForPeerWakeWaiter(t, o)
+					if release == "finish" {
+						tree.finish(blockers[first].owner, blockers[first], Outcome{State: Completed})
+					} else {
+						tree.cancelPending(blockers[first])
+					}
+					select {
+					case selected := <-started:
+						if selected.ref.ID != member.Ref.ID || selected.peerWake == nil || selected.peerWake.Control == nil || selected.peerWake.Control.Request != request.ID {
+							exerciseErr = fmt.Errorf("wrong wake identity: %#v", selected.peerWake)
+						}
+						select {
+						case <-blockers[1-first].done:
+							exerciseErr = fmt.Errorf("the other blocker settled before the teammate woke")
+						default:
+						}
+					case <-time.After(time.Second):
+						exerciseErr = fmt.Errorf("shutdown did not wake after %s of blocker %d while the other blocker remained live", release, first+1)
+					}
+				}, shutdownRepairHost)
+				if exerciseErr != nil {
+					t.Fatal(exerciseErr)
+				}
+			})
+		}
+	}
+}
