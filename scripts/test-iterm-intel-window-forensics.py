@@ -21,6 +21,13 @@ class ForensicsTests(unittest.TestCase):
             with self.subTest(response=response), self.assertRaises(RuntimeError):
                 probe.parse_state(response)
 
+    def test_title_allows_iterm_foreground_job_suffix_but_requires_unique_window(self):
+        nonce = "P03_INTEL_123"
+        self.assertIsNone(probe.verify_title("P03_INTEL_123 (sleep)\nP03_INTEL_123\n1", nonce))
+        for response in ("P03_INTEL_123 (sleep)\nP03_INTEL_123\n2", "P03_INTEL_123 (sleep)\nother\n1", "other\nP03_INTEL_123\n1"):
+            with self.subTest(response=response), self.assertRaises(RuntimeError):
+                probe.verify_title(response, nonce)
+
     def test_missing_session_is_reported_as_a_still_present_window(self):
         self.run_simulation("present:missing", "present:missing", True)
 
@@ -49,7 +56,7 @@ class ForensicsTests(unittest.TestCase):
                 if stage == "target.send":
                     return "sent"
                 if stage == "target.set-title":
-                    return nonce + "\n" + nonce + "\n1"
+                    return nonce + " (sleep)\n" + nonce + "\n1"
                 if stage == "target.text":
                     return nonce
                 if stage == "target.guarded-close":

@@ -41,8 +41,10 @@ tell application "iTerm"
     end try
     try
       set reportText to reportText & "  tabs=" & (count of tabs of candidateWindow) & linefeed
+      set tabOrdinal to 0
       repeat with candidateTab in tabs of candidateWindow
-        set reportText to reportText & "  tab index=" & (index of candidateTab as text) & " sessions=" & (count of sessions of candidateTab) & linefeed
+        set tabOrdinal to tabOrdinal + 1
+        set reportText to reportText & "  tab ordinal=" & tabOrdinal & " sessions=" & (count of sessions of candidateTab) & linefeed
         repeat with candidateSession in sessions of candidateTab
           try
             set reportText to reportText & "    session id=" & (unique id of candidateSession) & " tty=" & (tty of candidateSession) & " name=" & (name of candidateSession) & linefeed
@@ -151,6 +153,12 @@ def parse_state(result):
     return state
 
 
+def verify_title(title, nonce):
+    fields = (title or "").splitlines()
+    if len(fields) != 3 or not fields[0].startswith(nonce) or fields[1] != nonce or fields[2] != "1":
+        raise RuntimeError("The session title or unique window name could not be verified")
+
+
 def shell_wrapper(scratch, nonce):
     release = scratch / "release"
     return (
@@ -230,9 +238,7 @@ class Forensics(lifecycle.Diagnostic):
         target["process"] = process
         self.event("target.process", process=process)
         title = self.action("target.set-title", SET_TITLE, target["window"], target["session"], nonce)
-        title_fields = (title or "").splitlines()
-        if len(title_fields) != 3 or title_fields[0] != nonce or not title_fields[1] or title_fields[2] != "1":
-            raise RuntimeError("The session title or unique window name could not be verified")
+        verify_title(title, nonce)
         self.event("target.title", session_and_window=title)
         if self.state("target.before-exit-state", target) != "present:owned":
             raise RuntimeError("Target identity changed before exit")
