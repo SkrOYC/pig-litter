@@ -232,7 +232,8 @@ func (p *panelProof) teamPreviewProof() error {
 				}
 			}
 			if err := p.key(prefix+"-"+name+"-detail", "Enter", func(text string) bool {
-				return hasPanelView("team | detail")(text) && strings.Contains(text, "Name "+member.Name) && strings.Contains(text, "UUID "+member.Ref.ID)
+				body := previewPanelBody(text)
+				return hasPanelView("team | detail")(text) && strings.Contains(body, "Name "+member.Name) && strings.Contains(body, "UUID "+member.Ref.ID)
 			}); err != nil {
 				return err
 			}
@@ -240,22 +241,25 @@ func (p *panelProof) teamPreviewProof() error {
 			if err != nil {
 				return err
 			}
-			if member.Name == "Alice" && !strings.Contains(text, "P07_ASSIGNED_TASK") || member.Name == "Bob" && strings.Contains(text, "P07_ASSIGNED_TASK") {
+			body := previewPanelBody(text)
+			if member.Name == "Alice" && !strings.Contains(body, "P07_ASSIGNED_TASK") || member.Name == "Bob" && strings.Contains(body, "P07_ASSIGNED_TASK") {
 				return fmt.Errorf("task ownership displayed for wrong member: %s", text)
 			}
 			if err := checkPreviewWidth(text, width); err != nil {
 				return err
 			}
 			report := "P07_REPORT_" + strings.ToUpper(member.Name)
-			if err := p.key(prefix+"-"+name+"-report", "v", func(text string) bool { return hasPanelView("team | report")(text) && strings.Contains(text, report) }); err != nil {
+			if err := p.key(prefix+"-"+name+"-report", "v", func(text string) bool {
+				return hasPanelView("team | report")(text) && strings.Contains(previewPanelBody(text), report)
+			}); err != nil {
 				return err
 			}
 			if err := p.key(prefix+"-"+name+"-report-back", "Escape", hasPanelView("team | detail")); err != nil {
 				return err
 			}
-			marker := "P07_TRANSCRIPT_" + strings.ToUpper(member.Name)
 			if err := p.key(prefix+"-"+name+"-transcript", "t", func(text string) bool {
-				return hasPanelView("team | transcript")(text) && strings.Contains(text, marker) && strings.Contains(text, report)
+				ready, _ := previewTranscriptState(text, member.Name)
+				return ready
 			}); err != nil {
 				return err
 			}
@@ -263,11 +267,8 @@ func (p *panelProof) teamPreviewProof() error {
 			if err != nil {
 				return err
 			}
-			other := "ALICE"
-			if member.Name == "Alice" {
-				other = "BOB"
-			}
-			if strings.Contains(text, "P07_TRANSCRIPT_"+other) || strings.Contains(text, "P07_REPORT_"+other) {
+			_, crossed := previewTranscriptState(text, member.Name)
+			if crossed {
 				return fmt.Errorf("transcript crossed member identities: %s", text)
 			}
 			if err := checkPreviewWidth(text, width); err != nil {
@@ -337,7 +338,8 @@ func (p *panelProof) teamPreviewProof() error {
 		return fmt.Errorf("selection was not retained after root reload: %s %v", text, err)
 	}
 	if err := p.key("p07-reload-bob-transcript", "t", func(text string) bool {
-		return hasPanelView("team | transcript")(text) && strings.Contains(text, "P07_TRANSCRIPT_BOB") && strings.Contains(text, "P07_REPORT_BOB")
+		ready, crossed := previewTranscriptState(text, "Bob")
+		return ready && !crossed
 	}); err != nil {
 		return err
 	}
@@ -375,6 +377,32 @@ func (p *panelProof) openTeam(label string) error {
 	return p.key(label, "Enter", func(text string) bool {
 		return hasPanelView("team")(text) && strings.Contains(text, "Alice") && strings.Contains(text, "Bob")
 	})
+}
+
+func previewPanelBody(text string) string {
+	lines := strings.Split(text, "\n")
+	for index, line := range lines {
+		if strings.HasPrefix(line, "Pig Litter | ") {
+			return strings.Join(lines[index+1:], "\n")
+		}
+	}
+	return ""
+}
+
+func previewTranscriptState(text, member string) (ready, crossed bool) {
+	if !hasPanelView("team | transcript")(text) {
+		return false, false
+	}
+	selected, other := strings.ToUpper(member), "ALICE"
+	if selected == "ALICE" {
+		other = "BOB"
+	} else if selected != "BOB" {
+		return false, false
+	}
+	body := previewPanelBody(text)
+	ready = strings.Contains(body, "P07_TRANSCRIPT_"+selected) && strings.Contains(body, "P07_REPORT_"+selected)
+	crossed = strings.Contains(body, "P07_TRANSCRIPT_"+other) || strings.Contains(body, "P07_REPORT_"+other)
+	return ready, crossed
 }
 
 func checkPreviewWidth(text string, width int) error {
