@@ -780,7 +780,11 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	run.mu.Unlock()
 	r.deliveryMu.Unlock()
 	if r.team != nil {
-		o.routePendingControls(r.team.Ref)
+		var skip string
+		if run.peerWake != nil && run.peerWake.Control != nil {
+			skip = run.peerWake.Control.ID
+		}
+		o.routePendingControls(r.team.Ref, skip)
 	}
 	deliveryContext, stopDelivery := context.WithCancel(run.ctx)
 	deliveryDone := make(chan struct{})

@@ -188,7 +188,7 @@ func (o *owner) applyShutdown(authority controlAuthority, command shutdownComman
 		if err != nil {
 			return nil, err
 		}
-		notice, route = createdNotice, created
+		notice, route = createdNotice, created || request.State == "pending" && createdNotice.Delivery == "pending"
 		return map[string]any{"state": request.State, "request": request, "delivery": notice.Delivery}, nil
 	case "respond":
 		request, responseNotice, err := store.respondShutdown(command.RequestID, authority.caller.noticeID, command.Decision, command.Reason)

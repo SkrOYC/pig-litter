@@ -10,6 +10,9 @@ import (
 var errPeerWakeBlocked = errors.New("peer wake is waiting for room")
 
 func (o *owner) sendPeerWake(session *coding.Session, r *record, selected *run) error {
+	if selected.peerWake != nil && selected.peerWake.Control != nil {
+		return o.sendControlWake(session, r, selected, *selected.peerWake.Control)
+	}
 	store, ok := o.peerRunStore(r, selected)
 	if !ok || selected.peerWake == nil || selected.peerWake.Recipient != r.team.Ref {
 		return reject("unavailable", "peer wake is no longer current")
@@ -144,9 +147,17 @@ func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error
 		return false, nil
 	}
 	eligible, err := store.peerWakeEligible(recipient)
-	if err != nil || !eligible {
+	if err != nil {
 		t.lifecycleMu.Unlock()
 		return false, err
+	}
+	var control *controlNotice
+	if !eligible {
+		control, err = o.pendingControlWake(store, recipient)
+		if err != nil || control == nil {
+			t.lifecycleMu.Unlock()
+			return false, err
+		}
 	}
 	t.mu.Lock()
 	r := t.records[recipient.ID]
@@ -161,7 +172,7 @@ func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error
 		return false, errPeerWakeBlocked
 	}
 	selected := t.newRunLocked(Ref{r.id}, "")
-	selected.owner, selected.resume, selected.peerWake = r, true, &peerWakeInput{Recipient: recipient}
+	selected.owner, selected.resume, selected.peerWake = r, true, &peerWakeInput{Recipient: recipient, Control: control}
 	r.previous, r.run = previous, selected
 	t.live++
 	t.mu.Unlock()

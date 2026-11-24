@@ -131,6 +131,7 @@ type runProgress struct {
 
 type peerWakeInput struct {
 	Recipient MemberRef
+	Control   *controlNotice
 }
 
 type planDenial struct {

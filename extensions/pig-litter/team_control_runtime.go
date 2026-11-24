@@ -6,9 +6,92 @@ import (
 	"strings"
 
 	"github.com/MichaelKinsy/PiG/agent"
+	"github.com/MichaelKinsy/PiG/coding"
 	"github.com/MichaelKinsy/PiG/coding/extension"
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 )
+
+func (o *owner) pendingControlWake(store *teamStore, ref MemberRef) (*controlNotice, error) {
+	o.controlMu.Lock()
+	var candidates []controlNotice
+	for _, notice := range o.controlAuth {
+		if notice.Recipient == "member" && notice.Kind == "shutdown_request" && notice.Request.Member == ref {
+			candidates = append(candidates, notice)
+		}
+	}
+	o.controlMu.Unlock()
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	_, members, err := store.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	idle := false
+	for _, member := range members {
+		if member.Ref == ref && member.State == "idle" {
+			idle = true
+			break
+		}
+	}
+	if !idle {
+		return nil, nil
+	}
+	lifecycle, err := store.readLifecycle(ref)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range candidates {
+		for _, request := range lifecycle.Requests {
+			if request.ID != candidate.Request || request.State != "pending" {
+				continue
+			}
+			for _, notice := range lifecycle.Notices {
+				if notice == candidate && notice.Delivery == "pending" {
+					return &candidate, nil
+				}
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (o *owner) sendControlWake(session *coding.Session, r *record, selected *run, notice controlNotice) error {
+	store, ok := o.peerRunStore(r, selected)
+	if !ok || notice.Request.Member != r.team.Ref {
+		return reject("unavailable", "control wake is no longer current")
+	}
+	o.controlMu.Lock()
+	trusted, ok := o.controlAuth[notice.ID]
+	o.controlMu.Unlock()
+	if !ok || trusted != notice {
+		return reject("unavailable", "control wake is not authenticated")
+	}
+	changed, err := store.setControlNotice(notice, "pending", "attempted", "")
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return reject("unavailable", "control wake was already delivered")
+	}
+	if _, ok := o.peerRunStore(r, selected); !ok {
+		_, _ = store.setControlNotice(notice, "attempted", "ambiguous", "")
+		return reject("cancelled", "control wake was canceled before delivery")
+	}
+	payload, err := json.Marshal(map[string]any{"kind": notice.Kind, "requestId": notice.Request, "message": notice.Text})
+	if err != nil {
+		return err
+	}
+	trigger := true
+	message := extension.CustomMessageRef{CustomType: "pig_litter_control", Content: string(payload), Display: true, Details: map[string]any{"notice": notice}}
+	err = session.SendCustomMessage(selected.ctx, message, &extension.SendMessageOptions{TriggerTurn: &trigger})
+	if err != nil {
+		_, _ = store.setControlNotice(notice, "attempted", "ambiguous", "")
+		return err
+	}
+	o.observeControlNotice(notice)
+	return nil
+}
 
 func (o *owner) shutdownHook(r *record, selected *run) agent.BeforeToolCallHook {
 	return func(_ context.Context, id, name string, _ json.RawMessage) agent.ToolCallHookResult {
@@ -41,6 +124,9 @@ func (o *owner) routeControlNotice(notice controlNotice) {
 	}
 	o.controlAuth[notice.ID] = notice
 	o.controlMu.Unlock()
+	if notice.Recipient == "member" && notice.Kind == "shutdown_request" {
+		o.requestPeerWake(notice.Request.Member)
+	}
 	o.tree.mu.Lock()
 	if o.tree.closed {
 		o.tree.mu.Unlock()
@@ -63,7 +149,7 @@ func (o *owner) deliverControlNotice(notice controlNotice) {
 	if notice.Recipient == "member" {
 		o.tree.mu.Lock()
 		recipient = o.tree.records[notice.Request.Member.ID]
-		if recipient != nil && recipient.team != nil && recipient.team.Ref == notice.Request.Member && !recipient.paused && !recipient.run.state.terminal() {
+		if recipient != nil && recipient.team != nil && recipient.team.Ref == notice.Request.Member && !recipient.paused && !recipient.run.state.terminal() && (recipient.run.peerWake == nil || recipient.run.peerWake.Control == nil || recipient.run.peerWake.Control.ID != notice.ID) {
 			selected = recipient.run
 		}
 		o.tree.mu.Unlock()
@@ -111,11 +197,11 @@ func (o *owner) deliverControlNotice(notice controlNotice) {
 	o.observeControlNotice(notice)
 }
 
-func (o *owner) routePendingControls(ref MemberRef) {
+func (o *owner) routePendingControls(ref MemberRef, skip string) {
 	o.controlMu.Lock()
 	var pending []controlNotice
 	for _, notice := range o.controlAuth {
-		if notice.Recipient == "member" && notice.Request.Member == ref {
+		if notice.Recipient == "member" && notice.Request.Member == ref && notice.ID != skip {
 			pending = append(pending, notice)
 		}
 	}
@@ -237,13 +323,26 @@ func (o *owner) settleShutdown(r *record, selected *run) {
 		return
 	}
 	if !current || o.current() != nil {
-		_, _ = store.finishShutdown(fence.Request, selected.noticeID, false)
+		_, finishErr := store.finishShutdown(fence.Request, selected.noticeID, false)
 		o.tree.mu.Lock()
+		var failure *Outcome
+		if finishErr == nil && o.tree.records[r.id] == r && r.run == selected && !r.paused && selected.outcome != nil && selected.outcome.Error != "" {
+			copy := *selected.outcome
+			failure = &copy
+		}
 		if r.controlPhase == "closing" {
 			r.controlPhase = "recovery_pending"
 		}
 		o.tree.mu.Unlock()
+		var notice turnNotice
+		var created bool
+		if failure != nil {
+			notice, created, _ = store.recordTurnNotice(r.team.Ref, selected.noticeID, *failure)
+		}
 		o.tree.lifecycleMu.Unlock()
+		if created {
+			o.routeTurnNotice(notice)
+		}
 		return
 	}
 	if err := o.saveChildState(r, selected); err != nil {
