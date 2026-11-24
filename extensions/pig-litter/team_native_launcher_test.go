@@ -37,6 +37,21 @@ func TestTmuxNativeResumeAfterRootLoss(t *testing.T) {
 	testTmuxRootOwnedMemberLifetime(t, "resume")
 }
 
+func TestTmuxNativePeerDelivery(t *testing.T) {
+	for _, name := range []string{"peer_busy", "peer_idle", "peer_paused"} {
+		t.Run(name, func(t *testing.T) { testTmuxRootOwnedMemberLifetime(t, name) })
+	}
+}
+
+func mustPeerContent(t *testing.T, envelope peerEnvelope, sender string, request peerRequest) string {
+	t.Helper()
+	content, err := peerMessageContent(envelope, sender, peerBody{Text: request.Text, Summary: request.Summary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return content
+}
+
 func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 	unresolved := strings.HasPrefix(name, "unresolved_")
 	isolated := strings.HasSuffix(name, "_isolated")
@@ -159,6 +174,21 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 	member, err := store.Reserve(memberID, string(storeTestUUID(3)), "member", workspace, name == "unresolved_shared" || name == "resume")
 	if err != nil {
 		t.Fatal(err)
+	}
+	var sender teamMember
+	if strings.HasPrefix(name, "peer_") {
+		member, err = store.Commit(member.AdmissionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		admission := string(storeTestUUID(5))
+		if _, err := store.Reserve(storeTestUUID(4), admission, "sender", workspace, false); err != nil {
+			t.Fatal(err)
+		}
+		sender, err = store.Commit(admission)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if isolated {
 		cwd = workspace.Cwd
@@ -425,7 +455,89 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 			observed = ownership
 			tmux("pipe-pane", "-o", "-t", ownership.Pane.ID, "cat > "+filepath.Join(rootPath, "terminal.raw"))
 			_ = os.WriteFile(filepath.Join(rootPath, "during.ansi"), []byte(tmux("capture-pane", "-p", "-e", "-t", ownership.Pane.ID)), 0o600)
-			if name == "root_loss" || name == "resume" {
+			if strings.HasPrefix(name, "peer_") {
+				request := peerRequest{Recipient: "member", MessageID: "peer-one", Text: "PEER_ONLY", Summary: "peer update"}
+				if name != "peer_busy" {
+					root.mu.Lock()
+					root.queueProvider = true
+					root.mu.Unlock()
+					select {
+					case <-selected.done:
+					case <-ctx.Done():
+						t.Fatal("native member did not reach idle")
+					}
+					<-selected.executorDone
+					if selected.outcome.State != Completed {
+						t.Fatalf("native member did not complete: %#v", selected.outcome)
+					}
+					if name == "peer_paused" {
+						if _, _, err := tree.stop(nil, selected); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				receipt, _, err := store.acceptPeer(sender.Ref, request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if again, _, err := store.acceptPeer(sender.Ref, request); err != nil || again != receipt {
+					t.Fatalf("peer retry changed receipt: %#v, %v", again, err)
+				}
+				o.requestPeerWake(member.Ref)
+				if name == "peer_busy" {
+					root.mu.Lock()
+					root.queueProvider = true
+					root.mu.Unlock()
+				}
+				if name == "peer_paused" {
+					tree.peerWakeWG.Wait()
+					tree.mu.Lock()
+					unchanged := selected.owner.paused && selected.owner.run == selected
+					tree.mu.Unlock()
+					if !unchanged {
+						t.Fatal("peer message resumed an explicitly paused member")
+					}
+				} else {
+					woken := selected
+					if name == "peer_idle" {
+						probeWait(t, ctx, "native peer wake", func() bool {
+							tree.mu.Lock()
+							defer tree.mu.Unlock()
+							woken = selected.owner.run
+							return woken != selected
+						})
+					}
+					select {
+					case <-woken.done:
+					case <-ctx.Done():
+						t.Fatal("native peer delivery did not finish")
+					}
+					<-woken.executorDone
+					if woken.outcome.State != Completed || !probeRequestContains(provider, "PEER_ONLY") {
+						t.Fatalf("native peer outcome = %#v", woken.outcome)
+					}
+				}
+				key, _ := peerKey(receipt.Envelope)
+				_, path := peerPaths(store.dir, key)
+				observedReceipt, err := readPeerReceipt(path)
+				want := peerObserved
+				if name == "peer_paused" {
+					want = peerAccepted
+				}
+				if err != nil || observedReceipt.State != want {
+					t.Fatalf("peer receipt = %#v, %v", observedReceipt, err)
+				}
+				logs, err := os.ReadDir(ownership.SessionDirectory)
+				if err != nil || len(logs) != 1 {
+					t.Fatalf("peer delivery created extra session logs: %#v, %v", logs, err)
+				}
+				if name != "peer_paused" {
+					entryID, err := nativePeerEntry(filepath.Join(ownership.SessionDirectory, logs[0].Name()), receipt.Envelope, mustPeerContent(t, receipt.Envelope, "sender", request))
+					if err != nil || entryID == "" || entryID != observedReceipt.NativeEntryID {
+						t.Fatalf("peer native observation = %q, %v", entryID, err)
+					}
+				}
+			} else if name == "root_loss" || name == "resume" {
 				if name == "resume" {
 					if err := confirmOldMemberGone(ctx, ownership); err == nil {
 						t.Fatal("live native process was accepted for reconciliation")
@@ -515,6 +627,9 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 			return json.RawMessage(`{"models":[{"provider":"fixture","id":"fixed"}],"providers":{"fixture":{"configured":true}},"registered":[]}`)
 		}
 		if method == "sendMessage" {
+			if strings.HasPrefix(name, "peer_") && strings.Contains(string(raw), "pig_litter_peer") {
+				t.Error("peer delivery sent a message to the lead")
+			}
 			return json.RawMessage(`{}`)
 		}
 		return host.call(t, method, raw)

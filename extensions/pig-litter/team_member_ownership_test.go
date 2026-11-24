@@ -1,7 +1,9 @@
 package piglitter
 
 import (
+	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -109,7 +111,7 @@ func TestReconciledProvisionalNativeSessionSurvivesReopen(t *testing.T) {
 	}, func(method string, raw json.RawMessage) json.RawMessage { return host.call(t, method, raw) })
 }
 
-func TestProvisionalNativeOwnershipRejectsDifferentLaunch(t *testing.T) {
+func TestProvisionalNativeOwnershipFencesDifferentLaunch(t *testing.T) {
 	store, agentDir, rootID, workspace := storeTestOpen(t)
 	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "member", workspace, false)
 	if err != nil {
@@ -121,17 +123,76 @@ func TestProvisionalNativeOwnershipRejectsDifferentLaunch(t *testing.T) {
 	launch := "fedcba9876543210fedcba9876543210"
 	ownership := &memberOwnership{Backend: backendTmux, Member: member.Ref, Admission: member.AdmissionID, Execution: "execution", Launch: launch, Cwd: workspace.Cwd, Model: "fixture/fixed", Tools: []string{"read"}, SessionDirectory: agentDir, Executable: "/fixture", ExecutableSHA256: strings.Repeat("a", 64), Manifest: "/tmp/member-" + launch + ".json", Server: memberServerIdentity{Socket: "/tmp/tmux", PID: 1, Birth: "1", Target: "%0"}}
 	saved := savedChild{RootID: rootID, ID: member.Ref.ID, ParentID: rootID, Name: member.Name, Kind: "worker", Model: "fixture/fixed", Cwd: workspace.Cwd, Admitted: true, State: Unavailable, NoticeID: "execution", Team: &member, Native: ownership}
-	host := &runtimeHost{entries: []map[string]any{{"customType": childEntryType, "data": saved}}}
+	other := savedChild{RootID: rootID, ID: storeTestUUID(4), ParentID: rootID, Name: "other", Kind: "worker", Model: "fixture/fixed", Cwd: workspace.Cwd, Admitted: true, State: Completed, NoticeID: "other-execution"}
+	host := &runtimeHost{entries: []map[string]any{{"customType": childEntryType, "data": saved}, {"customType": childEntryType, "data": other}}}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = openTeamStore(agentDir, rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
 	tree := testTree(t, defaultConfig())
 	tree.root.id = rootID
 	withCompletionHost(t, tree, func(o *owner) {
 		o.teamStore, o.agentDir, o.cwd = store, agentDir, workspace.Cwd
-		if err := o.restoreChildren(); err == nil || !strings.Contains(err.Error(), "does not match its reservation") {
-			t.Fatalf("mismatched native launch recovery = %v", err)
+		if err := o.restoreChildren(); err != nil {
+			t.Fatalf("mismatched native launch blocked recovery: %v", err)
+		}
+		tree.mu.Lock()
+		restored, unaffected := tree.records[member.Ref.ID], tree.records[other.ID]
+		tree.mu.Unlock()
+		if restored == nil || unaffected == nil || !restored.paused || restored.nativeOwnership == nil || restored.nativeOwnership.Launch != launch || restored.latest.State != Unavailable {
+			t.Fatalf("mismatched recovery lost a child or ownership: %#v, %#v", restored, unaffected)
+		}
+		if _, err := o.prepareNativeResume(context.Background(), restored, restored.run); err == nil || !strings.Contains(err.Error(), "reservation") {
+			t.Fatalf("mismatched native launch resumed: %v", err)
+		}
+		if _, _, err := tree.resume(nil, unaffected.run, "continue"); err != nil {
+			t.Fatalf("unaffected child cannot resume: %v", err)
+		}
+		if _, err := os.Stat(workspace.Cwd); err != nil {
+			t.Fatalf("mismatched recovery removed its workspace: %v", err)
 		}
 		pending, err := store.Reservations()
 		if err != nil || len(pending) != 1 || pending[0] != member {
 			t.Fatalf("mismatched recovery changed the reservation: %#v, %v", pending, err)
+		}
+	}, func(method string, raw json.RawMessage) json.RawMessage { return host.call(t, method, raw) })
+}
+
+func TestProvisionalNativeRecoveryUsesLatestSnapshot(t *testing.T) {
+	store, agentDir, rootID, workspace := storeTestOpen(t)
+	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "member", workspace, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldLaunch, newLaunch := "0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210"
+	if err := store.markNativeLaunch(member, oldLaunch); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.markNativeLaunch(member, newLaunch, oldLaunch); err != nil {
+		t.Fatal(err)
+	}
+	session := &memberSession{File: filepath.Join(agentDir, "session_"+string(member.Ref.ID)+".jsonl"), Model: "fixture/fixed", Tools: []string{"read"}, Launch: oldLaunch}
+	saved := savedChild{RootID: rootID, ID: member.Ref.ID, ParentID: rootID, Name: member.Name, Kind: "worker", Model: session.Model, Cwd: workspace.Cwd, Admitted: true, State: Unavailable, NoticeID: "execution", Team: &member, Backend: backendTmux, NativeSession: session}
+	newSaved := saved
+	newSaved.NativeSession = cloneMemberSession(session)
+	newSaved.NativeSession.Launch = newLaunch
+	host := &runtimeHost{entries: []map[string]any{{"customType": childEntryType, "data": saved}, {"customType": childEntryType, "data": newSaved}}}
+	tree := testTree(t, defaultConfig())
+	tree.root.id = rootID
+	withCompletionHost(t, tree, func(o *owner) {
+		o.teamStore, o.agentDir, o.cwd = store, agentDir, workspace.Cwd
+		if err := o.restoreChildren(); err != nil {
+			t.Fatalf("historical launch blocked latest snapshot: %v", err)
+		}
+		tree.mu.Lock()
+		restored := tree.records[member.Ref.ID]
+		tree.mu.Unlock()
+		if restored == nil || restored.nativeSession == nil || restored.nativeSession.Launch != newLaunch {
+			t.Fatalf("restored historical session: %#v", restored)
 		}
 	}, func(method string, raw json.RawMessage) json.RawMessage { return host.call(t, method, raw) })
 }

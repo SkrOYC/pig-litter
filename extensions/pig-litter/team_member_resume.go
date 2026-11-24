@@ -21,6 +21,10 @@ func (o *owner) prepareNativeResume(ctx context.Context, r *record, selected *ru
 		return nil, err
 	}
 	o.tree.mu.Lock()
+	if r.nativeReservationConflict {
+		o.tree.mu.Unlock()
+		return nil, reject("unavailable", "native launch reservation requires reconciliation")
+	}
 	if o.tree.records[r.id] != r || r.run != selected || r.backend != backendTmux || r.nativeReleasing || r.native != nil || !selected.state.terminal() || selected.finishing {
 		o.tree.mu.Unlock()
 		return nil, reject("unavailable", "native teammate is not ready for reconciliation")

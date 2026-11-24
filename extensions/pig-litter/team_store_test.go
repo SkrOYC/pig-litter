@@ -534,6 +534,10 @@ func TestNativeLaunchReservationSurvivesOwnerRecovery(t *testing.T) {
 	if err := store.markNativeLaunch(member, "fedcba9876543210fedcba9876543210"); err == nil {
 		t.Fatal("reservation accepted a different native launch")
 	}
+	replacement := "fedcba9876543210fedcba9876543210"
+	if err := store.markNativeLaunch(member, replacement, launch); err != nil {
+		t.Fatalf("replace native launch: %v", err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -543,7 +547,7 @@ func TestNativeLaunchReservationSurvivesOwnerRecovery(t *testing.T) {
 	}
 	defer reopened.Close()
 	_, pending, err := reopened.recoverySnapshot()
-	if err != nil || len(pending) != 1 || pending[0].Member != member || pending[0].NativeLaunch != launch {
+	if err != nil || len(pending) != 1 || pending[0].Member != member || pending[0].NativeLaunch != replacement {
 		t.Fatalf("recovered native reservation = %#v, %v", pending, err)
 	}
 	if err := reopened.Rollback(member.AdmissionID); err != nil {

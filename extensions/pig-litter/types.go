@@ -93,6 +93,7 @@ type record struct {
 	nativeOwnership                      *memberOwnership
 	nativeReleasing                      bool
 	nativeCleanupError                   string
+	nativeReservationConflict            bool
 	nativeSession                        *memberSession
 	run                                  *run
 	previous                             *run

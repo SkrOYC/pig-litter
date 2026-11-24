@@ -35,8 +35,9 @@ func (queue *memberControlQueue) acceptReadiness(ctx context.Context, request me
 	queue.mu.Lock()
 	binding, handoff := queue.binding, queue.starting
 	installed := handoff != nil && handoff.installed && handoff.window == request.Window
+	peerWake := binding != nil && binding.run.peerWake != nil && binding.run.nativeResume != nil && handoff == nil && request.Window == ""
 	queue.mu.Unlock()
-	if binding == nil || !installed || !queue.bound() {
+	if binding == nil || !installed && !peerWake || !queue.bound() {
 		return reject("unavailable", "native starting transfer is not installed")
 	}
 	encoded, err := json.Marshal(request)
@@ -145,7 +146,9 @@ func (queue *memberControlQueue) installReadiness(ctx context.Context, binding *
 	if request.Leaf != nil {
 		after = *request.Leaf
 	}
-	binding.record.pendingInputs = []pendingInput{{Text: binding.run.prompt, After: &after}}
+	if binding.run.peerWake == nil {
+		binding.record.pendingInputs = []pendingInput{{Text: binding.run.prompt, After: &after}}
+	}
 	o.tree.dirty[binding.record.id] = binding.record
 	o.tree.mu.Unlock()
 	if err := o.tree.notify(); err != nil {
@@ -171,18 +174,25 @@ func (queue *memberControlQueue) installReadiness(ctx context.Context, binding *
 	}
 	binding.log, binding.startingLog, binding.ready = pin, fresh, true
 	queue.mu.Unlock()
+	if binding.run.peerWake != nil {
+		return nil
+	}
+	queue.activateReadyLocked()
+	return nil
+}
+
+func (queue *memberControlQueue) activateReadyLocked() {
 	go queue.deliverInputs()
-	if binding.run.nativeFrozen {
-		binding.run.nativeFrozen = false
-		close(binding.run.nativeThaw)
-		binding.run.nativeThaw = nil
+	if queue.run.nativeFrozen {
+		queue.run.nativeFrozen = false
+		close(queue.run.nativeThaw)
+		queue.run.nativeThaw = nil
 	}
 	select {
-	case <-binding.run.ready:
+	case <-queue.run.ready:
 	default:
-		close(binding.run.ready)
+		close(queue.run.ready)
 	}
-	return nil
 }
 
 func (o *owner) ensureMemberLog(ctx context.Context, binding *memberBinding) error {

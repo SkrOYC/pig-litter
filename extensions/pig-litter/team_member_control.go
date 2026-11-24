@@ -98,6 +98,9 @@ type memberControlQueue struct {
 	windows    map[string]uint64
 	running    map[string]*memberRunningInput
 	inputAcks  map[string]memberControlReply
+	mcpOnce    sync.Once
+	mcpConfig  memberMCPConfig
+	mcpErr     error
 	mu         sync.Mutex
 	pending    map[string]*memberControlCall
 	commands   []*memberControlCall
@@ -249,6 +252,8 @@ func (queue *memberControlQueue) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		}
 	case "/control/result":
 		queue.result(w, r)
+	case "/member/mcp/config":
+		queue.serveMCPConfig(w, r)
 	case "/input/start", "/input/installed", "/input/ready", "/input/result", "/input/window", "/input/running-result", "/input/cancel-watch":
 		queue.serveStartingInput(w, r)
 	default:

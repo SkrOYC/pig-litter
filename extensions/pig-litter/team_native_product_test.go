@@ -39,6 +39,16 @@ type productMemberCase struct {
 	terminalControls           bool
 }
 
+func TestTmuxNativeMCP(t *testing.T) {
+	for _, test := range []productMemberCase{
+		{name: "mcp_direct", task: "case direct-mcp-allow", tools: []string{"mcp__probe__write", "read"}, marker: "direct-mcp-allow.txt", report: "PROBE_TOOL_DONE", exists: true},
+		{name: "mcp_nested", task: "case codemode-mcp-allow", tools: []string{"codemode", "mcp__probe__write", "read"}, marker: "codemode-mcp-allow.txt", report: "PROBE_TOOL_DONE", exists: true},
+		{name: "mcp_denied", task: "case direct-mcp-deny", tools: []string{"mcp__probe__write", "read"}, marker: "direct-mcp-deny.txt", report: "PROBE_TOOL_DONE", planRequired: true},
+	} {
+		t.Run(test.name, func(t *testing.T) { testTmuxCompiledProductMember(t, test) })
+	}
+}
+
 func TestTmuxCompiledProductMember(t *testing.T) {
 	for _, test := range []productMemberCase{
 		{name: "starting", task: "QUEUE_GATE", tools: []string{"read"}, report: "PROBE_DONE", starting: true},
@@ -120,6 +130,84 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 	models := fmt.Sprintf(`{"providers":{"fixture":{"api":"openai-completions","baseUrl":"http://%s/v1","apiKey":"fixture-only","models":[{"id":"fixed","name":"fixed","contextWindow":32000,"maxTokens":1024}]}}}`, address)
 	if err := os.WriteFile(filepath.Join(agentDir, "models.json"), []byte(models), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	if strings.HasPrefix(name, "mcp_") {
+		var requests atomic.Int32
+		mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/chat/completions" {
+				body, _ := io.ReadAll(r.Body)
+				line, _ := json.Marshal(map[string]any{"event": "request", "body": json.RawMessage(body)})
+				if file, err := os.OpenFile(provider, os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+					_, _ = file.Write(append(line, '\n'))
+					_ = file.Close()
+				}
+				if requests.Add(1) == 1 {
+					target := filepath.Join(rootPath, "files", marker)
+					tool, args := "mcp__probe__write", any(map[string]any{"path": target, "content": "PROBE_WRITTEN"})
+					if name == "mcp_nested" {
+						tool = "codemode"
+						args = map[string]any{"code": fmt.Sprintf(`if ("mcp__probe__blocked" in tools) throw new Error("excluded tool is visible"); return await tools.mcp__probe__write({path:%q,content:"PROBE_WRITTEN"});`, target)}
+					}
+					runtimeToolAnswer(w, "mcp-call", tool, args)
+				} else {
+					runtimeAnswer(w, "PROBE_TOOL_DONE")
+				}
+				return
+			}
+			if r.Method == http.MethodDelete {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			var request struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+				Params struct {
+					ProtocolVersion string `json:"protocolVersion"`
+					Name            string `json:"name"`
+					Arguments       struct {
+						Path    string `json:"path"`
+						Content string `json:"content"`
+					} `json:"arguments"`
+				} `json:"params"`
+			}
+			if json.NewDecoder(r.Body).Decode(&request) != nil {
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			if len(request.ID) == 0 {
+				w.WriteHeader(http.StatusAccepted)
+				return
+			}
+			var result any
+			switch request.Method {
+			case "initialize":
+				w.Header().Set("Mcp-Session-Id", "p08-fixture")
+				result = map[string]any{"protocolVersion": request.Params.ProtocolVersion, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "probe", "version": "1"}}
+			case "tools/list":
+				result = map[string]any{"tools": []any{map[string]any{"name": "write", "description": "Write a fixture file", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}}, "required": []string{"path", "content"}}}, map[string]any{"name": "blocked", "description": "Excluded fixture tool", "inputSchema": map[string]any{"type": "object"}}}}
+			case "tools/call":
+				target := request.Params.Arguments.Path
+				if request.Params.Name != "write" || !strings.HasPrefix(target, filepath.Join(rootPath, "files")+string(os.PathSeparator)) || request.Params.Arguments.Content != "PROBE_WRITTEN" || os.WriteFile(target, []byte(request.Params.Arguments.Content), 0o600) != nil {
+					http.Error(w, "invalid write", http.StatusBadRequest)
+					return
+				}
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "PROBE_MCP_WROTE"}}}
+			default:
+				http.Error(w, "unknown method", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result})
+		}))
+		defer mcp.Close()
+		config := fmt.Sprintf(`{"mcpServers":{"probe":{"url":%q,"exposure":"direct"}}}`, mcp.URL)
+		if err := os.WriteFile(filepath.Join(agentDir, "mcp.json"), []byte(config), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		models := fmt.Sprintf(`{"providers":{"fixture":{"api":"openai-completions","baseUrl":%q,"apiKey":"fixture-only","models":[{"id":"fixed","name":"fixed","contextWindow":32000,"maxTokens":1024}]}}}`, mcp.URL+"/v1")
+		if err := os.WriteFile(filepath.Join(agentDir, "models.json"), []byte(models), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	socket := filepath.Join(rootPath, "tmux.sock")
 	tmux := func(args ...string) string {

@@ -56,6 +56,9 @@ func nativeMemberRoute(name string) string {
 
 func (member *nativeMember) factory(api extension.API) error {
 	member.fixtureHooks(api)
+	if err := member.registerMCP(api); err != nil {
+		return err
+	}
 	for _, name := range member.manifest.Tools {
 		route := nativeMemberRoute(name)
 		if route == "" {
@@ -96,6 +99,12 @@ func (member *nativeMember) factory(api extension.API) error {
 			return err
 		}
 		member.startControl(ctx, api)
+		if member.manifest.PeerWake {
+			if err := member.startPeerWake(ctx, api); err != nil {
+				member.stop(ctx)
+				return err
+			}
+		}
 		return nil
 	})
 	api.OnTurnStart(func(ctx context.Context, _ extension.TurnStartEvent) error {
@@ -113,6 +122,10 @@ func (member *nativeMember) factory(api extension.API) error {
 		turn := member.turn
 		member.mu.Unlock()
 		var reply map[string]bool
+		if err := member.call(ctx, "/member/peer/observe", struct{}{}, &reply); err != nil {
+			member.stop(ctx)
+			return err
+		}
 		if err := member.call(ctx, "/member/turn/start", memberTurnRequest{ID: turn}, &reply); err != nil {
 			member.stop(ctx)
 			return err
@@ -121,6 +134,10 @@ func (member *nativeMember) factory(api extension.API) error {
 	})
 	api.OnTurnEnd(func(ctx context.Context, _ extension.TurnEndEvent) (extension.TurnEndEventResult, error) {
 		var reply map[string]bool
+		if err := member.call(ctx, "/member/peer/observe", struct{}{}, &reply); err != nil {
+			member.stop(ctx)
+			return extension.BoundaryResult{}, err
+		}
 		if err := member.call(ctx, "/member/turn/end", memberTurnRequest{ID: member.currentTurn()}, &reply); err != nil {
 			member.stop(ctx)
 			return extension.BoundaryResult{}, err
@@ -148,6 +165,33 @@ func (member *nativeMember) factory(api extension.API) error {
 	return nil
 }
 
+func (member *nativeMember) startPeerWake(ctx context.Context, api extension.API) error {
+	var reply memberPeerReply
+	if err := member.call(ctx, "/member/peer/offer", struct{}{}, &reply); err != nil {
+		return err
+	}
+	if reply.Peer == nil {
+		return errors.New("native peer wake has no authenticated message")
+	}
+	member.mu.Lock()
+	started := make(chan struct{})
+	member.continuation = started
+	member.expectWindow = member.windowSeq + 1
+	member.mu.Unlock()
+	go func() {
+		timer := time.NewTimer(15 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-started:
+		case <-timer.C:
+			member.stop(ctx)
+		}
+	}()
+	trigger := true
+	api.SendMessage(extension.SendMessagePayload{CustomType: "pig_litter_peer", Content: reply.Peer.Content, Display: true, Details: map[string]any{"envelope": reply.Peer.Envelope}}, &extension.SendMessageOptions{TriggerTurn: &trigger})
+	return nil
+}
+
 func nativeToolError(message string) extension.AgentToolResult {
 	return extension.AgentToolResult{Content: []ai.ToolResultMessageContent{ai.TextContent{Text: message}}, IsError: true}
 }
@@ -169,11 +213,11 @@ func (member *nativeMember) sessionReady(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	tools := ext.GetActiveTools()
-	sorted := slices.Clone(tools)
-	slices.Sort(sorted)
-	if ChildID(manager.GetSessionId()) != member.manifest.Session || cwd != member.manifest.Cwd || nativeModelName(model) != member.manifest.Model || !slices.Equal(sorted, member.manifest.Tools) {
+	if ChildID(manager.GetSessionId()) != member.manifest.Session || cwd != member.manifest.Cwd || nativeModelName(model) != member.manifest.Model {
 		return errors.New("native readiness does not match its launch")
+	}
+	if err := member.waitTools(ctx, ext); err != nil {
+		return err
 	}
 	member.mu.Lock()
 	ready, window := member.ready, member.window
@@ -185,7 +229,7 @@ func (member *nativeMember) sessionReady(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	request := memberReadiness{Window: string(window), Session: member.manifest.Session, Cwd: cwd, Model: nativeModelName(model), Tools: tools, SessionFile: *manager.GetSessionFile(), Leaf: manager.GetLeafID(), Entries: entries}
+	request := memberReadiness{Window: string(window), Session: member.manifest.Session, Cwd: cwd, Model: nativeModelName(model), Tools: slices.Clone(member.manifest.Tools), SessionFile: *manager.GetSessionFile(), Leaf: manager.GetLeafID(), Entries: entries}
 	if member.manifest.ResumeFile != "" {
 		count, digest := len(entries), memberEntriesDigest(entries)
 		request.Entries = nil
@@ -332,6 +376,15 @@ func (member *nativeMember) beforeSettle(ctx context.Context, event *extension.A
 	if err := member.call(ctx, "/member/settlement/decide", request, &decision); err != nil || decision.Boundary != boundary {
 		member.stop(ctx)
 		return extension.BoundaryResult{}, nil
+	}
+	if decision.Peer != nil && decision.Continue {
+		member.mu.Lock()
+		member.expectWindow = member.windowSeq + 1
+		member.mu.Unlock()
+		entries := slices.Clone(event.Entries)
+		entries = append(entries, extension.SessionBoundaryDraft{Type: extension.SessionBoundaryDraftCustomMessage, CustomType: "pig_litter_peer", Content: decision.Peer.Content, Display: true, Details: map[string]any{"envelope": decision.Peer.Envelope}})
+		cont := true
+		return extension.BoundaryResult{Entries: &entries, Continue: &cont}, nil
 	}
 	if !decision.Allow {
 		if !decision.Continue {

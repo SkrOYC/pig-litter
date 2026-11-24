@@ -737,7 +737,7 @@ func (t *Tree) resumeAs(authority controlAuthority, selected *run, text string) 
 		t.mu.Unlock()
 		return Snapshot{}, nil, err
 	}
-	if r.nativeOwnership != nil || r.nativeReleasing {
+	if r.nativeReservationConflict || r.nativeOwnership != nil || r.nativeReleasing {
 		t.mu.Unlock()
 		return Snapshot{}, nil, reject("unavailable", "native pane ownership requires reconciliation before resume")
 	}

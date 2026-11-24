@@ -99,6 +99,10 @@ func (o *owner) drivePeerWake(recipient MemberRef) {
 			return
 		}
 		done := selected.teamFinishDone
+		var executorDone <-chan struct{}
+		if r.backend == backendTmux {
+			executorDone = selected.executorDone
+		}
 		t.mu.Unlock()
 		if done == nil {
 			if o.finishPeerWakeRequest(recipient, version) {
@@ -111,6 +115,14 @@ func (o *owner) drivePeerWake(recipient MemberRef) {
 		case <-t.ctx.Done():
 			o.finishPeerWakeRequest(recipient, version)
 			return
+		}
+		if executorDone != nil {
+			select {
+			case <-executorDone:
+			case <-t.ctx.Done():
+				o.finishPeerWakeRequest(recipient, version)
+				return
+			}
 		}
 		t.mu.Lock()
 		r = t.records[recipient.ID]
@@ -155,6 +167,22 @@ func (o *owner) drivePeerWake(recipient MemberRef) {
 
 func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error) {
 	t := o.tree
+	t.mu.Lock()
+	candidate := t.records[recipient.ID]
+	native := candidate != nil && candidate.backend == backendTmux
+	if native && (t.closed || t.root.paused || candidate.team == nil || candidate.team.Ref != recipient || candidate.run != previous || !candidate.admitted || candidate.paused || candidate.nativeSession == nil || candidate.nativeReservationConflict || candidate.nativeOwnership != nil || candidate.nativeReleasing || previous.state != Completed || previous.finishing) {
+		t.mu.Unlock()
+		return false, nil
+	}
+	t.mu.Unlock()
+	var nativeResume *memberResumePin
+	if native {
+		var err error
+		nativeResume, err = o.prepareNativeResume(t.ctx, candidate, previous)
+		if err != nil {
+			return false, err
+		}
+	}
 	t.lifecycleMu.Lock()
 	o.state.mu.Lock()
 	ownerCurrent := o.state.owner == o && o.state.epoch == o.epoch
@@ -176,13 +204,13 @@ func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error
 		return false, err
 	}
 	control, err := o.pendingControlWake(store, recipient)
-	if err != nil || !eligible && control == nil {
+	if err != nil || !eligible && control == nil || native && (!eligible || control != nil) {
 		t.lifecycleMu.Unlock()
 		return false, err
 	}
 	t.mu.Lock()
 	r := t.records[recipient.ID]
-	if t.closed || t.root.paused || r == nil || r.team == nil || r.team.Ref != recipient || r.backend == backendTmux || !r.admitted || r.paused || r.run != previous || previous.state != Completed || previous.finishing {
+	if t.closed || t.root.paused || r == nil || r.team == nil || r.team.Ref != recipient || (r.backend == backendTmux) != native || native && (r.nativeOwnership != nil || r.nativeReleasing) || !r.admitted || r.paused || r.run != previous || previous.state != Completed || previous.finishing {
 		t.mu.Unlock()
 		t.lifecycleMu.Unlock()
 		return false, nil
@@ -214,6 +242,7 @@ func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error
 	}
 	selected := t.newRunLocked(Ref{r.id}, "")
 	selected.owner, selected.resume, selected.peerWake = r, true, &peerWakeInput{Recipient: recipient, Control: control}
+	selected.nativeResume = nativeResume
 	r.previous, r.run = previous, selected
 	t.live++
 	t.mu.Unlock()

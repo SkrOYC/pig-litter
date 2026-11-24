@@ -104,10 +104,20 @@ type memberSettleRequest struct {
 }
 
 type memberSettleReply struct {
-	Boundary uint64 `json:"boundary"`
-	Allow    bool   `json:"allow"`
-	Continue bool   `json:"continue"`
-	Feedback string `json:"feedback,omitempty"`
+	Boundary uint64              `json:"boundary"`
+	Allow    bool                `json:"allow"`
+	Continue bool                `json:"continue"`
+	Feedback string              `json:"feedback,omitempty"`
+	Peer     *memberPeerDelivery `json:"peer,omitempty"`
+}
+
+type memberPeerDelivery struct {
+	Envelope peerEnvelope `json:"envelope"`
+	Content  string       `json:"content"`
+}
+
+type memberPeerReply struct {
+	Peer *memberPeerDelivery `json:"peer,omitempty"`
 }
 
 type memberFinalizationRequest struct {
@@ -195,6 +205,25 @@ func (queue *memberControlQueue) serveAuthority(w http.ResponseWriter, r *http.R
 			return
 		}
 		write(map[string]bool{"ok": true})
+	case "/member/peer/observe":
+		var request struct{}
+		if decodeMemberControl(w, r, &request) != nil || authority.owner.observeNativePeers(r.Context(), authority.binding) != nil {
+			fail()
+			return
+		}
+		write(map[string]bool{"ok": true})
+	case "/member/peer/offer":
+		var request struct{}
+		if decodeMemberControl(w, r, &request) != nil {
+			fail()
+			return
+		}
+		peer, err := authority.offerPeer(r.Context())
+		if err != nil {
+			fail()
+			return
+		}
+		write(memberPeerReply{Peer: peer})
 	case "/member/tool":
 		var request memberToolRequest
 		if decodeMemberControl(w, r, &request) != nil {
@@ -230,6 +259,15 @@ func (queue *memberControlQueue) serveAuthority(w http.ResponseWriter, r *http.R
 		_, terminal, err := memberAssistantMessages(snapshot, authority.binding.log.baselineCount)
 		if err != nil || request.Report != idleAssistantReport(terminal) {
 			http.Error(w, "native settlement report does not match its history", http.StatusConflict)
+			return
+		}
+		peer, err := authority.offerPeer(r.Context())
+		if err != nil {
+			fail()
+			return
+		}
+		if peer != nil {
+			write(memberSettleReply{Boundary: request.Boundary, Continue: true, Peer: peer})
 			return
 		}
 		decision, err := authority.owner.decideMemberSettlement(r.Context(), authority.binding, memberSettlementCandidate{boundary: request.Boundary, report: request.Report, completed: request.Completed, continuing: request.Continuing})
@@ -268,6 +306,30 @@ func (queue *memberControlQueue) serveAuthority(w http.ResponseWriter, r *http.R
 		}
 		write(reply)
 	}
+}
+
+func (authority *memberAuthority) offerPeer(ctx context.Context) (*memberPeerDelivery, error) {
+	if err := authority.owner.current(); err != nil {
+		return nil, err
+	}
+	store, ok := authority.owner.peerRunStore(authority.binding.record, authority.binding.run)
+	if !ok {
+		return nil, nil
+	}
+	receipt, content, found, err := store.offerPeer(authority.binding.member)
+	if err != nil || !found {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	authority.owner.tree.mu.Lock()
+	current := authority.owner.memberBindingCurrentLocked(authority.binding) && !authority.binding.record.paused
+	authority.owner.tree.mu.Unlock()
+	if !current {
+		return nil, reject("unavailable", "native peer recipient changed")
+	}
+	return &memberPeerDelivery{Envelope: receipt.Envelope, Content: content}, nil
 }
 
 func (authority *memberAuthority) finalizeSettlement(ctx context.Context, request memberFinalizationRequest) (memberSettlementDecision, error) {

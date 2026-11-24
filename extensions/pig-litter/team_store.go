@@ -198,7 +198,7 @@ func (s *teamStore) markNativeLaunch(member teamMember, launch string, previous 
 			if reservation.NativeLaunch != "" && reservation.NativeLaunch != launch && (len(previous) != 1 || reservation.NativeLaunch != previous[0]) {
 				return false, reject("unavailable", "provisional native launch identity changed")
 			}
-			changed := reservation.NativeLaunch == ""
+			changed := reservation.NativeLaunch != launch
 			reservation.NativeLaunch = launch
 			return changed, nil
 		}

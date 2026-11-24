@@ -74,11 +74,6 @@ func RunNativeMember(path string) error {
 	if err != nil || cwd != manifest.Cwd {
 		return errors.New("native member started in the wrong working directory")
 	}
-	for _, name := range manifest.Tools {
-		if isMCPTool(name) {
-			return errors.New("native member MCP registrations are not available")
-		}
-	}
 	if err := os.Setenv("PIG_CODING_AGENT_DIR", manifest.AgentDirectory); err != nil {
 		return err
 	}
@@ -111,6 +106,15 @@ func RunNativeMember(path string) error {
 		args = []string{"--session", manifest.ResumeFile}
 	}
 	args = append(args, "--session-dir", manifest.SessionDirectory, "--model", manifest.Model, "--tools", strings.Join(manifest.Tools, ","), "--no-extensions")
+	if slices.ContainsFunc(manifest.Tools, isMCPTool) && !slices.ContainsFunc(manifest.Tools, func(name string) bool { return strings.HasPrefix(name, "mcp__") }) {
+		excluded := []string{"mcp__*"}
+		for _, name := range []string{"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"} {
+			if !slices.Contains(manifest.Tools, name) {
+				excluded = append(excluded, name)
+			}
+		}
+		args = append(args, "--exclude-tools", strings.Join(excluded, ","))
+	}
 	for _, builtin := range []struct{ tool, extension string }{{"codemode", "builtin:codemode"}, {"tool_search", "builtin:tool-search"}} {
 		if slices.Contains(manifest.Tools, builtin.tool) {
 			args = append(args, "-e", builtin.extension)
@@ -122,7 +126,9 @@ func RunNativeMember(path string) error {
 	if manifest.ProjectTrusted {
 		args = append(args, "--approve")
 	}
-	args = append(args, "--", manifest.Prompt)
+	if !manifest.PeerWake {
+		args = append(args, "--", manifest.Prompt)
+	}
 	cli.Main(args, &cli.MainOptions{InputAdmission: member.admission, HostPolicy: &cli.HostPolicy{FixedModel: coding.FixedModel{Provider: parts[0], ID: parts[1]}, RequiredFactory: member.factory}})
 	return nil
 }

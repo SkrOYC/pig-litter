@@ -128,25 +128,36 @@ func (queue *memberControlQueue) beginStarting(window string) ([]memberStartingT
 }
 
 func (queue *memberControlQueue) installStarting(request memberStartingInstallation) error {
+	queue.owner.tree.mu.Lock()
+	defer queue.owner.tree.mu.Unlock()
 	queue.mu.Lock()
-	defer queue.mu.Unlock()
 	select {
 	case <-queue.closed:
+		queue.mu.Unlock()
 		return reject("unavailable", "native control is closed")
 	case <-queue.cancelled:
+		queue.mu.Unlock()
 		return reject("cancelled", "native control is cancelled")
 	default:
 	}
 	handoff := queue.starting
 	if handoff == nil || handoff.window != request.Window || len(handoff.transfers) != len(request.Transfers) {
+		queue.mu.Unlock()
 		return reject("unavailable", "native starting transfer changed")
 	}
 	for index, transfer := range handoff.transfers {
 		if transfer.ID != request.Transfers[index] {
+			queue.mu.Unlock()
 			return reject("unavailable", "native starting transfer IDs do not match")
 		}
 	}
+	first := !handoff.installed
 	handoff.installed = true
+	activate := first && queue.binding != nil && queue.binding.ready && queue.run.peerWake != nil && queue.owner.memberBindingCurrentLocked(queue.binding) && !queue.record.paused
+	queue.mu.Unlock()
+	if activate {
+		queue.activateReadyLocked()
+	}
 	return nil
 }
 

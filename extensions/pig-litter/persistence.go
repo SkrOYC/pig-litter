@@ -296,6 +296,7 @@ func (o *owner) restoreChildren() error {
 	}
 	latest := map[ChildID]savedChild{}
 	invalidTeam := map[ChildID]bool{}
+	reservationConflict := map[ChildID]bool{}
 	type admissionProof struct {
 		mode, known bool
 		err         error
@@ -315,6 +316,14 @@ func (o *owner) restoreChildren() error {
 		if saved.RootID != o.tree.root.id {
 			continue
 		}
+		if !seen[saved.ID] {
+			order = append(order, saved.ID)
+			seen[saved.ID] = true
+		}
+		latest[saved.ID] = saved
+	}
+	for _, id := range order {
+		saved := latest[id]
 		if !childUUID.MatchString(string(saved.ID)) || saved.ID == saved.ParentID || saved.Cwd == "" || saved.Name == "" {
 			return reject("unavailable", "stored child metadata is invalid")
 		}
@@ -343,7 +352,7 @@ func (o *owner) restoreChildren() error {
 					launch = saved.NativeSession.Launch
 				}
 				if reservation.NativeLaunch != "" && reservation.NativeLaunch != launch {
-					return reject("unavailable", "provisional native launch identity does not match its reservation")
+					reservationConflict[saved.ID] = true
 				}
 			}
 			proof, cached := proofs[saved.ID]
@@ -372,10 +381,6 @@ func (o *owner) restoreChildren() error {
 		}
 		if saved.Backend == "" && saved.Native != nil {
 			saved.Backend = saved.Native.Backend
-		}
-		if !seen[saved.ID] {
-			order = append(order, saved.ID)
-			seen[saved.ID] = true
 		}
 		latest[saved.ID] = saved
 	}
@@ -433,6 +438,10 @@ func (o *owner) restoreChildren() error {
 		if saved.Native != nil {
 			message = "native pane ownership requires reconciliation"
 		}
+		if reservationConflict[id] {
+			message = "native launch reservation differs from retained ownership"
+			saved.NativeCleanupError = message
+		}
 		saved.Latest = &Outcome{Run: Ref{id}, Model: saved.Model, State: saved.State, Error: message}
 		latest[id] = saved
 	}
@@ -473,7 +482,7 @@ func (o *owner) restoreChildren() error {
 			if _, exists := o.tree.names[key]; exists && saved.Team == nil {
 				return reject("unavailable", "stored child names conflict")
 			}
-			r := &record{id: id, team: saved.Team, backend: saved.Backend, nativeOwnership: cloneMemberOwnership(saved.Native), nativeCleanupError: saved.NativeCleanupError, nativeSession: cloneMemberSession(saved.NativeSession), parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest, controlPhase: controlPhases[id]}
+			r := &record{id: id, team: saved.Team, backend: saved.Backend, nativeOwnership: cloneMemberOwnership(saved.Native), nativeCleanupError: saved.NativeCleanupError, nativeReservationConflict: reservationConflict[id], nativeSession: cloneMemberSession(saved.NativeSession), parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest, controlPhase: controlPhases[id]}
 			r.pendingInputs = saved.PendingInputs
 			r.run = o.tree.newRunLocked(Ref{id}, "")
 			r.run.owner, r.run.noticeID, r.run.state = r, saved.NoticeID, saved.State
@@ -528,7 +537,7 @@ func (o *owner) withChildLogLocked(r *record, apply func(*coding.SessionManager)
 	o.tree.mu.Lock()
 	log := r.activeLog
 	native := r.native
-	ownership, releasing := r.nativeOwnership, r.nativeReleasing
+	ownership, releasing := r.nativeOwnership, r.nativeReleasing || r.nativeReservationConflict
 	o.tree.mu.Unlock()
 	if native != nil || ownership != nil || releasing {
 		return reject("unavailable", "the native member still owns its session log")

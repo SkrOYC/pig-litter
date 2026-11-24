@@ -129,6 +129,7 @@ func (o *owner) executeTmuxMember(r *record, selected *run, env tmuxMemberEnviro
 	if resumeSession != nil {
 		manifest.ResumeFile = resumeSession.File
 	}
+	manifest.PeerWake = selected.peerWake != nil
 	if err := manifest.validate(directory, filepath.Base(scope.manifest)); err != nil {
 		outcome.Error = err.Error()
 		return
