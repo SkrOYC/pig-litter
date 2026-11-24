@@ -260,8 +260,9 @@ func teamAdmissionMode(entries []json.RawMessage, member teamMember) (bool, bool
 
 func (o *owner) restoreChildren() error {
 	members := map[ChildID]teamMember{}
+	reservations := map[ChildID]teamReservation{}
 	if o.teamStore != nil {
-		_, roster, err := o.teamStore.Snapshot()
+		roster, pending, err := o.teamStore.recoverySnapshot()
 		if err != nil {
 			return err
 		}
@@ -278,6 +279,9 @@ func (o *owner) restoreChildren() error {
 				}
 			}
 			members[member.Ref.ID] = member
+		}
+		for _, reservation := range pending {
+			reservations[reservation.Member.Ref.ID] = reservation
 		}
 	}
 	entries, err := o.context.SessionManager().GetEntries()
@@ -296,6 +300,7 @@ func (o *owner) restoreChildren() error {
 	}
 	proofs := map[ChildID]admissionProof{}
 	order := []ChildID{}
+	seen := map[ChildID]bool{}
 	for _, entry := range entries {
 		if entry["customType"] != childEntryType {
 			continue
@@ -319,12 +324,26 @@ func (o *owner) restoreChildren() error {
 		}
 		if saved.Team != nil {
 			member, exists := members[saved.ID]
+			reservation, provisional := reservations[saved.ID]
+			if !exists && provisional {
+				member, exists = reservation.Member, true
+				if saved.Native == nil {
+					delete(latest, saved.ID)
+					continue
+				}
+				if reservation.NativeLaunch != "" && reservation.NativeLaunch != saved.Native.Launch {
+					return reject("unavailable", "provisional native launch identity does not match its reservation")
+				}
+			}
 			proof, cached := proofs[saved.ID]
 			if exists && !cached {
 				proof.mode, proof.known, proof.err = teamAdmissionMode(raw, member)
 				proofs[saved.ID] = proof
 			}
-			if !exists || invalidTeam[saved.ID] || saved.ParentID != o.tree.root.id || member.Ref != saved.Team.Ref || member.AdmissionID != saved.Team.AdmissionID || member.Name != saved.Name || member.Workspace.Cwd != saved.Cwd || member.Workspace != saved.Team.Workspace || member.PlanRequired != saved.Team.PlanRequired || proof.err != nil || proof.known && proof.mode != member.PlanRequired || !proof.known && member.PlanRequired {
+			if !exists || invalidTeam[saved.ID] || saved.ParentID != o.tree.root.id || member.Ref != saved.Team.Ref || member.AdmissionID != saved.Team.AdmissionID || member.Name != saved.Name || member.Workspace.Cwd != saved.Cwd || member.Workspace != saved.Team.Workspace || member.PlanRequired != saved.Team.PlanRequired || proof.err != nil || proof.known && proof.mode != member.PlanRequired || !proof.known && member.PlanRequired && !provisional {
+				if provisional && saved.Native != nil {
+					return reject("unavailable", "provisional native ownership does not match its reservation")
+				}
 				invalidTeam[saved.ID] = true
 				delete(latest, saved.ID)
 				continue
@@ -340,12 +359,13 @@ func (o *owner) restoreChildren() error {
 		if saved.Native != nil && saved.Backend != "" && saved.Backend != saved.Native.Backend {
 			return reject("unavailable", "stored native member backend does not match its ownership")
 		}
-		if _, exists := latest[saved.ID]; !exists {
+		if !seen[saved.ID] {
 			order = append(order, saved.ID)
+			seen[saved.ID] = true
 		}
 		latest[saved.ID] = saved
 	}
-	order = slices.DeleteFunc(order, func(id ChildID) bool { return invalidTeam[id] })
+	order = slices.DeleteFunc(order, func(id ChildID) bool { _, exists := latest[id]; return invalidTeam[id] || !exists })
 	controlPhases := map[ChildID]string{}
 	for id, member := range members {
 		if member.PlanRequired && latest[id].Team != nil {
@@ -375,8 +395,15 @@ func (o *owner) restoreChildren() error {
 		if saved.Native == nil {
 			continue
 		}
-		member := members[id]
-		if member.State != "terminated" {
+		member, committed := members[id]
+		if !committed {
+			reservation, exists := reservations[id]
+			if !exists {
+				return reject("unavailable", "provisional native reservation is unavailable")
+			}
+			member = reservation.Member
+			saved.State = Unavailable
+		} else if member.State != "terminated" {
 			if err := o.teamStore.SetState(member.Ref, "unavailable"); err != nil {
 				return err
 			}

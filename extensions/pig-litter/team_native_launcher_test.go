@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -26,7 +27,15 @@ func TestTmuxRootOwnedMemberLifetime(t *testing.T) {
 	}
 }
 
+func TestTmuxProvisionalStartupPreservesOwnership(t *testing.T) {
+	for _, name := range []string{"unresolved_shared", "unresolved_isolated", "resolved_isolated"} {
+		t.Run(name, func(t *testing.T) { testTmuxRootOwnedMemberLifetime(t, name) })
+	}
+}
+
 func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
+	unresolved := strings.HasPrefix(name, "unresolved_")
+	isolated := strings.HasSuffix(name, "_isolated")
 	fixtureBinary, memberBinary, prefix := os.Getenv("P08_NATIVE_PROBE"), os.Getenv("P08_PRODUCT_MEMBER"), os.Getenv("P08_LIVE_ROOT")
 	if fixtureBinary == "" || memberBinary == "" || prefix == "" {
 		t.Fatal("P08_NATIVE_PROBE, P08_PRODUCT_MEMBER, and P08_LIVE_ROOT are required")
@@ -76,7 +85,7 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 	probeWait(t, ctx, "fixture listener", func() bool { return probeCount(provider, "event", "listening") > 0 })
 	address, _ := probeRows(provider)[0]["address"].(string)
 	models := fmt.Sprintf(`{"providers":{"fixture":{"api":"openai-completions","baseUrl":"http://%s/v1","apiKey":"fixture-only","models":[{"id":"fixed","name":"fixed","contextWindow":32000,"maxTokens":1024}]}}}`, address)
-	if name == "startup_failure" {
+	if name == "startup_failure" || unresolved || name == "resolved_isolated" {
 		models = strings.Replace(models, `"id":"fixed"`, `"id":"other"`, 1)
 	}
 	if err := os.WriteFile(filepath.Join(agentDir, "models.json"), []byte(models), 0o600); err != nil {
@@ -105,6 +114,14 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if unresolved {
+		wrapper := filepath.Join(rootPath, "tmux-wrapper")
+		script := fmt.Sprintf("#!/bin/sh\nif [ \"$3\" = kill-pane ]; then exit 7; fi\nexec %s \"$@\"\n", server.command)
+		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		server.command = wrapper
+	}
 	unrelated := tmux("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", server.target, "sleep", "600")
 	rootID := ChildID("018f0000-0000-7000-8000-000000000001")
 	memberID := ChildID("018f0000-0000-7000-8000-000000000002")
@@ -113,9 +130,34 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	member, err := store.Reserve(memberID, string(storeTestUUID(3)), "member", WorkspacePolicy{Kind: "shared_checkout", Cwd: cwd}, false)
+	workspace := WorkspacePolicy{Kind: "shared_checkout", Cwd: cwd}
+	if isolated {
+		git := func(args ...string) {
+			t.Helper()
+			output, err := exec.Command("git", append([]string{"-C", cwd}, args...)...).CombinedOutput()
+			if err != nil {
+				t.Fatalf("git %v: %s: %v", args, output, err)
+			}
+		}
+		git("init", "-q")
+		git("config", "user.name", "Fixture")
+		git("config", "user.email", "fixture@example.invalid")
+		if err := os.WriteFile(filepath.Join(cwd, "fixture.txt"), []byte("fixture\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		git("add", "fixture.txt")
+		git("commit", "-qm", "fixture")
+		workspace, err = teamWorktreeIntent(ctx, store, cwd, memberID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	member, err := store.Reserve(memberID, string(storeTestUUID(3)), "member", workspace, name == "unresolved_shared")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if isolated {
+		cwd = workspace.Cwd
 	}
 	config := defaultConfig()
 	config.MaxMailbox = 2
@@ -129,6 +171,18 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 	_, selected, err := tree.admit(admission{kind: "worker", name: "member", model: "fixture/fixed", cwd: cwd, task: task, agent: worker, member: &member, backend: backendTmux})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if isolated {
+		if err := prepareTeamWorktree(ctx, workspace); err != nil {
+			t.Fatal(err)
+		}
+		member, err = store.SetWorkspacePhase(member.Ref, "prepared")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tree.mu.Lock()
+		selected.owner.team = &member
+		tree.mu.Unlock()
 	}
 	if name == "success" {
 		if _, _, err := tree.message(ctx, nil, selected, "follow_up", "START_ONE"); err != nil {
@@ -150,6 +204,7 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 		available = append(available, "litter_spawn", "litter_wait")
 	}
 	host := &runtimeHost{tools: available}
+	var retainedOwnership *memberOwnership
 	withCompletionHost(t, tree, func(o *owner) {
 		var observed *memberOwnership
 		o.cwd, o.agentDir, o.teamStore = cwd, agentDir, store
@@ -203,7 +258,7 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 			if panes := tmux("list-panes", "-a", "-F", "#{pane_id}"); !strings.Contains(panes, unrelated) || strings.Contains(panes, ownership.Pane.ID) {
 				t.Fatalf("stubborn member cleanup changed unrelated panes: %q", panes)
 			}
-		} else if name == "existing_history" || name == "startup_failure" || name == "prelaunch_failure" {
+		} else if name == "existing_history" || name == "startup_failure" || name == "prelaunch_failure" || unresolved || name == "resolved_isolated" {
 			select {
 			case <-selected.done:
 			case <-ctx.Done():
@@ -214,17 +269,30 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 				t.Fatalf("failed startup outcome = %#v", selected.outcome)
 			}
 			tree.mu.Lock()
-			retained := selected.owner.nativeOwnership
+			retained := cloneMemberOwnership(selected.owner.nativeOwnership)
 			tree.mu.Unlock()
-			if retained != nil {
+			retainedOwnership = retained
+			if unresolved && retained == nil {
+				t.Error("failed cleanup lost native ownership")
+			} else if !unresolved && retained != nil {
 				t.Fatalf("failed startup retained native ownership: %#v", retained)
 			}
 			_, roster, pending, err := store.SnapshotWithReservations()
-			if err != nil || len(roster) != 0 || len(pending) != 0 {
+			if unresolved && (err != nil || len(roster) != 0 || len(pending) != 1 || pending[0] != member) {
+				t.Errorf("unresolved startup lost its reservation: %#v %#v %v", roster, pending, err)
+			} else if !unresolved && (err != nil || len(roster) != 0 || len(pending) != 0) {
 				t.Fatalf("failed startup did not roll back its admission: %#v %#v %v", roster, pending, err)
 			}
+			if isolated {
+				_, workspaceErr := os.Stat(workspace.Cwd)
+				if unresolved && workspaceErr != nil || !unresolved && !os.IsNotExist(workspaceErr) {
+					t.Errorf("isolated workspace retention for %s: %v", name, workspaceErr)
+				}
+			}
 			if panes := strings.Split(tmux("list-panes", "-a", "-F", "#{pane_id}"), "\n"); len(panes) != 2 || !strings.Contains(strings.Join(panes, "\n"), unrelated) {
-				t.Fatalf("failed startup changed unrelated panes: %q", panes)
+				if !unresolved || !strings.Contains(strings.Join(panes, "\n"), unrelated) {
+					t.Fatalf("failed startup changed unrelated panes: %q", panes)
+				}
 			}
 		} else if name == "descendant" {
 			var child *run
@@ -436,4 +504,44 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 		}
 		return host.call(t, method, raw)
 	})
+	if unresolved {
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := openTeamStore(agentDir, rootID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reopened.Close()
+		recovered := testTree(t, config)
+		recovered.root.id = rootID
+		withCompletionHost(t, recovered, func(o *owner) {
+			o.teamStore, o.agentDir, o.cwd = reopened, agentDir, cwd
+			if err := o.restoreChildren(); err != nil {
+				t.Error(err)
+				return
+			}
+			recovered.mu.Lock()
+			restored := recovered.records[memberID]
+			recovered.mu.Unlock()
+			if restored == nil || restored.team == nil || *restored.team != member || !reflect.DeepEqual(restored.nativeOwnership, retainedOwnership) || !restored.paused || restored.latest == nil || restored.latest.State != Unavailable {
+				t.Errorf("reopened native ownership = %#v, want %#v", restored, retainedOwnership)
+			} else if _, _, err := recovered.resume(nil, restored.run, "continue"); err == nil {
+				t.Error("reopened native ownership did not fence resume")
+			}
+			_, roster, pending, err := reopened.SnapshotWithReservations()
+			if err != nil || len(roster) != 0 || len(pending) != 1 || pending[0] != member {
+				t.Errorf("reopened reservation = %#v %#v %v", roster, pending, err)
+			}
+			if isolated {
+				if _, err := os.Stat(workspace.Cwd); err != nil {
+					t.Errorf("reopened isolated workspace is unavailable: %v", err)
+				}
+			}
+			data, _ := json.Marshal(map[string]any{"reservationCount": len(pending), "rosterCount": len(roster), "restored": restored != nil, "workspace": workspace.Cwd})
+			if err := os.WriteFile(filepath.Join(rootPath, "reopen.json"), data, 0o600); err != nil {
+				t.Error(err)
+			}
+		}, func(method string, raw json.RawMessage) json.RawMessage { return host.call(t, method, raw) })
+	}
 }

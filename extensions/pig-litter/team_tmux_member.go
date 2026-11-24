@@ -111,6 +111,25 @@ func (o *owner) executeTmuxMember(r *record, selected *run, env tmuxMemberEnviro
 		outcome.Error = err.Error()
 		return
 	}
+	o.tree.mu.Lock()
+	var member *teamMember
+	if r.team != nil {
+		copy := *r.team
+		member = &copy
+	}
+	o.tree.mu.Unlock()
+	if member == nil {
+		outcome.Error = "native member has no teammate reservation"
+		return
+	}
+	store, err := o.teamStoreForRoot()
+	if err == nil {
+		err = store.markNativeLaunch(*member, launchID)
+	}
+	if err != nil {
+		outcome.Error = err.Error()
+		return
+	}
 	scope.ownership, err = o.reserveMemberLaunch(selected.ctx, r, selected, env.server, launch, sessionDir)
 	if err != nil {
 		outcome.Error = err.Error()

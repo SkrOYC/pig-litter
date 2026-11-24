@@ -69,3 +69,30 @@ func TestRestoredNativeOwnershipFencesResumeAndSessionWriter(t *testing.T) {
 		})
 	}
 }
+
+func TestProvisionalNativeOwnershipRejectsDifferentLaunch(t *testing.T) {
+	store, agentDir, rootID, workspace := storeTestOpen(t)
+	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "member", workspace, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.markNativeLaunch(member, "0123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatal(err)
+	}
+	launch := "fedcba9876543210fedcba9876543210"
+	ownership := &memberOwnership{Backend: backendTmux, Member: member.Ref, Admission: member.AdmissionID, Execution: "execution", Launch: launch, Cwd: workspace.Cwd, Model: "fixture/fixed", Tools: []string{"read"}, SessionDirectory: agentDir, Executable: "/fixture", ExecutableSHA256: strings.Repeat("a", 64), Manifest: "/tmp/member-" + launch + ".json", Server: memberServerIdentity{Socket: "/tmp/tmux", PID: 1, Birth: "1", Target: "%0"}}
+	saved := savedChild{RootID: rootID, ID: member.Ref.ID, ParentID: rootID, Name: member.Name, Kind: "worker", Model: "fixture/fixed", Cwd: workspace.Cwd, Admitted: true, State: Unavailable, NoticeID: "execution", Team: &member, Native: ownership}
+	host := &runtimeHost{entries: []map[string]any{{"customType": childEntryType, "data": saved}}}
+	tree := testTree(t, defaultConfig())
+	tree.root.id = rootID
+	withCompletionHost(t, tree, func(o *owner) {
+		o.teamStore, o.agentDir, o.cwd = store, agentDir, workspace.Cwd
+		if err := o.restoreChildren(); err == nil || !strings.Contains(err.Error(), "does not match its reservation") {
+			t.Fatalf("mismatched native launch recovery = %v", err)
+		}
+		pending, err := store.Reservations()
+		if err != nil || len(pending) != 1 || pending[0] != member {
+			t.Fatalf("mismatched recovery changed the reservation: %#v, %v", pending, err)
+		}
+	}, func(method string, raw json.RawMessage) json.RawMessage { return host.call(t, method, raw) })
+}

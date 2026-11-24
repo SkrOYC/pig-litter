@@ -328,8 +328,7 @@ func (o *owner) finishTeamMember(r *record, selected *run, outcome Outcome) erro
 		state = "paused"
 	}
 	if err := store.SetState(r.team.Ref, state); err != nil {
-		_ = o.rollbackTeamMember(r.team)
-		return err
+		return errors.Join(err, o.rollbackTeamMember(r.team))
 	}
 	if !closing || paused {
 		if paused {
@@ -400,6 +399,15 @@ func (o *owner) resumeTeamMember(r *record, selected *run) error {
 }
 
 func (o *owner) rollbackTeamMember(member *teamMember) error {
+	if o.tree != nil {
+		o.tree.mu.Lock()
+		r := o.tree.records[member.Ref.ID]
+		unresolved := r != nil && r.team != nil && r.team.Ref == member.Ref && r.team.AdmissionID == member.AdmissionID && (r.nativeOwnership != nil || r.nativeReleasing)
+		o.tree.mu.Unlock()
+		if unresolved {
+			return reject("unavailable", "native ownership requires reconciliation before teammate rollback")
+		}
+	}
 	store, err := o.teamStoreForRoot()
 	if err != nil {
 		return err

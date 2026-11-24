@@ -42,6 +42,7 @@ type teamRoster struct {
 type teamReservation struct {
 	Member        teamMember `json:"member"`
 	RequestedName string     `json:"requestedName"`
+	NativeLaunch  string     `json:"nativeLaunch,omitempty"`
 }
 
 type teamStore struct {
@@ -165,7 +166,7 @@ func (s *teamStore) claimLocked(created bool, lock *flock.Flock) error {
 	roster.OwnerPID = os.Getpid()
 	roster.Reservations = slices.DeleteFunc(roster.Reservations, func(reservation teamReservation) bool {
 		workspace := reservation.Member.Workspace
-		return workspace.Kind != "isolated_worktree" || workspace.Phase == "released"
+		return reservation.NativeLaunch == "" && (workspace.Kind != "isolated_worktree" || workspace.Phase == "released")
 	})
 	for i := range roster.Members {
 		if roster.Members[i].State == "running" || roster.Members[i].State == "starting" {
@@ -177,6 +178,43 @@ func (s *teamStore) claimLocked(created bool, lock *flock.Flock) error {
 	}
 	s.ownerEpoch, s.ownerToken = roster.OwnerEpoch, roster.OwnerToken
 	return nil
+}
+
+func (s *teamStore) markNativeLaunch(member teamMember, launch string) error {
+	if !tmuxLaunchNonce.MatchString(launch) {
+		return reject("unavailable", "invalid native launch identity")
+	}
+	return s.transact(func(roster *teamRoster) (bool, error) {
+		for _, committed := range roster.Members {
+			if committed.Ref == member.Ref && committed.AdmissionID == member.AdmissionID {
+				return false, nil
+			}
+		}
+		for i := range roster.Reservations {
+			reservation := &roster.Reservations[i]
+			if reservation.Member.Ref != member.Ref || reservation.Member.AdmissionID != member.AdmissionID {
+				continue
+			}
+			if reservation.NativeLaunch != "" && reservation.NativeLaunch != launch {
+				return false, reject("unavailable", "provisional native launch identity changed")
+			}
+			changed := reservation.NativeLaunch == ""
+			reservation.NativeLaunch = launch
+			return changed, nil
+		}
+		return false, reject("unavailable", "native teammate reservation is unavailable")
+	})
+}
+
+func (s *teamStore) recoverySnapshot() ([]teamMember, []teamReservation, error) {
+	var members []teamMember
+	var reservations []teamReservation
+	err := s.transact(func(roster *teamRoster) (bool, error) {
+		members = slices.Clone(roster.Members)
+		reservations = slices.Clone(roster.Reservations)
+		return false, nil
+	})
+	return members, reservations, err
 }
 
 func (s *teamStore) Reserve(id ChildID, admissionID, name string, workspace WorkspacePolicy, planRequired bool) (teamMember, error) {
@@ -758,6 +796,9 @@ func validateTeamRoster(roster teamRoster, root ChildID) error {
 		if err := validateTeamName(reservation.RequestedName); err != nil || !allocatedStoreName(reservation.RequestedName, reservation.Member.Name) {
 			return errors.New("invalid team reservation name")
 		}
+		if reservation.NativeLaunch != "" && !tmuxLaunchNonce.MatchString(reservation.NativeLaunch) {
+			return errors.New("invalid native launch reservation")
+		}
 		reservations = append(reservations, reservation.Member)
 	}
 	for _, group := range []struct {
@@ -897,7 +938,19 @@ func checkRosterJSONSchema(data []byte) error {
 		}
 		for _, data := range members {
 			if key == "reservations" {
-				reservation, err := exactJSONObject(data, "member", "requestedName")
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(data, &fields); err != nil {
+					return err
+				}
+				keys := []string{"member", "requestedName"}
+				if native, ok := fields["nativeLaunch"]; ok {
+					var launch string
+					if json.Unmarshal(native, &launch) != nil || !tmuxLaunchNonce.MatchString(launch) {
+						return errors.New("invalid native launch reservation")
+					}
+					keys = append(keys, "nativeLaunch")
+				}
+				reservation, err := exactJSONObject(data, keys...)
 				if err != nil {
 					return err
 				}
