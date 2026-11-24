@@ -464,10 +464,17 @@ func (t *Tree) finish(r *record, run *run, raw Outcome) {
 }
 
 func (t *Tree) finishLocked(r *record, run *run, raw Outcome) (func(), Outcome, error) {
+	if err := t.beginFinishLocked(r, run, raw); err != nil {
+		return nil, Outcome{}, err
+	}
+	return t.finishBegun(r, run, true)
+}
+
+func (t *Tree) beginFinishLocked(r *record, run *run, raw Outcome) error {
 	t.mu.Lock()
 	if run.outcome != nil || run.finishing {
 		t.mu.Unlock()
-		return nil, Outcome{}, reject("unavailable", "child execution has already finished")
+		return reject("unavailable", "child execution has already finished")
 	}
 	raw.Run, raw.Model = run.ref, r.model
 	if run.deliveryError != "" {
@@ -495,9 +502,16 @@ func (t *Tree) finishLocked(r *record, run *run, raw Outcome) (func(), Outcome, 
 		r.latest = &raw
 	}
 	t.mu.Unlock()
+	return nil
+}
+
+func (t *Tree) finishBegun(r *record, run *run, lifecycleHeld bool) (func(), Outcome, error) {
 	storeErr := t.store(r)
+	if !lifecycleHeld {
+		t.lifecycleMu.Lock()
+	}
 	t.mu.Lock()
-	raw = *run.outcome
+	raw := *run.outcome
 	run.state, run.finishing = raw.State, false
 	if run.started {
 		run.admission = admissionReady
@@ -531,6 +545,9 @@ mailboxDrained:
 		t.completionWG.Add(1)
 	}
 	t.mu.Unlock()
+	if !lifecycleHeld {
+		t.lifecycleMu.Unlock()
+	}
 	return func() {
 		if r.team != nil && t.teamFinished != nil {
 			err := t.teamFinished(r, run, raw)
@@ -970,8 +987,10 @@ func (t *Tree) close() {
 	var runs []*run
 	for _, id := range t.order {
 		run := t.records[id].run
-		if !run.state.terminal() {
-			run.state = Stopping
+		if !run.state.terminal() || run.finishing {
+			if !run.state.terminal() {
+				run.state = Stopping
+			}
 			runs = append(runs, run)
 		}
 	}

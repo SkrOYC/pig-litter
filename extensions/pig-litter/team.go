@@ -553,14 +553,39 @@ func (g *teamAdmissionGate) observe(message *agent.AssistantMessage) {
 }
 
 func (g *teamAdmissionGate) commit(ctx context.Context) error {
-	g.record.teamStateMu.Lock()
-	defer g.record.teamStateMu.Unlock()
-	if err := g.owner.current(); err != nil {
+	store, err := g.prepareCommit(ctx)
+	if err != nil {
 		return err
+	}
+	return g.commitPrepared(store)
+}
+
+func (g *teamAdmissionGate) prepareCommit(ctx context.Context) (*teamStore, error) {
+	if err := g.owner.current(); err != nil {
+		return nil, err
 	}
 	g.owner.tree.mu.Lock()
 	r, err := g.owner.tree.currentLocked(g.run)
-	if err == nil && (r != g.record || r.paused || g.run.ctx.Err() != nil) {
+	if err != nil || r != g.record || r.paused || r.team == nil || g.run.ctx.Err() != nil {
+		g.owner.tree.mu.Unlock()
+		return nil, reject("unavailable", "teammate execution is no longer current")
+	}
+	workspace := r.team.Workspace
+	g.owner.tree.mu.Unlock()
+	if workspace.Kind == "isolated_worktree" {
+		if err := verifyTeamWorktree(ctx, workspace); err != nil {
+			return nil, err
+		}
+	}
+	return g.owner.teamStoreForRoot()
+}
+
+func (g *teamAdmissionGate) commitPrepared(store *teamStore) error {
+	g.record.teamStateMu.Lock()
+	defer g.record.teamStateMu.Unlock()
+	g.owner.tree.mu.Lock()
+	r, err := g.owner.tree.currentLocked(g.run)
+	if err == nil && (r != g.record || r.paused || r.team == nil || g.run.ctx.Err() != nil) {
 		err = reject("unavailable", "teammate execution is no longer current")
 	}
 	if err == nil && !r.readOnly {
@@ -575,15 +600,6 @@ func (g *teamAdmissionGate) commit(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if g.record.team.Workspace.Kind == "isolated_worktree" {
-		if err := verifyTeamWorktree(ctx, g.record.team.Workspace); err != nil {
-			return err
-		}
-	}
-	store, err := g.owner.teamStoreForRoot()
-	if err != nil {
-		return err
-	}
 	member, err := store.Commit(g.record.team.AdmissionID)
 	if err != nil {
 		return err
@@ -593,6 +609,31 @@ func (g *teamAdmissionGate) commit(ctx context.Context) error {
 	}
 	g.committed = true
 	return nil
+}
+
+func (g *teamAdmissionGate) prepareFinish(ctx context.Context, outcome Outcome) (*teamStore, error) {
+	g.mu.Lock()
+	needed := !g.committed && outcome.State == Completed && g.seen && g.stop == ai.StopReasonStop && len(g.calls) == 0
+	g.mu.Unlock()
+	if !needed {
+		return nil, nil
+	}
+	return g.prepareCommit(ctx)
+}
+
+func (g *teamAdmissionGate) finishPrepared(outcome *Outcome, store *teamStore) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.committed || outcome.State != Completed || !g.seen || g.stop != ai.StopReasonStop || len(g.calls) != 0 {
+		return
+	}
+	if store == nil {
+		outcome.State, outcome.Error = Unavailable, "teammate admission was not prepared"
+		return
+	}
+	if err := g.commitPrepared(store); err != nil {
+		outcome.State, outcome.Error = Unavailable, err.Error()
+	}
 }
 
 func (g *teamAdmissionGate) before(ctx context.Context, id, name string, _ json.RawMessage) agent.ToolCallHookResult {

@@ -6,10 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 
 	"github.com/MichaelKinsy/PiG/agent"
+	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding"
 )
 
@@ -61,6 +63,13 @@ func (o *owner) memberOutcome(ctx context.Context, binding *memberBinding) (memb
 	if err != nil {
 		return evidence, err
 	}
+	binding.denialMu.Lock()
+	denials := maps.Clone(binding.denials)
+	binding.denialMu.Unlock()
+	failure, err := memberHistoryFailure(snapshot, binding.log.baselineCount, denials)
+	if err != nil {
+		return evidence, err
+	}
 	before, after, err := memberSnapshotStats(ctx, snapshot, binding.log.baselineCount, binding.log.cwd, o.agentDir, binding.log.session)
 	if err != nil {
 		return evidence, err
@@ -74,8 +83,73 @@ func (o *owner) memberOutcome(ctx context.Context, binding *memberBinding) (memb
 	if !current {
 		return evidence, reject("unavailable", "native execution changed while reading its outcome")
 	}
-	evidence = memberOutcomeEvidence{outcome: outcomeFrom(terminal, before, after, "", false, false), first: first, report: idleAssistantReport(terminal), count: len(snapshot.entries), digest: memberEntriesDigest(snapshot.entries)}
+	evidence = memberOutcomeEvidence{outcome: outcomeFrom(terminal, before, after, failure, false, false), first: first, report: idleAssistantReport(terminal), count: len(snapshot.entries), digest: memberEntriesDigest(snapshot.entries)}
 	return evidence, nil
+}
+
+func memberHistoryFailure(snapshot memberLogSnapshot, baseline int, denials map[memberPlanDenial]string) (string, error) {
+	if baseline < 0 || baseline > len(snapshot.entries) {
+		return "", errors.New("native execution baseline is invalid")
+	}
+	response := ""
+	for _, raw := range snapshot.entries[baseline:] {
+		var entry struct {
+			ID      string          `json:"id"`
+			Type    string          `json:"type"`
+			Message json.RawMessage `json:"message"`
+		}
+		if json.Unmarshal(raw, &entry) != nil || entry.Type != "message" {
+			continue
+		}
+		var message agent.AgentMessage
+		if err := json.Unmarshal(entry.Message, &message); err != nil {
+			return "", errors.New("native session contains an invalid message")
+		}
+		if message.Assistant != nil {
+			response = entry.ID
+			continue
+		}
+		if message.ToolResult == nil {
+			continue
+		}
+		var nested struct {
+			Calls *struct {
+				Calls []struct {
+					ID, Name, Status, Error string
+				} `json:"calls"`
+				Complete bool `json:"complete"`
+			} `json:"nestedCalls"`
+		}
+		if err := json.Unmarshal(entry.Message, &nested); err != nil {
+			return "", errors.New("native nested tool history is invalid")
+		}
+		if nested.Calls != nil {
+			for _, call := range nested.Calls.Calls {
+				if call.Status == "ok" {
+					continue
+				}
+				if reason, expected := denials[memberPlanDenial{response: response, call: planDenial{ID: call.ID, Name: call.Name}}]; expected && call.Status == "error" && call.Error == reason {
+					continue
+				}
+				result := agent.AgentToolResult{Content: []ai.ToolResultMessageContent{ai.TextContent{Text: call.Error}}, IsError: true}
+				return toolFailure(call.Name, result), nil
+			}
+			if !nested.Calls.Complete {
+				return "native nested tool history is incomplete", nil
+			}
+		}
+		result := message.ToolResult
+		if result.IsError {
+			reason, expected := denials[memberPlanDenial{response: response, call: planDenial{ID: result.ToolCallID, Name: result.ToolName}}]
+			if len(result.Content) == 1 {
+				if text, ok := result.Content[0].(ai.TextContent); ok && expected && text.Text == reason {
+					continue
+				}
+			}
+			return toolFailure(result.ToolName, result.Result()), nil
+		}
+	}
+	return "", nil
 }
 
 func memberSnapshotStats(ctx context.Context, snapshot memberLogSnapshot, baseline int, cwd, agentDir string, session ChildID) (coding.SessionStats, coding.SessionStats, error) {

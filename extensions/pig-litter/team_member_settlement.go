@@ -48,6 +48,9 @@ func (o *owner) decideMemberSettlement(ctx context.Context, binding *memberBindi
 		binding.evaluating = false
 		binding.settleMu.Unlock()
 	}()
+	if err := o.current(); err != nil {
+		return decision, err
+	}
 	o.tree.lifecycleMu.Lock()
 	o.tree.mu.Lock()
 	active := o.memberBindingCurrentLocked(binding)
@@ -56,12 +59,15 @@ func (o *owner) decideMemberSettlement(ctx context.Context, binding *memberBindi
 		o.tree.lifecycleMu.Unlock()
 		return decision, reject("unavailable", "native member execution is no longer current")
 	}
-	candidate, wake, err := o.idleCandidate(binding.record, binding.run, report)
+	candidate, wake, err := o.idleCandidateLocal(binding.record, binding.run, report)
 	o.tree.lifecycleMu.Unlock()
 	if err != nil {
 		return decision, err
 	}
 	permit, feedback := runTeamPolicy(ctx, o.policy.TeammateIdle, candidate)
+	if err := o.current(); err != nil {
+		return decision, err
+	}
 	o.tree.lifecycleMu.Lock()
 	defer o.tree.lifecycleMu.Unlock()
 	o.tree.mu.Lock()
@@ -70,7 +76,7 @@ func (o *owner) decideMemberSettlement(ctx context.Context, binding *memberBindi
 	if !active {
 		return decision, reject("unavailable", "native member execution changed during policy evaluation")
 	}
-	current, currentWake, err := o.idleCandidate(binding.record, binding.run, report)
+	current, currentWake, err := o.idleCandidateLocal(binding.record, binding.run, report)
 	if err != nil {
 		return decision, err
 	}
@@ -98,6 +104,9 @@ func (o *owner) decideMemberSettlement(ctx context.Context, binding *memberBindi
 
 func (o *owner) finalizeMemberSettlement(binding *memberBinding, boundary uint64, aborted bool, commit func() error) (memberSettlementDecision, error) {
 	decision := memberSettlementDecision{boundary: boundary}
+	if err := o.current(); err != nil {
+		return decision, err
+	}
 	o.tree.lifecycleMu.Lock()
 	defer o.tree.lifecycleMu.Unlock()
 	binding.settleMu.Lock()
@@ -116,7 +125,7 @@ func (o *owner) finalizeMemberSettlement(binding *memberBinding, boundary uint64
 	if !active {
 		return decision, reject("unavailable", "native member execution is no longer current")
 	}
-	current, wake, err := o.idleCandidate(binding.record, binding.run, pending.candidate.Report)
+	current, wake, err := o.idleCandidateLocal(binding.record, binding.run, pending.candidate.Report)
 	if err != nil {
 		return decision, err
 	}

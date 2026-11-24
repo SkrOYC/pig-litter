@@ -251,7 +251,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			if caller != nil {
 				actor = &parent.team.Ref
 			}
+			o.tree.lifecycleMu.Lock()
 			task, state, err := store.createTaskWithID(args.Subject, args.Description, args.BlockedBy, args.Metadata, args.SubmissionID, actor)
+			o.tree.lifecycleMu.Unlock()
 			return map[string]any{"state": state, "task": task}, err
 		case "team_task_get":
 			task, err := store.getTask(args.TaskID)
@@ -269,7 +271,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 				if caller != nil {
 					actor = &parent.team.Ref
 				}
+				o.tree.lifecycleMu.Lock()
 				task, state, err := store.editTask(args.TaskID, edit, actor)
+				o.tree.lifecycleMu.Unlock()
 				return map[string]any{"state": state, "task": task}, err
 			}
 			if args.Action == "complete" && args.Assignee == "" {
@@ -280,7 +284,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 				if caller != nil {
 					return nil, reject("permission_denied", "only the team lead can delete a task")
 				}
+				o.tree.lifecycleMu.Lock()
 				task, err := store.deleteTask(args.TaskID)
+				o.tree.lifecycleMu.Unlock()
 				return map[string]any{"state": "deleted", "task": task}, err
 			}
 			var member MemberRef
@@ -307,7 +313,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			} else {
 				return nil, reject("rejected", "a teammate must claim for itself or the lead must assign a task")
 			}
+			o.tree.lifecycleMu.Lock()
 			task, state, err := store.claimTask(args.TaskID, member, explicit)
+			o.tree.lifecycleMu.Unlock()
 			return map[string]any{"state": state, "task": task}, err
 		}
 		return nil, reject("rejected", "unknown task operation")

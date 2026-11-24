@@ -46,20 +46,24 @@ func (o *owner) sendPeerWake(session *coding.Session, r *record, selected *run) 
 
 func (o *owner) requestPeerWake(recipient MemberRef) {
 	t := o.tree
+	t.lifecycleMu.Lock()
 	t.mu.Lock()
 	r := t.records[recipient.ID]
 	if t.closed || r == nil || r.team == nil || r.team.Ref != recipient {
 		t.mu.Unlock()
+		t.lifecycleMu.Unlock()
 		return
 	}
 	r.peerWakeVersion++
 	if r.peerWakePending {
 		t.mu.Unlock()
+		t.lifecycleMu.Unlock()
 		return
 	}
 	r.peerWakePending = true
 	t.peerWakeWG.Add(1)
 	t.mu.Unlock()
+	t.lifecycleMu.Unlock()
 	go o.drivePeerWake(recipient)
 }
 

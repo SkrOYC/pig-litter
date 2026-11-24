@@ -48,6 +48,11 @@ func (o *owner) idleCandidate(r *record, selected *run, report string) (idlePoli
 	if err := o.current(); err != nil {
 		return candidate, 0, err
 	}
+	return o.idleCandidateLocal(r, selected, report)
+}
+
+func (o *owner) idleCandidateLocal(r *record, selected *run, report string) (idlePolicyCandidate, uint64, error) {
+	var candidate idlePolicyCandidate
 	o.tree.mu.Lock()
 	if o.tree.closed || o.tree.records[r.id] != r || r.run != selected || r.team == nil || r.paused || selected.ctx.Err() != nil || r.controlPhase == "closing" || r.controlPhase == "terminated" || r.controlPhase == "recovery_pending" {
 		o.tree.mu.Unlock()

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -16,16 +17,17 @@ import (
 )
 
 type memberAuthority struct {
-	owner    *owner
-	binding  *memberBinding
-	gate     *teamAdmissionGate
-	mu       sync.Mutex
-	turn     uint64
-	active   bool
-	approved map[string]memberAuthorizedCall
-	first    *agent.AssistantMessage
-	turnCtx  context.Context
-	cancel   context.CancelFunc
+	owner     *owner
+	binding   *memberBinding
+	gate      *teamAdmissionGate
+	mu        sync.Mutex
+	turn      uint64
+	active    bool
+	approved  map[string]memberAuthorizedCall
+	responses map[string]string
+	first     *agent.AssistantMessage
+	turnCtx   context.Context
+	cancel    context.CancelFunc
 }
 
 type memberAuthorizedCall struct {
@@ -35,6 +37,7 @@ type memberAuthorizedCall struct {
 	ready    bool
 	consumed bool
 	finished bool
+	response string
 }
 
 type memberTurnRequest struct {
@@ -261,8 +264,8 @@ func (authority *memberAuthority) finalizeSettlement(ctx context.Context, reques
 	if err != nil {
 		return memberSettlementDecision{}, err
 	}
-	if evidence.outcome.State != Completed || evidence.outcome.Error != "" {
-		return memberSettlementDecision{}, reject("unavailable", "native assistant outcome is not completed")
+	if evidence.outcome.State != Completed && evidence.outcome.State != Partial {
+		return memberSettlementDecision{}, reject("unavailable", "native assistant outcome cannot settle")
 	}
 	binding.settleMu.Lock()
 	pending := binding.settlement
@@ -271,33 +274,58 @@ func (authority *memberAuthority) finalizeSettlement(ctx context.Context, reques
 	if !matches {
 		return memberSettlementDecision{}, reject("unavailable", "native outcome does not match its approved settlement")
 	}
-	var after func()
+	authority.gate.observe(evidence.first)
+	outcome := evidence.outcome
+	store, err := authority.gate.prepareFinish(ctx, outcome)
+	if err != nil {
+		return memberSettlementDecision{}, err
+	}
+	begun := false
 	decision, err := o.finalizeMemberSettlement(binding, request.Boundary, false, func() error {
 		snapshot, err := readMemberLog(ctx, binding.log)
 		if err != nil || len(snapshot.entries) != evidence.count || memberEntriesDigest(snapshot.entries) != evidence.digest {
 			return reject("unavailable", "native history changed before settlement commit")
 		}
-		authority.gate.observe(evidence.first)
-		outcome := evidence.outcome
-		authority.gate.finish(&outcome)
+		authority.gate.finishPrepared(&outcome, store)
 		authority.gate.mu.Lock()
 		committed := authority.gate.committed
 		authority.gate.mu.Unlock()
-		if !committed && outcome.State == Completed {
+		if !committed {
 			outcome.State, outcome.Error = Unavailable, "teammate admission was not committed"
 		}
-		var settled Outcome
-		after, settled, err = o.tree.finishLocked(binding.record, binding.run, outcome)
-		if err != nil {
+		if err := o.tree.beginFinishLocked(binding.record, binding.run, outcome); err != nil {
 			return err
 		}
-		if settled.State != Completed {
-			return reject("unavailable", "native outcome did not complete")
-		}
+		begun = true
 		return nil
 	})
-	if after != nil {
-		after()
+	if begun {
+		after, settled, finishErr := o.tree.finishBegun(binding.record, binding.run, false)
+		if after != nil {
+			after()
+		}
+		if finishErr != nil {
+			decision.allow = false
+			return decision, finishErr
+		}
+		if settled.State != Completed && settled.State != Partial {
+			decision.allow = false
+			return decision, reject("unavailable", "native outcome did not settle")
+		}
+	}
+	if err == nil && decision.allow {
+		o.tree.mu.Lock()
+		teamErr := binding.run.teamFinishErr
+		active := o.memberBindingCurrentLocked(binding)
+		o.tree.mu.Unlock()
+		if !active {
+			decision.allow = false
+			return decision, reject("unavailable", "native owner retired during settlement")
+		}
+		if teamErr != nil {
+			decision.allow = false
+			return decision, fmt.Errorf("native team settlement did not persist: %w", teamErr)
+		}
 	}
 	return decision, err
 }
@@ -362,6 +390,7 @@ func (authority *memberAuthority) startTurn(id uint64) error {
 	o.tree.mu.Unlock()
 	authority.turn, authority.active = id, true
 	authority.approved = map[string]memberAuthorizedCall{}
+	authority.responses = map[string]string{}
 	authority.turnCtx, authority.cancel = context.WithCancel(binding.run.ctx)
 	authority.mu.Unlock()
 	o.retireScope(previous)
@@ -377,6 +406,7 @@ func (authority *memberAuthority) endTurn(id uint64) error {
 	}
 	authority.active = false
 	authority.approved = nil
+	authority.responses = nil
 	cancel := authority.cancel
 	scope := authority.owner.callScope(authority.binding.run)
 	if scope != nil {
@@ -423,6 +453,7 @@ func (authority *memberAuthority) observeResponse(ctx context.Context, request m
 		return err
 	}
 	var first *agent.AssistantMessage
+	var observed *agent.AssistantMessage
 	found := false
 	for _, raw := range entries[authority.binding.log.baselineCount:] {
 		var entry struct {
@@ -457,6 +488,7 @@ func (authority *memberAuthority) observeResponse(ctx context.Context, request m
 			first = message
 		}
 		if entry.ID == request.EntryID {
+			observed = message
 			found = true
 			break
 		}
@@ -471,6 +503,11 @@ func (authority *memberAuthority) observeResponse(ctx context.Context, request m
 	}
 	if authority.first == nil {
 		authority.first = first
+	}
+	for _, block := range observed.Content {
+		if call, ok := block.(ai.ToolCall); ok {
+			authority.responses[call.ID] = request.EntryID
+		}
 	}
 	return nil
 }
@@ -504,22 +541,28 @@ func (authority *memberAuthority) authorize(ctx context.Context, request memberT
 		authority.mu.Unlock()
 		return denied("native tool call bound reached")
 	}
+	response := authority.responses[request.ID]
 	if request.Parent != "" {
 		parent, ok := authority.approved[request.Parent]
 		if !ok || !parent.ready || parent.decision.Block {
 			authority.mu.Unlock()
 			return denied("native parent tool call is unavailable")
 		}
+		response = parent.response
 	}
-	authority.approved[request.ID] = memberAuthorizedCall{name: request.Name, digest: digest}
+	authority.approved[request.ID] = memberAuthorizedCall{name: request.Name, digest: digest, response: response}
 	first := authority.first
 	authority.mu.Unlock()
 	decision := memberToolDecision{}
+	planDenied := false
 	authority.gate.observe(first)
 	if result := authority.gate.before(ctx, request.ID, request.Name, request.Arguments); result.Block {
 		decision = memberToolDecision{Block: true, Reason: result.Reason, Terminate: result.Terminate}
 	} else if result := authority.owner.beforePlanTool(authority.binding.record, authority.binding.run, request.ID, request.Name, request.Arguments); result.Block {
 		decision = memberToolDecision{Block: true, Reason: result.Reason, Terminate: result.Terminate}
+		authority.binding.run.mu.Lock()
+		planDenied = authority.binding.run.planDenials[planDenial{ID: request.ID, Name: request.Name}]
+		authority.binding.run.mu.Unlock()
 	} else if result := authority.owner.shutdownHook(authority.binding.record, authority.binding.run)(ctx, request.ID, request.Name, request.Arguments); result.Block {
 		decision = memberToolDecision{Block: true, Reason: result.Reason, Terminate: result.Terminate}
 	}
@@ -528,7 +571,15 @@ func (authority *memberAuthority) authorize(ctx context.Context, request memberT
 	if !authority.active || authority.turn != turn {
 		return denied("native turn changed during authorization")
 	}
-	authority.approved[request.ID] = memberAuthorizedCall{name: request.Name, digest: digest, decision: decision, ready: true}
+	if planDenied && response != "" {
+		authority.binding.denialMu.Lock()
+		if authority.binding.denials == nil {
+			authority.binding.denials = map[memberPlanDenial]string{}
+		}
+		authority.binding.denials[memberPlanDenial{response: response, call: planDenial{ID: request.ID, Name: request.Name}}] = decision.Reason
+		authority.binding.denialMu.Unlock()
+	}
+	authority.approved[request.ID] = memberAuthorizedCall{name: request.Name, digest: digest, decision: decision, ready: true, response: response}
 	return decision
 }
 

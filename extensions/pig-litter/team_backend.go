@@ -148,10 +148,17 @@ type memberBinding struct {
 	readyErr    error
 	pinMu       sync.Mutex
 	startingLog *memberStartingLog
+	denialMu    sync.Mutex
+	denials     map[memberPlanDenial]string
 	settleMu    sync.Mutex
 	boundary    uint64
 	evaluating  bool
 	settlement  *memberSettlement
+}
+
+type memberPlanDenial struct {
+	response string
+	call     planDenial
 }
 
 const (
