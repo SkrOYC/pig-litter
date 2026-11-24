@@ -26,6 +26,11 @@ tell application "iTerm"
       set windowID to id of candidateWindow as text
       set reportText to reportText & "window " & windowID & linefeed
       try
+        set reportText to reportText & "  name " & (name of candidateWindow) & linefeed
+      on error errorText number errorNumber
+        set reportText to reportText & "  name error " & errorNumber & " " & errorText & linefeed
+      end try
+      try
         set currentRef to current session of candidateWindow
         if currentRef is missing value then
           set reportText to reportText & "  current-session missing" & linefeed
@@ -35,16 +40,23 @@ tell application "iTerm"
       on error errorText number errorNumber
         set reportText to reportText & "  current-session error " & errorNumber & " " & errorText & linefeed
       end try
+      set tabOrdinal to 0
       repeat with candidateTab in tabs of candidateWindow
         try
-          set tabIndex to index of candidateTab as text
+          set tabOrdinal to tabOrdinal + 1
+          set tabIndex to "unavailable"
+          try
+            set tabIndex to index of candidateTab as text
+          on error errorText number errorNumber
+            set tabIndex to "error " & errorNumber & " " & errorText
+          end try
           set tabID to "unavailable"
           try
             set tabID to id of candidateTab as text
           on error errorText number errorNumber
             set tabID to "error " & errorNumber & " " & errorText
           end try
-          set reportText to reportText & "  tab index=" & tabIndex & " id=" & tabID & linefeed
+          set reportText to reportText & "  tab ordinal=" & tabOrdinal & " index=" & tabIndex & " id=" & tabID & linefeed
           repeat with candidateSession in sessions of candidateTab
             try
               set reportText to reportText & "    session id=" & (unique id of candidateSession) & " tty=" & (tty of candidateSession) & linefeed
@@ -124,28 +136,40 @@ end tell
 ACKNOWLEDGE_WARNING = r'''
 on run argv
   set wantedWindow to item 1 of argv
+  set wantedSession to item 2 of argv
+  set wantedName to missing value
+  set matchingWindows to 0
+  tell application "iTerm"
+    repeat with candidateWindow in windows
+      if (id of candidateWindow as text) is wantedWindow then
+        set currentRef to current session of candidateWindow
+        if currentRef is missing value then return "owned current session missing"
+        if (unique id of currentRef) is not wantedSession then return "owned session changed"
+        set wantedName to name of candidateWindow
+      end if
+    end repeat
+    if wantedName is missing value or wantedName is "" then return "owned window name unavailable"
+    repeat with candidateWindow in windows
+      if (name of candidateWindow) is wantedName then set matchingWindows to matchingWindows + 1
+    end repeat
+  end tell
+  if matchingWindows is not 1 then return "iTerm window name is ambiguous: " & wantedName
   tell application "System Events"
     if not (exists process "iTerm2") then return "iTerm process unavailable"
     tell process "iTerm2"
-      repeat with candidateWindow in windows
-        set candidateID to ""
+      set matchingUIWindows to every window whose name is wantedName
+      if (count of matchingUIWindows) is not 1 then return "accessibility window name is ambiguous: " & wantedName
+      set ownedUIWindow to item 1 of matchingUIWindows
+      repeat with candidateDialog in sheets of ownedUIWindow
+        set dialogText to ""
         try
-          set candidateID to value of attribute "AXWindowNumber" of candidateWindow as text
+          set dialogText to (value of every static text of candidateDialog) as text
         end try
-        if candidateID is wantedWindow then
-          set candidates to {candidateWindow} & (every sheet of candidateWindow)
-          repeat with candidateDialog in candidates
-            set dialogText to ""
-            try
-              set dialogText to (value of every static text of candidateDialog) as text
-            end try
-            if dialogText contains "A session ended very soon after starting." and dialogText contains "Check that the command in profile" and dialogText contains "Default" and dialogText contains "is correct." then
-              if exists button "OK" of candidateDialog then
-                click button "OK" of candidateDialog
-                return "acknowledged owned short-session warning: " & dialogText
-              end if
-            end if
-          end repeat
+        if dialogText is "WarningA session ended very soon after starting. Check that the command in profile \"Default\" is correct." or dialogText is "WarningA session ended very soon after starting. Check that the command in profile “Default” is correct." then
+          if exists button "OK" of candidateDialog then
+            click button "OK" of candidateDialog
+            return "acknowledged owned short-session warning on " & wantedName & ": " & dialogText
+          end if
         end if
       end repeat
     end tell
@@ -344,11 +368,14 @@ class Diagnostic:
         owned["disappeared"] = self.window_gone(stage + ".window-exists", window)
         self.snapshot(stage + "-after-close")
         if not owned["disappeared"]:
-            warning = self.action(stage + ".acknowledge-warning", ACKNOWLEDGE_WARNING, window, timeout=10)
+            warning = self.action(stage + ".acknowledge-warning", ACKNOWLEDGE_WARNING, window, session, timeout=10)
             self.snapshot(stage + "-after-warning-check")
             if warning and warning.startswith("acknowledged owned"):
                 self.action(stage + ".exists-after-warning", driver.SESSION, window, session, "exists")
                 owned["disappeared"] = self.window_gone(stage + ".window-after-warning", window)
+                if not owned["disappeared"]:
+                    self.action(stage + ".close-after-warning", driver.SESSION, window, session, "close")
+                    owned["disappeared"] = self.window_gone(stage + ".window-after-second-close", window)
             if not owned["disappeared"]:
                 network = self.action(stage + ".allow-iterm-network", ALLOW_ITERM_NETWORK, timeout=10)
                 self.snapshot(stage + "-after-network-check")
