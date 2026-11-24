@@ -9,6 +9,10 @@ import (
 
 var errPeerWakeBlocked = errors.New("peer wake is waiting for room")
 
+type controlWakeBlocked struct{ err error }
+
+func (e controlWakeBlocked) Error() string { return e.err.Error() }
+
 func (o *owner) sendPeerWake(session *coding.Session, r *record, selected *run) error {
 	if selected.peerWake != nil && selected.peerWake.Control != nil {
 		return o.sendControlWake(session, r, selected, *selected.peerWake.Control)
@@ -122,11 +126,41 @@ func (o *owner) drivePeerWake(recipient MemberRef) {
 					return
 				}
 			}
+			if _, blocked := err.(controlWakeBlocked); blocked {
+				wait := t.wakeBlocker(selected)
+				if wait == nil {
+					continue
+				}
+				select {
+				case <-wait:
+					continue
+				case <-t.ctx.Done():
+					o.finishPeerWakeRequest(recipient, version)
+					return
+				}
+			}
 		}
 		if o.finishPeerWakeRequest(recipient, version) {
 			return
 		}
 	}
+}
+
+func (t *Tree) wakeBlocker(selected *run) <-chan struct{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, id := range t.order {
+		run := t.records[id].run
+		if run == selected {
+			continue
+		}
+		select {
+		case <-run.done:
+		default:
+			return run.done
+		}
+	}
+	return nil
 }
 
 func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error) {
@@ -151,13 +185,10 @@ func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error
 		t.lifecycleMu.Unlock()
 		return false, err
 	}
-	var control *controlNotice
-	if !eligible {
-		control, err = o.pendingControlWake(store, recipient)
-		if err != nil || control == nil {
-			t.lifecycleMu.Unlock()
-			return false, err
-		}
+	control, err := o.pendingControlWake(store, recipient)
+	if err != nil || !eligible && control == nil {
+		t.lifecycleMu.Unlock()
+		return false, err
 	}
 	t.mu.Lock()
 	r := t.records[recipient.ID]
@@ -169,6 +200,9 @@ func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error
 	if err := t.roomLocked(r.parentID(), !r.readOnly, r.cwd, r.id, r.team); err != nil {
 		t.mu.Unlock()
 		t.lifecycleMu.Unlock()
+		if control != nil {
+			return false, controlWakeBlocked{err: err}
+		}
 		return false, errPeerWakeBlocked
 	}
 	selected := t.newRunLocked(Ref{r.id}, "")

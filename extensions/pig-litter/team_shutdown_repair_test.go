@@ -193,7 +193,7 @@ func TestCancelledShutdownDoesNotWakeAfterTheTurnFinishes(t *testing.T) {
 	}
 }
 
-func TestShutdownRequestRetryWakesAfterCapacityReturns(t *testing.T) {
+func TestShutdownRequestWakesWhenCapacityReturns(t *testing.T) {
 	store, _, root, workspace := storeTestOpen(t)
 	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "worker", workspace, false)
 	if err != nil {
@@ -237,24 +237,25 @@ func TestShutdownRequestRetryWakesAfterCapacityReturns(t *testing.T) {
 			exerciseErr = err
 			return
 		}
-		tree.peerWakeWG.Wait()
-		if previous.owner.run != previous {
-			exerciseErr = fmt.Errorf("teammate woke while capacity was full")
-			return
-		}
-		tree.finish(other.owner, other, Outcome{State: Completed})
 		retry, err := o.applyShutdown(human, command)
 		if err != nil || retry["request"].(shutdownRequest).ID != first["request"].(shutdownRequest).ID {
 			exerciseErr = fmt.Errorf("shutdown retry: %#v %v", retry, err)
 			return
 		}
 		select {
+		case <-started:
+			exerciseErr = fmt.Errorf("teammate woke while capacity was full")
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+		tree.finish(other.owner, other, Outcome{State: Completed})
+		select {
 		case selected := <-started:
 			if selected.ref.ID != previous.ref.ID {
 				exerciseErr = fmt.Errorf("retry woke the wrong teammate")
 			}
 		case <-time.After(time.Second):
-			exerciseErr = fmt.Errorf("shutdown retry did not wake after capacity returned")
+			exerciseErr = fmt.Errorf("shutdown did not wake after capacity returned")
 		}
 	}, shutdownRepairHost)
 	if exerciseErr != nil {
