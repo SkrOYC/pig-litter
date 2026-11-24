@@ -254,3 +254,15 @@ func TestCollaborationEncodedProgressIgnoresIncompleteTimes(t *testing.T) {
 		t.Fatalf("unavailable progress = %d ms, want -1", got)
 	}
 }
+
+func TestMediaReadsLatestEncodedFrameFromRecorderProgress(t *testing.T) {
+	dir := t.TempDir()
+	progress := "frame=    0 fps=0.0 time=N/A\rframe=   14 fps=5.6 time=00:00:00.93\rframe=   37 fps=9.2 time=00:00:02.46\r"
+	if err := os.WriteFile(filepath.Join(dir, "ffmpeg.log"), []byte(progress), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	media := &collaborationMedia{directory: dir}
+	if frames, err := media.encodedFrames(); err != nil || frames != 37 {
+		t.Fatalf("encoded frames = %d, %v", frames, err)
+	}
+}

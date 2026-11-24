@@ -52,6 +52,18 @@ func fixtureReport(prefix string) string {
 }
 
 func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string) (providerTurn, bool, error) {
+	if turn, handled, err := teamMessageTurn(request); handled {
+		return turn, true, err
+	}
+	if turn, handled, err := teamPlanTurn(request); handled {
+		return turn, true, err
+	}
+	if turn, handled, err := teamShutdownTurn(request); handled {
+		return turn, true, err
+	}
+	if turn, handled, err := teamPreviewTurn(request); handled {
+		return turn, true, err
+	}
 	text := allMessageText(request.Messages)
 	if request.Model == "quick" && strings.Contains(text, "LIVE_QUICK_RUN") {
 		if !assistantContains(request.Messages, state.quickHistoryMarker) {
@@ -144,7 +156,7 @@ func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string
 		return turn, true, err
 	}
 	if marker == "NEW_ROOT_HEADER" || marker == "COLD_ROOT_HEADER" {
-		if err := requireToolInventory(tools, append(append([]string(nil), fileTools...), controlTools...), []string{"ls"}, "context-only root"); err != nil {
+		if err := requireRootToolInventory(tools, strings.HasPrefix(state.scenario, "team-"), "context-only root"); err != nil {
 			return providerTurn{}, true, err
 		}
 		return providerTurn{kind: "text", text: marker + "_DONE"}, true, nil
@@ -181,7 +193,7 @@ func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string
 	if state.caseName == caseUnselected {
 		return providerTurn{}, true, fmt.Errorf("unselected root invoked a child panel fixture")
 	}
-	if err := requireToolInventory(tools, append(append([]string(nil), fileTools...), controlTools...), []string{"ls"}, "panel root"); err != nil {
+	if err := requireRootToolInventory(tools, false, "panel root"); err != nil {
 		return providerTurn{}, true, err
 	}
 	switch marker {

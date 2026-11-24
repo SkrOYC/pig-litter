@@ -577,3 +577,83 @@ func TestClosedPanelLeavesAcceptedNativeRunAliveAndRejectsStaleActions(t *testin
 		}
 	})
 }
+
+func TestHumanTeamMessageRejectsExecutionReplacement(t *testing.T) {
+	base, store, members, runs := teamViewFixture(t)
+	member, selected := members[1], runs[1]
+	if err := store.SetState(member.Ref, "running"); err != nil {
+		t.Fatal(err)
+	}
+	host := &runtimeHost{tools: []string{"read", "ls"}}
+	withRuntimeOwner(t, host, base.tree, base.agentDir, base.agentDir, func(o *owner) {
+		o.teamStore = store
+		o.tree.mu.Lock()
+		replacement := o.tree.newRunLocked(selected.ref, "")
+		replacement.owner, replacement.state, replacement.admission = selected.owner, Running, admissionReady
+		selected.owner.run = replacement
+		o.tree.mu.Unlock()
+		target := humanMember{Ref: member.Ref, AdmissionID: member.AdmissionID, Name: member.Name}
+		for _, kind := range []humanActionKind{humanMessage, humanPause} {
+			result := o.performHuman(context.Background(), selected, humanAction{kind: kind, mode: "follow_up", text: "message for previous execution", member: &target})
+			if result.err == nil || !strings.Contains(result.err.Error(), "execution changed") || len(replacement.mailbox) != 0 || replacement.owner.paused {
+				t.Fatalf("replacement execution accepted stale action %d: %+v, queued=%d", kind, result, len(replacement.mailbox))
+			}
+		}
+		o.tree.mu.Lock()
+		selected.owner.run = selected
+		o.tree.mu.Unlock()
+		replacement.cancel()
+	})
+}
+
+func TestTeamComposerKeepsDraftWhenMemberStopsBeforeSubmission(t *testing.T) {
+	base, store, members, runs := teamViewFixture(t)
+	member, selected := members[1], runs[1]
+	if err := store.SetState(member.Ref, "running"); err != nil {
+		t.Fatal(err)
+	}
+	host := &runtimeHost{tools: []string{"read", "ls"}}
+	withRuntimeOwner(t, host, base.tree, base.agentDir, base.agentDir, func(o *owner) {
+		o.teamStore = store
+		o.tree.mu.Lock()
+		selected.state, selected.admission = Running, admissionReady
+		o.tree.mu.Unlock()
+		defer func() {
+			o.tree.mu.Lock()
+			selected.state = Completed
+			o.tree.mu.Unlock()
+		}()
+		panel := newChildPanel(o, nil, func() int { return 32 })
+		panel.mu.Lock()
+		panel.team = newTeamView(panel.ctx, o, panel.requestRender)
+		panel.mu.Unlock()
+		defer panel.Dispose()
+		waitTeamFrame(t, panel.team, func(frame *teamViewFrame) bool {
+			return len(frame.Members) == 2 && frame.Members[1].Execution != nil && frame.Members[1].Execution.Child.State == Running
+		})
+		panel.Render(120)
+		panelKey(t, panel, "\x1b[B")
+		panelKey(t, panel, "m")
+		panelKey(t, panel, "draft survives rejection")
+		if err := store.SetState(member.Ref, "paused"); err != nil {
+			t.Fatal(err)
+		}
+		panelKey(t, panel, "\r")
+		deadline := time.Now().Add(5 * time.Second)
+		var rendered string
+		for time.Now().Before(deadline) {
+			rendered = strings.Join(panel.Render(120), "\n")
+			if strings.Contains(rendered, "Action failed") {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if panel.mode != panelMessage || panel.draft != "draft survives rejection" || panel.member != member.Ref || !strings.Contains(rendered, "selected teammate is no longer active") {
+			t.Fatalf("rejected message lost its draft or target: %s", rendered)
+		}
+		panelKey(t, panel, "\x1b")
+		if panel.mode != panelList || panel.draft != "" || panel.pending != nil {
+			t.Fatalf("escape did not cancel the retained draft: mode=%d draft=%q", panel.mode, panel.draft)
+		}
+	})
+}

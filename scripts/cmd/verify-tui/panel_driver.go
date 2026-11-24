@@ -15,9 +15,10 @@ import (
 const panelBudget = 2 * time.Second
 
 type ownerReplacement struct {
-	Action string          `json:"action"`
-	Before observedProcess `json:"before"`
-	After  observedProcess `json:"after"`
+	Action          string          `json:"action"`
+	Before          observedProcess `json:"before"`
+	After           observedProcess `json:"after"`
+	ProcessRetained bool            `json:"processRetained"`
 }
 
 type panelEvent struct {
@@ -41,6 +42,7 @@ type panelProof struct {
 	events                                                        []panelEvent
 	replacements                                                  []ownerReplacement
 	scenario                                                      string
+	reviewPace                                                    time.Duration
 	firstRow                                                      string
 	ctx                                                           context.Context
 	state                                                         *fixtureState
@@ -51,8 +53,10 @@ type panelProof struct {
 	geometry                                                      func() (paneGeometry, error)
 	resize                                                        func(int, int) error
 	rootSessions, agentDir, evidence, rootPath, rootID, newRootID string
+	resumeTrace                                                   string
 	configPath                                                    string
 	workspace                                                     string
+	sourceCellDir                                                 string
 	idleCommand, idleDirectory, idleObserver                      string
 	idleReadiness                                                 []idleBarrierEvidence
 	paneTitle                                                     func() (string, error)
@@ -92,8 +96,19 @@ func (p *panelProof) action(label string, send func() error, ready func(string) 
 		return err
 	}
 	p.timings = append(p.timings, panelTiming{Action: label, SentAt: started.UTC().Format(time.RFC3339Nano), VisibleAt: observed.UTC().Format(time.RFC3339Nano), Milliseconds: float64(observed.Sub(started)) / float64(time.Millisecond), Width: geometry.width, Height: geometry.height})
-	_, err = p.frame(label)
-	return err
+	if _, err := p.frame(label); err != nil {
+		return err
+	}
+	if p.reviewPace != 0 {
+		timer := time.NewTimer(p.reviewPace)
+		defer timer.Stop()
+		select {
+		case <-p.ctx.Done():
+			return p.ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil
 }
 
 func (p *panelProof) key(label, key string, ready func(string) bool) error {
@@ -811,10 +826,8 @@ func panelListHintsReady(frame string, width, height int) bool {
 	}
 	lines := strings.Split(strings.TrimSuffix(frame, "\n"), "\n")
 	rows := 2
-	want := "Up/Down move Enter inspect v result m message p pause subtree r resume [ ] page Home/End first/last Esc back/close"
 	if width == 32 {
 		rows = 4
-		want = "↑↓ move Enter detail v result\nm msg p pause subtree r resume\n[ ] page Home/End first/last\nEsc back/close"
 	}
 	start := len(lines) - 2 - rows
 	if start <= 0 {
@@ -835,9 +848,11 @@ func panelListHintsReady(frame string, width, height int) bool {
 		hints[index] = strings.TrimSpace(line)
 	}
 	if width == 32 {
-		return strings.Join(hints, "\n") == want
+		got := strings.Join(hints, "\n")
+		return got == "↑↓ move Enter detail v result\nm msg p pause subtree r resume\n[ ] page Home/End first/last\nEsc back/close" || got == "Up/Down move Enter detail\nv result m msg p pause subtree\nr resume [ ] page Home/End\nEscape/Ctrl+C back/close"
 	}
-	return strings.Join(strings.Fields(strings.Join(hints, " ")), " ") == want
+	got := strings.Join(strings.Fields(strings.Join(hints, " ")), " ")
+	return got == "Up/Down move Enter inspect v result m message p pause subtree r resume [ ] page Home/End first/last Esc back/close" || got == "Up/Down move Enter inspect v result m message p pause subtree r resume [ ]/PageUp/PageDown page Home/End first/last Escape/Ctrl+C back/close"
 }
 
 func (p *panelProof) deferredReceiptProof(childID, receipt string) error {
@@ -1253,7 +1268,7 @@ func (p *panelProof) extensionProcess() (observedProcess, error) {
 	}
 	var extension []observedProcess
 	for _, process := range processes {
-		if filepath.Base(strings.TrimSuffix(process.Executable, " (deleted)")) == selectedExtensionName {
+		if p.selectedExtensionProcess(process.Executable) {
 			extension = append(extension, process)
 		}
 	}
@@ -1263,21 +1278,41 @@ func (p *panelProof) extensionProcess() (observedProcess, error) {
 	return extension[0], nil
 }
 
+var sourceCellKey = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+func (p *panelProof) selectedExtensionProcess(executable string) bool {
+	executable = strings.TrimSuffix(executable, " (deleted)")
+	if p.sourceCellDir == "" {
+		return filepath.Base(executable) == selectedExtensionName
+	}
+	relative, err := filepath.Rel(p.sourceCellDir, executable)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(relative, string(filepath.Separator))
+	return len(parts) == 2 && sourceCellKey.MatchString(parts[0]) && parts[1] == "runner"
+}
+
 func (p *panelProof) waitReplacement(action string, before observedProcess) error {
 	var after observedProcess
+	retained := false
 	if err := waitFor(p.ctx, action, stageTimeout, func() (bool, error) {
 		current, err := p.extensionProcess()
 		if err != nil {
 			return false, nil
 		}
 		if current.PID == before.PID && current.StartTicks == before.StartTicks {
-			return false, nil
+			if p.sourceCellDir == "" || current.Executable != before.Executable || !observedAlive(before) {
+				return false, nil
+			}
+			after, retained = current, true
+			return true, nil
 		}
 		after = current
 		return !observedAlive(before), nil
 	}); err != nil {
 		return err
 	}
-	p.replacements = append(p.replacements, ownerReplacement{Action: action, Before: before, After: after})
+	p.replacements = append(p.replacements, ownerReplacement{Action: action, Before: before, After: after, ProcessRetained: retained})
 	return nil
 }
