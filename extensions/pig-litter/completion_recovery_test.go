@@ -49,7 +49,7 @@ func testRootCompletionRecovery(t *testing.T, clearQueue, consumed bool) {
 	if err := os.WriteFile(filepath.Join(directory, "models.json"), []byte(models), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: directory, AgentDir: directory})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: directory, AgentDir: directory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,12 +116,25 @@ func testRootCompletionRecovery(t *testing.T, clearQueue, consumed bool) {
 			t.Fatal("completion was not queued with a pending receipt")
 		}
 		if clearQueue {
-			session.ClearQueue()
+			session.QueueSteer("queued user input", nil)
+			steering, followUp := session.ClearQueue()
+			if len(steering) != 1 || steering[0] != "queued user input" || len(followUp) != 0 {
+				t.Fatalf("clear queue did not return the queued user input: steering=%v followUp=%v", steering, followUp)
+			}
+			queued := session.Agent().PeekQueuedMessages()
+			if len(queued) != 1 {
+				t.Fatalf("clear queue changed the queued completion: %#v", queued)
+			}
+			details, ok := contextCompletion(queued[0])
+			if !ok || details.ChildID != child.ID || details.Receipt != selected.noticeID {
+				t.Fatalf("clear queue retained the wrong completion: %#v", queued[0])
+			}
+			session.Agent().ClearAllQueues()
 		}
 		session.RequestAbort()
 		releaseOnce.Do(func() { close(release) })
 		<-done
-		entries, _ := rawEntries(manager.Entries())
+		entries, _ := rawEntries(manager.GetEntries())
 		details := completionDetails{ChildID: child.ID, Receipt: selected.noticeID}
 		if !completionStored(entries, details, selected.reservation.content) || len(tree.pending) != 0 {
 			t.Fatal("root recovery did not store the receipt and release capacity")
@@ -210,7 +223,7 @@ func testRootCompletionRecovery(t *testing.T, clearQueue, consumed bool) {
 			var query struct{ Method string }
 			_ = json.Unmarshal(raw, &query)
 			if query.Method == "getEntries" {
-				entries, _ := json.Marshal(manager.Entries())
+				entries, _ := json.Marshal(manager.GetEntries())
 				return entries
 			}
 			if query.Method == "getSessionFile" {
@@ -221,7 +234,10 @@ func testRootCompletionRecovery(t *testing.T, clearQueue, consumed bool) {
 				data, _ := json.Marshal(manager.GetSessionDir())
 				return data
 			}
-			if query.Method == "getSessionId" { data, _ := json.Marshal(manager.ID()); return data }
+			if query.Method == "getSessionId" {
+				data, _ := json.Marshal(manager.ID())
+				return data
+			}
 			return json.RawMessage(`null`)
 		case "isIdle":
 			result, _ := json.Marshal(map[string]bool{"idle": session.IsIdle()})

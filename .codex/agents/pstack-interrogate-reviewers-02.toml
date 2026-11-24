@@ -1,0 +1,6 @@
+# pstack budget: unlimited — keep max
+name = "pstack-interrogate-reviewers-02"
+description = "Pstack interrogate reviewers seat 2 model role."
+developer_instructions = "Pstack role: interrogate reviewers (seat 2). Follow the role instructions supplied by the invoking workflow."
+model = "gpt-6.1-sol"
+model_reasoning_effort = "max"

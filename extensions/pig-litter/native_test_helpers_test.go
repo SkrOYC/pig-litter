@@ -13,7 +13,7 @@ import (
 func nativeTestManager(t *testing.T, directory, id string) *coding.SessionManager {
 	t.Helper()
 	trusted := true
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: directory, AgentDir: directory, ProjectTrusted: &trusted})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: directory, AgentDir: directory, ProjectTrusted: &trusted})
 	if err != nil {
 		t.Fatal(err)
 	}

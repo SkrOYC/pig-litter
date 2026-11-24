@@ -1,0 +1,6 @@
+# pstack budget: unlimited — keep max
+name = "pstack-perf-issue"
+description = "Pstack perf-issue model role."
+developer_instructions = "Pstack role: perf-issue. Follow the role instructions supplied by the invoking workflow."
+model = "gpt-6.1-terra"
+model_reasoning_effort = "max"

@@ -34,7 +34,7 @@ func TestNativeSessionResourcesAndTranscriptSurviveResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	trusted := true
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: dir, AgentDir: dir, ProjectTrusted: &trusted})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: dir, AgentDir: dir, ProjectTrusted: &trusted})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestNativeSessionResourcesAndTranscriptSurviveResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resumed.Close()
-	entries, err := json.Marshal(resumed.SessionManager().Entries())
+	entries, err := json.Marshal(resumed.SessionManager().GetEntries())
 	if err != nil {
 		t.Fatal(err)
 	}

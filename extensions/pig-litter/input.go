@@ -55,12 +55,12 @@ func inputStored(entries []json.RawMessage, input pendingInput) bool {
 }
 
 func (t *Tree) prepareInput(session *coding.Session, selected *run) error {
-	entries, err := rawEntries(session.SessionManager().Entries())
+	entries, err := rawEntries(session.SessionManager().GetEntries())
 	if err != nil {
 		return err
 	}
 	after := ""
-	if leaf := session.SessionManager().LeafID(); leaf != nil {
+	if leaf := session.SessionManager().GetLeafID(); leaf != nil {
 		after = *leaf
 	}
 	t.mu.Lock()

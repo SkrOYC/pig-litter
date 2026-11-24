@@ -1,0 +1,6 @@
+# pstack budget: unlimited — keep max
+name = "pstack-arena-cross-judge-pool-02"
+description = "Pstack arena cross-judge pool seat 2 model role."
+developer_instructions = "Pstack role: arena cross-judge pool (seat 2). Follow the role instructions supplied by the invoking workflow."
+model = "gpt-6.1-sol"
+model_reasoning_effort = "max"

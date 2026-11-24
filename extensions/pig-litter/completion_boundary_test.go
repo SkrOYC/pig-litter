@@ -86,7 +86,7 @@ func testNativeCompletionBoundary(t *testing.T, phase string, consumed bool) {
 	parentRef := testAdmissionWithAgent(t, tree, Ref{}, "coordinator", "parent", coordinator)
 	childRef := testAdmission(t, tree, parentRef.Ref, "scout", "child")
 	parent, child := tree.records[parentRef.ID], tree.records[childRef.ID]
-	services, err := coding.NewServices(coding.ServicesOptions{CWD: parent.activeLog.GetCwd(), AgentDir: directory})
+	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: parent.activeLog.GetCwd(), AgentDir: directory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func testNativeCompletionBoundary(t *testing.T, phase string, consumed bool) {
 		if reportAfterConsumption.Load() {
 			t.Fatal("a provider request repeated the completion after a successful wait")
 		}
-		entries, _ := rawEntries(parent.activeLog.Entries())
+		entries, _ := rawEntries(parent.activeLog.GetEntries())
 		details := completionDetails{ChildID: child.id, Receipt: selected.noticeID}
 		if !completionStored(entries, details, selected.reservation.content) {
 			t.Fatal("native delivery did not retain the child completion")

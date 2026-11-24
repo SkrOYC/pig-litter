@@ -1,0 +1,19 @@
+{
+  "kind": "patched-source-build",
+  "version": "0.7.0",
+  "archive": {
+    "url": "https://github.com/MichaelKinsy/PiG/releases/download/v0.7.0/pig-0.7.0-source.tar.gz",
+    "repository": "MichaelKinsy/PiG",
+    "sha256": "0e39058a861dd0d76f7961fd5bbc4cacef6b9f0ab5ece0990b9969d6a7c950b8",
+    "root": "pig-0.7.0",
+    "sourceCommit": "beb56447c476da70d05d8e1e1ca9e993b367cb8b",
+    "sourceRef": "refs/heads/release/v0.7.0",
+    "signerWorkflow": "MichaelKinsy/PiG/.github/workflows/release-candidate.yml"
+  },
+  "patch": {
+    "path": "patches/pig-0.7.0-integrated.patch",
+    "sha256": "bc80b11ccd9be5b7dce029e0b8e88fc490e0659726d31d8a13e75bb8c87f8f12",
+    "commit": "c2dba96a705018206f56ba0d7a88de28278d9acc",
+    "tree": "322229700ca6d4fc03a98f7ea8324ef7523f8082"
+  }
+}
