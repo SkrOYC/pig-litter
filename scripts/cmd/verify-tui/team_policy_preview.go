@@ -41,6 +41,20 @@ func (p *panelProof) teamPolicyProof(media *collaborationMedia) error {
 		if json.Unmarshal(data, &graph) != nil || len(graph.Tasks) != 2 || graph.Tasks[0].State != "in_progress" || graph.Tasks[0].Owner == nil {
 			return false, nil
 		}
+		rosterData, err := os.ReadFile(filepath.Join(p.agentDir, "pig-litter", "roots", p.rootID, "team.json"))
+		var roster struct {
+			Members []previewMember `json:"members"`
+		}
+		root, rootErr := p.root()
+		if err != nil || rootErr != nil || json.Unmarshal(rosterData, &roster) != nil || len(roster.Members) != 2 || p.state.modelRequests("quick") != 2 {
+			return false, nil
+		}
+		for _, member := range roster.Members {
+			child, ok := root.Children[member.Ref.ID]
+			if !ok || child.State != "completed" || child.Latest == nil || member.State != "idle" {
+				return false, nil
+			}
+		}
 		before = data
 		return true, nil
 	}); err != nil {
@@ -112,8 +126,9 @@ func (p *panelProof) teamPolicyProof(media *collaborationMedia) error {
 		return err
 	}
 	resumeAfter, err := os.ReadFile(p.resumeTrace)
-	if err != nil || !bytes.Equal(resumeBefore, resumeAfter) || requests != p.state.totalRequests() || memberRequests != p.state.modelRequests("quick") {
-		return fmt.Errorf("policy controls changed provider or resume activity: %v", err)
+	requestsAfter, membersAfter := p.state.totalRequests(), p.state.modelRequests("quick")
+	if err != nil || !bytes.Equal(resumeBefore, resumeAfter) || requests != requestsAfter || memberRequests != membersAfter {
+		return fmt.Errorf("policy controls changed provider or resume activity: requests %d to %d, teammate requests %d to %d, resume trace equal %t: %v", requests, requestsAfter, memberRequests, membersAfter, bytes.Equal(resumeBefore, resumeAfter), err)
 	}
 	if err := p.checkpoint("p07-policy-after"); err != nil {
 		return err
