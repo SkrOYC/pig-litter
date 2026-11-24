@@ -824,10 +824,8 @@ func panelListHintsReady(frame string, width, height int) bool {
 	}
 	lines := strings.Split(strings.TrimSuffix(frame, "\n"), "\n")
 	rows := 2
-	want := "Up/Down move Enter inspect v result m message p pause subtree r resume [ ] page Home/End first/last Esc back/close"
 	if width == 32 {
 		rows = 4
-		want = "↑↓ move Enter detail v result\nm msg p pause subtree r resume\n[ ] page Home/End first/last\nEsc back/close"
 	}
 	start := len(lines) - 2 - rows
 	if start <= 0 {
@@ -848,9 +846,11 @@ func panelListHintsReady(frame string, width, height int) bool {
 		hints[index] = strings.TrimSpace(line)
 	}
 	if width == 32 {
-		return strings.Join(hints, "\n") == want
+		got := strings.Join(hints, "\n")
+		return got == "↑↓ move Enter detail v result\nm msg p pause subtree r resume\n[ ] page Home/End first/last\nEsc back/close" || got == "Up/Down move Enter detail\nv result m msg p pause subtree\nr resume [ ] page Home/End\nEscape/Ctrl+C back/close"
 	}
-	return strings.Join(strings.Fields(strings.Join(hints, " ")), " ") == want
+	got := strings.Join(strings.Fields(strings.Join(hints, " ")), " ")
+	return got == "Up/Down move Enter inspect v result m message p pause subtree r resume [ ] page Home/End first/last Esc back/close" || got == "Up/Down move Enter inspect v result m message p pause subtree r resume [ ]/PageUp/PageDown page Home/End first/last Escape/Ctrl+C back/close"
 }
 
 func (p *panelProof) deferredReceiptProof(childID, receipt string) error {

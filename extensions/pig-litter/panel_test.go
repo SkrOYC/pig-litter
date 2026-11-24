@@ -87,6 +87,23 @@ func TestPanelUsesHostKeybindings(t *testing.T) {
 	panelKey(t, panel, "\x11")
 }
 
+func TestPanelWideLegendWrapsLongConfiguredKeys(t *testing.T) {
+	previous := sdktui.GetKeybindings()
+	sdktui.SetKeybindings(sdktui.NewKeybindingsManager(sdktui.TUIKeybindings, sdktui.KeybindingsConfig{
+		"tui.select.down": {"ctrl+shift+p", "alt+shift+pageDown"},
+	}))
+	t.Cleanup(func() { sdktui.SetKeybindings(previous) })
+	tree := testTree(t, defaultConfig())
+	panel := newChildPanel(testCallOwner(tree), nil, func() int { return 32 })
+	defer panel.Dispose()
+	text := strings.Join(panel.Render(80), "\n")
+	for _, want := range []string{"Ctrl+Shift+P/Alt+Shift+PageDown", "m message", "p pause subtree", "r resume", "[ ]/PageUp/PageDown page", "Escape/Ctrl+C back/close"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("configured legend hid %q: %s", want, text)
+		}
+	}
+}
+
 func TestPanelRetainedViewportResizeAndSelectionBeyondSixteen(t *testing.T) {
 	tree := testTree(t, defaultConfig())
 	tree.execute = func(r *record, _ *run) Outcome { return Outcome{State: Completed, Text: "report for " + r.name} }
@@ -122,6 +139,12 @@ func TestPanelRetainedViewportResizeAndSelectionBeyondSixteen(t *testing.T) {
 		}
 		if width >= 32 && height >= 24 && !strings.Contains(strings.Join(rows, "\n"), "child-39") {
 			t.Fatalf("retained selection beyond row 16 disappeared: %q", rows)
+		}
+		if width == 80 && height == 24 {
+			text := strings.Join(rows, "\n")
+			if !strings.Contains(text, "[ ]/PageUp/PageDown page") || !strings.Contains(text, "Escape/Ctrl+C back/close") {
+				t.Fatalf("80-column panel split or hid navigation keys: %s", text)
+			}
 		}
 		if width == 32 && height == 24 {
 			text := strings.Join(rows, "\n")

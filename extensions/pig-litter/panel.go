@@ -302,7 +302,18 @@ func (p *childPanel) Render(width int) []string {
 		legends[0] = panelMoveKeys() + " scroll  v result"
 	}
 	if width >= 80 {
-		legends = widthx.WrapTextWithAnsi(paintText(strings.Join(legends, "  "), false), width)
+		if p.mode == panelList {
+			groups := []string{strings.Join(legends[:2], "  "), strings.Join(legends[2:], "  ")}
+			if widthx.VisibleWidth(paintText(groups[0], false)) > width {
+				groups = []string{legends[0], legends[1], groups[1]}
+			}
+			legends = nil
+			for _, group := range groups {
+				legends = append(legends, widthx.WrapTextWithAnsi(paintText(group, false), width)...)
+			}
+		} else {
+			legends = widthx.WrapTextWithAnsi(paintText(strings.Join(legends, "  "), false), width)
+		}
 	}
 	if budget <= 2 {
 		return panelPaint(legends[len(legends)-min(budget, len(legends)):], width)
