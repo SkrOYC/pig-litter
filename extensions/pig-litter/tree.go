@@ -49,6 +49,7 @@ type Tree struct {
 	changed      func()
 	persist      func(*record) error
 	teamFinished func(*record, *run, Outcome) error
+	teamSettled  func(*record, *run)
 	teamCanceled func(*record)
 	teamPaused   func(*record, *run) error
 	teamResuming func(*record, *run) error
@@ -262,6 +263,11 @@ func (t *Tree) admit(request admission) (Snapshot, *run, error) {
 	parent, err := t.callerLocked(request.parentRun)
 	if err != nil {
 		return Snapshot{}, nil, err
+	}
+	for ancestor := parent; ancestor != nil && ancestor != t.root; ancestor = ancestor.parent {
+		if ancestor.controlPhase == "closing" || ancestor.controlPhase == "terminated" || ancestor.controlPhase == "recovery_pending" {
+			return Snapshot{}, nil, reject("unavailable", "teammate shutdown prevents child admission")
+		}
 	}
 	depth := parent.depth + 1
 	available := request.available
@@ -521,6 +527,9 @@ mailboxDrained:
 			close(run.teamFinishDone)
 		}
 		t.mu.Unlock()
+		if t.teamSettled != nil {
+			t.teamSettled(r, run)
+		}
 		t.teamWG.Done()
 	}
 	t.notify()
@@ -670,11 +679,21 @@ func (t *Tree) resumeAs(authority controlAuthority, selected *run, text string) 
 		t.mu.Unlock()
 		return Snapshot{}, nil, err
 	}
+	for ancestor := r.parent; ancestor != nil && ancestor != t.root; ancestor = ancestor.parent {
+		if ancestor.controlPhase == "closing" || ancestor.controlPhase == "terminated" || ancestor.controlPhase == "recovery_pending" {
+			t.mu.Unlock()
+			return Snapshot{}, nil, reject("unavailable", "teammate shutdown prevents child resume")
+		}
+	}
 	if !r.run.state.terminal() || r.run.finishing {
 		t.mu.Unlock()
 		return Snapshot{}, nil, reject("rejected", "resume needs a settled child and text")
 	}
 	if r.team != nil {
+		if r.controlPhase == "closing" || r.controlPhase == "terminated" || r.controlPhase == "recovery_pending" {
+			t.mu.Unlock()
+			return Snapshot{}, nil, reject("unavailable", "teammate shutdown requires recovery")
+		}
 		select {
 		case <-r.run.teamFinishDone:
 			if r.run.teamFinishErr != nil {
@@ -802,6 +821,11 @@ func (t *Tree) stopAs(authority controlAuthority, selected *run) (*Outcome, int,
 		t.lifecycleMu.Unlock()
 		return nil, 0, err
 	}
+	if target.controlPhase == "terminated" {
+		t.mu.Unlock()
+		t.lifecycleMu.Unlock()
+		return nil, 0, reject("unavailable", "teammate is terminated")
+	}
 	var settled *Outcome
 	if selected.outcome != nil && target.latest != nil {
 		copy := *target.latest
@@ -826,6 +850,9 @@ func (t *Tree) pauseLocked(target *record) ([]*run, []*run) {
 	for _, id := range t.order {
 		r := t.records[id]
 		if r != target && !t.belongsLocked(target, r) {
+			continue
+		}
+		if r.team != nil && r.controlPhase == "terminated" {
 			continue
 		}
 		r.paused = true

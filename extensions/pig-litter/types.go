@@ -27,11 +27,12 @@ const (
 	Failed      State = "failed"
 	Stopped     State = "stopped"
 	Unavailable State = "unavailable"
+	Terminated  State = "terminated"
 )
 
 func (s State) terminal() bool {
 	switch s {
-	case Completed, Partial, Failed, Stopped, Paused, Unavailable:
+	case Completed, Partial, Failed, Stopped, Paused, Unavailable, Terminated:
 		return true
 	}
 	return false
@@ -99,6 +100,7 @@ type record struct {
 	notices                              map[string]*reservation
 	peerWakePending                      bool
 	peerWakeVersion                      uint64
+	controlPhase                         string
 }
 
 type pendingInput struct {
@@ -122,12 +124,25 @@ const (
 type runProgress struct {
 	activated, settled time.Time
 	toolStarts         uint64
+	turns              int
 	activeTools        map[string]string
 	toolsClipped       bool
 }
 
 type peerWakeInput struct {
 	Recipient MemberRef
+	Control   *controlNotice
+}
+
+type planDenial struct {
+	ID   string
+	Name string
+}
+
+type shutdownFence struct {
+	Request ShutdownRequestID
+	Batch   map[string]string
+	Drained bool
 }
 
 type run struct {
@@ -163,6 +178,10 @@ type run struct {
 	teamSessionFile string
 	teamFinishDone  chan struct{}
 	teamFinishErr   error
+	planDenials     map[planDenial]bool
+	batchCalls      map[string]string
+	shutdown        *shutdownFence
+	idleRefusal     string
 }
 
 type Inspection struct {

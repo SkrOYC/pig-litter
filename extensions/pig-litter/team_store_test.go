@@ -54,7 +54,7 @@ func storeTestIsolatedWorkspace(t *testing.T, root, id ChildID) WorkspacePolicy 
 func TestTeamStoreUncertainCommitBlocksCompetingFirstTools(t *testing.T) {
 	store, dir, root, workspace := storeTestOpen(t)
 	id, admission := storeTestUUID(2), string(storeTestUUID(3))
-	reserved, err := store.Reserve(id, admission, "first", workspace)
+	reserved, err := store.Reserve(id, admission, "first", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestTeamStoreUncertainCommitBlocksCompetingFirstTools(t *testing.T) {
 		first, second = <-results, <-results
 		_, _, snapshotErr = store.Snapshot()
 		_, _, passiveErr = readTeamSnapshot(dir, root)
-		_, reserveErr = store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "next", workspace)
+		_, reserveErr = store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "next", workspace, false)
 		_, retryErr = store.Commit(admission)
 		failSync.Store(false)
 		path := filepath.Join(store.dir, "team.json")
@@ -153,7 +153,7 @@ func TestTeamStoreUncertainCommitBlocksCompetingFirstTools(t *testing.T) {
 		recovered = !gate.before(context.Background(), "first", "read", nil).Block
 		committed, commitErr = store.Commit(admission)
 		_, members, err = store.Snapshot()
-		next, nextErr = store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "next", workspace)
+		next, nextErr = store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "next", workspace, false)
 	}, func(string, json.RawMessage) json.RawMessage { return json.RawMessage(`"fixture"`) })
 	if !first || !second {
 		t.Errorf("competing first tools blocked = %v, %v, want both blocked", first, second)
@@ -179,7 +179,7 @@ func TestTeamStoreUncertainCommitBlocksCompetingFirstTools(t *testing.T) {
 
 func TestTeamStoreFailedCloseRequiresNewOwnerBarrier(t *testing.T) {
 	store, dir, root, workspace := storeTestOpen(t)
-	reserved, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "first", workspace)
+	reserved, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "first", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestTeamStoreCloseRetriesHeldLocks(t *testing.T) {
 	for _, target := range []string{"team.lock", "lead.lock"} {
 		t.Run(target, func(t *testing.T) {
 			store, dir, root, workspace := storeTestOpen(t)
-			reserved, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "first", workspace)
+			reserved, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "first", workspace, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -298,14 +298,14 @@ func TestTeamStoreCloseRetriesHeldLocks(t *testing.T) {
 
 func TestTeamStorePauseMember(t *testing.T) {
 	store, _, root, workspace := storeTestOpen(t)
-	committed, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "committed", workspace)
+	committed, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "committed", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Commit(committed.AdmissionID); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "pending", workspace)
+	pending, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "pending", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +336,7 @@ func TestTeamStoreIsolatedReservationLifecycle(t *testing.T) {
 	store, dir, root, shared := storeTestOpen(t)
 	id, admission := storeTestUUID(2), string(storeTestUUID(3))
 	workspace := storeTestIsolatedWorkspace(t, root, id)
-	reservation, err := store.Reserve(id, admission, "isolated", workspace)
+	reservation, err := store.Reserve(id, admission, "isolated", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestTeamStoreIsolatedReservationLifecycle(t *testing.T) {
 	if retry, err := store.SetWorkspacePhase(reservation.Ref, "prepared"); err != nil || retry != prepared {
 		t.Fatalf("prepare retry = %#v, %v", retry, err)
 	}
-	if retry, err := store.Reserve(id, admission, "isolated", workspace); err != nil || retry != prepared {
+	if retry, err := store.Reserve(id, admission, "isolated", workspace, false); err != nil || retry != prepared {
 		t.Fatalf("reservation retry after prepare = %#v, %v", retry, err)
 	}
 	if _, err := store.SetWorkspacePhase(reservation.Ref, "intent"); err == nil {
@@ -410,7 +410,7 @@ func TestTeamStoreIsolatedReservationLifecycle(t *testing.T) {
 	if _, err := store.SetWorkspacePhase(reservation.Ref, "released"); err == nil {
 		t.Fatal("changed the phase of a committed member")
 	}
-	sharedReservation, err := store.Reserve(storeTestUUID(5), string(storeTestUUID(6)), "shared", shared)
+	sharedReservation, err := store.Reserve(storeTestUUID(5), string(storeTestUUID(6)), "shared", shared, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +425,7 @@ func TestTeamStoreIsolatedReleaseBeforeRollback(t *testing.T) {
 			store, _, root, _ := storeTestOpen(t)
 			id, admission := storeTestUUID(2), string(storeTestUUID(3))
 			workspace := storeTestIsolatedWorkspace(t, root, id)
-			reservation, err := store.Reserve(id, admission, "isolated", workspace)
+			reservation, err := store.Reserve(id, admission, "isolated", workspace, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -464,11 +464,11 @@ func TestTeamStoreIsolatedReleaseBeforeRollback(t *testing.T) {
 
 func TestTeamStoreRecoveryRetainsUnsettledIsolatedReservations(t *testing.T) {
 	store, dir, root, shared := storeTestOpen(t)
-	intent, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "intent", storeTestIsolatedWorkspace(t, root, storeTestUUID(2)))
+	intent, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "intent", storeTestIsolatedWorkspace(t, root, storeTestUUID(2)), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "prepared", storeTestIsolatedWorkspace(t, root, storeTestUUID(4)))
+	prepared, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "prepared", storeTestIsolatedWorkspace(t, root, storeTestUUID(4)), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,14 +476,14 @@ func TestTeamStoreRecoveryRetainsUnsettledIsolatedReservations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	released, err := store.Reserve(storeTestUUID(6), string(storeTestUUID(7)), "released", storeTestIsolatedWorkspace(t, root, storeTestUUID(6)))
+	released, err := store.Reserve(storeTestUUID(6), string(storeTestUUID(7)), "released", storeTestIsolatedWorkspace(t, root, storeTestUUID(6)), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SetWorkspacePhase(released.Ref, "released"); err != nil {
 		t.Fatal(err)
 	}
-	sharedPending, err := store.Reserve(storeTestUUID(8), string(storeTestUUID(9)), "shared", shared)
+	sharedPending, err := store.Reserve(storeTestUUID(8), string(storeTestUUID(9)), "shared", shared, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,11 +547,11 @@ func TestTeamStoreRejectsInvalidIsolatedReservations(t *testing.T) {
 			id := storeTestUUID(2)
 			workspace := storeTestIsolatedWorkspace(t, root, id)
 			tc.change(&workspace)
-			if _, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", workspace); err == nil {
+			if _, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", workspace, false); err == nil {
 				t.Fatal("accepted an invalid isolated workspace")
 			}
 			valid := storeTestIsolatedWorkspace(t, root, id)
-			member, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", valid)
+			member, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", valid, false)
 			if err != nil || member.Ref.Generation != 1 {
 				t.Fatalf("invalid request changed the roster = %#v, %v", member, err)
 			}
@@ -562,7 +562,7 @@ func TestTeamStoreRejectsInvalidIsolatedReservations(t *testing.T) {
 		id := storeTestUUID(2)
 		workspace := storeTestIsolatedWorkspace(t, root, id)
 		workspace.BaseCommit = strings.Repeat("a", 64)
-		member, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", workspace)
+		member, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", workspace, false)
 		if err != nil || member.Workspace.BaseCommit != strings.Repeat("a", 64) {
 			t.Fatalf("sha256 reservation = %#v, %v", member, err)
 		}
@@ -600,7 +600,7 @@ func TestTeamStoreRefusesCorruptIsolatedMetadata(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store, dir, root, _ := storeTestOpen(t)
 			id := storeTestUUID(2)
-			if _, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", storeTestIsolatedWorkspace(t, root, id)); err != nil {
+			if _, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", storeTestIsolatedWorkspace(t, root, id), false); err != nil {
 				t.Fatal(err)
 			}
 			if err := store.Close(); err != nil {
@@ -641,7 +641,7 @@ func TestTeamStoreRefusesCorruptIsolatedMetadata(t *testing.T) {
 func TestTeamStoreRefusesInvalidUTF8Metadata(t *testing.T) {
 	store, dir, root, _ := storeTestOpen(t)
 	id := storeTestUUID(2)
-	if _, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", storeTestIsolatedWorkspace(t, root, id)); err != nil {
+	if _, err := store.Reserve(id, string(storeTestUUID(3)), "isolated", storeTestIsolatedWorkspace(t, root, id), false); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -671,7 +671,7 @@ func TestTeamStoreRefusesInvalidUTF8Metadata(t *testing.T) {
 func TestTeamStorePublishesOnlyCommittedMembers(t *testing.T) {
 	store, dir, root, workspace := storeTestOpen(t)
 	id, admission := storeTestUUID(2), string(storeTestUUID(3))
-	pending, err := store.Reserve(id, admission, "parser", workspace)
+	pending, err := store.Reserve(id, admission, "parser", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,7 +683,7 @@ func TestTeamStorePublishesOnlyCommittedMembers(t *testing.T) {
 	if err != nil || team != wantRef.Team || len(members) != 0 {
 		t.Fatalf("passive snapshot before commit = %#v %#v, %v", team, members, err)
 	}
-	if retry, err := store.Reserve(id, admission, "parser", workspace); err != nil || retry != pending {
+	if retry, err := store.Reserve(id, admission, "parser", workspace, false); err != nil || retry != pending {
 		t.Fatalf("reservation retry = %#v, %v", retry, err)
 	}
 	if _, err := store.Commit(string(storeTestUUID(4))); err == nil {
@@ -739,7 +739,7 @@ func TestTeamStoreBoundsConcurrentReservationsAndNeverReusesGenerations(t *testi
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			member, err := store.Reserve(storeTestUUID(100+i), string(storeTestUUID(200+i)), fmt.Sprintf("worker-%d", i), workspace)
+			member, err := store.Reserve(storeTestUUID(100+i), string(storeTestUUID(200+i)), fmt.Sprintf("worker-%d", i), workspace, false)
 			results <- result{member, err}
 		}()
 	}
@@ -783,7 +783,7 @@ func TestTeamStoreBoundsConcurrentReservationsAndNeverReusesGenerations(t *testi
 	if err := store.Rollback(accepted[1].AdmissionID); err != nil {
 		t.Fatalf("repeated rollback = %v", err)
 	}
-	next, err := store.Reserve(storeTestUUID(500), string(storeTestUUID(501)), "replacement", workspace)
+	next, err := store.Reserve(storeTestUUID(500), string(storeTestUUID(501)), "replacement", workspace, false)
 	if err != nil || next.Ref.Generation != 17 {
 		t.Fatalf("generation after rollback = %#v, %v", next, err)
 	}
@@ -796,7 +796,7 @@ func TestTeamStoreBoundsConcurrentReservationsAndNeverReusesGenerations(t *testi
 func TestTeamStoreRejectsDuplicateIdentities(t *testing.T) {
 	store, _, root, workspace := storeTestOpen(t)
 	id, admission := storeTestUUID(2), string(storeTestUUID(3))
-	if _, err := store.Reserve(id, admission, "Parser", workspace); err != nil {
+	if _, err := store.Reserve(id, admission, "Parser", workspace, false); err != nil {
 		t.Fatal(err)
 	}
 	cases := []struct {
@@ -813,7 +813,7 @@ func TestTeamStoreRejectsDuplicateIdentities(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := store.Reserve(tc.id, tc.admission, tc.label, workspace); err == nil {
+			if _, err := store.Reserve(tc.id, tc.admission, tc.label, workspace, false); err == nil {
 				t.Fatalf("accepted duplicate or invalid %s", tc.name)
 			}
 		})
@@ -821,7 +821,7 @@ func TestTeamStoreRejectsDuplicateIdentities(t *testing.T) {
 	if err := store.Rollback(admission); err != nil {
 		t.Fatal(err)
 	}
-	next, err := store.Reserve(storeTestUUID(6), string(storeTestUUID(7)), "parser", workspace)
+	next, err := store.Reserve(storeTestUUID(6), string(storeTestUUID(7)), "parser", workspace, false)
 	if err != nil || next.Ref.Generation != 2 {
 		t.Fatalf("failed reservations changed generation or retained name: %#v, %v", next, err)
 	}
@@ -829,29 +829,29 @@ func TestTeamStoreRejectsDuplicateIdentities(t *testing.T) {
 
 func TestTeamStoreAllocatesNamesAcrossCommittedAndProvisionalMembers(t *testing.T) {
 	store, _, _, workspace := storeTestOpen(t)
-	first, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "parser", workspace)
+	first, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "parser", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "PARSER", workspace)
+	second, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "PARSER", workspace, false)
 	if err != nil || second.Name != "PARSER-2" {
 		t.Fatalf("provisional name collision = %#v, %v", second, err)
 	}
-	if retry, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "PARSER", workspace); err != nil || retry != second {
+	if retry, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "PARSER", workspace, false); err != nil || retry != second {
 		t.Fatalf("suffixed reservation retry = %#v, %v", retry, err)
 	}
 	if _, err := store.Commit(first.AdmissionID); err != nil {
 		t.Fatal(err)
 	}
-	third, err := store.Reserve(storeTestUUID(6), string(storeTestUUID(7)), "Parser", workspace)
+	third, err := store.Reserve(storeTestUUID(6), string(storeTestUUID(7)), "Parser", workspace, false)
 	if err != nil || third.Name != "Parser-3" {
 		t.Fatalf("committed and provisional name collision = %#v, %v", third, err)
 	}
 	longName := strings.Repeat("x", 64)
-	if _, err := store.Reserve(storeTestUUID(8), string(storeTestUUID(9)), longName, workspace); err != nil {
+	if _, err := store.Reserve(storeTestUUID(8), string(storeTestUUID(9)), longName, workspace, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Reserve(storeTestUUID(10), string(storeTestUUID(11)), longName, workspace); err == nil {
+	if _, err := store.Reserve(storeTestUUID(10), string(storeTestUUID(11)), longName, workspace, false); err == nil {
 		t.Fatal("accepted a suffix past the name limit")
 	} else if failure, ok := err.(*treeError); !ok || failure.code != "name_exhausted" {
 		t.Fatalf("overflow error = %v", err)
@@ -860,14 +860,14 @@ func TestTeamStoreAllocatesNamesAcrossCommittedAndProvisionalMembers(t *testing.
 
 func TestTeamStoreRecoveryPreservesMembersAndDiscardsReservations(t *testing.T) {
 	store, dir, root, workspace := storeTestOpen(t)
-	running, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "running", workspace)
+	running, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "running", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Commit(running.AdmissionID); err != nil {
 		t.Fatal(err)
 	}
-	idle, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "idle", workspace)
+	idle, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "idle", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -877,7 +877,7 @@ func TestTeamStoreRecoveryPreservesMembersAndDiscardsReservations(t *testing.T) 
 	if err := store.SetState(idle.Ref, "idle"); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := store.Reserve(storeTestUUID(6), string(storeTestUUID(7)), "pending", workspace)
+	pending, err := store.Reserve(storeTestUUID(6), string(storeTestUUID(7)), "pending", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -900,7 +900,7 @@ func TestTeamStoreRecoveryPreservesMembersAndDiscardsReservations(t *testing.T) 
 	if _, err := recovered.Commit(pending.AdmissionID); err == nil {
 		t.Fatal("recovered provisional admission")
 	}
-	next, err := recovered.Reserve(storeTestUUID(8), string(storeTestUUID(9)), "pending", workspace)
+	next, err := recovered.Reserve(storeTestUUID(8), string(storeTestUUID(9)), "pending", workspace, false)
 	if err != nil || next.Ref.Generation != 4 {
 		t.Fatalf("generation after recovery = %#v, %v", next, err)
 	}
@@ -922,7 +922,7 @@ func TestTeamStoreLeaseProcess(t *testing.T) {
 		os.Exit(0)
 	}
 	store, dir, root, workspace := storeTestOpen(t)
-	active, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "active", workspace)
+	active, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "active", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1022,7 +1022,7 @@ func TestTeamStoreRefusesCorruptMetadataWithoutOverwriting(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store, dir, root, workspace := storeTestOpen(t)
-			member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "parser", workspace)
+			member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "parser", workspace, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1128,7 +1128,7 @@ func TestTeamStoreRejectsMalformedFilesAndLockContention(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("take transaction lock = %v, %v", ok, err)
 		}
-		if _, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "parser", workspace); err == nil {
+		if _, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "parser", workspace, false); err == nil {
 			t.Fatal("wrote through held transaction lock")
 		}
 		if _, _, err := readTeamSnapshot(dir, root); err == nil {
@@ -1137,7 +1137,7 @@ func TestTeamStoreRejectsMalformedFilesAndLockContention(t *testing.T) {
 		if err := lock.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "parser", workspace); err != nil {
+		if _, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "parser", workspace, false); err != nil {
 			t.Fatalf("did not recover after release: %v", err)
 		}
 	})
@@ -1163,7 +1163,7 @@ func TestTeamStoreRejectsMalformedFilesAndLockContention(t *testing.T) {
 		if err := os.WriteFile(path, nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "parser", workspace); err == nil || !strings.Contains(err.Error(), "replaced") {
+		if _, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "parser", workspace, false); err == nil || !strings.Contains(err.Error(), "replaced") {
 			t.Fatalf("accepted a replaced owner lock: %v", err)
 		}
 	})

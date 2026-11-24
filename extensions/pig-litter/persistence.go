@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding"
 )
 
@@ -45,6 +46,10 @@ type savedChild struct {
 }
 
 func (o *owner) saveChild(r *record) error {
+	return o.saveChildState(r, nil)
+}
+
+func (o *owner) saveChildState(r *record, terminated *run) error {
 	o.persistMu.Lock()
 	defer o.persistMu.Unlock()
 	o.tree.mu.Lock()
@@ -56,7 +61,14 @@ func (o *owner) saveChild(r *record) error {
 	if r.previous != nil {
 		selected, paused = r.previous, selected.resumePaused
 	}
+	if terminated != nil && (selected != terminated || r.previous != nil) {
+		o.tree.mu.Unlock()
+		return reject("unavailable", "teammate execution changed before termination")
+	}
 	saved := savedChild{RootID: o.tree.root.id, ID: r.id, ParentID: r.parentID(), Name: r.name, Kind: r.kind, Model: r.model, Cwd: r.cwd, Instructions: r.instructions, Tools: slices.Clone(r.tools), CanDelegate: r.canDelegate, ReadOnly: r.readOnly, PendingTask: r.pendingTask, Admitted: r.admitted, State: selected.state, Paused: paused, NoticeID: selected.noticeID}
+	if terminated != nil {
+		saved.State = Terminated
+	}
 	if r.team != nil {
 		copy := *r.team
 		saved.Team = &copy
@@ -64,6 +76,9 @@ func (o *owner) saveChild(r *record) error {
 	saved.PendingInputs = slices.Clone(r.pendingInputs)
 	if r.latest != nil {
 		copy := *r.latest
+		if terminated != nil {
+			copy.State = Terminated
+		}
 		saved.Latest = &copy
 	}
 	for pending, receipt := range o.tree.pending {
@@ -155,6 +170,83 @@ func spawnStored(entries []json.RawMessage, id ChildID) bool {
 	return false
 }
 
+func teamAdmissionMode(entries []json.RawMessage, member teamMember) (bool, bool, error) {
+	calls := map[string]bool{}
+	var mode, found bool
+	schema, err := json.Marshal(schemas["team_spawn"])
+	if err != nil {
+		return false, false, err
+	}
+	for _, raw := range entries {
+		var entry struct {
+			Message struct {
+				Role       string            `json:"role"`
+				ToolCallID string            `json:"toolCallId"`
+				ToolName   string            `json:"toolName"`
+				IsError    bool              `json:"isError"`
+				Content    []json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(raw, &entry) != nil {
+			continue
+		}
+		if entry.Message.Role == "assistant" {
+			calls = map[string]bool{}
+			for _, block := range entry.Message.Content {
+				var call struct {
+					Type      string          `json:"type"`
+					ID        string          `json:"id"`
+					Name      string          `json:"name"`
+					Arguments json.RawMessage `json:"arguments"`
+				}
+				if json.Unmarshal(block, &call) != nil || call.Type != "toolCall" || call.Name != "team_spawn" || call.ID == "" || checkUniqueJSON(call.Arguments) != nil {
+					continue
+				}
+				normalized, err := ai.ValidateToolArgumentsJSON("team_spawn", schema, call.Arguments)
+				if err != nil {
+					continue
+				}
+				var args struct {
+					PlanRequired bool `json:"planRequired"`
+				}
+				if json.Unmarshal(normalized, &args) != nil {
+					continue
+				}
+				calls[call.ID] = args.PlanRequired
+			}
+			continue
+		}
+		if entry.Message.Role != "toolResult" || entry.Message.ToolName != "team_spawn" || entry.Message.IsError {
+			continue
+		}
+		for _, block := range entry.Message.Content {
+			var content struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(block, &content) != nil || content.Type != "text" {
+				continue
+			}
+			var result struct {
+				Operation    string    `json:"operation"`
+				State        string    `json:"state"`
+				Admission    string    `json:"admission"`
+				Member       MemberRef `json:"member"`
+				PlanRequired *bool     `json:"planRequired"`
+			}
+			if checkUniqueJSON([]byte(content.Text)) != nil || json.Unmarshal([]byte(content.Text), &result) != nil || result.Operation != "team_spawn" || result.Member.ID != member.Ref.ID {
+				continue
+			}
+			requested, exists := calls[entry.Message.ToolCallID]
+			if !exists || result.State != "starting" || result.Member != member.Ref || result.Admission != member.AdmissionID || result.PlanRequired == nil && requested || result.PlanRequired != nil && *result.PlanRequired != requested || found && mode != requested {
+				return false, false, reject("unavailable", "teammate planning provenance conflicts")
+			}
+			mode, found = requested, true
+		}
+	}
+	return mode, found, nil
+}
+
 func (o *owner) restoreChildren() error {
 	members := map[ChildID]teamMember{}
 	if o.teamStore != nil {
@@ -186,6 +278,12 @@ func (o *owner) restoreChildren() error {
 		return err
 	}
 	latest := map[ChildID]savedChild{}
+	invalidTeam := map[ChildID]bool{}
+	type admissionProof struct {
+		mode, known bool
+		err         error
+	}
+	proofs := map[ChildID]admissionProof{}
 	order := []ChildID{}
 	for _, entry := range entries {
 		if entry["customType"] != childEntryType {
@@ -204,7 +302,14 @@ func (o *owner) restoreChildren() error {
 		}
 		if saved.Team != nil {
 			member, exists := members[saved.ID]
-			if !exists || saved.ParentID != o.tree.root.id || member.Ref != saved.Team.Ref || member.AdmissionID != saved.Team.AdmissionID || member.Name != saved.Name || member.Workspace.Cwd != saved.Cwd || member.Workspace != saved.Team.Workspace {
+			proof, cached := proofs[saved.ID]
+			if exists && !cached {
+				proof.mode, proof.known, proof.err = teamAdmissionMode(raw, member)
+				proofs[saved.ID] = proof
+			}
+			if !exists || invalidTeam[saved.ID] || saved.ParentID != o.tree.root.id || member.Ref != saved.Team.Ref || member.AdmissionID != saved.Team.AdmissionID || member.Name != saved.Name || member.Workspace.Cwd != saved.Cwd || member.Workspace != saved.Team.Workspace || member.PlanRequired != saved.Team.PlanRequired || proof.err != nil || proof.known && proof.mode != member.PlanRequired || !proof.known && member.PlanRequired {
+				invalidTeam[saved.ID] = true
+				delete(latest, saved.ID)
 				continue
 			}
 			saved.Team = &member
@@ -217,6 +322,32 @@ func (o *owner) restoreChildren() error {
 		}
 		latest[saved.ID] = saved
 	}
+	order = slices.DeleteFunc(order, func(id ChildID) bool { return invalidTeam[id] })
+	controlPhases := map[ChildID]string{}
+	for id, member := range members {
+		if member.PlanRequired && latest[id].Team != nil {
+			if err := o.teamStore.recoverPlans(member.Ref); err != nil {
+				invalidTeam[id] = true
+				delete(latest, id)
+			}
+		}
+		if latest[id].Team != nil && !invalidTeam[id] {
+			phase, err := o.teamStore.recoverLifecycle(member.Ref, member.State)
+			if err != nil || phase == "terminated" && latest[id].State != Terminated {
+				invalidTeam[id] = true
+				delete(latest, id)
+				continue
+			}
+			controlPhases[id] = phase
+			if phase == "recovery_pending" && latest[id].State == Terminated {
+				saved := latest[id]
+				saved.State, saved.Paused = Unavailable, true
+				saved.Latest = &Outcome{Run: Ref{id}, Model: saved.Model, State: Unavailable, Error: "shutdown did not finish before recovery"}
+				latest[id] = saved
+			}
+		}
+	}
+	order = slices.DeleteFunc(order, func(id ChildID) bool { return invalidTeam[id] })
 	for len(order) != 0 {
 		remaining := []ChildID{}
 		for _, id := range order {
@@ -254,7 +385,7 @@ func (o *owner) restoreChildren() error {
 			if _, exists := o.tree.names[key]; exists && saved.Team == nil {
 				return reject("unavailable", "stored child names conflict")
 			}
-			r := &record{id: id, team: saved.Team, parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest}
+			r := &record{id: id, team: saved.Team, parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest, controlPhase: controlPhases[id]}
 			r.pendingInputs = saved.PendingInputs
 			r.run = o.tree.newRunLocked(Ref{id}, "")
 			r.run.owner, r.run.noticeID, r.run.state = r, saved.NoticeID, saved.State

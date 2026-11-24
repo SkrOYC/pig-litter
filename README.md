@@ -58,6 +58,23 @@ At the turn allowance, the child receives one `<system-notice>` asking for a fin
 
 PiG owns persisted conversation history and context management. Pig Litter has no record-count or history-byte limit. `max_mailbox` controls delivery backpressure independently of conversation size.
 
+## Configure teammate policies
+
+An operator can place a `team-policy.json` file in the active PiG agent directory to check task completion and teammate idle transitions. Project `litter.yaml` files cannot configure these commands. If a command is absent, its policy permits the transition.
+
+Each command is an argument array whose first element is an absolute executable path. For example:
+
+```json
+{
+  "taskCompletion": ["/path/to/check-task"],
+  "teammateIdle": ["/path/to/check-idle"]
+}
+```
+
+Pig Litter sends one JSON object to the command on standard input. A task-completion input includes `kind`, `actor`, `task`, and `revision`. An idle input includes `kind`, `member`, `execution`, a bounded `report` preview, the member's unfinished `tasks`, and `revision`. A null `actor` identifies the team lead.
+
+The command returns `{"permit":true}` on standard output to permit the transition. To refuse it, return `{"permit":false,"feedback":"Explain the work to do."}`. A refusal leaves the task and its owner unchanged. When the turn allowance permits, an idle refusal supplies the feedback to the teammate for another turn. Otherwise, the run finishes as partial with the feedback. A failed command, invalid response, or timeout is treated as a refusal. Commands have five seconds before cancellation and can return at most 8,192 bytes. Feedback is limited to 4,096 bytes.
+
 ## Use the tools
 
 The Resource registers the child controls `litter_spawn`, `litter_list`, `litter_inspect`, `litter_message`, `litter_stop`, and `litter_wait`, along with the team and shared-task tools.

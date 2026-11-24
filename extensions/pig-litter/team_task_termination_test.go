@@ -52,7 +52,7 @@ func TestTeamTasksReleaseTerminatedMemberOnly(t *testing.T) {
 	alice, bob := peerTestMembers(t, store, workspace)
 	completed := createTerminationTask(t, store, "completed", nil)
 	claimTerminationTask(t, store, completed.ID, alice.Ref, false)
-	if _, state, err := store.completeTask(completed.ID, &alice.Ref); err != nil || state != "completed" {
+	if _, state, err := store.completeTask(completed.ID, &alice.Ref, nil); err != nil || state != "completed" {
 		t.Fatalf("completion = %q, %v", state, err)
 	}
 	unfinished := createTerminationTask(t, store, "unfinished", nil)

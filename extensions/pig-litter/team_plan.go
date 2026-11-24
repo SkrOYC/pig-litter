@@ -1,0 +1,257 @@
+package piglitter
+
+import (
+	"encoding/json"
+	"strings"
+	"unicode/utf8"
+)
+
+type planCommand struct {
+	Action       string        `json:"action"`
+	SubmissionID string        `json:"submissionId"`
+	Text         string        `json:"text"`
+	TimeoutMs    int           `json:"timeoutMs"`
+	RequestID    PlanRequestID `json:"requestId"`
+	Decision     string        `json:"decision"`
+	Reason       string        `json:"reason"`
+}
+
+type planView struct {
+	Request planRequest `json:"request"`
+	Gate    string      `json:"gate"`
+}
+
+func parsePlanCommand(raw json.RawMessage) (planCommand, error) {
+	var command planCommand
+	if len(raw) > 16384 || !utf8.Valid(raw) || checkUniqueJSON(raw) != nil {
+		return command, reject("rejected", "invalid plan arguments")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil || json.Unmarshal(fields["action"], &command.Action) != nil {
+		return command, reject("rejected", "invalid plan action")
+	}
+	keys := []string{"action"}
+	switch command.Action {
+	case "submit":
+		keys = append(keys, "submissionId", "text", "timeoutMs")
+	case "get", "cancel":
+		keys = append(keys, "requestId")
+	case "list":
+	case "decide":
+		keys = append(keys, "requestId", "decision")
+		var decision string
+		if json.Unmarshal(fields["decision"], &decision) != nil {
+			return command, reject("rejected", "invalid plan decision")
+		}
+		if decision == "reject" {
+			keys = append(keys, "reason")
+		} else if decision != "approve" {
+			return command, reject("rejected", "invalid plan decision")
+		}
+	default:
+		return command, reject("rejected", "unknown plan action")
+	}
+	if _, err := exactJSONObject(raw, keys...); err != nil || json.Unmarshal(raw, &command) != nil {
+		return command, reject("rejected", "invalid action-specific plan arguments")
+	}
+	if command.Action == "get" || command.Action == "cancel" || command.Action == "decide" {
+		var requestFields map[string]json.RawMessage
+		if json.Unmarshal(fields["requestId"], &requestFields) != nil {
+			return command, reject("rejected", "invalid plan request identity")
+		}
+		requestKeys := []string{"member", "sequence"}
+		if _, present := requestFields["nonce"]; present {
+			requestKeys = append(requestKeys, "nonce")
+			if !validPlanNonce(command.RequestID.Nonce) {
+				return command, reject("rejected", "invalid plan request identity")
+			}
+		}
+		request, err := exactJSONObject(fields["requestId"], requestKeys...)
+		if err != nil {
+			return command, reject("rejected", "invalid plan request identity")
+		}
+		member, err := exactJSONObject(request["member"], "team", "id", "generation")
+		if err != nil {
+			return command, reject("rejected", "invalid plan member identity")
+		}
+		if _, err := exactJSONObject(member["team"], "root", "epoch"); err != nil || command.RequestID.Sequence == 0 || command.RequestID.Member.Generation == 0 || command.RequestID.Member.Team.Epoch == 0 || !childUUID.MatchString(string(command.RequestID.Member.ID)) || !childUUID.MatchString(string(command.RequestID.Member.Team.Root)) {
+			return command, reject("rejected", "invalid plan member identity")
+		}
+	}
+	return command, validatePlanCommand(command)
+}
+
+func validatePlanCommand(command planCommand) error {
+	validID := validControlRef(command.RequestID.Member) && command.RequestID.Sequence > 0 && (command.RequestID.Nonce == "" || validPlanNonce(command.RequestID.Nonce))
+	switch command.Action {
+	case "submit":
+		if command.RequestID != (PlanRequestID{}) || command.Decision != "" || command.Reason != "" || !peerMessageIDPattern.MatchString(command.SubmissionID) || strings.TrimSpace(command.Text) == "" || len(command.Text) > 4096 || !utf8.ValidString(command.Text) || command.TimeoutMs < 1000 || command.TimeoutMs > 3600000 {
+			return reject("rejected", "invalid plan submission")
+		}
+	case "get", "cancel", "decide":
+		if !validID || command.SubmissionID != "" || command.Text != "" || command.TimeoutMs != 0 {
+			return reject("rejected", "invalid plan request identity")
+		}
+		if command.Action != "decide" && (command.Decision != "" || command.Reason != "") {
+			return reject("rejected", "unexpected plan decision fields")
+		}
+		if command.Action == "decide" && (command.Decision != "approve" && command.Decision != "reject" || command.Decision == "approve" && command.Reason != "" || command.Decision == "reject" && (strings.TrimSpace(command.Reason) == "" || len(command.Reason) > 4096 || !utf8.ValidString(command.Reason))) {
+			return reject("rejected", "invalid plan decision")
+		}
+	case "list":
+		if command.SubmissionID != "" || command.Text != "" || command.TimeoutMs != 0 || command.RequestID != (PlanRequestID{}) || command.Decision != "" || command.Reason != "" {
+			return reject("rejected", "unexpected plan list fields")
+		}
+	default:
+		return reject("rejected", "unknown plan action")
+	}
+	return nil
+}
+
+func (o *owner) planOperation(raw json.RawMessage, authority controlAuthority) (map[string]any, error) {
+	command, err := parsePlanCommand(raw)
+	if err != nil {
+		return nil, err
+	}
+	return o.applyPlan(authority, command)
+}
+
+func (o *owner) applyPlan(authority controlAuthority, command planCommand) (map[string]any, error) {
+	if err := validatePlanCommand(command); err != nil {
+		return nil, err
+	}
+	o.tree.lifecycleMu.Lock()
+	defer o.tree.lifecycleMu.Unlock()
+	if err := o.current(); err != nil {
+		return nil, err
+	}
+	o.tree.mu.Lock()
+	caller := authority.caller
+	var parent *record
+	if authority.human != nil {
+		if err := authority.human(); err != nil {
+			o.tree.mu.Unlock()
+			return nil, err
+		}
+		caller = nil
+	} else {
+		var err error
+		parent, err = o.tree.callerLocked(caller)
+		if err != nil {
+			o.tree.mu.Unlock()
+			return nil, err
+		}
+	}
+	if caller != nil && (parent == nil || parent.team == nil) {
+		o.tree.mu.Unlock()
+		return nil, reject("permission_denied", "a registered teammate is required")
+	}
+	if caller != nil && command.Action == "decide" {
+		o.tree.mu.Unlock()
+		return nil, reject("permission_denied", "only the team lead can decide a plan")
+	}
+	if caller == nil && command.Action == "submit" {
+		o.tree.mu.Unlock()
+		return nil, reject("permission_denied", "only a teammate can submit a plan")
+	}
+	if caller != nil && command.Action != "submit" && command.Action != "list" && command.RequestID.Member != parent.team.Ref {
+		o.tree.mu.Unlock()
+		return nil, reject("permission_denied", "the plan belongs to another teammate")
+	}
+	if caller != nil && !parent.team.PlanRequired {
+		o.tree.mu.Unlock()
+		return map[string]any{"state": "plan_not_required", "gate": "not_required"}, nil
+	}
+	var execution string
+	if command.Action == "decide" {
+		member := o.tree.records[command.RequestID.Member.ID]
+		if o.tree.closed || member == nil || member.team == nil || member.team.Ref != command.RequestID.Member || member.paused || member.run == nil || member.run.state != Starting && member.run.state != Running {
+			o.tree.mu.Unlock()
+			return nil, reject("unavailable", "the plan requester is no longer active")
+		}
+		execution = member.run.noticeID
+	}
+	o.tree.mu.Unlock()
+	store, err := o.teamStoreForRoot()
+	if err != nil {
+		return nil, err
+	}
+	switch command.Action {
+	case "submit":
+		request, err := store.submitPlan(parent.team.Ref, caller.noticeID, command.SubmissionID, command.Text, command.TimeoutMs)
+		if err != nil {
+			return nil, err
+		}
+		granted, err := store.planGranted(parent.team.Ref)
+		if err != nil {
+			return nil, err
+		}
+		gate := "closed"
+		if granted {
+			gate = "granted"
+		}
+		return map[string]any{"state": request.State, "request": request, "gate": gate}, nil
+	case "decide":
+		request, err := store.decidePlan(command.RequestID, execution, command.Decision, command.Reason)
+		gate := "closed"
+		if err == nil && request.State == "approved" {
+			gate = "granted"
+		}
+		return map[string]any{"state": request.State, "request": request, "gate": gate}, err
+	case "cancel":
+		request, err := store.cancelPlan(command.RequestID)
+		return map[string]any{"state": request.State, "request": request, "gate": "closed"}, err
+	case "get", "list":
+		var members []teamMember
+		if caller == nil {
+			_, members, err = store.Snapshot()
+		} else {
+			members = []teamMember{*parent.team}
+		}
+		if err != nil {
+			return nil, err
+		}
+		views := []planView{}
+		for _, member := range members {
+			if !member.PlanRequired || command.Action == "get" && member.Ref != command.RequestID.Member {
+				continue
+			}
+			requests, err := store.readPlans(member.Ref)
+			if err != nil {
+				return nil, err
+			}
+			granted, err := store.planGranted(member.Ref)
+			if err != nil {
+				return nil, err
+			}
+			gate := "closed"
+			if granted {
+				gate = "granted"
+			}
+			for _, request := range requests {
+				if command.Action == "list" || request.ID == command.RequestID {
+					views = append(views, planView{Request: request, Gate: gate})
+				}
+			}
+		}
+		if command.Action == "get" {
+			if len(views) != 1 {
+				return nil, reject("rejected", "plan request is unavailable")
+			}
+			return map[string]any{"state": "found", "request": views[0].Request, "gate": views[0].Gate}, nil
+		}
+		return map[string]any{"state": "listed", "plans": views}, nil
+	}
+	return nil, reject("rejected", "unknown plan action")
+}
+
+func (o *owner) planSnapshot(authority controlAuthority) ([]planView, error) {
+	if authority.caller != nil {
+		return nil, reject("permission_denied", "only the team lead can view all plans")
+	}
+	result, err := o.applyPlan(authority, planCommand{Action: "list"})
+	if err != nil {
+		return nil, err
+	}
+	return result["plans"].([]planView), nil
+}
