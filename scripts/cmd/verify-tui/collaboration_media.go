@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -419,6 +420,46 @@ func (media *collaborationMedia) awaitEncodedObservation(ctx context.Context) er
 		media.receipt.ConfirmedNS = confirmed
 		return true, nil
 	})
+}
+
+var mediaFramePattern = regexp.MustCompile(`frame=\s*([0-9]+)`)
+
+func (media *collaborationMedia) encodedFrames() (int, error) {
+	data, err := os.ReadFile(filepath.Join(media.directory, "ffmpeg.log"))
+	if err != nil {
+		return 0, err
+	}
+	matches := mediaFramePattern.FindAllSubmatch(data, -1)
+	if len(matches) == 0 {
+		return 0, nil
+	}
+	return strconv.Atoi(string(matches[len(matches)-1][1]))
+}
+
+func (media *collaborationMedia) markPanelObservation(ctx context.Context) error {
+	frames, err := media.encodedFrames()
+	if err != nil {
+		return err
+	}
+	for step := 0; step < 2; step++ {
+		target := frames + 30
+		if err := waitFor(ctx, "recorded panel frame", 15*time.Second, func() (bool, error) {
+			if !observedAlive(media.children["ffmpeg"].record.Identity) {
+				return false, errors.New("media recorder exited before the panel frame")
+			}
+			var err error
+			frames, err = media.encodedFrames()
+			return frames >= target, err
+		}); err != nil {
+			return err
+		}
+		if step == 0 {
+			if err := media.markObservation(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func withoutEnvironment(env []string, key string) []string {

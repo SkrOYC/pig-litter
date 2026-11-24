@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,6 +10,26 @@ import (
 
 	"github.com/MichaelKinsy/PiG/tui"
 )
+
+func TestPanelFindsOnlyTheSelectedSourceCellProcess(t *testing.T) {
+	cellDir := filepath.Join(t.TempDir(), "pig-home", "cache", "cells", "go")
+	selected := observedProcess{PID: 1, StartTicks: "100", Executable: filepath.Join(cellDir, strings.Repeat("a", 64), "runner")}
+	unrelated := []observedProcess{
+		{PID: 2, Executable: filepath.Join(cellDir, "not-a-cell-key", "runner")},
+		{PID: 3, Executable: filepath.Join(cellDir+"-other", strings.Repeat("a", 64), "runner")},
+		{PID: 4, Executable: filepath.Join(cellDir, strings.Repeat("b", 64), "other")},
+	}
+	processes := append(unrelated, selected)
+	panel := panelProof{sourceCellDir: cellDir, processes: func() ([]observedProcess, error) { return processes, nil }}
+	got, err := panel.extensionProcess()
+	if err != nil || got != selected {
+		t.Fatalf("source-selected process = %+v, %v", got, err)
+	}
+	processes = append(processes, observedProcess{PID: 5, Executable: filepath.Join(cellDir, strings.Repeat("c", 64), "runner")})
+	if _, err := panel.extensionProcess(); err == nil {
+		t.Fatal("accepted multiple matching source-selected processes")
+	}
+}
 
 func TestPanelNavigationParserUsesViewAndActualPaintedRows(t *testing.T) {
 	const frame = " Litter 2 active\nPig Litter | list (3/3)\n  running held-b #bbbbbbbb\n  running held-a #aaaaaaaa\n> completed quick-newer #cccccccc\n\nWorking\ncontrols\n"
@@ -44,6 +65,11 @@ func TestPanelGeometryRejectsActualClippedWideLegendAt32(t *testing.T) {
 	copy(valid[18:22], []string{"↑↓ move Enter detail v result", "m msg p pause subtree r resume", "[ ] page Home/End first/last", "Esc back/close"})
 	if !panelListHintsReady(strings.Join(valid, "\n"), 32, 24) {
 		t.Fatal("rejected complete 32-column panel controls")
+	}
+	current := strings.Split(clipped, "\n")
+	copy(current[18:22], []string{"Up/Down move Enter detail", "v result m msg p pause subtree", "r resume [ ] page Home/End", "Escape/Ctrl+C back/close"})
+	if !panelListHintsReady(strings.Join(current, "\n"), 32, 24) {
+		t.Fatal("rejected current complete 32-column panel controls")
 	}
 	for _, placement := range []string{"body", "footer"} {
 		t.Run(placement, func(t *testing.T) {
@@ -81,6 +107,11 @@ func TestPanelGeometryRequiresCompleteWideControls(t *testing.T) {
 		frame[size.height-4] = strings.ReplaceAll(size.first, "m message  p pause subtree  r resume", "")
 		if panelListHintsReady(strings.Join(frame, "\n"), size.width, size.height) {
 			t.Fatalf("accepted %d-column panel missing action controls", size.width)
+		}
+		frame[size.height-4] = "Up/Down move  Enter inspect  v result  m message  p pause subtree  r resume"
+		frame[size.height-3] = "[ ]/PageUp/PageDown page  Home/End first/last  Escape/Ctrl+C back/close"
+		if !panelListHintsReady(strings.Join(frame, "\n"), size.width, size.height) {
+			t.Fatalf("rejected current complete %d-column panel controls", size.width)
 		}
 	}
 }
