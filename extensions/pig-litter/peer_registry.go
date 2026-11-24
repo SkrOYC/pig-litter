@@ -236,7 +236,8 @@ func prepareLocalDirectory(path string) (string, error) {
 	if path == "" || !filepath.IsAbs(path) {
 		return "", errors.New("local peer directory must be absolute")
 	}
-	if err := os.MkdirAll(path, 0o700); err != nil {
+	path = filepath.Clean(path)
+	if err := makeLocalDirectory(path); err != nil {
 		return "", err
 	}
 	info, err := os.Lstat(path)
@@ -246,7 +247,22 @@ func prepareLocalDirectory(path string) (string, error) {
 	if !info.IsDir() || info.Mode().Perm() != 0o700 || !localOwned(info) {
 		return "", fmt.Errorf("local peer directory is not private: %s", path)
 	}
-	return filepath.Clean(path), nil
+	return path, nil
+}
+
+func makeLocalDirectory(path string) error {
+	parent := filepath.Dir(path)
+	if parent == path {
+		return nil
+	}
+	if err := makeLocalDirectory(parent); err != nil {
+		return err
+	}
+	err := os.Mkdir(path, 0o700)
+	if err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	return syncDir(parent)
 }
 
 func canonicalLocalFile(path string) (string, error) {

@@ -28,6 +28,7 @@ const (
 	localSubscriptionLimit       = 256
 	localSubscriptionSenderLimit = 16
 	localConnectionLimit         = 32
+	localNoticeConcurrency       = 8
 	localDeadline                = 5 * time.Second
 )
 
@@ -502,6 +503,9 @@ func (p *localPeer) queryLocal(from localSessionRef, id string) localResult {
 		return localResult{Status: "not_found"}
 	}
 	if err != nil || receipt.Envelope.Sender != from || receipt.Envelope.Recipient != p.ref {
+		return localResult{Status: "uncertain"}
+	}
+	if syncDir(p.stateDir) != nil {
 		return localResult{Status: "uncertain"}
 	}
 	return localReceiptResult(receipt)
@@ -1089,6 +1093,15 @@ func (p *localPeer) wakeLocalNotices() {
 
 func (p *localPeer) driveLocalNotices() {
 	defer close(p.noticeStopped)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-p.stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	for {
 		select {
 		case <-p.stop:
@@ -1096,9 +1109,7 @@ func (p *localPeer) driveLocalNotices() {
 		case <-p.noticeWake:
 		}
 		for {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			retry := p.flushLocalNotices(ctx)
-			cancel()
 			if !retry {
 				break
 			}
@@ -1120,50 +1131,77 @@ func (p *localPeer) flushLocalNotices(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	retry := false
+	var workers sync.WaitGroup
+	limit := make(chan struct{}, localNoticeConcurrency)
+	retry := make(chan struct{}, 1)
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasPrefix(name, "subin-") && !strings.HasPrefix(name, "subout-") {
 			continue
 		}
-		path := filepath.Join(p.stateDir, name)
-		record, err := readLocalSubscription(path)
-		if err != nil || record.Fired == "" {
-			continue
+		if ctx.Err() != nil {
+			workers.Wait()
+			return false
 		}
-		subscription := record.Subscription
-		if strings.HasPrefix(name, "subout-") {
-			result := p.recordLocalNotice(subscription.Target, subscription.ID, subscription.Incarnation, record.Fired)
-			if result.Status != "notice_accepted" && result.Status != "already_notified" && result.Status != "denied" {
-				retry = true
+		select {
+		case limit <- struct{}{}:
+		case <-ctx.Done():
+			workers.Wait()
+			return false
+		}
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			defer func() { <-limit }()
+			if p.flushLocalNotice(ctx, name) {
+				select {
+				case retry <- struct{}{}:
+				default:
+				}
 			}
-			continue
-		}
-		if record.Delivered || !subscription.Expires.After(time.Now()) {
-			continue
-		}
-		p.mu.Lock()
-		allowed := p.accept && !p.closed
-		p.mu.Unlock()
-		if !allowed {
-			continue
-		}
-		result, err := p.exchange(ctx, subscription.Source, "notice", localNotice{ID: subscription.ID, Incarnation: subscription.Incarnation, Event: localNoticeIdle})
-		if err != nil || result.Status != "notice_accepted" && result.Status != "already_notified" {
-			retry = true
-			continue
-		}
-		p.mu.Lock()
-		current, readErr := readLocalSubscription(path)
-		if readErr == nil && equalLocalSubscription(current.Subscription, subscription) && current.Fired == localNoticeIdle {
-			current.Delivered = true
-			if err := writeLocalSubscription(path, current, true); err != nil {
-				retry = true
-			}
-		}
-		p.mu.Unlock()
+		}()
 	}
-	return retry
+	workers.Wait()
+	return len(retry) != 0
+}
+
+func (p *localPeer) flushLocalNotice(ctx context.Context, name string) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	path := filepath.Join(p.stateDir, name)
+	record, err := readLocalSubscription(path)
+	if err != nil || record.Fired == "" {
+		return false
+	}
+	subscription := record.Subscription
+	if strings.HasPrefix(name, "subout-") {
+		result := p.recordLocalNotice(subscription.Target, subscription.ID, subscription.Incarnation, record.Fired)
+		return result.Status != "notice_accepted" && result.Status != "already_notified" && result.Status != "denied"
+	}
+	if record.Delivered || !subscription.Expires.After(time.Now()) {
+		return false
+	}
+	p.mu.Lock()
+	allowed := p.accept && !p.closed
+	p.mu.Unlock()
+	if !allowed {
+		return false
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	result, err := p.exchange(requestCtx, subscription.Source, "notice", localNotice{ID: subscription.ID, Incarnation: subscription.Incarnation, Event: localNoticeIdle})
+	cancel()
+	if err != nil || result.Status != "notice_accepted" && result.Status != "already_notified" {
+		return true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	current, err := readLocalSubscription(path)
+	if err == nil && equalLocalSubscription(current.Subscription, subscription) && current.Fired == localNoticeIdle {
+		current.Delivered = true
+		return writeLocalSubscription(path, current, true) != nil
+	}
+	return false
 }
 
 func (p *localPeer) startLocalWatch(subscription localSubscription, watch localProcessWatch) bool {
