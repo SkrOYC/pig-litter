@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/MichaelKinsy/PiG/agent"
+	sdktui "github.com/MichaelKinsy/PiG/extensions/sdk/tui"
 	"github.com/MichaelKinsy/PiG/tui/widthx"
 )
 
@@ -28,6 +29,62 @@ func panelAdmission(t *testing.T, tree *Tree, name string) *run {
 		t.Fatal(err)
 	}
 	return selected
+}
+
+func TestPanelUsesHostKeybindings(t *testing.T) {
+	previous := sdktui.GetKeybindings()
+	sdktui.SetKeybindings(sdktui.NewKeybindingsManager(sdktui.TUIKeybindings, sdktui.KeybindingsConfig{
+		"tui.select.up":                 {"ctrl+p"},
+		"tui.select.down":               {"ctrl+n"},
+		"tui.select.confirm":            {"ctrl+g"},
+		"tui.select.cancel":             {"ctrl+q"},
+		"tui.input.submit":              {"ctrl+x"},
+		"tui.editor.deleteCharBackward": {"ctrl+w"},
+	}))
+	t.Cleanup(func() { sdktui.SetKeybindings(previous) })
+
+	tree := testTree(t, defaultConfig())
+	first := panelAdmission(t, tree, "first")
+	second := panelAdmission(t, tree, "second")
+	tree.execute = func(_ *record, selected *run) Outcome {
+		<-selected.ctx.Done()
+		return Outcome{State: Stopped}
+	}
+	if err := tree.activate(second); err != nil {
+		t.Fatal(err)
+	}
+	o := testCallOwner(tree)
+	panel := newChildPanel(o, nil, func() int { return 32 })
+	defer panel.Dispose()
+	text := strings.Join(panel.Render(120), "\n")
+	if !strings.Contains(text, "Ctrl+P/Ctrl+N move") || !strings.Contains(text, "Ctrl+G inspect") {
+		t.Fatalf("panel did not show configured navigation keys: %s", text)
+	}
+	panelKey(t, panel, "\x1b[B")
+	if panel.selected != first {
+		t.Fatal("an overridden Down key still moved the selection")
+	}
+	panelKey(t, panel, "\x0e")
+	if panel.selected != second {
+		t.Fatal("configured Down did not select the second child")
+	}
+	panelKey(t, panel, "\x07")
+	if panel.mode != panelDetail {
+		t.Fatal("configured Confirm did not open details")
+	}
+	panelKey(t, panel, "\x11")
+	panelKey(t, panel, "m")
+	panelKey(t, panel, "abc")
+	panelKey(t, panel, "\x17")
+	if panel.draft != "ab" {
+		t.Fatalf("configured editor key did not delete the last grapheme: %q", panel.draft)
+	}
+	o.state.owner = nil
+	panelKey(t, panel, "\x18")
+	if text := strings.Join(panel.Render(120), "\n"); !strings.Contains(text, "Action failed | the root Session retired") {
+		t.Fatalf("configured Submit did not reach the owner: %s", text)
+	}
+	panelKey(t, panel, "\x11")
 }
 
 func TestPanelRetainedViewportResizeAndSelectionBeyondSixteen(t *testing.T) {

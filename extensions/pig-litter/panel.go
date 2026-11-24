@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
+	sdktui "github.com/MichaelKinsy/PiG/extensions/sdk/tui"
 	"github.com/MichaelKinsy/PiG/tui"
 	"github.com/MichaelKinsy/PiG/tui/widthx"
 )
@@ -23,6 +24,7 @@ const (
 	panelResume
 	panelTranscript
 	panelTasks
+	panelTaskDetail
 )
 
 type panelChild struct {
@@ -65,6 +67,11 @@ type childPanel struct {
 	memberSelected     bool
 	teamRequest        uint64
 	messageTarget      *humanMember
+	task               TaskID
+	taskSelected       bool
+	taskTop            int
+	tasksReturn        panelMode
+	tasksReturnScroll  int
 }
 
 func (t *Tree) panelChildren() []panelChild {
@@ -214,6 +221,26 @@ func (p *childPanel) receive() {
 	}
 }
 
+func panelKeyMatches(data, binding string) bool {
+	return sdktui.GetKeybindings().Matches(data, binding)
+}
+
+func panelKeyText(binding string) string {
+	key := sdk.KeyDisplayText(binding)
+	if key == "" {
+		return "unbound"
+	}
+	return key
+}
+
+func panelMoveKeys() string {
+	return panelKeyText("tui.select.up") + "/" + panelKeyText("tui.select.down")
+}
+
+func panelPageKeys() string {
+	return "[ ]/" + panelKeyText("tui.select.pageUp") + "/" + panelKeyText("tui.select.pageDown")
+}
+
 func (p *childPanel) Render(width int) []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -230,22 +257,22 @@ func (p *childPanel) Render(width int) []string {
 		height = 24
 	}
 	budget := max(1, height-8)
-	legends := []string{"Up/Down move  Enter inspect  v result", "m message  p pause subtree  r resume", "[ ] page  Home/End first/last", "Esc back/close"}
+	legends := []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " inspect  v result", "m message  p pause subtree  r resume", panelPageKeys() + " page  Home/End first/last", panelKeyText("tui.select.cancel") + " back/close"}
 	if width < 40 {
-		legends = []string{"↑↓ move Enter detail v result", "m msg p pause subtree r resume", "[ ] page Home/End first/last", "Esc back/close"}
+		legends = []string{panelMoveKeys() + " move " + panelKeyText("tui.select.confirm") + " detail", "v result m msg p pause subtree", "r resume [ ] page Home/End", panelKeyText("tui.select.cancel") + " back/close"}
 	}
 	if width < 30 {
-		legends = []string{"↑↓ move Enter detail", "v result m message", "p pause subtree", "r resume [ ] page", "Esc back/close"}
+		legends = []string{panelMoveKeys() + " move", panelKeyText("tui.select.confirm") + " detail", "v result m message", "p pause subtree", "r resume " + panelPageKeys() + " page", panelKeyText("tui.select.cancel") + " back/close"}
 	}
 	if p.mode == panelMessage || p.mode == panelResume {
-		legends = []string{"Enter submit  Esc cancel", "Left/Right edit  Ctrl+U clear"}
+		legends = []string{panelKeyText("tui.input.submit") + " submit  " + panelKeyText("tui.select.cancel") + " cancel", panelKeyText("tui.editor.cursorLeft") + "/" + panelKeyText("tui.editor.cursorRight") + " edit  " + panelKeyText("tui.editor.deleteToLineStart") + " clear"}
 		if p.mode == panelMessage {
-			legends = append(legends, "Tab steer/follow_up")
+			legends = append(legends, panelKeyText("tui.input.tab")+" steer/follow_up")
 		}
 	} else if p.mode == panelReport {
-		legends = []string{"Up/Down scroll  [ ] page", "Home/End  Esc back"}
+		legends = []string{panelMoveKeys() + " scroll  " + panelPageKeys() + " page", "Home/End  " + panelKeyText("tui.select.cancel") + " back"}
 	} else if p.mode == panelDetail {
-		legends[0] = "Up/Down scroll  v result"
+		legends[0] = panelMoveKeys() + " scroll  v result"
 	}
 	if width >= 80 {
 		legends = widthx.WrapTextWithAnsi(paintText(strings.Join(legends, "  "), false), width)
@@ -407,7 +434,7 @@ func (p *childPanel) HandleInput(data string) (sdk.RemoteComponentResult, error)
 	if p.team != nil {
 		return p.handleTeamInput(data, key), nil
 	}
-	if tui.MatchesKeyID(data, "escape") {
+	if panelKeyMatches(data, "tui.select.cancel") {
 		if p.mode == panelList {
 			p.cancel()
 			return sdk.RemoteComponentResult{Done: true}, nil
@@ -436,13 +463,13 @@ func (p *childPanel) HandleInput(data string) (sdk.RemoteComponentResult, error)
 	index := slices.IndexFunc(children, func(child panelChild) bool { return p.selected != nil && child.child.ID == p.selected.ref.ID })
 	step := 0
 	switch {
-	case tui.MatchesKeyID(data, "up"):
+	case panelKeyMatches(data, "tui.select.up"):
 		step = -1
-	case tui.MatchesKeyID(data, "down"):
+	case panelKeyMatches(data, "tui.select.down"):
 		step = 1
-	case key == "[" || tui.MatchesKeyID(data, "pageUp"):
+	case key == "[" || panelKeyMatches(data, "tui.select.pageUp"):
 		step = -max(1, p.pageRows-1)
-	case key == "]" || tui.MatchesKeyID(data, "pageDown"):
+	case key == "]" || panelKeyMatches(data, "tui.select.pageDown"):
 		step = max(1, p.pageRows-1)
 	case tui.MatchesKeyID(data, "home"):
 		step = -int(^uint(0) >> 2)
@@ -466,7 +493,7 @@ func (p *childPanel) HandleInput(data string) (sdk.RemoteComponentResult, error)
 		return sdk.RemoteComponentResult{}, nil
 	}
 	switch {
-	case tui.MatchesKeyID(data, "enter"):
+	case panelKeyMatches(data, "tui.select.confirm"):
 		if p.mode == panelList {
 			p.mode, p.scroll, p.renderedScroll = panelDetail, 0, 0
 		}
@@ -492,7 +519,7 @@ func (p *childPanel) HandleInput(data string) (sdk.RemoteComponentResult, error)
 }
 
 func (p *childPanel) composerInput(data string) {
-	if tui.MatchesKeyID(data, "enter") {
+	if panelKeyMatches(data, "tui.input.submit") {
 		if strings.TrimSpace(p.draft) != "" {
 			kind := humanMessage
 			if p.mode == panelResume {
@@ -500,7 +527,7 @@ func (p *childPanel) composerInput(data string) {
 			}
 			p.submit(humanAction{kind: kind, mode: p.messageMode, text: p.draft})
 		}
-	} else if tui.MatchesKeyID(data, "tab") && p.mode == panelMessage {
+	} else if panelKeyMatches(data, "tui.input.tab") && p.mode == panelMessage {
 		if p.messageMode == "steer" {
 			p.messageMode = "follow_up"
 		} else {
@@ -546,23 +573,23 @@ func previousGrapheme(text string, end int) int {
 
 func (p *childPanel) edit(data string) {
 	switch {
-	case tui.MatchesKeyID(data, "left"):
+	case panelKeyMatches(data, "tui.editor.cursorLeft"):
 		p.cursor = previousGrapheme(p.draft, p.cursor)
-	case tui.MatchesKeyID(data, "right"):
+	case panelKeyMatches(data, "tui.editor.cursorRight"):
 		cluster, _ := widthx.FirstGrapheme(p.draft[p.cursor:])
 		p.cursor += len(cluster)
-	case tui.MatchesKeyID(data, "home"):
+	case panelKeyMatches(data, "tui.editor.cursorLineStart"):
 		p.cursor = 0
-	case tui.MatchesKeyID(data, "end"):
+	case panelKeyMatches(data, "tui.editor.cursorLineEnd"):
 		p.cursor = len(p.draft)
-	case tui.MatchesKeyID(data, "backspace"):
+	case panelKeyMatches(data, "tui.editor.deleteCharBackward"):
 		left := previousGrapheme(p.draft, p.cursor)
 		p.draft = p.draft[:left] + p.draft[p.cursor:]
 		p.cursor = left
-	case tui.MatchesKeyID(data, "delete"):
+	case panelKeyMatches(data, "tui.editor.deleteCharForward"):
 		cluster, _ := widthx.FirstGrapheme(p.draft[p.cursor:])
 		p.draft = p.draft[:p.cursor] + p.draft[p.cursor+len(cluster):]
-	case tui.MatchesKeyID(data, "ctrl+u"):
+	case panelKeyMatches(data, "tui.editor.deleteToLineStart"):
 		p.draft, p.cursor = "", 0
 	default:
 		if strings.HasPrefix(data, "\x1b[200~") && strings.HasSuffix(data, "\x1b[201~") {
@@ -622,6 +649,16 @@ func (p *childPanel) teamSelection(frame *teamViewFrame) int {
 	return slices.IndexFunc(frame.Members, func(member teamMemberView) bool { return member.Member.Ref == p.member })
 }
 
+func (p *childPanel) taskSelection(frame *teamViewFrame) int {
+	if !p.taskSelected && len(frame.Tasks) != 0 {
+		p.task, p.taskSelected = frame.Tasks[0].ID, true
+	}
+	if !p.taskSelected {
+		return -1
+	}
+	return slices.IndexFunc(frame.Tasks, func(task teamTaskView) bool { return task.ID == p.task })
+}
+
 func (p *childPanel) renderTeam(width int) []string {
 	frame := p.team.Snapshot()
 	index := p.teamSelection(frame)
@@ -630,13 +667,15 @@ func (p *childPanel) renderTeam(width int) []string {
 		height = 24
 	}
 	budget := max(1, height-8)
-	legend := []string{"Up/Down move  Enter detail  v report  t transcript", "m message active teammate  k all tasks  [ ] page  Home/End  Esc close"}
+	legend := []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " detail  v report  t transcript", "m message active teammate  k all tasks  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " close"}
 	if p.mode == panelMessage {
-		legend = []string{"Enter submit  Esc cancel", "Left/Right edit  Ctrl+U clear  Tab steer/follow_up"}
+		legend = []string{panelKeyText("tui.input.submit") + " submit  " + panelKeyText("tui.select.cancel") + " cancel", panelKeyText("tui.editor.cursorLeft") + "/" + panelKeyText("tui.editor.cursorRight") + " edit  " + panelKeyText("tui.editor.deleteToLineStart") + " clear  " + panelKeyText("tui.input.tab") + " steer/follow_up"}
+	} else if p.mode == panelTasks {
+		legend = []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " detail  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " back"}
 	} else if p.mode != panelList && p.mode != panelDetail {
-		legend = []string{"Up/Down scroll  [ ] page  Home/End  Esc back"}
+		legend = []string{panelMoveKeys() + " scroll  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " back"}
 	} else if p.mode == panelDetail {
-		legend = []string{"Up/Down scroll  v report  t transcript", "m message active teammate  k all tasks  Esc back"}
+		legend = []string{panelMoveKeys() + " scroll  v report  t transcript", "m message active teammate  k all tasks  " + panelKeyText("tui.select.cancel") + " back"}
 	}
 	if width >= 80 {
 		legend = widthx.WrapTextWithAnsi(paintText(strings.Join(legend, "  "), false), width)
@@ -698,6 +737,32 @@ func (p *childPanel) renderTeam(width int) []string {
 		for _, pending := range frame.Reservations[:reserveRows] {
 			content = append(content, "  "+pending.Name+" | reservation "+pending.State)
 		}
+	} else if p.mode == panelTasks {
+		taskIndex := p.taskSelection(frame)
+		title += fmt.Sprintf(" | tasks (%d/%d)", taskIndex+1, len(frame.Tasks))
+		if frame.TaskHealth.Error != "" {
+			content = append(content, "Tasks "+frame.TaskHealth.Status+" | "+frame.TaskHealth.Error)
+		}
+		if p.taskSelected && taskIndex < 0 {
+			content = append(content, fmt.Sprintf("Selected task #%d unavailable", p.task.Number))
+		} else if len(frame.Tasks) == 0 {
+			content = append(content, "No tasks")
+		}
+		rows := max(0, contentBudget-len(content))
+		p.taskTop = min(p.taskTop, max(0, len(frame.Tasks)-rows))
+		if taskIndex >= 0 && taskIndex < p.taskTop {
+			p.taskTop = taskIndex
+		}
+		if rows > 0 && taskIndex >= p.taskTop+rows {
+			p.taskTop = taskIndex - rows + 1
+		}
+		for i := p.taskTop; i < min(len(frame.Tasks), p.taskTop+rows); i++ {
+			prefix := "  "
+			if i == taskIndex {
+				prefix = "> "
+			}
+			content = append(content, prefix+teamTaskSummary(frame, frame.Tasks[i]))
+		}
 	} else {
 		switch p.mode {
 		case panelDetail:
@@ -709,9 +774,14 @@ func (p *childPanel) renderTeam(width int) []string {
 		case panelTranscript:
 			title += " | transcript"
 			content = p.teamTranscriptLines(frame, width)
-		case panelTasks:
-			title += " | tasks"
-			content = teamTaskLines(frame, nil)
+		case panelTaskDetail:
+			title += " | task detail"
+			taskIndex := p.taskSelection(frame)
+			if taskIndex < 0 {
+				content = []string{"Selected task unavailable"}
+			} else {
+				content = teamTaskDetail(frame, frame.Tasks[taskIndex])
+			}
 		case panelMessage:
 			title += " | message"
 			content = []string{"Message mode " + p.messageMode}
@@ -819,39 +889,48 @@ func teamTaskLines(frame *teamViewFrame, owner *MemberRef) []string {
 		if owner != nil && (task.Owner == nil || *task.Owner != *owner) {
 			continue
 		}
-		assigned := "unassigned"
-		if task.Owner != nil {
-			assigned = string(task.Owner.ID) + fmt.Sprintf(" generation %d", task.Owner.Generation)
-			if i := slices.IndexFunc(frame.Members, func(member teamMemberView) bool { return member.Member.Ref == *task.Owner }); i >= 0 {
-				assigned = frame.Members[i].Member.Name + " | " + assigned
-			}
-		}
-		line := fmt.Sprintf("#%d %s | %s | %s", task.ID.Number, task.Subject, task.State, assigned)
-		if task.Blocked {
-			line += " | blocked"
-		}
-		lines = append(lines, line)
-		if task.Description != "" {
-			lines = append(lines, "  "+task.Description)
-		}
-		if len(task.BlockedBy) != 0 {
-			dependencies := make([]string, len(task.BlockedBy))
-			for i, dependency := range task.BlockedBy {
-				dependencies[i] = fmt.Sprintf("#%d", dependency.Number)
-			}
-			lines = append(lines, "  Depends on "+strings.Join(dependencies, ", "))
-		}
-		keys := make([]string, 0, len(task.Metadata))
-		for key := range task.Metadata {
-			keys = append(keys, key)
-		}
-		slices.Sort(keys)
-		for _, key := range keys {
-			lines = append(lines, "  "+key+" "+task.Metadata[key])
-		}
+		lines = append(lines, teamTaskDetail(frame, task)...)
 	}
 	if len(lines) == 0 {
 		return []string{"No tasks"}
+	}
+	return lines
+}
+
+func teamTaskSummary(frame *teamViewFrame, task teamTaskView) string {
+	assigned := "unassigned"
+	if task.Owner != nil {
+		assigned = string(task.Owner.ID) + fmt.Sprintf(" generation %d", task.Owner.Generation)
+		if i := slices.IndexFunc(frame.Members, func(member teamMemberView) bool { return member.Member.Ref == *task.Owner }); i >= 0 {
+			assigned = frame.Members[i].Member.Name + " | " + assigned
+		}
+	}
+	line := fmt.Sprintf("#%d %s | %s | %s", task.ID.Number, task.Subject, task.State, assigned)
+	if task.Blocked {
+		line += " | blocked"
+	}
+	return line
+}
+
+func teamTaskDetail(frame *teamViewFrame, task teamTaskView) []string {
+	lines := []string{teamTaskSummary(frame, task)}
+	if task.Description != "" {
+		lines = append(lines, "  "+task.Description)
+	}
+	if len(task.BlockedBy) != 0 {
+		dependencies := make([]string, len(task.BlockedBy))
+		for i, dependency := range task.BlockedBy {
+			dependencies[i] = fmt.Sprintf("#%d", dependency.Number)
+		}
+		lines = append(lines, "  Depends on "+strings.Join(dependencies, ", "))
+	}
+	keys := make([]string, 0, len(task.Metadata))
+	for key := range task.Metadata {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		lines = append(lines, "  "+key+" "+task.Metadata[key])
 	}
 	return lines
 }
@@ -884,7 +963,7 @@ func (p *childPanel) teamTranscriptLines(frame *teamViewFrame, width int) []stri
 }
 
 func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult {
-	if tui.MatchesKeyID(data, "escape") {
+	if panelKeyMatches(data, "tui.select.cancel") {
 		switch p.mode {
 		case panelList:
 			p.cancel()
@@ -897,6 +976,10 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 			}
 			p.mode, p.scroll = p.previous, p.previousScroll
 			p.draft, p.cursor, p.messageTarget = "", 0, nil
+		case panelTasks:
+			p.mode, p.scroll = p.tasksReturn, p.tasksReturnScroll
+		case panelTaskDetail:
+			p.mode, p.scroll = panelTasks, 0
 		default:
 			p.mode, p.scroll = panelList, 0
 		}
@@ -913,13 +996,13 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 	index := p.teamSelection(frame)
 	step := 0
 	switch {
-	case tui.MatchesKeyID(data, "up"):
+	case panelKeyMatches(data, "tui.select.up"):
 		step = -1
-	case tui.MatchesKeyID(data, "down"):
+	case panelKeyMatches(data, "tui.select.down"):
 		step = 1
-	case key == "[" || tui.MatchesKeyID(data, "pageUp"):
+	case key == "[" || panelKeyMatches(data, "tui.select.pageUp"):
 		step = -max(1, p.pageRows-1)
-	case key == "]" || tui.MatchesKeyID(data, "pageDown"):
+	case key == "]" || panelKeyMatches(data, "tui.select.pageDown"):
 		step = max(1, p.pageRows-1)
 	case tui.MatchesKeyID(data, "home"):
 		step = -int(^uint(0) >> 2)
@@ -938,20 +1021,38 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 			}
 			p.member, p.memberSelected = frame.Members[index].Member.Ref, true
 			p.team.Select(p.member)
+		} else if p.mode == panelTasks && len(frame.Tasks) != 0 {
+			taskIndex := p.taskSelection(frame)
+			if taskIndex < 0 {
+				taskIndex = 0
+				if step < 0 {
+					taskIndex = len(frame.Tasks) - 1
+				}
+			} else {
+				taskIndex = min(max(0, taskIndex+step), len(frame.Tasks)-1)
+			}
+			p.task, p.taskSelected = frame.Tasks[taskIndex].ID, true
 		} else {
 			p.scroll = max(0, p.renderedScroll+step)
 		}
 		return sdk.RemoteComponentResult{}
 	}
 	if key == "k" && (p.mode == panelList || p.mode == panelDetail) {
+		p.tasksReturn, p.tasksReturnScroll = p.mode, p.scroll
 		p.mode, p.scroll, p.renderedScroll = panelTasks, 0, 0
+		return sdk.RemoteComponentResult{}
+	}
+	if p.mode == panelTasks && panelKeyMatches(data, "tui.select.confirm") {
+		if p.taskSelection(frame) >= 0 {
+			p.mode, p.scroll, p.renderedScroll = panelTaskDetail, 0, 0
+		}
 		return sdk.RemoteComponentResult{}
 	}
 	if index < 0 {
 		return sdk.RemoteComponentResult{}
 	}
 	switch {
-	case tui.MatchesKeyID(data, "enter") && p.mode == panelList:
+	case panelKeyMatches(data, "tui.select.confirm") && p.mode == panelList:
 		p.mode, p.scroll, p.renderedScroll = panelDetail, 0, 0
 	case key == "v" && (p.mode == panelList || p.mode == panelDetail):
 		p.previous, p.previousScroll = p.mode, p.scroll

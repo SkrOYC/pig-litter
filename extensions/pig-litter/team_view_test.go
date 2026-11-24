@@ -70,6 +70,70 @@ func teamViewFixture(t *testing.T) (*owner, *teamStore, []teamMember, []*run) {
 	return o, store, members, runs
 }
 
+func TestTeamTaskSelectionUsesIdentityAcrossRefresh(t *testing.T) {
+	o, store, members, _ := teamViewFixture(t)
+	prerequisite, err := store.createTask("Prepare", "First step", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dependent, err := store.createTask("Publish", "Second step", []TaskID{prerequisite.ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	panel := newChildPanel(o, nil, func() int { return 32 })
+	panel.mu.Lock()
+	panel.team = newTeamView(panel.ctx, o, panel.requestRender)
+	panel.mu.Unlock()
+	defer panel.Dispose()
+	waitTeamFrame(t, panel.team, func(frame *teamViewFrame) bool {
+		return len(frame.Members) == 2 && len(frame.Tasks) == 2 && frame.PreferenceLoaded
+	})
+	panel.Render(120)
+	panelKey(t, panel, "\x1b[B")
+	panelKey(t, panel, "k")
+	panel.Render(120)
+	panelKey(t, panel, "\x1b[B")
+	if panel.task != dependent.ID || panel.member != members[1].Ref {
+		t.Fatal("task navigation changed the selected teammate or picked the wrong task")
+	}
+	panelKey(t, panel, "\r")
+	for _, width := range []int{80, 120, 150} {
+		rows := panel.Render(width)
+		text := strings.Join(rows, "\n")
+		if !strings.Contains(text, "Publish | pending | unassigned | blocked") || !strings.Contains(text, "Second step") || !strings.Contains(text, "Depends on #1") {
+			t.Fatalf("task detail omitted its state or dependency at %d columns: %s", width, text)
+		}
+		for _, row := range rows {
+			if widthx.VisibleWidth(row) > width {
+				t.Fatalf("task detail exceeded %d columns: %q", width, row)
+			}
+		}
+	}
+	panelKey(t, panel, "\x1b")
+	if _, err := store.createTask("Later", "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitTeamFrame(t, panel.team, func(frame *teamViewFrame) bool { return len(frame.Tasks) == 3 })
+	if text := strings.Join(panel.Render(120), "\n"); panel.task != dependent.ID || !strings.Contains(text, "> #2 Publish") {
+		t.Fatalf("refresh did not retain task identity: %s", text)
+	}
+	if _, err := store.deleteTask(dependent.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitTeamFrame(t, panel.team, func(frame *teamViewFrame) bool { return len(frame.Tasks) == 2 })
+	if text := strings.Join(panel.Render(120), "\n"); !strings.Contains(text, "Selected task #2 unavailable") || panel.task != dependent.ID {
+		t.Fatalf("removed task was silently replaced: %s", text)
+	}
+	panelKey(t, panel, "\x1b[B")
+	if panel.task != prerequisite.ID {
+		t.Fatal("navigation did not choose a replacement task")
+	}
+	panelKey(t, panel, "\x1b")
+	if panel.mode != panelList || panel.member != members[1].Ref {
+		t.Fatal("leaving tasks changed the retained teammate selection")
+	}
+}
+
 func TestTeamPanelRetainsMemberAndDisplaysOwnedTasksAndPrivateHistory(t *testing.T) {
 	o, store, members, _ := teamViewFixture(t)
 	task, err := store.createTask("Assigned marker", "Task description", nil, nil)
