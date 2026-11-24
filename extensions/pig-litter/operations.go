@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -37,6 +38,9 @@ var descriptions = map[string]string{
 	"litter_message":    "Steer a live child or explicitly resume a settled child with the same ID.",
 	"litter_stop":       "Pause an immediate child and its descendants. Resume each node explicitly with litter_message.",
 	"litter_wait":       "Wait for a child result by ID. Outcome text is the child assistant's report. A timeout leaves the child running.",
+	"observer_read":     "Read the paired worker's structural activity at /observer/activity.json.",
+	"observer_ls":       "List the virtual observer activity directory.",
+	"observer_report":   "Send an optional report to the destination fixed when this observer was admitted.",
 }
 
 var promptGuidelines = map[string][]string{
@@ -95,21 +99,24 @@ var schemas = map[string]map[string]any{
 		planActionSchema("decide", []string{"requestId", "decision"}, map[string]any{"requestId": planIDSchema, "decision": map[string]any{"type": "string", "enum": []string{"approve"}}}),
 		planActionSchema("decide", []string{"requestId", "decision", "reason"}, map[string]any{"requestId": planIDSchema, "decision": map[string]any{"type": "string", "enum": []string{"reject"}}, "reason": text(4096)}),
 	}},
-	"team_task_create": object([]string{"subject"}, map[string]any{"subject": text(256), "description": map[string]any{"type": "string", "maxLength": 16384}, "blockedBy": map[string]any{"type": "array", "maxItems": 128, "items": taskIDSchema}, "metadata": map[string]any{"type": "object", "maxProperties": 64, "additionalProperties": map[string]any{"type": "string", "maxLength": 4096}}, "submissionId": text(128)}),
-	"team_task_get":    object([]string{"taskId"}, map[string]any{"taskId": taskIDSchema}),
-	"team_task_list":   object([]string{}, map[string]any{}),
-	"team_task_update": object([]string{"taskId", "action"}, map[string]any{"taskId": taskIDSchema, "action": map[string]any{"type": "string", "enum": []string{"edit", "claim", "assign", "complete", "delete"}}, "assignee": text(64), "subject": text(256), "description": map[string]any{"type": "string", "maxLength": 16384}, "addBlockedBy": map[string]any{"type": "array", "maxItems": 128, "items": taskIDSchema}, "addBlocks": map[string]any{"type": "array", "maxItems": 128, "items": taskIDSchema}, "metadata": map[string]any{"type": "object", "maxProperties": 64, "additionalProperties": map[string]any{"anyOf": []any{map[string]any{"type": "string", "maxLength": 4096}, map[string]any{"type": "null"}}}}}),
-	"team_spawn":       object([]string{"type", "task", "name", "workspace"}, map[string]any{"type": text(64), "task": text(16384), "name": text(64), "model": text(256), "backend": map[string]any{"type": "string", "enum": []string{"embedded", "tmux", "iterm2", "auto"}}, "planRequired": map[string]any{"type": "boolean"}, "workspace": object([]string{"kind"}, map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"shared_checkout", "isolated_worktree"}}})}),
+	"team_task_create":  object([]string{"subject"}, map[string]any{"subject": text(256), "description": map[string]any{"type": "string", "maxLength": 16384}, "blockedBy": map[string]any{"type": "array", "maxItems": 128, "items": taskIDSchema}, "metadata": map[string]any{"type": "object", "maxProperties": 64, "additionalProperties": map[string]any{"type": "string", "maxLength": 4096}}, "submissionId": text(128)}),
+	"team_task_get":     object([]string{"taskId"}, map[string]any{"taskId": taskIDSchema}),
+	"team_task_list":    object([]string{}, map[string]any{}),
+	"team_task_update":  object([]string{"taskId", "action"}, map[string]any{"taskId": taskIDSchema, "action": map[string]any{"type": "string", "enum": []string{"edit", "claim", "assign", "complete", "delete"}}, "assignee": text(64), "subject": text(256), "description": map[string]any{"type": "string", "maxLength": 16384}, "addBlockedBy": map[string]any{"type": "array", "maxItems": 128, "items": taskIDSchema}, "addBlocks": map[string]any{"type": "array", "maxItems": 128, "items": taskIDSchema}, "metadata": map[string]any{"type": "object", "maxProperties": 64, "additionalProperties": map[string]any{"anyOf": []any{map[string]any{"type": "string", "maxLength": 4096}, map[string]any{"type": "null"}}}}}),
+	"team_spawn":        object([]string{"type", "task", "name", "workspace"}, map[string]any{"type": text(64), "task": text(16384), "name": text(64), "model": text(256), "backend": map[string]any{"type": "string", "enum": []string{"embedded", "tmux", "iterm2", "auto"}}, "planRequired": map[string]any{"type": "boolean"}, "workspace": object([]string{"kind"}, map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"shared_checkout", "isolated_worktree"}}}), "observe": observerRequestSchema}),
 	"team_list":         object([]string{}, map[string]any{"cursor": text(128)}),
 	"team_send":         object([]string{"recipient", "messageId", "text", "summary"}, map[string]any{"recipient": text(160), "messageId": text(128), "text": text(131072), "summary": text(4096)}),
 	"team_subscribe":    object([]string{"recipient", "subscriptionId", "expiresAt"}, map[string]any{"recipient": text(160), "subscriptionId": text(128), "expiresAt": text(40)}),
 	"team_peer_receipt": object([]string{"recipient", "messageId"}, map[string]any{"recipient": text(160), "messageId": text(128)}),
-	"litter_spawn":     object([]string{"type", "task"}, map[string]any{"type": text(64), "task": text(16384), "name": text(128), "model": text(256), "cwd": text(4096)}),
-	"litter_list":      object([]string{}, map[string]any{"offset": integer(0, 1000000), "limit": integer(1, 50), "agentOffset": integer(0, 1000000), "agentLimit": integer(1, 50)}),
-	"litter_inspect":   object([]string{"id"}, map[string]any{"id": text(128)}),
-	"litter_message":   object([]string{"id", "text"}, map[string]any{"id": text(128), "text": text(16384), "mode": map[string]any{"type": "string", "enum": []string{"steer", "follow_up"}}, "resume": map[string]any{"type": "boolean"}}),
-	"litter_stop":      object([]string{"id"}, map[string]any{"id": text(128)}),
-	"litter_wait":      object([]string{"id"}, map[string]any{"id": text(128), "timeoutMs": integer(1, 300000)}),
+	"litter_spawn":      object([]string{"type", "task"}, map[string]any{"type": text(64), "task": text(16384), "name": text(128), "model": text(256), "cwd": text(4096), "observe": observerRequestSchema}),
+	"observer_read":     object([]string{"path"}, map[string]any{"path": text(256)}),
+	"observer_ls":       object([]string{"path"}, map[string]any{"path": text(256)}),
+	"observer_report":   object([]string{"reportId", "text"}, map[string]any{"reportId": text(64), "text": text(4096)}),
+	"litter_list":       object([]string{}, map[string]any{"offset": integer(0, 1000000), "limit": integer(1, 50), "agentOffset": integer(0, 1000000), "agentLimit": integer(1, 50), "observerOffset": integer(0, 1000000), "observerLimit": integer(1, 50)}),
+	"litter_inspect":    object([]string{"id"}, map[string]any{"id": text(128)}),
+	"litter_message":    object([]string{"id", "text"}, map[string]any{"id": text(128), "text": text(16384), "mode": map[string]any{"type": "string", "enum": []string{"steer", "follow_up"}}, "resume": map[string]any{"type": "boolean"}}),
+	"litter_stop":       object([]string{"id"}, map[string]any{"id": text(128)}),
+	"litter_wait":       object([]string{"id"}, map[string]any{"id": text(128), "timeoutMs": integer(1, 300000)}),
 }
 
 type operationArgs struct {
@@ -123,10 +130,13 @@ type operationArgs struct {
 	Limit                  *int
 	AgentOffset            int
 	AgentLimit             *int
+	ObserverOffset         int
+	ObserverLimit          *int
 	Resume                 bool
 	PlanRequired           bool
 	TimeoutMs              *int
 	Workspace              *WorkspacePolicy
+	Observe                *observerRequest
 	TaskID                 TaskID `json:"taskId"`
 	Subject                string
 	Description            string
@@ -233,6 +243,19 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			return nil, reject("unavailable", "team store is unavailable")
 		}
 		o.tree.lifecycleMu.Lock()
+		o.tree.mu.Lock()
+		observerRecipient := false
+		for _, candidate := range o.tree.records {
+			if candidate.team != nil && candidate.role == "observer" && strings.EqualFold(candidate.team.Name, request.Recipient) {
+				observerRecipient = true
+				break
+			}
+		}
+		o.tree.mu.Unlock()
+		if observerRecipient {
+			o.tree.lifecycleMu.Unlock()
+			return nil, reject("permission_denied", "observers do not accept peer messages")
+		}
 		receipt, _, err := store.acceptPeer(parent.team.Ref, request)
 		o.tree.lifecycleMu.Unlock()
 		if err != nil {
@@ -411,6 +434,18 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if agent.Model != "" && args.Model != "" && args.Model != agent.Model {
 			return nil, reject("permission_denied", "the named agent has a fixed model")
 		}
+		if agent.Role == "observer" && isTeam && args.PlanRequired {
+			return nil, reject("rejected", "an observer cannot require plan approval")
+		}
+		if args.Observe != nil {
+			var fields map[string]json.RawMessage
+			if checkUniqueJSON(raw) != nil || json.Unmarshal(raw, &fields) != nil {
+				return nil, reject("rejected", "invalid observer admission arguments")
+			}
+			if _, err := exactJSONObject(fields["observe"], "id", "reportTo"); err != nil {
+				return nil, reject("rejected", "invalid observer admission arguments")
+			}
+		}
 		model := agent.Model
 		if model == "" {
 			model = args.Model
@@ -481,7 +516,7 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if choice.kind != backendEmbedded {
 			backend = choice.kind
 		}
-		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, available: available, member: member, backend: backend})
+		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, available: available, member: member, backend: backend, observe: args.Observe})
 		if err != nil {
 			if member != nil {
 				if cleanupErr := o.rollbackTeamMember(member); cleanupErr != nil {
@@ -489,6 +524,12 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 				}
 			}
 			return nil, err
+		}
+		if execution.owner.observer != nil {
+			if err := o.prepareObserver(execution.owner.observer); err != nil {
+				o.tree.cancelPending(execution)
+				return nil, err
+			}
 		}
 		if member != nil && member.Workspace.Kind == "isolated_worktree" {
 			if err := prepareTeamWorktree(ctx, member.Workspace); err != nil {
@@ -514,6 +555,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			return nil, err
 		}
 		value := map[string]any{"state": snapshot.State, "child": snapshot}
+		if execution.owner.observer != nil {
+			value["observer"] = execution.owner.observer.presentation()
+		}
 		if member != nil {
 			value = map[string]any{"state": "starting", "admission": member.AdmissionID, "member": member.Ref, "name": member.Name, "cwd": member.Workspace.Cwd, "workspace": member.Workspace, "planRequired": member.PlanRequired, "backend": choice.kind}
 			if choice.fallback != "" {
@@ -536,7 +580,8 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			return nil, err
 		}
 		limit, agentLimit := pageLimit(args.Limit, 20), pageLimit(args.AgentLimit, 20)
-		if args.Offset < 0 || args.Offset > 1000000 || args.AgentOffset < 0 || args.AgentOffset > 1000000 || limit < 1 || limit > 50 || agentLimit < 1 || agentLimit > 50 {
+		observerLimit := pageLimit(args.ObserverLimit, 20)
+		if args.Offset < 0 || args.Offset > 1000000 || args.AgentOffset < 0 || args.AgentOffset > 1000000 || args.ObserverOffset < 0 || args.ObserverOffset > 1000000 || limit < 1 || limit > 50 || agentLimit < 1 || agentLimit > 50 || observerLimit < 1 || observerLimit > 50 {
 			return nil, reject("rejected", "invalid list page")
 		}
 		directory := o.cwd
@@ -564,7 +609,30 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			agents = append(agents, value)
 		}
 		page := children[min(args.Offset, len(children)):min(args.Offset+limit, len(children))]
-		return map[string]any{"state": "listed", "children": page, "nextOffset": args.Offset + len(page), "more": len(children) > args.Offset+limit, "totalChildren": len(children), "availableAgentTypes": agents, "nextAgentOffset": args.AgentOffset + len(agents), "moreAgentTypes": len(names) > args.AgentOffset+agentLimit, "totalAgentTypes": len(names)}, nil
+		value := map[string]any{"state": "listed", "children": page, "nextOffset": args.Offset + len(page), "more": len(children) > args.Offset+limit, "totalChildren": len(children), "availableAgentTypes": agents, "nextAgentOffset": args.AgentOffset + len(agents), "moreAgentTypes": len(names) > args.AgentOffset+agentLimit, "totalAgentTypes": len(names)}
+		if caller == nil {
+			o.observerMu.Lock()
+			store := o.observers
+			o.observerMu.Unlock()
+			if store != nil {
+				store.mu.Lock()
+				pairs := make([]*observerPair, 0, len(store.pairs))
+				for _, pair := range store.pairs {
+					pairs = append(pairs, pair)
+				}
+				unverifiable := store.count - len(store.pairs)
+				store.mu.Unlock()
+				slices.SortFunc(pairs, func(a, b *observerPair) int { return strings.Compare(a.journal.ID, b.journal.ID) })
+				start, end := min(args.ObserverOffset, len(pairs)), min(args.ObserverOffset+observerLimit, len(pairs))
+				list := make([]map[string]any, 0, end-start)
+				for _, pair := range pairs[start:end] {
+					list = append(list, pair.presentation())
+				}
+				value["observerPairings"], value["observerUnverifiable"] = list, unverifiable
+				value["nextObserverOffset"], value["moreObserverPairings"] = end, end < len(pairs)
+			}
+		}
+		return value, nil
 	}
 	if strings.HasPrefix(string(args.ID), "local:") {
 		return nil, reject("permission_denied", "independent local sessions do not allow child controls")
@@ -581,6 +649,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		result := map[string]any{"state": inspection.Child.State, "child": inspection.Child, "outcome": inspection.Outcome}
 		if inspection.Backend != nil {
 			result["backend"] = inspection.Backend
+		}
+		if selected.owner.observer != nil {
+			result["observer"] = selected.owner.observer.presentation()
 		}
 		return result, nil
 	}

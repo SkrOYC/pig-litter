@@ -539,6 +539,9 @@ func (o *owner) addressedSend(ctx context.Context, raw json.RawMessage) (map[str
 		return nil, reject("ambiguous", "recipient name matches more than one session")
 	}
 	if len(matches) == 1 {
+		if matches[0].owner.role == "observer" {
+			return nil, reject("permission_denied", "observers do not accept peer messages")
+		}
 		localCollision, discoveryDegraded := o.localNameCollision(name)
 		collisions := []string{}
 		if localCollision {

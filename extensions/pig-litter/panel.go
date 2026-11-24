@@ -1021,6 +1021,10 @@ func (p *childPanel) teamDetail(frame *teamViewFrame, index, width int, report b
 	}
 	execution := view.Execution
 	metadata = append(metadata, "Execution "+string(execution.Child.State), "Admission "+execution.Admission)
+	if observer := execution.Observer; observer != nil {
+		metadata = append(metadata, fmt.Sprintf("Observer %v | %v", observer["id"], observer["state"]), fmt.Sprintf("Observed %v | target %v (%v)", observer["observed"], observer["target"], observer["reportTo"]), fmt.Sprintf("Reports pending %v | observed %v | undeliverable %v", observer["pending"], observer["observedReports"], observer["undeliverable"]))
+		metadata = append(metadata, fmt.Sprintf("Activity %v", observer["availability"]))
+	}
 	outcome := execution.Latest
 	if report {
 		if outcome == nil {

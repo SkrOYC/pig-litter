@@ -77,37 +77,38 @@ type Snapshot struct {
 }
 
 type record struct {
-	id                                   ChildID
-	team                                 *teamMember
-	backend                              backendRequest
-	parent                               *record
-	depth                                int
-	name, kind, model, instructions, cwd string
-	pendingTask                          string
-	pendingInputs                        []pendingInput
-	tools                                []string
-	canDelegate, readOnly                bool
-	admitted                             bool
-	activeLog                            *coding.SessionManager
-	native                               *memberBinding
-	nativeOwnership                      *memberOwnership
-	nativeReleasing                      bool
-	nativeCleanupError                   string
-	nativeReservationConflict            bool
-	nativeSession                        *memberSession
-	run                                  *run
-	previous                             *run
-	paused                               bool
-	latest                               *Outcome
-	deliveryMu                           sync.Mutex
-	teamStateMu                          sync.Mutex
-	agentEnded                           bool
-	receiptMu                            sync.Mutex
-	receipts                             map[*run]*completionReceipt
-	notices                              map[string]*reservation
-	peerWakePending                      bool
-	peerWakeVersion                      uint64
-	controlPhase                         string
+	id                                         ChildID
+	team                                       *teamMember
+	backend                                    backendRequest
+	parent                                     *record
+	depth                                      int
+	name, kind, role, model, instructions, cwd string
+	observer                                   *observerPair
+	pendingTask                                string
+	pendingInputs                              []pendingInput
+	tools                                      []string
+	canDelegate, readOnly                      bool
+	admitted                                   bool
+	activeLog                                  *coding.SessionManager
+	native                                     *memberBinding
+	nativeOwnership                            *memberOwnership
+	nativeReleasing                            bool
+	nativeCleanupError                         string
+	nativeReservationConflict                  bool
+	nativeSession                              *memberSession
+	run                                        *run
+	previous                                   *run
+	paused                                     bool
+	latest                                     *Outcome
+	deliveryMu                                 sync.Mutex
+	teamStateMu                                sync.Mutex
+	agentEnded                                 bool
+	receiptMu                                  sync.Mutex
+	receipts                                   map[*run]*completionReceipt
+	notices                                    map[string]*reservation
+	peerWakePending                            bool
+	peerWakeVersion                            uint64
+	controlPhase                               string
 }
 
 type pendingInput struct {
@@ -131,6 +132,8 @@ const (
 
 type runProgress struct {
 	activated, settled time.Time
+	sourceAt           time.Time
+	version            uint64
 	toolStarts         uint64
 	turns              int
 	activeTools        map[string]string

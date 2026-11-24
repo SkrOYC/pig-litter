@@ -29,34 +29,37 @@ type reservation struct {
 }
 
 type Tree struct {
-	mu           sync.Mutex
-	lifecycleMu  sync.Mutex
-	config       Config
-	ctx          context.Context
-	cancel       context.CancelFunc
-	root         *record
-	records      map[ChildID]*record
-	order        []ChildID
-	names        map[string]ChildID
-	pending      map[*run]*reservation
-	live         int
-	closed       bool
-	closedDone   chan struct{}
-	completionWG sync.WaitGroup
-	executeWG    sync.WaitGroup
-	teamWG       sync.WaitGroup
-	peerWakeWG   sync.WaitGroup
-	roomChanged  chan struct{}
-	execute      func(*record, *run) Outcome
-	completion   func(*record, *run, Outcome)
-	changed      func()
-	persist      func(*record) error
-	teamFinished func(*record, *run, Outcome) error
-	teamSettled  func(*record, *run)
-	teamCanceled func(*record)
-	teamPaused   func(*record, *run) error
-	teamResuming func(*record, *run) error
-	dirty        map[ChildID]*record
+	mu             sync.Mutex
+	lifecycleMu    sync.Mutex
+	config         Config
+	ctx            context.Context
+	cancel         context.CancelFunc
+	root           *record
+	records        map[ChildID]*record
+	order          []ChildID
+	names          map[string]ChildID
+	pending        map[*run]*reservation
+	live           int
+	closed         bool
+	closedDone     chan struct{}
+	completionWG   sync.WaitGroup
+	executeWG      sync.WaitGroup
+	teamWG         sync.WaitGroup
+	peerWakeWG     sync.WaitGroup
+	roomChanged    chan struct{}
+	execute        func(*record, *run) Outcome
+	completion     func(*record, *run, Outcome)
+	changed        func()
+	persist        func(*record) error
+	teamFinished   func(*record, *run, Outcome) error
+	teamSettled    func(*record, *run)
+	teamCanceled   func(*record)
+	teamPaused     func(*record, *run) error
+	teamResuming   func(*record, *run) error
+	observerArm    func(*observerPair) error
+	observerRetire func([]*observerPair) error
+	observerIndex  map[*run]map[*observerPair]struct{}
+	dirty          map[ChildID]*record
 }
 
 type admission struct {
@@ -66,6 +69,7 @@ type admission struct {
 	available                    []string
 	member                       *teamMember
 	backend                      backendRequest
+	observe                      *observerRequest
 }
 
 type controlAuthority struct {
@@ -288,6 +292,23 @@ func (t *Tree) admit(request admission) (Snapshot, *run, error) {
 			}
 		}
 	}
+	if request.agent.Role == "observer" {
+		if request.observe == nil {
+			return Snapshot{}, nil, reject("rejected", "an embedded observer needs an observed child and report target")
+		}
+		if request.agent.CanDelegate || slices.ContainsFunc(request.agent.Tools, func(name string) bool { return name != "read" && name != "ls" }) {
+			return Snapshot{}, nil, reject("permission_denied", "observer definitions allow only read and ls without delegation")
+		}
+		worker := t.records[request.observe.ID]
+		if worker == nil || worker.parent != parent || worker.role == "observer" || worker.run.admission != admissionReady || worker.paused || worker.run.state != Starting && worker.run.state != Running {
+			return Snapshot{}, nil, reject("rejected", "the observed child must be an admitted active immediate child")
+		}
+		if request.observe.ReportTo != "worker" && request.observe.ReportTo != "coordinator" {
+			return Snapshot{}, nil, reject("rejected", "reportTo must be worker or coordinator")
+		}
+	} else if request.observe != nil {
+		return Snapshot{}, nil, reject("rejected", "only an observer can select an observed child")
+	}
 	if depth > t.config.Depth {
 		return Snapshot{}, nil, reject("rejected", "child depth limit reached")
 	}
@@ -321,9 +342,13 @@ func (t *Tree) admit(request admission) (Snapshot, *run, error) {
 	if _, exists := t.names[nameKey]; exists && request.member == nil {
 		return Snapshot{}, nil, reject("rejected", "child name already belongs to this owner")
 	}
-	r := &record{id: id, team: request.member, backend: request.backend, parent: parent, depth: depth, name: name, kind: request.kind, model: request.model, instructions: request.agent.Instructions, pendingTask: request.task, cwd: request.cwd, tools: slices.Clone(request.agent.Tools), canDelegate: request.agent.CanDelegate && request.agent.Role != "scout", readOnly: readOnly}
+	r := &record{id: id, team: request.member, backend: request.backend, parent: parent, depth: depth, name: name, kind: request.kind, role: request.agent.Role, model: request.model, instructions: request.agent.Instructions, pendingTask: request.task, cwd: request.cwd, tools: slices.Clone(request.agent.Tools), canDelegate: request.agent.CanDelegate && request.agent.Role != "scout" && request.agent.Role != "observer", readOnly: readOnly}
 	r.run = t.newRunLocked(Ref{id}, "Task:\n"+request.task)
 	r.run.owner = r
+	if request.observe != nil {
+		r.observer = newObserverPair(t.root, parent, request.parentRun, r.run, t.records[request.observe.ID].run, request.observe.ReportTo)
+		t.indexObserverLocked(r.observer)
+	}
 	t.records[id] = r
 	if request.member == nil {
 		t.names[nameKey] = id
@@ -369,6 +394,13 @@ func (t *Tree) activateChecked(selected *run, accept func() error) error {
 	activated := time.Now()
 	if err == nil && accept != nil {
 		err = accept()
+	}
+	if err == nil && r.observer != nil && r.team == nil {
+		if t.observerArm == nil {
+			err = reject("unavailable", "observer admission is unavailable")
+		} else {
+			err = t.observerArm(r.observer)
+		}
 	}
 	if err == nil && r.team != nil && run.resume && run.peerWake == nil {
 		if t.teamResuming == nil {
@@ -454,6 +486,9 @@ func (t *Tree) cancelPending(selected *run) {
 		t.order = slices.DeleteFunc(t.order, func(id ChildID) bool { return id == r.id })
 	}
 	t.mu.Unlock()
+	if r.observer != nil && t.observerRetire != nil {
+		_ = t.observerRetire([]*observerPair{r.observer})
+	}
 	if r.team != nil && !selected.resume && t.teamCanceled != nil {
 		t.teamCanceled(r)
 	}
@@ -483,8 +518,14 @@ func (t *Tree) beginFinishLocked(r *record, run *run, raw Outcome) error {
 		return reject("unavailable", "child execution has already finished")
 	}
 	raw.Run, raw.Model = run.ref, r.model
+	if r.role == "observer" {
+		raw.Text, raw.ReportProvenance, raw.Truncated = "", "", false
+	}
 	if run.deliveryError != "" {
 		raw.Error = strings.TrimSpace(raw.Error + " " + run.deliveryError)
+	}
+	if r.role == "observer" && raw.Error != "" {
+		raw.Error = "observer execution failed"
 	}
 	if raw.Text != "" {
 		raw.ReportProvenance = "child_assistant"
@@ -508,6 +549,9 @@ func (t *Tree) beginFinishLocked(r *record, run *run, raw Outcome) error {
 		r.latest = &raw
 	}
 	t.mu.Unlock()
+	if t.observerRetire != nil {
+		_ = t.observerRetire(t.observersFor(run))
+	}
 	return nil
 }
 
@@ -606,6 +650,9 @@ func (t *Tree) store(r *record) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	description, _ := bounded("child metadata storage failed: "+err.Error(), 1024)
+	if r.role == "observer" {
+		description = "observer status storage failed"
+	}
 	r.run.deliveryError = description
 	if r.latest != nil {
 		previous := r.latest
@@ -741,6 +788,10 @@ func (t *Tree) resumeAs(authority controlAuthority, selected *run, text string) 
 		t.mu.Unlock()
 		return Snapshot{}, nil, reject("unavailable", "native pane ownership requires reconciliation before resume")
 	}
+	if r.role == "observer" {
+		t.mu.Unlock()
+		return Snapshot{}, nil, reject("rejected", "an observer requires a new pairing")
+	}
 	for ancestor := r.parent; ancestor != nil && ancestor != t.root; ancestor = ancestor.parent {
 		if ancestor.controlPhase == "closing" || ancestor.controlPhase == "terminated" || ancestor.controlPhase == "recovery_pending" {
 			t.mu.Unlock()
@@ -812,6 +863,10 @@ retry:
 	if err != nil {
 		t.mu.Unlock()
 		return Snapshot{}, nil, err
+	}
+	if r.role == "observer" {
+		t.mu.Unlock()
+		return Snapshot{}, nil, reject("permission_denied", "observers do not accept messages")
 	}
 	run := r.run
 	if run.state != Starting && run.state != Running {
@@ -913,6 +968,7 @@ func (t *Tree) stopAs(authority controlAuthority, selected *run) (*Outcome, int,
 	}
 	pending, fresh := t.pauseLocked(target)
 	t.mu.Unlock()
+	t.retirePausedObservers(pending)
 	t.lifecycleMu.Unlock()
 	if err := t.joinPaused(pending, fresh); err != nil {
 		return nil, len(fresh), err
@@ -1002,6 +1058,7 @@ func (t *Tree) pauseRoot() {
 	}
 	pending, fresh := t.pauseLocked(t.root)
 	t.mu.Unlock()
+	t.retirePausedObservers(pending)
 	t.lifecycleMu.Unlock()
 	_ = t.joinPaused(pending, fresh)
 }
@@ -1103,6 +1160,9 @@ func (t *Tree) deliveryFailed(selected *run, failure error) {
 		target = child
 	}
 	description, _ := bounded("child completion delivery failed: "+failure.Error(), 1024)
+	if target.role == "observer" {
+		description = "observer status delivery failed"
+	}
 	if !target.run.state.terminal() && target.previous == nil {
 		target.run.deliveryError = description
 		return
