@@ -15,6 +15,14 @@ spec.loader.exec_module(probe)
 
 
 class PigForensicsTests(unittest.TestCase):
+    def test_pig_window_title_may_differ_from_unique_session_nonce(self):
+        nonce = "P03_PIG_123"
+        self.assertIsNone(probe.verify_pig_title("P03_PIG_123 (pig)\npig - workspace\n1", nonce))
+        self.assertIsNone(probe.verify_pig_title("P03_PIG_123 (pig)\npig - workspace\n2", nonce))
+        for response in ("other (pig)\npig - workspace\n1", "P03_PIG_123 (pig)\n\n1", "P03_PIG_123 (pig)\npig - workspace\n0"):
+            with self.subTest(response=response), self.assertRaises(RuntimeError):
+                probe.verify_pig_title(response, nonce)
+
     def test_startup_and_prompt_use_separate_provider_observations(self):
         with tempfile.TemporaryDirectory(prefix="itp-test.") as directory:
             root = Path(directory)
@@ -102,7 +110,7 @@ class PigForensicsTests(unittest.TestCase):
             def action(stage, _script, *_arguments):
                 if stage.endswith(".set-title"):
                     nonce = _arguments[-1]
-                    return nonce + " (pig)\n" + nonce + "\n1"
+                    return nonce + " (pig)\npig - workspace\n1"
                 raise RuntimeError("Unexpected action")
 
             process = {"pid": 72, "start": "control birth", "tty": "ttys001"}

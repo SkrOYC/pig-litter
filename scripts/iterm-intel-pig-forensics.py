@@ -25,6 +25,12 @@ def check_fixture(fixture, prompted):
         raise RuntimeError("The startup-only session made a provider request")
 
 
+def verify_pig_title(title, nonce):
+    fields = (title or "").splitlines()
+    if len(fields) != 3 or not (fields[0] == nonce or fields[0].startswith(nonce + " (")) or not fields[1] or not fields[2].isdigit() or int(fields[2]) < 1:
+        raise RuntimeError("The session nonce or window title could not be verified")
+
+
 class PigForensics(window_probe.Forensics):
     def __init__(self, evidence, scratch):
         super().__init__(evidence, scratch)
@@ -97,7 +103,7 @@ class PigForensics(window_probe.Forensics):
             self.event(name + ".identity", target=target, host=terminal.window["host"], processes=list(terminal.owned.values()))
             nonce = "P03_PIG_" + os.urandom(12).hex()
             title = self.action(name + ".set-title", window_probe.SET_TITLE, target["window"], target["session"], nonce)
-            window_probe.verify_title(title, nonce)
+            verify_pig_title(title, nonce)
             self.event(name + ".title", nonce=nonce, session_and_window=title)
             self.check_control(name + ".control-before", control)
             check_fixture(self.fixture, prompted=False)
