@@ -18,23 +18,25 @@ import (
 )
 
 var controlNames = []string{"litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
-var teamToolNames = []string{"team_spawn", "team_list", "team_send", "team_plan", "team_shutdown", "team_task_create", "team_task_get", "team_task_list", "team_task_update"}
+var teamToolNames = []string{"team_spawn", "team_list", "team_send", "team_plan", "team_shutdown", "team_task_create", "team_task_get", "team_task_list", "team_task_update", "team_subscribe", "team_peer_receipt"}
 var descriptions = map[string]string{
-	"team_plan":        "Submit, inspect, cancel, or decide a teammate plan.",
-	"team_shutdown":    "Request, inspect, cancel, or respond to a teammate shutdown.",
-	"team_task_create": "Create a shared task with optional dependencies.",
-	"team_task_get":    "Read a shared task by its team-scoped ID.",
-	"team_task_list":   "List shared tasks and whether their dependencies block them.",
-	"team_task_update": "Edit, claim, assign, complete, or delete a shared task.",
-	"team_spawn":       "Start a named teammate with an explicit workspace policy.",
-	"team_list":        "List the team and classify the caller's inbox receipts.",
-	"team_send":        "Send an ordinary message to a named teammate.",
-	"litter_spawn":     "Start a background child. Use litter_list to discover named agent types.",
-	"litter_list":      "List available agent types and active immediate children.",
-	"litter_inspect":   "Get a child's current status and latest result by ID.",
-	"litter_message":   "Steer a live child or explicitly resume a settled child with the same ID.",
-	"litter_stop":      "Pause an immediate child and its descendants. Resume each node explicitly with litter_message.",
-	"litter_wait":      "Wait for a child result by ID. Outcome text is the child assistant's report. A timeout leaves the child running.",
+	"team_plan":         "Submit, inspect, cancel, or decide a teammate plan.",
+	"team_shutdown":     "Request, inspect, cancel, or respond to a teammate shutdown.",
+	"team_task_create":  "Create a shared task with optional dependencies.",
+	"team_task_get":     "Read a shared task by its team-scoped ID.",
+	"team_task_list":    "List shared tasks and whether their dependencies block them.",
+	"team_task_update":  "Edit, claim, assign, complete, or delete a shared task.",
+	"team_spawn":        "Start a named teammate with an explicit workspace policy.",
+	"team_list":         "List the team, local sessions, and the caller's inbox receipts, including discovery limits.",
+	"team_send":         "Send ordinary text to a teammate, child, or independent local session.",
+	"team_subscribe":    "Subscribe once to an independent local session becoming idle or exiting.",
+	"team_peer_receipt": "Query a local session message receipt by exact recipient pin and message ID.",
+	"litter_spawn":      "Start a background child. Use litter_list to discover named agent types.",
+	"litter_list":       "List available agent types and active immediate children.",
+	"litter_inspect":    "Get a child's current status and latest result by ID.",
+	"litter_message":    "Steer a live child or explicitly resume a settled child with the same ID.",
+	"litter_stop":       "Pause an immediate child and its descendants. Resume each node explicitly with litter_message.",
+	"litter_wait":       "Wait for a child result by ID. Outcome text is the child assistant's report. A timeout leaves the child running.",
 }
 
 var promptGuidelines = map[string][]string{
@@ -98,8 +100,10 @@ var schemas = map[string]map[string]any{
 	"team_task_list":   object([]string{}, map[string]any{}),
 	"team_task_update": object([]string{"taskId", "action"}, map[string]any{"taskId": taskIDSchema, "action": map[string]any{"type": "string", "enum": []string{"edit", "claim", "assign", "complete", "delete"}}, "assignee": text(64), "subject": text(256), "description": map[string]any{"type": "string", "maxLength": 16384}, "addBlockedBy": map[string]any{"type": "array", "maxItems": 128, "items": taskIDSchema}, "addBlocks": map[string]any{"type": "array", "maxItems": 128, "items": taskIDSchema}, "metadata": map[string]any{"type": "object", "maxProperties": 64, "additionalProperties": map[string]any{"anyOf": []any{map[string]any{"type": "string", "maxLength": 4096}, map[string]any{"type": "null"}}}}}),
 	"team_spawn":       object([]string{"type", "task", "name", "workspace"}, map[string]any{"type": text(64), "task": text(16384), "name": text(64), "model": text(256), "backend": map[string]any{"type": "string", "enum": []string{"embedded", "tmux", "iterm2", "auto"}}, "planRequired": map[string]any{"type": "boolean"}, "workspace": object([]string{"kind"}, map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"shared_checkout", "isolated_worktree"}}})}),
-	"team_list":        object([]string{}, map[string]any{}),
-	"team_send":        object([]string{"recipient", "messageId", "text", "summary"}, map[string]any{"recipient": text(64), "messageId": text(128), "text": text(16384), "summary": text(256)}),
+	"team_list":         object([]string{}, map[string]any{"cursor": text(128)}),
+	"team_send":         object([]string{"recipient", "messageId", "text", "summary"}, map[string]any{"recipient": text(160), "messageId": text(128), "text": text(16384), "summary": text(256)}),
+	"team_subscribe":    object([]string{"recipient", "subscriptionId", "expiresAt"}, map[string]any{"recipient": text(160), "subscriptionId": text(128), "expiresAt": text(40)}),
+	"team_peer_receipt": object([]string{"recipient", "messageId"}, map[string]any{"recipient": text(160), "messageId": text(128)}),
 	"litter_spawn":     object([]string{"type", "task"}, map[string]any{"type": text(64), "task": text(16384), "name": text(128), "model": text(256), "cwd": text(4096)}),
 	"litter_list":      object([]string{}, map[string]any{"offset": integer(0, 1000000), "limit": integer(1, 50), "agentOffset": integer(0, 1000000), "agentLimit": integer(1, 50)}),
 	"litter_inspect":   object([]string{"id"}, map[string]any{"id": text(128)}),
@@ -131,6 +135,7 @@ type operationArgs struct {
 	Action                 string
 	Assignee               string
 	SubmissionID           string `json:"submissionId"`
+	Cursor                 string
 }
 
 func pageLimit(request *int, fallback int) int {
@@ -204,8 +209,17 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 	if name == "team_shutdown" {
 		return o.shutdownOperation(raw, controlAuthority{caller: caller})
 	}
+	if name == "team_subscribe" || name == "team_peer_receipt" {
+		if caller != nil {
+			return nil, reject("permission_denied", "only the main conversation can use independent session controls")
+		}
+		return o.localOperation(ctx, name, raw)
+	}
 	if name == "team_send" {
-		if caller == nil || parent == nil || parent.team == nil {
+		if caller == nil {
+			return o.addressedSend(ctx, raw)
+		}
+		if parent == nil || parent.team == nil {
 			return nil, reject("permission_denied", "a registered teammate is required")
 		}
 		request, err := parsePeerRequest(raw)
@@ -353,6 +367,8 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		result := map[string]any{"state": "listed", "team": team, "members": roster, "inbox": inbox}
 		if caller == nil {
 			result["pending"] = pending
+			result["independentSessions"] = o.localDiscovery(args.Cursor)
+			result["unsupportedRoutes"] = []string{"cloud", "remote_control", "desktop"}
 		}
 		return result, nil
 	}
@@ -549,6 +565,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		}
 		page := children[min(args.Offset, len(children)):min(args.Offset+limit, len(children))]
 		return map[string]any{"state": "listed", "children": page, "nextOffset": args.Offset + len(page), "more": len(children) > args.Offset+limit, "totalChildren": len(children), "availableAgentTypes": agents, "nextAgentOffset": args.AgentOffset + len(agents), "moreAgentTypes": len(names) > args.AgentOffset+agentLimit, "totalAgentTypes": len(names)}, nil
+	}
+	if strings.HasPrefix(string(args.ID), "local:") {
+		return nil, reject("permission_denied", "independent local sessions do not allow child controls")
 	}
 	selected, err := o.tree.selectOwned(caller, args.ID)
 	if err != nil {

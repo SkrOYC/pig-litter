@@ -73,11 +73,11 @@ func TestLocalPeerReceiptQueryRequiresDurablePublication(t *testing.T) {
 }
 
 func TestLocalPeerIdleNoticeReachesHealthySubscriberBehindStalledPeer(t *testing.T) {
-	t.Run("first subscriber stalls", func(t *testing.T) { testLocalPeerIdleNoticeWithStalledSubscriber(t, true) })
-	t.Run("second subscriber stalls", func(t *testing.T) { testLocalPeerIdleNoticeWithStalledSubscriber(t, false) })
+	t.Run("subscriber A stalls", func(t *testing.T) { testLocalPeerIdleNoticeWithStalledSubscriber(t, true) })
+	t.Run("subscriber B stalls", func(t *testing.T) { testLocalPeerIdleNoticeWithStalledSubscriber(t, false) })
 }
 
-func testLocalPeerIdleNoticeWithStalledSubscriber(t *testing.T, stallFirst bool) {
+func testLocalPeerIdleNoticeWithStalledSubscriber(t *testing.T, stallA bool) {
 	t.Helper()
 	root, err := os.MkdirTemp("", "ln-")
 	if err != nil {
@@ -109,28 +109,8 @@ func testLocalPeerIdleNoticeWithStalledSubscriber(t *testing.T, stallFirst bool)
 			t.Fatalf("subscribe = %+v, %v", result, err)
 		}
 	}
-	entries, err := boundedLocalStateEntries(target.stateDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var first localSubscription
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "subin-") {
-			record, err := readLocalSubscription(filepath.Join(target.stateDir, entry.Name()))
-			if err != nil {
-				t.Fatal(err)
-			}
-			first = record.Subscription
-			break
-		}
-	}
 	stalled, healthy := sourceA, sourceB
-	if first.Source == sourceB.ref {
-		stalled, healthy = sourceB, sourceA
-	} else if first.Source != sourceA.ref {
-		t.Fatalf("unexpected first subscription = %+v", first)
-	}
-	if !stallFirst {
+	if !stallA {
 		stalled, healthy = healthy, stalled
 	}
 	socket := filepath.Join(stalled.registryDir, stalled.socketName())
@@ -177,19 +157,6 @@ func testLocalPeerIdleNoticeWithStalledSubscriber(t *testing.T, stallFirst bool)
 	case <-time.After(4 * time.Second):
 		t.Fatal("the stalled subscriber did not receive a notice request")
 	}
-	entries, err = boundedLocalStateEntries(target.stateDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "subin-") {
-			record, err := readLocalSubscription(filepath.Join(target.stateDir, entry.Name()))
-			if err != nil || record.Subscription.Source != first.Source {
-				t.Fatalf("fixture changed subscription scan order: %+v, %v", record, err)
-			}
-			break
-		}
-	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		notice, found, err := healthy.offerLocal()
@@ -214,7 +181,7 @@ func testLocalPeerIdleNoticeWithStalledSubscriber(t *testing.T, stallFirst bool)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	entries, _ = boundedLocalStateEntries(target.stateDir)
+	entries, _ := boundedLocalStateEntries(target.stateDir)
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), "subin-") {
 			record, readErr := readLocalSubscription(filepath.Join(target.stateDir, entry.Name()))

@@ -113,12 +113,20 @@ func (s *extensionState) openPanel(ctx sdk.Context, args string) (err error) {
 		err = paintError(err)
 	}()
 	if strings.TrimSpace(args) == "help" {
-		ctx.Notify("Use litter_list to discover named agents and children. Use litter_spawn to start a background child, then inspect, message, stop, or wait by ID.", "info")
+		ctx.Notify("Use litter_list to discover named agents and children. Use litter_spawn to start a background child, then inspect, message, stop, or wait by ID. Use /pig-litter peers to list independent sessions.", "info")
+		return nil
+	}
+	if strings.TrimSpace(args) == "peers" {
+		o, err := s.acquire(ctx, false)
+		if err != nil {
+			return err
+		}
+		ctx.Notify(o.localTerminalList(), "info")
 		return nil
 	}
 	team := strings.TrimSpace(args) == "team"
 	if strings.TrimSpace(args) != "" && !team {
-		ctx.Notify("Use /pig-litter to manage retained children, /pig-litter team to view teammates, or /pig-litter help for tool instructions.", "info")
+		ctx.Notify("Use /pig-litter to manage retained children, /pig-litter team to view teammates, /pig-litter peers to list independent sessions, or /pig-litter help for tool instructions.", "info")
 		return nil
 	}
 	if !ctx.HasUI() || ctx.Mode() != "tui" {

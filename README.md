@@ -77,9 +77,29 @@ Pig Litter sends one JSON object to the command on standard input. A task-comple
 
 The command returns `{"permit":true}` on standard output to permit the transition. To refuse it, return `{"permit":false,"feedback":"Explain the work to do."}`. A refusal leaves the task and its owner unchanged. When the turn allowance permits, an idle refusal supplies the feedback to the teammate for another turn. Otherwise, the run finishes as partial with the feedback. A failed command, invalid response, or timeout is treated as a refusal. Commands have five seconds before cancellation and can return at most 8,192 bytes. Feedback is limited to 4,096 bytes.
 
+## Use independent local sessions
+
+Independent local sessions are off by default. On Linux and macOS, select Pig Litter and create `local-sessions.json` in the active PiG agent directory with mode `0600`. Project configuration cannot enable this setting.
+
+```json
+{"mode":"accept"}
+```
+
+`accept` publishes the session and accepts ordinary peer messages and idle subscriptions. `deny` publishes the session but denies inbound requests. `off` disables discovery and registration. For one process, `PIG_LITTER_LOCAL_SESSIONS=accept`, `deny`, or `off` overrides the user file. The native session must have persistent storage. The selected PiG host and Go SDK must support `HostProcessIdentity`.
+
+Use `team_list` or `/pig-litter peers` to find independent sessions. Discovery reports unavailable records, truncation, and a cursor for further pages. Each row has an exact `local:SESSION_UUID@PUBLIC_KEY` pin. A retained session keeps its pin across an orderly reopen, while each process gets a new incarnation. Renaming changes its displayed name, not its pin. A stale or malformed pin never falls back to name lookup.
+
+Use `team_send` with a unique `messageId`, text, and summary. An explicit `local:NAME` selects a unique local name. A bare name selects a direct child first, then a teammate, then a unique local session. Use `child:NAME`, `team:NAME`, or an exact local pin to disambiguate. The list reports collisions with children and teammates. Local sessions do not grant child controls or approval authority.
+
+The result distinguishes durable `accepted` from `native_observed`. Use `team_peer_receipt` with the exact pin and message ID to query the receiver. An `uncertain` result is not confirmation of delivery. Retrying the same ID and content is idempotent; changing the content returns `id_conflict`. Other explicit outcomes include `busy`, `paced`, `too_large`, `unreachable`, `denied`, and `stale_identity`. An idle fresh session can show a message before PiG creates its native session file, so its receipt can remain uncertain until storage is observed.
+
+Only the main conversation can call `team_subscribe` for an independent session. Provide a unique `subscriptionId` and an absolute RFC 3339 `expiresAt` no more than 24 hours away. Retry with the same values. The result identifies whether exit monitoring is armed. A busy-to-idle transition sends one attributed notice. Process exit is reported only when the native host identity and watcher establish it; a lost extension or socket alone is not exit proof.
+
+Local peer traffic stays within the current operating-system user boundary. The identity and socket permissions do not isolate mutually hostile processes running as that same user. Peer text is not a user instruction and grants no permission. Cloud, Remote Control, and Desktop routes are unsupported.
+
 ## Use the tools
 
-The Resource registers the child controls `litter_spawn`, `litter_list`, `litter_inspect`, `litter_message`, `litter_stop`, and `litter_wait`, along with the team and shared-task tools.
+The child controls are `litter_spawn`, `litter_list`, `litter_inspect`, `litter_message`, `litter_stop`, and `litter_wait`. The Resource also registers the team and independent-session tools.
 
 Call `litter_list` to discover named agent types and your active direct children. It pages agent definitions and children independently. Paused and settled children are absent from this list. Their immediate parent can still retrieve their status and latest result with `litter_inspect` and the retained UUID.
 
