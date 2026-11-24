@@ -23,6 +23,7 @@ class InputAndProviderTests(unittest.TestCase):
             lead = ("11111111-1111-4111-8111-111111111111", "/dev/ttys001")
             added = ("22222222-2222-4222-8222-222222222222", "/dev/ttys002")
             actions = []
+            state = {"pane": True, "live": True}
 
             class Fixture:
                 def __init__(self, *_args):
@@ -75,19 +76,45 @@ class InputAndProviderTests(unittest.TestCase):
                 if kind == driver.SIBLING and args[2] == "create":
                     return "malformed"
                 if kind == driver.PANE_BY_TTY:
-                    return "41\n" + added[0]
+                    return "41\n" + added[0] if state["pane"] else "missing"
                 if kind == driver.SIBLING and args[2] == "close":
                     actions.append((args[1], args[3]))
+                    state["pane"] = False
                     return "closed"
                 raise AssertionError(args)
 
+            def terminate(pid, sig):
+                self.assertEqual((pid, sig), (7, driver.signal.SIGTERM))
+                actions.append("terminate-sibling")
+                state["live"] = False
+
             fixture = Fixture()
             processes = {7: {"pid": 7, "tty": "ttys002", "command": "/bin/sleep 600", "start": "fixture"}}
-            with mock.patch.object(driver, "Fixture", return_value=fixture), mock.patch.object(driver, "Terminal", Terminal), mock.patch.object(driver, "start_provider", return_value=(Server(), Thread())), mock.patch.object(driver, "window_sessions", side_effect=[{lead}, {lead, added}]), mock.patch.object(driver, "applescript", side_effect=script), mock.patch.object(driver, "process_snapshot", return_value=processes), mock.patch.object(driver, "executable", return_value="/bin/sleep"), mock.patch.object(driver, "same_process", return_value=True), mock.patch.object(driver, "native_window"), mock.patch.object(driver, "idle_editor", side_effect=lambda frame: frame == "idle"), mock.patch.object(driver, "save_native", return_value=["fixture"]), mock.patch.object(driver.subprocess, "run", side_effect=OSError("not macOS")):
+            with mock.patch.object(driver, "Fixture", return_value=fixture), mock.patch.object(driver, "Terminal", Terminal), mock.patch.object(driver, "start_provider", return_value=(Server(), Thread())), mock.patch.object(driver, "window_sessions", side_effect=[{lead}, {lead, added}]), mock.patch.object(driver, "applescript", side_effect=script), mock.patch.object(driver, "process_snapshot", return_value=processes), mock.patch.object(driver, "executable", return_value="/bin/sleep"), mock.patch.object(driver, "same_process", side_effect=lambda _identity: state["live"]), mock.patch.object(driver.os, "kill", side_effect=terminate), mock.patch.object(driver, "native_window"), mock.patch.object(driver, "idle_editor", side_effect=lambda frame: frame == "idle"), mock.patch.object(driver, "save_native", return_value=["fixture"]), mock.patch.object(driver.subprocess, "run", side_effect=OSError("not macOS")):
                 receipt = driver.run_case("iterm", root, root / "evidence", root / "pig", root / "extension")
-            self.assertEqual(actions, [(added[0], added[1]), "interrupt", "exit", "terminal-cleanup"])
+            self.assertEqual(actions, [(added[0], added[1]), "terminate-sibling", "interrupt", "exit", "terminal-cleanup"])
             self.assertEqual(receipt["product_status"], "failed")
             self.assertEqual(receipt["teardown_status"], "pass")
+            with mock.patch.object(driver, "same_process", side_effect=RuntimeError("identity uncertain")), mock.patch.object(driver.os, "kill") as kill:
+                with self.assertRaisesRegex(RuntimeError, "identity uncertain"):
+                    driver.release_fixture_sibling(Terminal(), {"pid": 7}, added[1])
+                kill.assert_not_called()
+
+            process = subprocess.Popen([driver.sys.executable, "-c", "import time; time.sleep(60)"])
+            try:
+                class WaitForExit:
+                    def wait(self, predicate, _label, _timeout):
+                        process.wait(timeout=5)
+                        if not predicate():
+                            raise AssertionError("owned process or pane survived")
+
+                with mock.patch.object(driver, "same_process", side_effect=lambda _identity: process.poll() is None), mock.patch.object(driver, "applescript", return_value="missing"):
+                    driver.release_fixture_sibling(WaitForExit(), {"pid": process.pid}, added[1])
+                self.assertEqual(process.returncode, -driver.signal.SIGTERM)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
 
     def test_unexpected_case_failure_stops_further_cases(self):
         with tempfile.TemporaryDirectory() as temp:

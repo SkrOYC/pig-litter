@@ -589,6 +589,15 @@ def same_process(identity):
     return True
 
 
+def release_fixture_sibling(terminal, identity, tty):
+    if same_process(identity):
+        try:
+            os.kill(identity["pid"], signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    terminal.wait(lambda: not same_process(identity) and applescript(PANE_BY_TTY, tty) == "missing", "fixture sibling process and pane cleanup", 30)
+
+
 def iterm_owner():
     matches = [process for process in process_snapshot().values() if process["command"].split(" ", 1)[0] == "/Applications/iTerm.app/Contents/MacOS/iTerm2"]
     require(len(matches) == 1, "iTerm process identity is ambiguous")
@@ -1043,7 +1052,7 @@ def run_case(name, scratch, evidence, pig, extension):
             require(probe and applescript(SESSION, *probe, "exists") == "present", "Unrelated probe window was closed")
             require(same_process(sibling) and applescript(PANE_BY_TTY, sibling_tty) == fixture.lead["id"] + "\n" + sibling_id, "Unrelated sibling pane changed")
             require(applescript(SIBLING, fixture.lead["id"], sibling_id, "close", sibling_tty) == "closed", "Fixture sibling pane did not close")
-            terminal.wait(lambda: not same_process(sibling), "fixture sibling process cleanup", 30)
+            release_fixture_sibling(terminal, sibling, sibling_tty)
             sibling_ref = None
             fixture.observations["cleanup"] = "native process and pane exited; unrelated sibling and probe remained until fixture cleanup"
         elif name == "team":
@@ -1104,6 +1113,8 @@ def run_case(name, scratch, evidence, pig, extension):
                 if present != "missing":
                     require(sibling is not None and same_process(sibling) and present == terminal.window["id"] + "\n" + sibling_id, "Fixture sibling identity is uncertain")
                     require(applescript(SIBLING, terminal.window["id"], sibling_id, "close", sibling_tty) == "closed", "Fixture sibling cleanup failed")
+                require(sibling is not None, "Fixture sibling process identity is unknown")
+                release_fixture_sibling(terminal, sibling, sibling_tty)
             except Exception as error:
                 terminal.unsafe = True
                 teardown_problems.append(f"Fixture sibling cleanup: {error}")
