@@ -171,6 +171,9 @@ type run struct {
 	calls           *callScope
 	messageMu       sync.Mutex
 	pendingMessages int
+	nativeFrozen    bool
+	nativeThaw      chan struct{}
+	nativeInputErr  string
 	session         *coding.Session
 	member          memberControl
 	disposing       bool

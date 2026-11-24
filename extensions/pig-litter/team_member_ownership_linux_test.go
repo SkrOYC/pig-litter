@@ -113,6 +113,25 @@ func TestNativeOwnershipPersistsAndReleasesAfterProcessExit(t *testing.T) {
 		tree.mu.Lock()
 		ownership.ExecutableSHA256 = actualDigest
 		tree.mu.Unlock()
+		if err := os.Remove(log); err != nil {
+			t.Fatal(err)
+		}
+		provisional, err := o.installProvisionalMemberHandle(ctx, selected.owner, selected, sessionDir, nonce, control)
+		if err != nil || provisional.ready {
+			t.Fatalf("provisional process handle = %#v, %v", provisional, err)
+		}
+		if _, err := o.memberLogEntries(ctx, provisional); err == nil {
+			t.Fatal("provisional handle exposed an unpinned history")
+		}
+		tree.mu.Lock()
+		selected.owner.native = nil
+		selected.mu.Lock()
+		selected.member = nil
+		selected.mu.Unlock()
+		tree.mu.Unlock()
+		if err := os.WriteFile(log, append(header, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := o.installMemberHandle(ctx, selected.owner, selected, sessionDir, log, nonce, control); err != nil {
 			t.Fatal(err)
 		}

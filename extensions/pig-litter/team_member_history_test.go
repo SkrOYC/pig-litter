@@ -41,7 +41,7 @@ func bindMemberFixture(t *testing.T, o *owner, r *record, selected *run, directo
 	tools := append(slices.Clone(controlNames), teamToolNames...)
 	slices.Sort(tools)
 	ownership := &memberOwnership{Backend: backendTmux, Member: r.team.Ref, Admission: r.team.AdmissionID, Execution: selected.noticeID, OwnerEpoch: o.epoch, Launch: launch, Cwd: r.cwd, Model: r.model, Tools: tools, SessionDirectory: directory, Executable: "/fixture", ExecutableSHA256: strings.Repeat("0", 64), Manifest: "/tmp/member-" + launch + ".json", Server: memberServerIdentity{Socket: "/tmp/tmux", PID: 1, Birth: "1", Target: "%0"}, Pane: &memberPaneIdentity{ID: "%1", PID: 2, Birth: "2", Command: "/fixture --pig-litter-member /tmp/member-" + launch + ".json"}}
-	binding := &memberBinding{record: r, run: selected, member: r.team.Ref, admission: r.team.AdmissionID, execution: selected.noticeID, ownerEpoch: o.epoch, launch: launch, log: pin, ownership: ownership, owned: cloneMemberOwnership(ownership), control: control}
+	binding := &memberBinding{record: r, run: selected, member: r.team.Ref, admission: r.team.AdmissionID, execution: selected.noticeID, ownerEpoch: o.epoch, launch: launch, log: pin, ownership: ownership, owned: cloneMemberOwnership(ownership), control: control, ready: true}
 	o.tree.mu.Lock()
 	r.nativeOwnership, r.native = ownership, binding
 	selected.mu.Lock()
@@ -96,7 +96,17 @@ func TestNativeMemberHistoryStaysWithItsOwner(t *testing.T) {
 		if err != nil || len(entries) != 2 || !strings.Contains(string(entries[1]), `"done"`) {
 			t.Fatalf("appended native history = %s, %v", entries, err)
 		}
-		if _, err := o.memberCallTicket(binding, "foreign-call", "arbitrary_tool", ""); err == nil {
+		changed := strings.Replace(first, "hello", "other", 1)
+		if err := os.WriteFile(path, []byte(string(header)+"\n"+changed+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := o.memberLogEntries(context.Background(), binding); err == nil {
+			t.Fatal("native history accepted a changed execution baseline")
+		}
+		if err := os.WriteFile(path, []byte(string(header)+"\n"+first+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := o.memberCallTicket(binding, o.callScope(binding.run), "foreign-call", "arbitrary_tool", ""); err == nil {
 			t.Fatal("native member invoked an unregistered operation")
 		}
 		o.state.mu.Lock()

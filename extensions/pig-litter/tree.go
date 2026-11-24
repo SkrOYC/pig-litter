@@ -456,11 +456,18 @@ func (t *Tree) cancelPending(selected *run) {
 
 func (t *Tree) finish(r *record, run *run, raw Outcome) {
 	t.lifecycleMu.Lock()
+	after, _, _ := t.finishLocked(r, run, raw)
+	t.lifecycleMu.Unlock()
+	if after != nil {
+		after()
+	}
+}
+
+func (t *Tree) finishLocked(r *record, run *run, raw Outcome) (func(), Outcome, error) {
 	t.mu.Lock()
 	if run.outcome != nil || run.finishing {
 		t.mu.Unlock()
-		t.lifecycleMu.Unlock()
-		return
+		return nil, Outcome{}, reject("unavailable", "child execution has already finished")
 	}
 	raw.Run, raw.Model = run.ref, r.model
 	if run.deliveryError != "" {
@@ -488,7 +495,7 @@ func (t *Tree) finish(r *record, run *run, raw Outcome) {
 		r.latest = &raw
 	}
 	t.mu.Unlock()
-	_ = t.store(r)
+	storeErr := t.store(r)
 	t.mu.Lock()
 	raw = *run.outcome
 	run.state, run.finishing = raw.State, false
@@ -524,27 +531,28 @@ mailboxDrained:
 		t.completionWG.Add(1)
 	}
 	t.mu.Unlock()
-	t.lifecycleMu.Unlock()
-	if r.team != nil && t.teamFinished != nil {
-		err := t.teamFinished(r, run, raw)
-		t.mu.Lock()
-		run.teamFinishErr = err
-		if run.teamFinishDone != nil {
-			close(run.teamFinishDone)
+	return func() {
+		if r.team != nil && t.teamFinished != nil {
+			err := t.teamFinished(r, run, raw)
+			t.mu.Lock()
+			run.teamFinishErr = err
+			if run.teamFinishDone != nil {
+				close(run.teamFinishDone)
+			}
+			t.mu.Unlock()
+			if t.teamSettled != nil {
+				t.teamSettled(r, run)
+			}
+			t.teamWG.Done()
 		}
-		t.mu.Unlock()
-		if t.teamSettled != nil {
-			t.teamSettled(r, run)
+		t.notify()
+		if deliver {
+			go func() {
+				defer t.completionWG.Done()
+				t.completion(r, run, raw)
+			}()
 		}
-		t.teamWG.Done()
-	}
-	t.notify()
-	if deliver {
-		go func() {
-			defer t.completionWG.Done()
-			t.completion(r, run, raw)
-		}()
-	}
+	}, raw, storeErr
 }
 
 func (t *Tree) notify() error {
@@ -754,6 +762,7 @@ func (t *Tree) messageAs(ctx context.Context, authority controlAuthority, select
 	if mode != "steer" && mode != "follow_up" {
 		return Snapshot{}, nil, reject("rejected", "invalid child message")
 	}
+retry:
 	t.mu.Lock()
 	r, err := t.controlAsLocked(authority, selected)
 	if err != nil {
@@ -777,6 +786,23 @@ func (t *Tree) messageAs(ctx context.Context, authority controlAuthority, select
 	if _, err := t.controlAsLocked(authority, selected); err != nil || ctx.Err() != nil || r.paused || run.state != Starting && run.state != Running {
 		t.mu.Unlock()
 		return Snapshot{}, nil, reject("rejected", "child is no longer active")
+	}
+	if run.nativeFrozen {
+		thaw := run.nativeThaw
+		t.mu.Unlock()
+		select {
+		case <-thaw:
+			goto retry
+		case <-run.ctx.Done():
+			return Snapshot{}, nil, reject("cancelled", "child stopped before message delivery")
+		case <-ctx.Done():
+			return Snapshot{}, nil, reject("cancelled", "message caller cancelled")
+		}
+	}
+	if run.nativeInputErr != "" {
+		err := reject("unavailable", run.nativeInputErr)
+		t.mu.Unlock()
+		return Snapshot{}, nil, err
 	}
 	run.messageMu.Lock()
 	queued := run.pendingMessages

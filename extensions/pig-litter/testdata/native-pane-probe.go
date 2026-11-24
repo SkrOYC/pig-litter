@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,18 +15,72 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding"
 	"github.com/MichaelKinsy/PiG/coding/cli"
 	"github.com/MichaelKinsy/PiG/coding/extension"
+	"github.com/SkrOYC/pig-litter/extensions/pig-litter/memberinput"
 )
 
 var logMu sync.Mutex
 var boundaryMu sync.Mutex
 var boundaryCounter uint64
 var approvedBoundary uint64
+var domainMu sync.Mutex
+var domain *nativeDomain
+var domainTurn uint64
+var inputAdmission *coding.InputAdmission
+var inputBridge *memberinput.Bridge
+var inputPhase atomic.Uint64
+var startupDomain *nativeDomain
+var startupWindow memberinput.WindowID
+var startupTransport *http.Transport
+
+type nativeDomain struct {
+	client *http.Client
+	token  string
+}
+
+func (domain *nativeDomain) call(ctx context.Context, path string, request, result any) error {
+	data, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://member"+path, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Pig-Litter-Member", domain.token)
+	response, err := domain.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
+		return fmt.Errorf("native domain route %s: %s: %s", path, response.Status, strings.TrimSpace(string(body)))
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(result); err != nil {
+		return err
+	}
+	record("events", map[string]any{"event": "domain_call", "route": path})
+	return nil
+}
+
+func currentDomain() *nativeDomain {
+	domainMu.Lock()
+	defer domainMu.Unlock()
+	return domain
+}
+
+func currentDomainTurn() uint64 {
+	domainMu.Lock()
+	defer domainMu.Unlock()
+	return domainTurn
+}
 
 func record(name string, data any) {
 	logMu.Lock()
@@ -37,7 +95,7 @@ func record(name string, data any) {
 	}
 }
 
-type decision struct {
+type rootDecisionResult struct {
 	Kind     string `json:"kind"`
 	Revision string `json:"revision"`
 	Boundary uint64 `json:"boundary"`
@@ -46,24 +104,26 @@ type decision struct {
 	Continue bool   `json:"continue"`
 }
 
-func rootDecision(kind string, detail any) decision {
+func rootDecision(kind string, detail any) rootDecisionResult {
 	conn, err := net.DialTimeout("unix", filepath.Join(os.Getenv("PROBE_ROOT"), "root.sock"), 2*time.Second)
 	if err != nil {
-		return decision{Kind: "unavailable"}
+		return rootDecisionResult{Kind: "unavailable"}
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	if json.NewEncoder(conn).Encode(map[string]any{"kind": kind, "detail": detail, "token": os.Getenv("PROBE_TOKEN")}) != nil {
-		return decision{Kind: "unavailable"}
+		return rootDecisionResult{Kind: "unavailable"}
 	}
-	var result decision
+	var result rootDecisionResult
 	if json.NewDecoder(conn).Decode(&result) != nil {
-		return decision{Kind: "unavailable"}
+		return rootDecisionResult{Kind: "unavailable"}
 	}
 	return result
 }
 
 func watchRoot(ctx context.Context, api extension.API) {
+	controlCtx, stopControl := context.WithCancel(context.Background())
+	defer stopControl()
 	lost := func() {
 		record("events", map[string]any{"event": "root_lost"})
 		if ext := extension.FromContext(ctx); ext != nil {
@@ -89,11 +149,22 @@ func watchRoot(ctx context.Context, api extension.API) {
 			Content string          `json:"content"`
 			Details json.RawMessage `json:"details"`
 			Audit   json.RawMessage `json:"audit"`
+			Socket  string          `json:"socket"`
+			Token   string          `json:"token"`
 		}
 		if decoder.Decode(&control) != nil {
 			break
 		}
 		switch control.Kind {
+		case "transport":
+			transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", control.Socket)
+			}}
+			client := &nativeDomain{client: &http.Client{Transport: transport}, token: control.Token}
+			domainMu.Lock()
+			domain = client
+			domainMu.Unlock()
+			go serveControl(controlCtx, ctx, api, client, transport)
 		case "completion":
 			trigger := false
 			api.SendMessage(extension.SendMessagePayload{CustomType: "litter_completion", Content: control.Content, Details: control.Details}, &extension.SendMessageOptions{TriggerTurn: &trigger})
@@ -135,6 +206,146 @@ func watchRoot(ctx context.Context, api extension.API) {
 	lost()
 }
 
+type nativeControlCommand struct {
+	ID         string `json:"id"`
+	Kind       string `json:"kind"`
+	Completion *struct {
+		Details json.RawMessage `json:"details"`
+		Content string          `json:"content"`
+		Mode    string          `json:"mode"`
+		Trigger bool            `json:"trigger"`
+	} `json:"completion"`
+	History *struct {
+		Entries int `json:"entries"`
+		Bytes   int `json:"bytes"`
+	} `json:"history"`
+	Audit json.RawMessage `json:"audit"`
+}
+
+func serveControl(ctx, nativeCtx context.Context, api extension.API, domain *nativeDomain, transport *http.Transport) {
+	defer transport.CloseIdleConnections()
+	request := func(path string, body io.Reader) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://member"+path, body)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("X-Pig-Litter-Member", domain.token)
+		return domain.client.Do(req)
+	}
+	go func() {
+		response, err := request("/control/watch", nil)
+		if response != nil {
+			response.Body.Close()
+		}
+		if ctx.Err() == nil && (err != nil || response.StatusCode != http.StatusOK) {
+			_ = extension.FromContext(nativeCtx).Abort()
+			_ = extension.FromContext(nativeCtx).Shutdown()
+			return
+		}
+		if err == nil && response.StatusCode == http.StatusOK {
+			_ = extension.FromContext(nativeCtx).Abort()
+			_ = extension.FromContext(nativeCtx).Shutdown()
+		}
+	}()
+	for {
+		response, err := request("/control/next", nil)
+		if err != nil || response.StatusCode != http.StatusOK {
+			if response != nil {
+				response.Body.Close()
+			}
+			if ctx.Err() == nil {
+				_ = extension.FromContext(nativeCtx).Abort()
+				_ = extension.FromContext(nativeCtx).Shutdown()
+			}
+			return
+		}
+		var command nativeControlCommand
+		err = json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&command)
+		response.Body.Close()
+		if err != nil {
+			return
+		}
+		if command.Kind == "cancel" {
+			_ = extension.FromContext(nativeCtx).Abort()
+			_ = extension.FromContext(nativeCtx).Shutdown()
+			return
+		}
+		reply := executeNativeControl(nativeCtx, api, command)
+		record("events", map[string]any{"event": "transport_control", "id": command.ID, "kind": command.Kind, "disposition": reply["disposition"], "error": reply["error"]})
+		data, err := json.Marshal(reply)
+		if err != nil {
+			return
+		}
+		response, err = request("/control/result", strings.NewReader(string(data)))
+		if err != nil {
+			return
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusNoContent {
+			return
+		}
+	}
+}
+
+func executeNativeControl(ctx context.Context, api extension.API, command nativeControlCommand) (reply map[string]any) {
+	reply = map[string]any{"id": command.ID, "kind": command.Kind}
+	defer func() {
+		if recover() != nil {
+			reply = map[string]any{"id": command.ID, "kind": command.Kind, "error": "native control failed"}
+		}
+	}()
+	switch command.Kind {
+	case "snapshot":
+		ext := extension.FromContext(ctx)
+		manager, err := ext.SessionManager()
+		if err != nil {
+			reply["error"] = "native session is unavailable"
+			return reply
+		}
+		cwd, _ := ext.CWD()
+		model, _ := ext.Model()
+		idle, _ := ext.IsIdle()
+		pending, _ := ext.HasPendingMessages()
+		phase, count := 2, 0
+		if idle {
+			phase = 4
+		}
+		if pending {
+			count = 1
+		}
+		var entries []json.RawMessage
+		clipped, used := false, 0
+		if command.History != nil && command.History.Entries > 0 {
+			for _, entry := range manager.GetBranch() {
+				data, err := json.Marshal(entry)
+				if err != nil || len(entries) == command.History.Entries || used+len(data) > command.History.Bytes {
+					clipped = true
+					break
+				}
+				entries = append(entries, data)
+				used += len(data)
+			}
+		}
+		modelName := ""
+		if model != nil {
+			modelName = model.ProviderMeta.ProviderID + "/" + model.ID
+		}
+		reply["snapshot"] = map[string]any{"session": manager.GetSessionId(), "cwd": cwd, "model": modelName, "tools": ext.GetActiveTools(), "phase": phase, "pending": count, "entries": entries, "leaf": manager.GetLeafID(), "clipped": clipped}
+	case "completion":
+		if command.Completion == nil {
+			reply["error"] = "missing completion"
+			break
+		}
+		api.SendMessage(extension.SendMessagePayload{CustomType: "litter_completion", Content: command.Completion.Content, Details: command.Completion.Details}, &extension.SendMessageOptions{TriggerTurn: &command.Completion.Trigger, DeliverAs: extension.DeliverAs(command.Completion.Mode)})
+		reply["disposition"] = 3
+	case "audit":
+		api.AppendEntry("litter_completion", command.Audit)
+	default:
+		reply["error"] = "unsupported native control"
+	}
+	return reply
+}
+
 func identity(ctx context.Context) map[string]any {
 	ext := extension.FromContext(ctx)
 	cwd, _ := ext.CWD()
@@ -152,6 +363,64 @@ func identity(ctx context.Context) map[string]any {
 func factory(api extension.API) error {
 	api.OnSessionStart(func(ctx context.Context, event extension.SessionStartEvent) error {
 		record("events", map[string]any{"event": "session_start", "reason": event.Reason, "identity": identity(ctx)})
+		if os.Getenv("P08_INPUT_TEST") != "" {
+			manager, err := extension.FromContext(ctx).SessionManager()
+			if err != nil {
+				_ = inputAdmission.Close()
+				return err
+			}
+			baseline, err := json.Marshal(manager.GetEntries())
+			if err != nil || os.WriteFile(filepath.Join(os.Getenv("PROBE_ROOT"), "baseline.json"), baseline, 0o600) != nil {
+				_ = inputAdmission.Close()
+				return errors.New("fixture could not retain the starting session baseline")
+			}
+			for {
+				if _, err := os.Stat(filepath.Join(os.Getenv("PROBE_ROOT"), "release-ready")); err == nil {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					_ = inputAdmission.Close()
+					return ctx.Err()
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+		}
+		if os.Getenv("P08_INPUT_TEST") == "fail" {
+			_ = inputAdmission.Close()
+			record("events", map[string]any{"event": "readiness_refused", "closed": true})
+			go func() { _ = extension.FromContext(ctx).Shutdown() }()
+			return errors.New("fixture readiness refused")
+		}
+		if startupDomain != nil {
+			ext := extension.FromContext(ctx)
+			manager, err := ext.SessionManager()
+			cwd, cwdErr := ext.CWD()
+			model, modelErr := ext.Model()
+			if err != nil || cwdErr != nil || modelErr != nil || model == nil || manager.GetSessionFile() == nil {
+				_ = inputAdmission.Close()
+				return errors.New("native readiness context is incomplete")
+			}
+			request := map[string]any{"window": startupWindow, "session": manager.GetSessionId(), "cwd": cwd, "model": model.ProviderID() + "/" + model.ID, "tools": ext.GetActiveTools(), "sessionFile": *manager.GetSessionFile(), "leaf": manager.GetLeafID(), "entries": manager.GetEntries()}
+			if os.Getenv("P08_INPUT_TEST") == "bad-ready" {
+				request["model"] = "fixture/wrong"
+			}
+			for range 2 {
+				var reply map[string]any
+				if err := startupDomain.call(ctx, "/input/ready", request, &reply); err != nil {
+					_ = inputAdmission.Close()
+					record("events", map[string]any{"event": "readiness_refused", "closed": true, "error": err.Error()})
+					go func() { _ = ext.Shutdown() }()
+					return err
+				}
+			}
+		}
+		if startupDomain != nil && os.Getenv("P08_COMMIT_ROOT") == "1" {
+			domainMu.Lock()
+			domain = startupDomain
+			domainMu.Unlock()
+			go serveControl(context.Background(), ctx, api, startupDomain, startupTransport)
+		}
 		go watchRoot(ctx, api)
 		return nil
 	})
@@ -172,9 +441,58 @@ func factory(api extension.API) error {
 		}
 		return extension.InputEventResultContinue{}, nil
 	})
+	api.OnTurnStart(func(ctx context.Context, event extension.TurnStartEvent) error {
+		if client := currentDomain(); client != nil {
+			domainMu.Lock()
+			domainTurn++
+			turn := domainTurn
+			domainMu.Unlock()
+			var reply map[string]any
+			if err := client.call(ctx, "/member/turn/start", map[string]any{"id": turn}, &reply); err != nil {
+				record("events", map[string]any{"event": "domain_error", "route": "turn-start", "error": err.Error()})
+				go func() { _ = extension.FromContext(ctx).Abort(); _ = extension.FromContext(ctx).Shutdown() }()
+			}
+		}
+		return nil
+	})
+	api.OnTurnEnd(func(ctx context.Context, event extension.TurnEndEvent) (extension.TurnEndEventResult, error) {
+		if client := currentDomain(); client != nil {
+			domainMu.Lock()
+			turn := domainTurn
+			domainMu.Unlock()
+			var reply map[string]any
+			if err := client.call(ctx, "/member/turn/end", map[string]any{"id": turn}, &reply); err != nil {
+				record("events", map[string]any{"event": "domain_error", "route": "turn-end", "error": err.Error()})
+				go func() { _ = extension.FromContext(ctx).Abort(); _ = extension.FromContext(ctx).Shutdown() }()
+			}
+		}
+		return extension.BoundaryResult{}, nil
+	})
 	api.OnToolCall(func(ctx context.Context, event extension.ToolCallEvent) (extension.ToolCallEventResult, error) {
 		call := event.(extension.CustomToolCallEvent)
 		path, _ := call.Input["path"].(string)
+		if client := currentDomain(); client != nil && !strings.HasSuffix(path, "direct-write-lost.txt") {
+			turn := currentDomainTurn()
+			manager, err := extension.FromContext(ctx).SessionManager()
+			if err != nil {
+				return extension.ToolCallEventResult{Block: true, Reason: "native session unavailable"}, nil
+			}
+			if leaf := manager.GetLeafID(); leaf != nil {
+				var observed map[string]any
+				if err := client.call(ctx, "/member/response", map[string]any{"turn": turn, "entryId": *leaf}, &observed); err != nil {
+					record("events", map[string]any{"event": "domain_error", "route": "response", "error": err.Error()})
+					return extension.ToolCallEventResult{Block: true, Reason: "native response was not observed"}, nil
+				}
+			}
+			var decision extension.ToolCallEventResult
+			err = client.call(ctx, "/member/tool", map[string]any{"turn": turn, "id": call.ToolCallID, "parent": call.ParentToolCallID, "name": call.ToolName, "arguments": call.Input}, &decision)
+			if err != nil {
+				record("events", map[string]any{"event": "domain_error", "route": "tool", "error": err.Error()})
+				return extension.ToolCallEventResult{Block: true, Reason: "native tool authority unavailable"}, nil
+			}
+			record("events", map[string]any{"event": "tool_call", "tool": call.ToolName, "id": call.ToolCallID, "parent": call.ParentToolCallID, "input": call.Input, "decision": decision, "denied": decision.Block})
+			return decision, nil
+		}
 		decision := rootDecision("tool", map[string]any{"name": call.ToolName, "call": call.ToolCallID, "parent": call.ParentToolCallID, "path": path})
 		denied := decision.Kind != "allow"
 		record("events", map[string]any{"event": "tool_call", "tool": call.ToolName, "id": call.ToolCallID, "parent": call.ParentToolCallID, "input": call.Input, "decision": decision, "denied": denied})
@@ -196,6 +514,21 @@ func factory(api extension.API) error {
 				if id := manager.GetLeafID(); id != nil {
 					leaf = *id
 				}
+				if client := currentDomain(); client != nil {
+					route := "/member/child/spawn"
+					if name == "litter_wait" {
+						route = "/member/child/wait"
+					}
+					var reply struct {
+						Content string `json:"content"`
+						IsError bool   `json:"isError"`
+					}
+					if err := client.call(ctx, route, map[string]any{"turn": currentDomainTurn(), "callId": callID, "leaf": leaf, "args": params}, &reply); err != nil {
+						record("events", map[string]any{"event": "domain_error", "route": route, "error": err.Error()})
+						return extension.AgentToolResult{Content: []ai.ToolResultMessageContent{ai.TextContent{Text: "native operation unavailable"}}, IsError: true}, nil
+					}
+					return extension.AgentToolResult{Content: []ai.ToolResultMessageContent{ai.TextContent{Text: reply.Content}}, IsError: reply.IsError}, nil
+				}
 				decision := rootDecision(name, map[string]any{"call": callID, "leaf": leaf, "args": params})
 				return extension.AgentToolResult{Content: []ai.ToolResultMessageContent{ai.TextContent{Text: decision.Result}}, IsError: decision.Kind != "allow"}, nil
 			},
@@ -203,6 +536,22 @@ func factory(api extension.API) error {
 	}
 	api.OnToolExecutionEnd(func(ctx context.Context, event extension.ToolExecutionEndEvent) error {
 		if event.ToolName == "litter_spawn" || event.ToolName == "litter_wait" {
+			if client := currentDomain(); client != nil {
+				data, _ := json.Marshal(event.Result)
+				var result struct {
+					Content []struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+					} `json:"content"`
+					IsError bool `json:"isError"`
+				}
+				_ = json.Unmarshal(data, &result)
+				var reply map[string]any
+				if err := client.call(ctx, "/member/result", map[string]any{"turn": currentDomainTurn(), "callId": event.ToolCallID, "name": event.ToolName, "isError": event.IsError || result.IsError, "content": result.Content}, &reply); err != nil {
+					record("events", map[string]any{"event": "domain_error", "route": "result", "error": err.Error()})
+				}
+				return nil
+			}
 			rootDecision("tool-end", map[string]any{"call": event.ToolCallID, "name": event.ToolName, "result": event.Result, "isError": event.IsError})
 		}
 		return nil
@@ -241,7 +590,28 @@ func factory(api extension.API) error {
 			}
 			break
 		}
-		decision := rootDecision("settle", map[string]any{"boundary": boundary, "outcome": event.Outcome, "continuing": event.Continue, "canContinue": event.Context.CanContinue, "report": report})
+		var decision rootDecisionResult
+		if client := currentDomain(); client != nil {
+			var reply struct {
+				Boundary uint64 `json:"boundary"`
+				Allow    bool   `json:"allow"`
+				Continue bool   `json:"continue"`
+				Feedback string `json:"feedback"`
+			}
+			err := client.call(ctx, "/member/settlement/decide", map[string]any{"boundary": boundary, "report": report, "completed": true, "continuing": false}, &reply)
+			if err != nil {
+				record("events", map[string]any{"event": "domain_error", "route": "settlement", "error": err.Error()})
+				go func() { _ = extension.FromContext(ctx).Abort(); _ = extension.FromContext(ctx).Shutdown() }()
+				return extension.BoundaryResult{}, nil
+			}
+			decision = rootDecisionResult{Kind: "deny", Boundary: reply.Boundary, Continue: reply.Continue, Feedback: reply.Feedback}
+			if reply.Allow {
+				decision.Kind = "allow"
+				rootDecision("after-decision", map[string]any{"boundary": boundary})
+			}
+		} else {
+			decision = rootDecision("settle", map[string]any{"boundary": boundary, "outcome": event.Outcome, "continuing": event.Continue, "canContinue": event.Context.CanContinue, "report": report})
+		}
 		record("events", map[string]any{"event": "before_settle", "decision": decision, "outcome": event.Outcome, "canContinue": event.Context.CanContinue})
 		if decision.Kind != "allow" || decision.Boundary != boundary {
 			if decision.Kind == "allow" && decision.Boundary != boundary {
@@ -267,9 +637,25 @@ func factory(api extension.API) error {
 		boundary := approvedBoundary
 		approvedBoundary = 0
 		boundaryMu.Unlock()
-		decision := decision{Kind: "observed"}
+		decision := rootDecisionResult{Kind: "observed"}
 		if boundary != 0 {
-			decision = rootDecision("settled", map[string]any{"boundary": boundary, "aborted": event.Aborted})
+			if startupDomain != nil && os.Getenv("P08_COMMIT_ROOT") == "1" {
+				var reply struct {
+					Allow    bool   `json:"allow"`
+					Continue bool   `json:"continue"`
+					Feedback string `json:"feedback"`
+				}
+				if err := startupDomain.call(ctx, "/member/settlement/finalize", map[string]any{"boundary": boundary, "aborted": event.Aborted}, &reply); err != nil {
+					record("events", map[string]any{"event": "finalize_uncertain", "boundary": boundary, "error": err.Error()})
+					return nil
+				}
+				decision = rootDecisionResult{Kind: "deny", Boundary: boundary, Continue: reply.Continue, Feedback: reply.Feedback}
+				if reply.Allow {
+					decision.Kind = "allow"
+				}
+			} else {
+				decision = rootDecision("settled", map[string]any{"boundary": boundary, "aborted": event.Aborted})
+			}
 		}
 		record("events", map[string]any{"event": "native_settled", "aborted": event.Aborted, "boundary": boundary, "decision": decision, "identity": identity(ctx)})
 		if decision.Kind == "allow" && boundary != 0 {
@@ -282,6 +668,115 @@ func factory(api extension.API) error {
 		return nil
 	})
 	return nil
+}
+
+func publishInputWindow(ctx context.Context, window *coding.InputWindow) error {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return err
+	}
+	id := memberinput.WindowID(hex.EncodeToString(nonce[:]))
+	if err := inputBridge.Open(ctx, id, memberinput.NativeWindow{Value: window}); err != nil {
+		return err
+	}
+	phase := inputPhase.Add(1)
+	record("events", map[string]any{"event": "input_window", "id": id, "phase": phase})
+	if phase != 1 {
+		return nil
+	}
+	startupWindow = id
+	type transferInput struct {
+		ID   memberinput.TransferID `json:"id"`
+		Mode memberinput.Mode       `json:"mode"`
+		Text string                 `json:"text"`
+	}
+	inputs := []transferInput{{ID: "starting-0", Mode: memberinput.FollowUp, Text: "START_ONE"}, {ID: "starting-1", Mode: memberinput.FollowUp, Text: "START_TWO"}}
+	if startupDomain != nil {
+		request := map[string]any{"window": id}
+		for {
+			if err := startupDomain.call(ctx, "/input/start", request, &inputs); err == nil {
+				break
+			} else {
+				var transport *net.OpError
+				if !errors.As(err, &transport) {
+					return err
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		var replay []transferInput
+		if err := startupDomain.call(ctx, "/input/start", request, &replay); err != nil || len(replay) != len(inputs) {
+			return errors.New("starting transfer replay was unavailable")
+		}
+		for index := range replay {
+			if replay[index] != inputs[index] {
+				return errors.New("starting transfer replay changed its content")
+			}
+		}
+	}
+	ids := make([]memberinput.TransferID, 0, len(inputs))
+	for _, entry := range inputs {
+		transfer := entry.ID
+		input := memberinput.Input{Mode: entry.Mode, Text: entry.Text}
+		receipt, err := inputBridge.Admit(ctx, id, transfer, input)
+		if err != nil {
+			return err
+		}
+		replayed, err := inputBridge.Admit(ctx, id, transfer, input)
+		if err != nil || replayed != receipt {
+			return errors.New("starting transfer replay changed its ticket")
+		}
+		if _, err := receipt.Await(ctx); !errors.Is(err, coding.ErrInputWouldBlock) {
+			return fmt.Errorf("starting ticket callback wait = %v", err)
+		}
+		go func() {
+			result, err := receipt.Await(context.Background())
+			detail := ""
+			if err != nil {
+				detail = err.Error()
+			}
+			record("events", map[string]any{"event": "input_result", "transfer": transfer, "result": result, "error": detail})
+			if startupDomain != nil && err == nil {
+				request := map[string]any{"window": id, "transfer": transfer, "disposition": result.Disposition, "error": result.Error}
+				for ctx.Err() == nil {
+					var reply map[string]any
+					if startupDomain.call(ctx, "/input/result", request, &reply) == nil {
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+			}
+			receipt.Close()
+		}()
+		ids = append(ids, transfer)
+	}
+	if startupDomain != nil {
+		for range 2 {
+			var reply map[string]any
+			if err := startupDomain.call(ctx, "/input/installed", map[string]any{"window": id, "transfers": ids}, &reply); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := inputBridge.Admit(ctx, id, "starting-overflow", memberinput.Input{Mode: "follow_up", Text: "START_OVERFLOW"})
+	if !errors.Is(err, coding.ErrInputFull) {
+		return fmt.Errorf("starting input limit = %v", err)
+	}
+	record("events", map[string]any{"event": "input_staged", "id": id, "count": len(inputs), "replay": true, "callbackWouldBlock": true, "overflow": "full"})
+	for {
+		if _, err := os.Stat(filepath.Join(os.Getenv("PROBE_ROOT"), "release-window")); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 
 type request struct {
@@ -437,5 +932,23 @@ func main() {
 		fixture()
 		return
 	}
-	cli.Main(os.Args[1:], &cli.MainOptions{HostPolicy: &cli.HostPolicy{FixedModel: coding.FixedModel{Provider: "fixture", ID: "fixed"}, RequiredFactory: factory}})
+	if os.Getenv("P08_INPUT_TEST") != "" {
+		inputBridge = memberinput.New()
+		if socket := os.Getenv("P08_CONTROL_SOCKET"); socket != "" {
+			transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+			}}
+			defer transport.CloseIdleConnections()
+			startupTransport = transport
+			startupDomain = &nativeDomain{client: &http.Client{Transport: transport}, token: os.Getenv("P08_CONTROL_TOKEN")}
+		}
+		var err error
+		inputAdmission, err = coding.NewInputAdmission(context.Background(), coding.InputAdmissionOptions{SessionID: "018f0000-0000-7000-8000-000000000002", PendingLimit: 2, OnWindow: publishInputWindow})
+		if err != nil {
+			panic(err)
+		}
+		defer inputBridge.Close()
+		defer inputAdmission.Close()
+	}
+	cli.Main(os.Args[1:], &cli.MainOptions{InputAdmission: inputAdmission, HostPolicy: &cli.HostPolicy{FixedModel: coding.FixedModel{Provider: "fixture", ID: "fixed"}, RequiredFactory: factory}})
 }

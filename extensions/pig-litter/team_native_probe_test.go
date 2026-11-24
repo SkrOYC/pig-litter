@@ -44,8 +44,7 @@ type nativeProbeRoot struct {
 	closed        bool
 	childID       ChildID
 	release       bool
-	invoke        func(nativeProbeRequest) map[string]any
-	settle        func(nativeProbeRequest) map[string]any
+	afterDecision func(nativeProbeRequest) map[string]any
 	settled       func(nativeProbeRequest) map[string]any
 	stale         bool
 	staleTask     bool
@@ -181,19 +180,8 @@ func (root *nativeProbeRoot) handle(conn net.Conn) {
 		root.mu.Unlock()
 		return
 	}
-	if request.Kind == "litter_spawn" || request.Kind == "litter_wait" || request.Kind == "tool-end" {
-		invoke := root.invoke
-		root.mu.Unlock()
-		answer := map[string]any{"kind": "deny"}
-		if invoke != nil {
-			answer = invoke(request)
-		}
-		_ = json.NewEncoder(conn).Encode(answer)
-		conn.Close()
-		return
-	}
-	if request.Kind == "settle" && root.settle != nil || request.Kind == "settled" && root.settled != nil {
-		callback := root.settle
+	if request.Kind == "after-decision" && root.afterDecision != nil || request.Kind == "settled" && root.settled != nil {
+		callback := root.afterDecision
 		if request.Kind == "settled" {
 			callback = root.settled
 		}
@@ -535,113 +523,118 @@ func TestTmuxNativeProbe(t *testing.T) {
 			sessionFile, _ = identity["sessionFile"].(string)
 		}
 	}
-	exerciseNativeDescendant(t, ctx, root, cwd, filepath.Join(rootPath, "agent"), filepath.Join(rootPath, "sessions"), sessionFile, server, launch, pane, turn)
-	control := &nativeProbeControl{root: root, events: events, session: "018f0000-0000-7000-8000-000000000002"}
-	gate := probeCount(providerLog, "event", "queue_gate_wait")
-	settled := probeCount(events, "event", "native_settled")
-	send("QUEUE_GATE")
-	probeWait(t, ctx, "queue provider gate", func() bool { return probeCount(providerLog, "event", "queue_gate_wait") > gate })
-	for index, text := range []string{"QUEUED_ONE", "QUEUED_TWO"} {
-		disposition, err := control.Queue(ctx, memberTextInput{mode: "follow_up", text: text})
-		if err != nil || disposition != memberInputHandled {
-			t.Fatalf("queue %s = %v, %v", text, disposition, err)
+	after := func(o *owner, binding *memberBinding, ownership *memberOwnership) {
+		control := &nativeProbeControl{root: root, events: events, session: "018f0000-0000-7000-8000-000000000002"}
+		gate := probeCount(providerLog, "event", "queue_gate_wait")
+		settled := probeCount(events, "event", "native_settled")
+		send("QUEUE_GATE")
+		probeWait(t, ctx, "queue provider gate", func() bool { return probeCount(providerLog, "event", "queue_gate_wait") > gate })
+		for index, text := range []string{"QUEUED_ONE", "QUEUED_TWO"} {
+			disposition, err := control.Queue(ctx, memberTextInput{mode: "follow_up", text: text})
+			if err != nil || disposition != memberInputHandled {
+				t.Fatalf("queue %s = %v, %v", text, disposition, err)
+			}
+			if index == 0 {
+				probeWait(t, ctx, text+" input hook", func() bool { return probeCount(events, "text", text) > 0 })
+			}
+			if err := control.send(ctx, map[string]any{"kind": "inspect"}); err != nil {
+				t.Fatal(err)
+			}
 		}
-		if index == 0 {
-			probeWait(t, ctx, text+" input hook", func() bool { return probeCount(events, "text", text) > 0 })
+		var queueObservations []map[string]any
+		var pendingChecks []map[string]any
+		for _, row := range probeRows(events) {
+			if row["event"] == "control_applied" && row["kind"] == "queue" {
+				queueObservations = append(queueObservations, row)
+			} else if row["event"] == "control_applied" && row["kind"] == "inspect" {
+				pendingChecks = append(pendingChecks, row)
+			}
 		}
-		if err := control.send(ctx, map[string]any{"kind": "inspect"}); err != nil {
+		if len(queueObservations) != 2 || queueObservations[0]["idle"] != false || queueObservations[1]["idle"] != false || queueObservations[0]["after"] != false || queueObservations[1]["after"] != false || len(pendingChecks) != 2 || pendingChecks[0]["pending"] != false || pendingChecks[1]["pending"] != false {
+			t.Fatalf("native pending observations = %#v, checks = %#v", queueObservations, pendingChecks)
+		}
+		root.mu.Lock()
+		root.queueInput = true
+		root.mu.Unlock()
+		probeWait(t, ctx, "second queued input hook", func() bool { return probeCount(events, "text", "QUEUED_TWO") > 0 })
+		root.mu.Lock()
+		root.queueProvider = true
+		root.mu.Unlock()
+		probeWait(t, ctx, "queued messages observed", func() bool {
+			return probeRequestContains(providerLog, "QUEUED_ONE") && probeRequestContains(providerLog, "QUEUED_TWO") && probeCount(events, "event", "native_settled") > settled
+		})
+		root.mu.Lock()
+		root.queueProvider = false
+		root.mu.Unlock()
+		gate = probeCount(providerLog, "event", "queue_gate_wait")
+		settled = probeCount(events, "event", "native_settled")
+		send("QUEUE_GATE_STALE")
+		probeWait(t, ctx, "stale queue provider gate", func() bool { return probeCount(providerLog, "event", "queue_gate_wait") > gate })
+		queueID, err := root.send(map[string]any{"kind": "queue-hold", "content": "STALE_FOLLOW_UP"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		probeWait(t, ctx, "stale queue snapshot", func() bool {
+			for _, row := range probeRows(events) {
+				if row["event"] == "queue_checked" && row["id"] == queueID && row["idle"] == false {
+					return true
+				}
+			}
+			return false
+		})
+		root.mu.Lock()
+		root.queueProvider = true
+		root.mu.Unlock()
+		probeWait(t, ctx, "settlement after queue snapshot", func() bool { return probeCount(events, "event", "native_settled") > settled })
+		root.mu.Lock()
+		root.queueRelease = true
+		root.mu.Unlock()
+		probeWait(t, ctx, "stale queue started a turn", func() bool { return probeRequestContains(providerLog, "STALE_FOLLOW_UP") })
+		capture("after")
+		approved := probeCount(events, "event", "root_settle_approved")
+		send("case direct-write-lost")
+		probeWait(t, ctx, "held tool authorization", func() bool {
+			root.mu.Lock()
+			defer root.mu.Unlock()
+			return len(root.pending) != 0
+		})
+		root.disconnect()
+		probeWait(t, ctx, "root loss observed", func() bool { return probeCount(events, "event", "root_lost") > 0 })
+		probeWait(t, ctx, "native process exit", func() bool { birth, err := processBirth(pane.pid); return err != nil || birth != pane.birth })
+		probeWait(t, ctx, "native pane exit status", func() bool {
+			return tmux("display-message", "-p", "-t", pane.id, "#{pane_dead} #{pane_dead_status}") == "1 0"
+		})
+		probeWait(t, ctx, "terminal recorder EOF", func() bool { _, err := os.Stat(filepath.Join(rootPath, "terminal.eof")); return err == nil })
+		if _, err := os.Stat(filepath.Join(rootPath, "files", "direct-write-lost.txt")); !os.IsNotExist(err) {
+			t.Fatalf("root loss allowed the pending write: %v", err)
+		}
+		if got := probeCount(events, "event", "root_settle_approved"); got != approved {
+			t.Fatalf("root loss approved a new settlement: before=%d after=%d", approved, got)
+		}
+		blockedAfterLoss := false
+		for _, row := range probeRows(events) {
+			input, _ := row["input"].(map[string]any)
+			if row["event"] == "tool_call" && strings.HasSuffix(fmt.Sprint(input["path"]), "direct-write-lost.txt") && row["denied"] == true {
+				blockedAfterLoss = true
+			}
+		}
+		if !blockedAfterLoss {
+			t.Fatal("root loss did not return an explicit tool block")
+		}
+		if err := o.releaseMemberLaunch(ctx, binding.record, binding.run, ownership, pane); err != nil {
+			t.Fatal(err)
+		}
+		panes := tmux("list-panes", "-a", "-F", "#{pane_id}")
+		if !strings.Contains(panes, unrelated) || strings.Contains(panes, pane.id) {
+			t.Fatalf("unexpected panes after root loss: %q", panes)
+		}
+		if err := os.WriteFile(filepath.Join(rootPath, "result.json"), []byte(`{"passed":true,"scope":"private native hook and root-loss prototype; product team integration not exercised"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	var queueObservations []map[string]any
-	var pendingChecks []map[string]any
-	for _, row := range probeRows(events) {
-		if row["event"] == "control_applied" && row["kind"] == "queue" {
-			queueObservations = append(queueObservations, row)
-		} else if row["event"] == "control_applied" && row["kind"] == "inspect" {
-			pendingChecks = append(pendingChecks, row)
-		}
-	}
-	if len(queueObservations) != 2 || queueObservations[0]["idle"] != false || queueObservations[1]["idle"] != false || queueObservations[0]["after"] != false || queueObservations[1]["after"] != false || len(pendingChecks) != 2 || pendingChecks[0]["pending"] != false || pendingChecks[1]["pending"] != false {
-		t.Fatalf("native pending observations = %#v, checks = %#v", queueObservations, pendingChecks)
-	}
-	root.mu.Lock()
-	root.queueInput = true
-	root.mu.Unlock()
-	probeWait(t, ctx, "second queued input hook", func() bool { return probeCount(events, "text", "QUEUED_TWO") > 0 })
-	root.mu.Lock()
-	root.queueProvider = true
-	root.mu.Unlock()
-	probeWait(t, ctx, "queued messages observed", func() bool {
-		return probeRequestContains(providerLog, "QUEUED_ONE") && probeRequestContains(providerLog, "QUEUED_TWO") && probeCount(events, "event", "native_settled") > settled
-	})
-	root.mu.Lock()
-	root.queueProvider = false
-	root.mu.Unlock()
-	gate = probeCount(providerLog, "event", "queue_gate_wait")
-	settled = probeCount(events, "event", "native_settled")
-	send("QUEUE_GATE_STALE")
-	probeWait(t, ctx, "stale queue provider gate", func() bool { return probeCount(providerLog, "event", "queue_gate_wait") > gate })
-	queueID, err := root.send(map[string]any{"kind": "queue-hold", "content": "STALE_FOLLOW_UP"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	probeWait(t, ctx, "stale queue snapshot", func() bool {
-		for _, row := range probeRows(events) {
-			if row["event"] == "queue_checked" && row["id"] == queueID && row["idle"] == false {
-				return true
-			}
-		}
-		return false
-	})
-	root.mu.Lock()
-	root.queueProvider = true
-	root.mu.Unlock()
-	probeWait(t, ctx, "settlement after queue snapshot", func() bool { return probeCount(events, "event", "native_settled") > settled })
-	root.mu.Lock()
-	root.queueRelease = true
-	root.mu.Unlock()
-	probeWait(t, ctx, "stale queue started a turn", func() bool { return probeRequestContains(providerLog, "STALE_FOLLOW_UP") })
-	capture("after")
-	approved := probeCount(events, "event", "root_settle_approved")
-	send("case direct-write-lost")
-	probeWait(t, ctx, "held tool authorization", func() bool {
-		root.mu.Lock()
-		defer root.mu.Unlock()
-		return len(root.pending) != 0
-	})
-	root.disconnect()
-	probeWait(t, ctx, "root loss observed", func() bool { return probeCount(events, "event", "root_lost") > 0 })
-	probeWait(t, ctx, "native process exit", func() bool { birth, err := processBirth(pane.pid); return err != nil || birth != pane.birth })
-	probeWait(t, ctx, "native pane exit status", func() bool {
-		return tmux("display-message", "-p", "-t", pane.id, "#{pane_dead} #{pane_dead_status}") == "1 0"
-	})
-	probeWait(t, ctx, "terminal recorder EOF", func() bool { _, err := os.Stat(filepath.Join(rootPath, "terminal.eof")); return err == nil })
-	if _, err := os.Stat(filepath.Join(rootPath, "files", "direct-write-lost.txt")); !os.IsNotExist(err) {
-		t.Fatalf("root loss allowed the pending write: %v", err)
-	}
-	if got := probeCount(events, "event", "root_settle_approved"); got != approved {
-		t.Fatalf("root loss approved a new settlement: before=%d after=%d", approved, got)
-	}
-	blockedAfterLoss := false
-	for _, row := range probeRows(events) {
-		input, _ := row["input"].(map[string]any)
-		if row["event"] == "tool_call" && strings.HasSuffix(fmt.Sprint(input["path"]), "direct-write-lost.txt") && row["denied"] == true {
-			blockedAfterLoss = true
-		}
-	}
-	if !blockedAfterLoss {
-		t.Fatal("root loss did not return an explicit tool block")
-	}
-	if err := pane.close(ctx); err != nil {
-		t.Fatal(err)
-	}
-	panes := tmux("list-panes", "-a", "-F", "#{pane_id}")
-	if !strings.Contains(panes, unrelated) || strings.Contains(panes, pane.id) {
-		t.Fatalf("unexpected panes after root loss: %q", panes)
-	}
-	if err := os.WriteFile(filepath.Join(rootPath, "result.json"), []byte(`{"passed":true,"scope":"private native hook and root-loss prototype; product team integration not exercised"}`), 0o600); err != nil {
-		t.Fatal(err)
+	exerciseNativeDescendant(t, ctx, root, cwd, filepath.Join(rootPath, "agent"), filepath.Join(rootPath, "sessions"), sessionFile, server, launch, pane, send, turn, after)
+	if _, err := os.Lstat(filepath.Join(rootPath, "member-control.sock")); !os.IsNotExist(err) {
+		t.Fatalf("owned control socket survived cleanup: %v", err)
 	}
 }
 
@@ -726,13 +719,7 @@ func TestTmuxNativeStartupRootLoss(t *testing.T) {
 	}
 }
 
-type nativeProbeCall struct {
-	ticket *callTicket
-	value  map[string]any
-	err    error
-}
-
-func exerciseNativeDescendant(t *testing.T, ctx context.Context, root *nativeProbeRoot, cwd, agentDir, sessionDir, sessionFile string, server tmuxServer, launch tmuxLaunch, pane tmuxPane, turn func(string)) {
+func exerciseNativeDescendant(t *testing.T, ctx context.Context, root *nativeProbeRoot, cwd, agentDir, sessionDir, sessionFile string, server tmuxServer, launch tmuxLaunch, pane tmuxPane, send, turn func(string), after func(*owner, *memberBinding, *memberOwnership)) {
 	t.Helper()
 	rootID := ChildID("018f0000-0000-7000-8000-000000000001")
 	memberID := ChildID("018f0000-0000-7000-8000-000000000002")
@@ -777,7 +764,6 @@ func exerciseNativeDescendant(t *testing.T, ctx context.Context, root *nativePro
 		policyMarker := filepath.Join(root.path, "policy-ran")
 		o.policy.TeammateIdle = []string{"/bin/sh", "-c", `if [ -e "$1" ]; then printf '{"permit":true}'; else : > "$1"; printf '{"permit":false,"feedback":"Finish the review."}'; fi`, "policy", policyMarker}
 		tree.execute, tree.persist, tree.completion = o.executeRun, o.saveChild, o.sendCompletion
-		control := &nativeProbeControl{root: root, events: filepath.Join(root.path, "events.jsonl"), session: memberID}
 		ownership, err := o.reserveMemberLaunch(ctx, parent.owner, parent, server, launch, sessionDir)
 		if err != nil {
 			t.Fatal(err)
@@ -785,32 +771,50 @@ func exerciseNativeDescendant(t *testing.T, ctx context.Context, root *nativePro
 		if err := o.recordMemberPane(ctx, parent.owner, parent, ownership, pane); err != nil {
 			t.Fatal(err)
 		}
+		control, err := o.newMemberControlQueue(parent.owner, parent, ownership)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer control.Close()
+		controlServer, err := startMemberControlServer(ctx, root.path, control)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := controlServer.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
+		controlID, err := root.send(map[string]any{"kind": "transport", "socket": controlServer.path, "token": control.token()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		probeWait(t, ctx, "native control connected", func() bool {
+			for _, row := range probeRows(filepath.Join(root.path, "events.jsonl")) {
+				if row["event"] == "control_applied" && row["id"] == controlID {
+					return true
+				}
+			}
+			return false
+		})
 		binding, err := o.installMemberHandle(ctx, parent.owner, parent, sessionDir, sessionFile, launch.nonce, control)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var callsMu sync.Mutex
-		calls := map[string]nativeProbeCall{}
-		var child *run
+		if err := control.attachAuthority(binding); err != nil {
+			t.Fatal(err)
+		}
+		var callbackMu sync.Mutex
 		var callbackErr error
 		var commits, stale atomic.Int64
 		setError := func(err error) {
-			callsMu.Lock()
+			callbackMu.Lock()
 			callbackErr = err
-			callsMu.Unlock()
+			callbackMu.Unlock()
 		}
 		root.mu.Lock()
-		root.settle = func(request nativeProbeRequest) map[string]any {
+		root.afterDecision = func(request nativeProbeRequest) map[string]any {
 			boundary, _ := request.Detail["boundary"].(float64)
-			report, _ := request.Detail["report"].(string)
-			decision, err := o.decideMemberSettlement(ctx, binding, memberSettlementCandidate{boundary: uint64(boundary), report: report, completed: request.Detail["outcome"] == "completed", continuing: request.Detail["continuing"] == true})
-			if err != nil {
-				setError(err)
-				return map[string]any{"kind": "deny", "boundary": boundary, "feedback": err.Error()}
-			}
-			if !decision.allow {
-				return map[string]any{"kind": "deny", "boundary": boundary, "feedback": memberSettlementFeedback(decision), "continue": decision.continueRun}
-			}
 			root.mu.Lock()
 			changeWake := root.stale
 			changeTask := root.staleTask
@@ -852,105 +856,9 @@ func exerciseNativeDescendant(t *testing.T, ctx context.Context, root *nativePro
 			}
 			return map[string]any{"kind": "allow"}
 		}
-		root.invoke = func(request nativeProbeRequest) map[string]any {
-			callID, _ := request.Detail["call"].(string)
-			if request.Kind == "tool-end" {
-				callsMu.Lock()
-				call, ok := calls[callID]
-				delete(calls, callID)
-				callsMu.Unlock()
-				if !ok || request.Detail["name"] != call.ticket.operation || request.Detail["isError"] == true {
-					setError(errors.New("native tool result did not match its root call"))
-					return map[string]any{"kind": "deny"}
-				}
-				result, _ := request.Detail["result"].(map[string]any)
-				blocks, _ := result["content"].([]any)
-				var text string
-				if len(blocks) == 1 {
-					block, _ := blocks[0].(map[string]any)
-					text, _ = block["text"].(string)
-				}
-				expected, _ := resultContent(call.ticket.operation, call.value, call.err)
-				if text != expected {
-					setError(errors.New("native tool result content changed before acknowledgement"))
-					return map[string]any{"kind": "deny"}
-				}
-				o.finishCall(call.ticket, nativeResult(call.ticket.operation, call.value, call.err), false)
-				return map[string]any{"kind": "allow"}
-			}
-			leaf, _ := request.Detail["leaf"].(string)
-			ticket, err := o.memberCallTicket(binding, callID, request.Kind, leaf)
-			if err != nil {
-				setError(err)
-				return map[string]any{"kind": "deny", "result": err.Error()}
-			}
-			raw, err := json.Marshal(request.Detail["args"])
-			if err != nil {
-				setError(err)
-				return map[string]any{"kind": "deny", "result": err.Error()}
-			}
-			var value map[string]any
-			if request.Kind == "litter_wait" {
-				type result struct {
-					value map[string]any
-					err   error
-				}
-				done := make(chan result, 1)
-				go func() {
-					value, err := o.operation(ctx, raw, ticket, nil)
-					done <- result{value: value, err: err}
-				}()
-				for {
-					o.ackMu.Lock()
-					pending := o.outcomeAcks[ticket] != nil
-					o.ackMu.Unlock()
-					if pending {
-						root.mu.Lock()
-						root.release = true
-						root.mu.Unlock()
-						break
-					}
-					select {
-					case result := <-done:
-						setError(result.err)
-						return map[string]any{"kind": "deny", "result": "wait ended before acknowledgement"}
-					case <-ctx.Done():
-						setError(ctx.Err())
-						return map[string]any{"kind": "deny", "result": ctx.Err().Error()}
-					case <-time.After(10 * time.Millisecond):
-					}
-				}
-				reply := <-done
-				value, err = reply.value, reply.err
-			} else {
-				value, err = o.operation(ctx, raw, ticket, nil)
-				if err == nil {
-					spawned := value["child"].(Snapshot)
-					selected, selectErr := tree.selectRun(spawned.ID)
-					err = selectErr
-					callsMu.Lock()
-					child = selected
-					callsMu.Unlock()
-					root.mu.Lock()
-					root.childID = spawned.ID
-					root.mu.Unlock()
-				}
-			}
-			if err != nil {
-				setError(err)
-			}
-			callsMu.Lock()
-			calls[callID] = nativeProbeCall{ticket: ticket, value: value, err: err}
-			callsMu.Unlock()
-			content, failed := resultContent(request.Kind, value, err)
-			kind := "allow"
-			if failed {
-				kind = "deny"
-			}
-			return map[string]any{"kind": kind, "result": content}
-		}
+
 		root.mu.Unlock()
-		defer func() { root.mu.Lock(); root.invoke, root.settle, root.settled = nil, nil, nil; root.mu.Unlock() }()
+		defer func() { root.mu.Lock(); root.afterDecision, root.settled = nil, nil; root.mu.Unlock() }()
 		providerLog := filepath.Join(root.path, "provider.jsonl")
 		beforePolicy := probeCount(providerLog, "event", "request")
 		turn("native policy check")
@@ -977,18 +885,42 @@ func exerciseNativeDescendant(t *testing.T, ctx context.Context, root *nativePro
 			return stale.Load() == 2 && probeCount(filepath.Join(root.path, "events.jsonl"), "event", "native_settled") >= beforeStale+2
 		})
 		turn("case spawn-child")
+		var currentChild *run
+		tree.mu.Lock()
+		for _, candidate := range tree.records {
+			if candidate.parent == parent.owner {
+				currentChild = candidate.run
+			}
+		}
+		tree.mu.Unlock()
+		if currentChild == nil {
+			t.Fatal("embedded descendant was not retained")
+		}
+		root.mu.Lock()
+		root.childID = currentChild.ref.ID
+		root.mu.Unlock()
 		probeWait(t, ctx, "embedded descendant provider request", func() bool {
 			return probeCount(filepath.Join(root.path, "root.jsonl"), "kind", "child-gate") > 0
 		})
-		turn("case wait-child")
-		callsMu.Lock()
-		currentChild, currentErr := child, callbackErr
-		callsMu.Unlock()
+		beforeWait := probeCount(filepath.Join(root.path, "events.jsonl"), "event", "native_settled")
+		beforeCommit := commits.Load()
+		send("case wait-child")
+		probeWait(t, ctx, "native wait acknowledgement", func() bool {
+			o.ackMu.Lock()
+			defer o.ackMu.Unlock()
+			return len(o.outcomeAcks) != 0
+		})
+		root.mu.Lock()
+		root.release = true
+		root.mu.Unlock()
+		probeWait(t, ctx, "native wait settlement", func() bool {
+			return commits.Load() > beforeCommit && probeCount(filepath.Join(root.path, "events.jsonl"), "event", "native_settled") > beforeWait
+		})
+		callbackMu.Lock()
+		currentErr := callbackErr
+		callbackMu.Unlock()
 		if currentErr != nil {
 			t.Fatal(currentErr)
-		}
-		if currentChild == nil {
-			t.Fatal("embedded descendant was not retained")
 		}
 		outcome, err := tree.wait(ctx, currentChild, 1000)
 		if err != nil || outcome.State != Completed || outcome.Text != "CHILD_COMPLETED" {
@@ -1017,9 +949,14 @@ func exerciseNativeDescendant(t *testing.T, ctx context.Context, root *nativePro
 			t.Fatalf("native wait audit count = %d", audits)
 		}
 		turn("case spawn-notice")
-		callsMu.Lock()
-		noticeChild, currentErr := child, callbackErr
-		callsMu.Unlock()
+		var noticeChild *run
+		tree.mu.Lock()
+		for _, candidate := range tree.records {
+			if candidate.parent == parent.owner && candidate.id != currentChild.ref.ID {
+				noticeChild = candidate.run
+			}
+		}
+		tree.mu.Unlock()
 		if currentErr != nil || noticeChild == nil || noticeChild == currentChild {
 			t.Fatalf("automatic completion child = %p, %v", noticeChild, currentErr)
 		}
@@ -1055,9 +992,33 @@ func exerciseNativeDescendant(t *testing.T, ctx context.Context, root *nativePro
 		if notices != 1 {
 			t.Fatalf("native automatic completion count = %d", notices)
 		}
+		commands := map[string]int{}
+		for _, row := range probeRows(filepath.Join(root.path, "events.jsonl")) {
+			if row["event"] == "transport_control" {
+				kind, _ := row["kind"].(string)
+				commands[kind]++
+			}
+		}
+		if commands["snapshot"] == 0 || commands["audit"] != 1 || commands["completion"] != 1 {
+			t.Fatalf("native control commands = %#v", commands)
+		}
+		if probeCount(filepath.Join(root.path, "events.jsonl"), "event", "domain_error") != 0 || probeCount(filepath.Join(root.path, "root.jsonl"), "kind", "litter_spawn") != 0 || probeCount(filepath.Join(root.path, "root.jsonl"), "kind", "litter_wait") != 0 {
+			t.Fatal("native operations did not use the bound production authority routes")
+		}
+		routes := map[string]int{}
+		for _, row := range probeRows(filepath.Join(root.path, "events.jsonl")) {
+			if row["event"] == "domain_call" {
+				route, _ := row["route"].(string)
+				routes[route]++
+			}
+		}
+		if routes["/member/child/spawn"] != 2 || routes["/member/child/wait"] != 1 || routes["/member/result"] != 3 || routes["/member/tool"] < 3 || routes["/member/response"] < 3 || routes["/member/settlement/decide"] == 0 {
+			t.Fatalf("native authority routes = %#v", routes)
+		}
 		if err := os.WriteFile(filepath.Join(root.path, "descendant.json"), []byte(fmt.Sprintf(`{"child":%q,"state":%q,"report":%q,"waitLeaf":%q,"audits":%d,"noticeChild":%q,"notices":%d}`, currentChild.ref.ID, outcome.State, outcome.Text, *currentChild.reservation.handback.After, audits, noticeChild.ref.ID, notices)), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		after(o, binding, ownership)
 	}, func(method string, raw json.RawMessage) json.RawMessage {
 		if method == "getModelRegistryState" {
 			return json.RawMessage(`{"models":[{"provider":"fixture","id":"fixed"}],"providers":{"fixture":{"configured":true}},"registered":[]}`)

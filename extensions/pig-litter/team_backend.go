@@ -53,7 +53,7 @@ const (
 type memberPhase uint8
 
 const (
-	memberStarting memberPhase = iota
+	memberStarting memberPhase = iota + 1
 	memberStreaming
 	memberSettling
 	memberIdle
@@ -83,9 +83,18 @@ type memberControl interface {
 }
 
 type memberLogPin struct {
-	path, cwd string
-	session   ChildID
-	file      os.FileInfo
+	path, cwd     string
+	session       ChildID
+	file          os.FileInfo
+	header        json.RawMessage
+	baselineCount int
+	baselineHash  [32]byte
+	baselineSet   bool
+}
+
+type memberLogSnapshot struct {
+	header  json.RawMessage
+	entries []json.RawMessage
 }
 
 type memberServerIdentity struct {
@@ -121,21 +130,28 @@ type memberOwnership struct {
 }
 
 type memberBinding struct {
-	record     *record
-	run        *run
-	member     MemberRef
-	admission  string
-	execution  string
-	ownerEpoch uint64
-	launch     string
-	log        memberLogPin
-	ownership  *memberOwnership
-	owned      *memberOwnership
-	control    memberControl
-	settleMu   sync.Mutex
-	boundary   uint64
-	evaluating bool
-	settlement *memberSettlement
+	record      *record
+	run         *run
+	member      MemberRef
+	admission   string
+	execution   string
+	ownerEpoch  uint64
+	launch      string
+	log         memberLogPin
+	ownership   *memberOwnership
+	owned       *memberOwnership
+	control     memberControl
+	ready       bool
+	readyMu     sync.Mutex
+	readyHash   [32]byte
+	readyDone   chan struct{}
+	readyErr    error
+	pinMu       sync.Mutex
+	startingLog *memberStartingLog
+	settleMu    sync.Mutex
+	boundary    uint64
+	evaluating  bool
+	settlement  *memberSettlement
 }
 
 const (

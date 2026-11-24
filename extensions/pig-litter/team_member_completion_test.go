@@ -105,7 +105,7 @@ func persistedNativeAttempt(host *runtimeHost, audit bool) bool {
 
 func nativeWaitHandback(t *testing.T, o *owner, binding *memberBinding, child *run, path string) {
 	t.Helper()
-	ticket, err := o.memberCallTicket(binding, "wait-call", "litter_wait", "leaf-before-wait")
+	ticket, err := o.memberCallTicket(binding, o.callScope(binding.run), "wait-call", "litter_wait", "leaf-before-wait")
 	if err != nil {
 		t.Fatal(err)
 	}
