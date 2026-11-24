@@ -1,6 +1,83 @@
 package piglitter
 
-import "github.com/MichaelKinsy/PiG/extensions/sdk"
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+
+	"github.com/MichaelKinsy/PiG/extensions/sdk"
+)
+
+func (o *owner) sendRootPeers(ctx context.Context, store *teamStore, team TeamID) {
+	action, err := o.beginAction(ctx)
+	if err != nil {
+		return
+	}
+	defer action.finish()
+	o.tree.root.deliveryMu.Lock()
+	defer o.tree.root.deliveryMu.Unlock()
+	if action.ctx.Err() != nil || o.current() != nil || ChildID(o.sessionID) != team.Root {
+		return
+	}
+	file, err := o.context.SessionManager().GetSessionFile()
+	if err != nil || file == nil || *file == "" {
+		return
+	}
+	host, err := o.context.HostProcessIdentity()
+	if err != nil {
+		return
+	}
+	attempt := peerLeadAttempt{Host: peerHostIdentity{PID: host.PID, Birth: host.Birth, Scope: host.Scope}, SessionFile: filepath.Clean(*file)}
+	if !validPeerLeadAttempt(attempt) {
+		return
+	}
+	for action.ctx.Err() == nil && o.current() == nil {
+		receipt, content, found, err := store.offerPeerAttempt(teamLeadRef(team), &attempt)
+		if err != nil || !found {
+			return
+		}
+		if action.ctx.Err() != nil || o.current() != nil {
+			return
+		}
+		trigger := false
+		options := sdk.SendMessageOptions{TriggerTurn: &trigger}
+		if o.context.Mode() == "tui" {
+			options.DeliverAs = "nextTurn"
+		}
+		message := sdk.CustomMessage{CustomType: "pig_litter_peer", Content: content, Display: true, Details: map[string]any{"envelope": receipt.Envelope}}
+		if err := o.context.SendCustomMessage(message, options); err != nil {
+			return
+		}
+	}
+}
+
+func (o *owner) observeRootPeers() error {
+	o.teamMu.Lock()
+	store := o.teamStore
+	o.teamMu.Unlock()
+	if store == nil {
+		return nil
+	}
+	if err := o.current(); err != nil {
+		return err
+	}
+	team, _, err := store.Snapshot()
+	if err != nil {
+		return err
+	}
+	if team.Root != ChildID(o.sessionID) {
+		return reject("unavailable", "the root team changed")
+	}
+	file, err := o.context.SessionManager().GetSessionFile()
+	if err != nil || file == nil || *file == "" {
+		return err
+	}
+	if err := store.observePeers(teamLeadRef(team), *file); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
 
 func (s *extensionState) rootContext(ctx sdk.Context, data map[string]any) (_ any, err error) {
 	if ctx.Mode() == "tui" {
@@ -27,6 +104,7 @@ func (s *extensionState) rootContext(ctx sdk.Context, data map[string]any) (_ an
 			}
 			o.watchRoot(signal)
 			o.startRecovery(nil)
+			_ = o.observeRootPeers()
 			return o.reconcileRootContext(messages)
 		}
 		return map[string]any{"messages": completionContext(o, o.tree.root, messages)}, nil

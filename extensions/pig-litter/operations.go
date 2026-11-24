@@ -142,7 +142,11 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if err != nil {
 			return nil, err
 		}
-		if receipt.State == peerAccepted {
+		if receipt.Envelope.Recipient == teamLeadRef(receipt.Envelope.Team) {
+			if receipt.State != peerObserved {
+				o.sendRootPeers(ctx, store, receipt.Envelope.Team)
+			}
+		} else if receipt.State == peerAccepted {
 			o.requestPeerWake(receipt.Envelope.Recipient)
 		}
 		delivery := string(receipt.State)
@@ -169,7 +173,7 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if err != nil {
 			return nil, err
 		}
-		roster := []map[string]any{{"ref": MemberRef{Team: team, ID: team.Root, Generation: 1}, "name": "team-lead", "role": "lead", "state": "running", "cwd": o.cwd}}
+		roster := []map[string]any{{"ref": teamLeadRef(team), "name": "team-lead", "role": "lead", "state": "running", "cwd": o.cwd}}
 		for _, member := range members {
 			roster = append(roster, map[string]any{"ref": member.Ref, "name": member.Name, "role": "teammate", "state": member.State, "cwd": member.Workspace.Cwd, "workspace": member.Workspace})
 		}

@@ -40,8 +40,20 @@ const (
 type peerReceipt struct {
 	Envelope      peerEnvelope      `json:"envelope"`
 	State         peerDeliveryState `json:"state"`
+	Attempt       *peerLeadAttempt  `json:"attempt,omitempty"`
 	NativeEntryID string            `json:"nativeEntryId,omitempty"`
 	SessionID     ChildID           `json:"sessionId,omitempty"`
+}
+
+type peerHostIdentity struct {
+	PID   int    `json:"pid"`
+	Birth string `json:"birth"`
+	Scope string `json:"scope"`
+}
+
+type peerLeadAttempt struct {
+	Host        peerHostIdentity `json:"host"`
+	SessionFile string           `json:"sessionFile"`
 }
 
 type peerAuthorization struct {
@@ -69,8 +81,10 @@ func parsePeerRequest(raw json.RawMessage) (peerRequest, error) {
 	if err := decoder.Decode(&request); err != nil {
 		return request, reject("rejected", "invalid team message arguments")
 	}
-	if err := validateTeamName(request.Recipient); err != nil {
-		return request, err
+	if !strings.EqualFold(request.Recipient, "team-lead") {
+		if err := validateTeamName(request.Recipient); err != nil {
+			return request, err
+		}
 	}
 	if !peerMessageIDPattern.MatchString(request.MessageID) || !utf8.ValidString(request.Text) || !utf8.ValidString(request.Summary) || strings.TrimSpace(request.Text) == "" || strings.TrimSpace(request.Summary) == "" || len(request.Text) > 16384 || len(request.Summary) > 256 {
 		return request, reject("rejected", "invalid team message content or ID")

@@ -57,6 +57,173 @@ func TestPeerRequestRejectsForgedIdentityAndProtocolFrames(t *testing.T) {
 	}
 }
 
+func TestPeerMessageAddressesPublishedTeamLead(t *testing.T) {
+	t.Run("request", func(t *testing.T) {
+		for _, name := range []string{"team-lead", "TEAM-LEAD"} {
+			raw, _ := json.Marshal(peerRequest{Recipient: name, MessageID: "lead-1", Text: "hello lead", Summary: "greeting"})
+			request, err := parsePeerRequest(raw)
+			if err != nil || request.Recipient != name {
+				t.Fatalf("lead address = %#v, %v", request, err)
+			}
+		}
+	})
+	t.Run("durable receipt", func(t *testing.T) {
+		store, _, root, workspace := storeTestOpen(t)
+		sender, _ := peerTestMembers(t, store, workspace)
+		request := peerRequest{Recipient: "team-lead", MessageID: "lead-1", Text: "hello lead", Summary: "greeting"}
+		if _, err := store.Reserve(storeTestUUID(50), string(storeTestUUID(51)), "team-lead", workspace); err == nil {
+			t.Fatal("allocated the reserved lead name to a teammate")
+		}
+		receipt, name, err := store.acceptPeer(sender.Ref, request)
+		lead := MemberRef{Team: TeamID{Root: root, Epoch: 1}, ID: root, Generation: 1}
+		if err != nil || name != "alice" || receipt.State != peerAccepted || receipt.Envelope.Sender != sender.Ref || receipt.Envelope.Recipient != lead {
+			t.Fatalf("lead receipt = %#v, sender %q, %v", receipt, name, err)
+		}
+		key, err := peerKey(receipt.Envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, receiptPath := peerPaths(store.dir, key)
+		if persisted, err := readPeerReceipt(receiptPath); err != nil || persisted != receipt {
+			t.Fatalf("persisted lead receipt = %#v, %v", persisted, err)
+		}
+		if again, _, err := store.acceptPeer(sender.Ref, request); err != nil || again != receipt {
+			t.Fatalf("lead retry = %#v, %v", again, err)
+		}
+	})
+}
+
+func TestPeerLeadReceiptRequiresCurrentIdentityAndAuthenticatedRetry(t *testing.T) {
+	store, dir, root, workspace := storeTestOpen(t)
+	sender, _ := peerTestMembers(t, store, workspace)
+	request := peerRequest{Recipient: "TEAM-LEAD", MessageID: "lead-retry", Text: "hello lead", Summary: "greeting"}
+	accepted, _, err := store.acceptPeer(sender.Ref, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lead := MemberRef{Team: TeamID{Root: root, Epoch: 1}, ID: root, Generation: 1}
+	if accepted.Envelope.Recipient != lead {
+		t.Fatalf("lead identity = %#v", accepted.Envelope.Recipient)
+	}
+	if _, _, err := store.acceptPeer(lead, request); err == nil {
+		t.Fatal("accepted the virtual lead as a teammate sender")
+	}
+	for _, stale := range []MemberRef{
+		{Team: sender.Ref.Team, ID: sender.Ref.ID, Generation: sender.Ref.Generation + 1},
+		{Team: TeamID{Root: root, Epoch: 2}, ID: sender.Ref.ID, Generation: sender.Ref.Generation},
+	} {
+		if _, _, err := store.acceptPeer(stale, request); err == nil {
+			t.Fatalf("accepted stale sender %#v", stale)
+		}
+	}
+	for _, stale := range []MemberRef{
+		{Team: lead.Team, ID: lead.ID, Generation: 2},
+		{Team: TeamID{Root: root, Epoch: 2}, ID: root, Generation: 1},
+		{Team: lead.Team, ID: storeTestUUID(99), Generation: 1},
+	} {
+		if _, _, found, err := store.offerPeer(stale); err == nil || found {
+			t.Fatalf("offered to stale lead %#v: found=%v, %v", stale, found, err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openTeamStore(dir, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, _, err := store.acceptPeer(sender.Ref, request); err == nil {
+		t.Fatal("retired owner accepted a lead message")
+	}
+	if _, _, found, err := store.offerPeer(lead); err == nil || found {
+		t.Fatalf("retired owner offered a lead message: found=%v, %v", found, err)
+	}
+	if _, _, found, err := reopened.offerPeer(lead); err != nil || found {
+		t.Fatalf("offered without authenticated retry: found=%v, %v", found, err)
+	}
+	if again, _, err := reopened.acceptPeer(sender.Ref, request); err != nil || again != accepted {
+		t.Fatalf("authenticated lead retry = %#v, %v", again, err)
+	}
+	offered, content, found, err := reopened.offerPeer(lead)
+	if err != nil || !found || offered.State != peerAttempted || offered.Envelope != accepted.Envelope {
+		t.Fatalf("lead offer = %#v, found=%v, %v", offered, found, err)
+	}
+	var message struct {
+		Sender            MemberRef `json:"sender"`
+		SenderName        string    `json:"senderName"`
+		Provenance        string    `json:"provenance"`
+		VerificationScope string    `json:"verificationScope"`
+		Body              peerBody  `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(content), &message); err != nil || message.Sender != sender.Ref || message.SenderName != "alice" || message.Provenance != "verified" || message.VerificationScope != "current_owner_runtime" || message.Body != (peerBody{Text: "hello lead", Summary: "greeting"}) {
+		t.Fatalf("lead message = %#v, %v", message, err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := openTeamStore(dir, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resumed.Close() })
+	if again, _, err := resumed.acceptPeer(sender.Ref, request); err != nil || again != offered {
+		t.Fatalf("attempted lead retry = %#v, %v", again, err)
+	}
+	if _, _, found, err := resumed.offerPeer(lead); err != nil || found {
+		t.Fatalf("reoffered attempted lead receipt: found=%v, %v", found, err)
+	}
+	manager := nativeTestManager(t, t.TempDir(), string(root))
+	entryID, err := manager.AppendCustomMessageEntry("pig_litter_peer", content, true, map[string]any{"envelope": offered.Envelope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resumed.observePeers(lead, *manager.GetSessionFile()); err != nil {
+		t.Fatal(err)
+	}
+	key, _ := peerKey(accepted.Envelope)
+	_, receiptPath := peerPaths(resumed.dir, key)
+	observed, err := readPeerReceipt(receiptPath)
+	if err != nil || observed.State != peerObserved || observed.SessionID != root || observed.NativeEntryID != entryID {
+		t.Fatalf("observed lead receipt = %#v, %v", observed, err)
+	}
+	if _, _, found, err := resumed.offerPeer(lead); err != nil || found {
+		t.Fatalf("offered observed message again: found=%v, %v", found, err)
+	}
+}
+
+func TestPeerLeadInboxUsesIndependentCapacityAndPreservesRetries(t *testing.T) {
+	store, _, _, workspace := storeTestOpen(t)
+	sender, _ := peerTestMembers(t, store, workspace)
+	request := peerRequest{Recipient: "team-lead", Text: "hello lead", Summary: "greeting"}
+	for i := range 32 {
+		request.MessageID = fmt.Sprintf("lead-capacity-%d", i)
+		if _, _, err := store.acceptPeer(sender.Ref, request); err != nil {
+			t.Fatalf("accept lead message %d: %v", i, err)
+		}
+	}
+	request.MessageID = "lead-overflow"
+	if _, _, err := store.acceptPeer(sender.Ref, request); err == nil {
+		t.Fatal("accepted a message into the full lead inbox")
+	} else if failure, ok := err.(*treeError); !ok || failure.code != "capacity" {
+		t.Fatalf("lead overflow = %v", err)
+	}
+	request.MessageID = "lead-capacity-0"
+	if receipt, _, err := store.acceptPeer(sender.Ref, request); err != nil || receipt.State != peerAccepted {
+		t.Fatalf("lead retry after capacity = %#v, %v", receipt, err)
+	}
+	request.Text = "changed"
+	if _, _, err := store.acceptPeer(sender.Ref, request); err == nil {
+		t.Fatal("accepted changed text for the same lead message")
+	} else if failure, ok := err.(*treeError); !ok || failure.code != "id_conflict" {
+		t.Fatalf("lead conflict = %v", err)
+	}
+	request.Recipient, request.MessageID, request.Text = "bob", "sibling-1", "hello sibling"
+	if receipt, _, err := store.acceptPeer(sender.Ref, request); err != nil || receipt.State != peerAccepted {
+		t.Fatalf("lead inbox blocked sibling delivery = %#v, %v", receipt, err)
+	}
+}
+
 func TestPeerAcceptancePersistsAndRejectsConflictingIdentity(t *testing.T) {
 	store, _, root, workspace := storeTestOpen(t)
 	sender, recipient := peerTestMembers(t, store, workspace)

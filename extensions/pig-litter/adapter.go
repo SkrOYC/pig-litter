@@ -925,10 +925,11 @@ func newExtension(state *extensionState) *sdk.Extension {
 			state.calls = newCallScope()
 			o.rootCalls = state.calls
 			state.mu.Unlock()
+			peerErr := o.observeRootPeers()
 			o.confirmCompletions(o.tree.root)
 			o.tree.root.markAgentEnded(false)
 			o.retireScope(previous)
-			return nil, nil
+			return nil, peerErr
 		})
 	})
 	ext.OnEvent("turn_end", func(ctx sdk.Context, _ map[string]any) (any, error) {
@@ -970,11 +971,12 @@ func newExtension(state *extensionState) *sdk.Extension {
 	})
 	ext.OnEvent("agent_settled", func(ctx sdk.Context, _ map[string]any) (any, error) {
 		return state.observe(ctx, func(o *owner) (any, error) {
+			peerErr := o.observeRootPeers()
 			o.tree.root.markAgentEnded(false)
 			o.settleRoot()
 			o.retireScope(o.callScope(nil))
 			o.retireReceipts(o.tree.root)
-			return nil, nil
+			return nil, peerErr
 		})
 	})
 	ext.OnSessionStart(func(ctx sdk.Context, _ map[string]any) (any, error) {

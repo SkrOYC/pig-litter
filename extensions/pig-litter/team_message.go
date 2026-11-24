@@ -17,6 +17,14 @@ import (
 
 const peerInboxLimit = 32
 
+func teamLeadRef(team TeamID) MemberRef {
+	return MemberRef{Team: team, ID: team.Root, Generation: 1}
+}
+
+func validPeerLeadAttempt(attempt peerLeadAttempt) bool {
+	return attempt.Host.PID > 0 && attempt.Host.Birth != "" && len(attempt.Host.Birth) <= 128 && attempt.Host.Scope != "" && len(attempt.Host.Scope) <= 256 && filepath.IsAbs(attempt.SessionFile) && filepath.Clean(attempt.SessionFile) == attempt.SessionFile
+}
+
 func peerKey(envelope peerEnvelope) (string, error) {
 	data, err := json.Marshal(struct {
 		Team      TeamID    `json:"team"`
@@ -89,6 +97,9 @@ func readPeerReceipt(path string) (peerReceipt, error) {
 	if hash, err := hex.DecodeString(envelope.BodySHA256); err != nil || len(hash) != sha256.Size || hex.EncodeToString(hash) != envelope.BodySHA256 {
 		return receipt, errors.New("invalid peer body digest")
 	}
+	if attempt := receipt.Attempt; attempt != nil && (envelope.Recipient != teamLeadRef(envelope.Team) || receipt.State == peerAccepted || !validPeerLeadAttempt(*attempt)) {
+		return receipt, errors.New("invalid lead delivery attempt")
+	}
 	if receipt.State == peerObserved {
 		if receipt.SessionID != envelope.Recipient.ID || receipt.NativeEntryID == "" {
 			return receipt, errors.New("invalid peer native observation")
@@ -137,16 +148,19 @@ func (s *teamStore) acceptPeer(sender MemberRef, request peerRequest) (peerRecei
 			return false, reject("permission_denied", "sender is not in the current team")
 		}
 		var senderFound, recipientFound bool
-		var recipient teamMember
+		var recipient MemberRef
+		if strings.EqualFold(request.Recipient, "team-lead") {
+			recipientFound, recipient = true, teamLeadRef(roster.Team)
+		}
 		for _, member := range roster.Members {
 			if member.Ref == sender {
 				senderFound, senderName = true, member.Name
 			}
 			if strings.EqualFold(member.Name, request.Recipient) {
-				recipientFound, recipient = true, member
+				recipientFound, recipient = true, member.Ref
 			}
 		}
-		if !senderFound || !recipientFound || recipient.Ref.Team != sender.Team || recipient.Ref == sender {
+		if !senderFound || !recipientFound || recipient.Team != sender.Team || recipient == sender {
 			return false, reject("permission_denied", "sender or recipient is not an eligible teammate")
 		}
 		body, err := json.Marshal(peerBody{Text: request.Text, Summary: request.Summary})
@@ -154,7 +168,7 @@ func (s *teamStore) acceptPeer(sender MemberRef, request peerRequest) (peerRecei
 			return false, err
 		}
 		bodyHash := sha256.Sum256(body)
-		envelope := peerEnvelope{Team: roster.Team, MessageID: request.MessageID, Sender: sender, Recipient: recipient.Ref, BodySHA256: hex.EncodeToString(bodyHash[:])}
+		envelope := peerEnvelope{Team: roster.Team, MessageID: request.MessageID, Sender: sender, Recipient: recipient, BodySHA256: hex.EncodeToString(bodyHash[:])}
 		key, err := peerKey(envelope)
 		if err != nil {
 			return false, err
@@ -202,7 +216,7 @@ func (s *teamStore) acceptPeer(sender MemberRef, request peerRequest) (peerRecei
 				return false, errors.New("peer receipt filename differs from its identity")
 			}
 			receipts[receiptKey] = true
-			if receipt.Envelope.Recipient == recipient.Ref && receipt.State != peerObserved {
+			if receipt.Envelope.Recipient == recipient && receipt.State != peerObserved {
 				count++
 			}
 		}
@@ -251,6 +265,10 @@ func (s *teamStore) acceptPeer(sender MemberRef, request peerRequest) (peerRecei
 }
 
 func (s *teamStore) offerPeer(recipient MemberRef) (peerReceipt, string, bool, error) {
+	return s.offerPeerAttempt(recipient, nil)
+}
+
+func (s *teamStore) offerPeerAttempt(recipient MemberRef, attempt *peerLeadAttempt) (peerReceipt, string, bool, error) {
 	var offered peerReceipt
 	var content string
 	found := false
@@ -258,11 +276,14 @@ func (s *teamStore) offerPeer(recipient MemberRef) (peerReceipt, string, bool, e
 		if roster.Team != recipient.Team {
 			return false, reject("unavailable", "team identity changed")
 		}
+		if attempt != nil && (recipient != teamLeadRef(roster.Team) || !validPeerLeadAttempt(*attempt)) {
+			return false, reject("unavailable", "lead delivery identity is invalid")
+		}
 		members := make(map[MemberRef]string, len(roster.Members))
 		for _, member := range roster.Members {
 			members[member.Ref] = member.Name
 		}
-		if _, ok := members[recipient]; !ok {
+		if _, ok := members[recipient]; !ok && recipient != teamLeadRef(roster.Team) {
 			return false, reject("permission_denied", "recipient is not a committed teammate")
 		}
 		entries, err := os.ReadDir(s.dir)
@@ -278,7 +299,10 @@ func (s *teamStore) offerPeer(recipient MemberRef) (peerReceipt, string, bool, e
 			if err != nil {
 				return false, err
 			}
-			if receipt.State != peerAccepted || receipt.Envelope.Recipient != recipient {
+			if receipt.Envelope.Recipient != recipient {
+				continue
+			}
+			if receipt.State != peerAccepted && (attempt == nil || receipt.Attempt == nil || receipt.State != peerAttempted && receipt.State != peerAmbiguous) {
 				continue
 			}
 			senderName, ok := members[receipt.Envelope.Sender]
@@ -311,7 +335,40 @@ func (s *teamStore) offerPeer(recipient MemberRef) (peerReceipt, string, bool, e
 			if err != nil {
 				return false, err
 			}
+			if receipt.State == peerAccepted && attempt != nil {
+				id, err := nativePeerEntry(attempt.SessionFile, receipt.Envelope, content)
+				if err != nil {
+					return false, err
+				}
+				if id != "" {
+					return false, errors.New("native peer entry predates its delivery attempt")
+				}
+			}
+			if receipt.State != peerAccepted {
+				if receipt.Attempt.SessionFile != attempt.SessionFile {
+					continue
+				}
+				id, err := nativePeerEntry(attempt.SessionFile, receipt.Envelope, content)
+				if err != nil {
+					return false, err
+				}
+				if id != "" {
+					receipt.State, receipt.SessionID, receipt.NativeEntryID = peerObserved, recipient.ID, id
+					data, err = json.Marshal(receipt)
+					if err != nil {
+						return false, err
+					}
+					if err := publishPeerFile(path, data, true); err != nil {
+						return false, err
+					}
+					continue
+				}
+				if !peerHostGone(receipt.Attempt.Host, attempt.Host) {
+					continue
+				}
+			}
 			receipt.State = peerAttempted
+			receipt.Attempt = attempt
 			data, err = json.Marshal(receipt)
 			if err != nil {
 				return false, err
@@ -443,7 +500,7 @@ func (s *teamStore) observePeers(recipient MemberRef, sessionFile string) error 
 		for _, member := range roster.Members {
 			members[member.Ref] = member.Name
 		}
-		if _, ok := members[recipient]; !ok {
+		if _, ok := members[recipient]; !ok && recipient != teamLeadRef(roster.Team) {
 			return false, reject("permission_denied", "recipient is not a committed teammate")
 		}
 		entries, err := os.ReadDir(s.dir)
