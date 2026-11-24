@@ -44,6 +44,7 @@ type memberLifecycle struct {
 	Active    *ShutdownRequestID `json:"active,omitempty"`
 	Requests  []shutdownRequest  `json:"requests"`
 	Notices   []controlNotice    `json:"notices"`
+	Turns     []turnNotice       `json:"turns,omitempty"`
 }
 
 const shutdownRequestLimit = 24
@@ -120,6 +121,9 @@ func validateMemberLifecycle(lifecycle memberLifecycle, ref MemberRef) error {
 		if !notices[request.ID.Nonce+"-shutdown_request"] {
 			return errors.New("shutdown request has no retained notice")
 		}
+	}
+	if err := validateTurnNotices(lifecycle.Turns, ref); err != nil {
+		return err
 	}
 	return nil
 }

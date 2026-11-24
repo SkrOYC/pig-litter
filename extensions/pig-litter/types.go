@@ -124,6 +124,7 @@ const (
 type runProgress struct {
 	activated, settled time.Time
 	toolStarts         uint64
+	turns              int
 	activeTools        map[string]string
 	toolsClipped       bool
 }
@@ -179,6 +180,7 @@ type run struct {
 	planDenials     map[planDenial]bool
 	batchCalls      map[string]string
 	shutdown        *shutdownFence
+	idleRefusal     string
 }
 
 type Inspection struct {

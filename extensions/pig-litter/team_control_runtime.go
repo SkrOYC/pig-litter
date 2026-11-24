@@ -191,6 +191,7 @@ func (o *owner) observeControlNotices(ref MemberRef, recipient string) {
 }
 
 func (o *owner) observeLeadControls() {
+	o.observeTurnNotices()
 	o.controlMu.Lock()
 	var notices []controlNotice
 	for _, notice := range o.controlAuth {

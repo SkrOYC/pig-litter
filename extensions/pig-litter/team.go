@@ -331,6 +331,15 @@ func (o *owner) finishTeamMember(r *record, selected *run, outcome Outcome) erro
 		_ = o.rollbackTeamMember(r.team)
 		return err
 	}
+	if !closing || paused {
+		notice, created, err := store.recordTurnNotice(r.team.Ref, selected.noticeID, outcome)
+		if err != nil {
+			return err
+		}
+		if created {
+			o.routeTurnNotice(notice)
+		}
+	}
 	return nil
 }
 

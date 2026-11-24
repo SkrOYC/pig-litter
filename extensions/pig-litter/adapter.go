@@ -43,6 +43,7 @@ type owner struct {
 	sessionID, cwd, agentDir string
 	context                  sdk.Context
 	config                   Config
+	policy                   teamPolicy
 	services                 *coding.AgentSessionServices
 	tree                     *Tree
 	rootCalls                *callScope
@@ -69,6 +70,7 @@ type owner struct {
 	teamStore                *teamStore
 	controlMu                sync.Mutex
 	controlAuth              map[string]controlNotice
+	turnAuth                 map[string]turnNotice
 	widgetMu                 sync.Mutex
 	widgetStopped            bool
 	widgetUnsubscribe        func()
@@ -184,6 +186,10 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 		return nil, err
 	}
 	agentDir := configuredAgentDir()
+	policy, err := loadTeamPolicy(agentDir)
+	if err != nil {
+		return nil, err
+	}
 	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: cwd, AgentDir: agentDir, ProjectTrusted: &trusted})
 	if err != nil {
 		return nil, err
@@ -191,7 +197,7 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 	tree := newTree(config)
 	tree.root.id = ChildID(id)
 	tree.root.paused = !recover
-	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
+	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, policy: policy, services: services, tree: tree, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 	tree.execute, tree.completion, tree.changed = o.executeRun, o.sendCompletion, o.widget
 	tree.teamFinished, tree.teamCanceled, tree.teamPaused = o.finishTeamMember, o.cancelTeamMember, o.pauseTeamMember
 	tree.teamResuming = o.resumeTeamMember
@@ -711,12 +717,14 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			o.retireScope(previous)
 			observedMu.Lock()
 			turns++
+			currentTurns := turns
 			warn := turns == o.config.MaxTurns
 			if warn {
 				limitHit = true
 			}
 			observedMu.Unlock()
 			o.tree.mu.Lock()
+			run.progress.turns = currentTurns
 			if run.state == Starting {
 				run.state = Running
 			}
@@ -836,6 +844,14 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	}
 	outcome = outcomeFrom(terminal, baseline, session.GetSessionStats(), failure, run.ctx.Err() != nil, limitHit)
 	observedMu.Unlock()
+	o.tree.mu.Lock()
+	if run.idleRefusal != "" && outcome.State != Stopped {
+		if outcome.State == Completed {
+			outcome.State = Partial
+		}
+		outcome.Error = strings.TrimSpace(outcome.Error + " teammate idle policy refused settlement: " + run.idleRefusal)
+	}
+	o.tree.mu.Unlock()
 	return outcome
 }
 

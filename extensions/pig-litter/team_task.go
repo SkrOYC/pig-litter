@@ -25,7 +25,8 @@ type teamTask struct {
 
 type teamTaskView struct {
 	teamTask
-	Blocked bool `json:"blocked"`
+	Blocked  bool   `json:"blocked"`
+	Feedback string `json:"feedback,omitempty"`
 }
 
 type teamTaskEdit struct {
@@ -93,41 +94,88 @@ func (g *teamTaskGraph) find(id TaskID) int {
 	return -1
 }
 
-func (o *owner) applyTaskCompletion(authority controlAuthority, id TaskID) (teamTaskView, string, error) {
-	if !childUUID.MatchString(string(id.Team.Root)) || id.Team.Epoch == 0 || id.Number == 0 {
-		return teamTaskView{}, "", reject("rejected", "invalid task identity")
-	}
-	o.tree.lifecycleMu.Lock()
-	defer o.tree.lifecycleMu.Unlock()
+func (o *owner) completionActor(authority controlAuthority) (*MemberRef, error) {
 	if err := o.current(); err != nil {
-		return teamTaskView{}, "", err
+		return nil, err
 	}
 	o.tree.mu.Lock()
+	defer o.tree.mu.Unlock()
 	var actor *MemberRef
 	if authority.human != nil {
 		if err := authority.human(); err != nil {
-			o.tree.mu.Unlock()
-			return teamTaskView{}, "", err
+			return nil, err
 		}
 	} else {
 		parent, err := o.tree.callerLocked(authority.caller)
 		if err != nil {
-			o.tree.mu.Unlock()
-			return teamTaskView{}, "", err
+			return nil, err
 		}
 		if authority.caller != nil {
 			if parent.team == nil {
-				o.tree.mu.Unlock()
-				return teamTaskView{}, "", reject("permission_denied", "team membership is required")
+				return nil, reject("permission_denied", "team membership is required")
 			}
 			ref := parent.team.Ref
 			actor = &ref
 		}
 	}
-	o.tree.mu.Unlock()
+	return actor, nil
+}
+
+func (o *owner) applyTaskCompletion(authority controlAuthority, id TaskID) (teamTaskView, string, error) {
+	if !childUUID.MatchString(string(id.Team.Root)) || id.Team.Epoch == 0 || id.Number == 0 {
+		return teamTaskView{}, "", reject("rejected", "invalid task identity")
+	}
+	o.tree.lifecycleMu.Lock()
+	actor, err := o.completionActor(authority)
+	if err != nil {
+		o.tree.lifecycleMu.Unlock()
+		return teamTaskView{}, "", err
+	}
 	store, err := o.teamStoreForRoot()
+	if err != nil {
+		o.tree.lifecycleMu.Unlock()
+		return teamTaskView{}, "", err
+	}
+	if len(o.policy.TaskCompletion) == 0 {
+		result, state, err := store.completeTask(id, actor, nil)
+		o.tree.lifecycleMu.Unlock()
+		return result, state, err
+	}
+	task, state, revision, err := store.taskCompletionCandidate(id, actor)
+	o.tree.lifecycleMu.Unlock()
+	if err != nil || state != "ready" {
+		return task, state, err
+	}
+	ctx := o.tree.ctx
+	if authority.caller != nil {
+		ctx = authority.caller.ctx
+	}
+	input := struct {
+		Kind     string       `json:"kind"`
+		Actor    *MemberRef   `json:"actor"`
+		Task     teamTaskView `json:"task"`
+		Revision uint64       `json:"revision"`
+	}{Kind: "task_completion", Actor: actor, Task: task, Revision: revision}
+	permit, feedback := runTeamPolicy(ctx, o.policy.TaskCompletion, input)
+	o.tree.lifecycleMu.Lock()
+	defer o.tree.lifecycleMu.Unlock()
+	current, err := o.completionActor(authority)
 	if err != nil {
 		return teamTaskView{}, "", err
 	}
-	return store.completeTask(id, actor)
+	if (actor == nil) != (current == nil) || actor != nil && *actor != *current {
+		return teamTaskView{}, "", reject("unavailable", "task actor changed while the completion policy ran")
+	}
+	if !permit {
+		currentTask, currentState, currentRevision, err := store.taskCompletionCandidate(id, current)
+		if err != nil {
+			return currentTask, currentState, err
+		}
+		if currentRevision != revision || currentState != "ready" {
+			return currentTask, currentState, reject("unavailable", "task state changed while the completion policy ran")
+		}
+		currentTask.Feedback = feedback
+		return currentTask, "policy_refused", nil
+	}
+	return store.completeTask(id, current, &revision)
 }
