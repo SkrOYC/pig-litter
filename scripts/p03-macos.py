@@ -265,6 +265,45 @@ class Fixture:
             return "P03_POLICY_DONE"
         raise RuntimeError("Unexpected policy lead turn")
 
+    def iterm_turn(self, request, tool_results, prompt):
+        model = request["model"]
+        if model == "team_alpha":
+            if not tool_results:
+                matches = [process for process in process_snapshot().values() if f"{self.extension} --pig-litter-member " in process["command"]]
+                require(len(matches) == 1, "Native helper process is missing or ambiguous")
+                member = matches[0]
+                member["executable"] = executable(member["pid"])
+                require(member["executable"] == os.path.realpath(self.extension), "Native helper executable changed")
+                tty = "/dev/" + member["tty"]
+                window, session = applescript(PANE_BY_TTY, tty).splitlines()
+                require(window == self.lead["id"] and session != self.lead["session"] and tty != self.lead["tty"], "Native member is not in a distinct pane of the lead window")
+                member.update({"window": window, "session": session, "terminal": tty})
+                self.observations["native_member"] = member
+                probe = probe_identity(Path(os.environ["RUNNER_TEMP"]) / "collaboration-platform-probe" / "result.json")
+                require(probe and applescript(SESSION, *probe, "exists") == "present", "Unrelated probe window changed")
+                return call("bash", command='test "$OPENAI_API_KEY" = "fixture-only-key" && test "$P08_ALLOWED_CHECK" = "fixture-allowed-value" && printf P08_ITERM_SIDE_EFFECT > p08-iterm.txt')
+            require((self.workspace / "p08-iterm.txt").read_text() == "P08_ITERM_SIDE_EFFECT", "Native member side effect is missing")
+            return "P08_ITERM_MEMBER_DONE"
+        require(model == "parent", "Unexpected iTerm lead model")
+        if self.stage == 0:
+            require(prompt == "P08_ITERM", "Unexpected iTerm prompt")
+            self.stage = 1
+            return call("team_spawn", type="worker", name="alpha", task="Write the iTerm fixture file and report completion", model="fixture/team_alpha", workspace={"kind": "shared_checkout"}, backend="iterm2")
+        if self.stage == 1:
+            admission = tool_results[-1]
+            ref = admission.get("member", {})
+            require(admission.get("operation") == "team_spawn" and admission.get("state") == "starting" and ref.get("id"), f"iTerm admission failed: {admission}")
+            self.refs["alpha"] = ref
+            self.stage = 2
+            return call("litter_wait", id=ref["id"], timeoutMs=90000)
+        if self.stage == 2:
+            result = tool_results[-1]
+            require(result.get("operation") == "litter_wait" and result.get("state") == "completed" and (result.get("outcome") or {}).get("text") == "P08_ITERM_MEMBER_DONE", f"iTerm completion failed: {result}")
+            self.observations["native_outcome"] = result
+            self.stage = 3
+            return "P08_ITERM_DONE"
+        raise RuntimeError("Unexpected iTerm lead turn")
+
     def decide(self, request):
         with self.changed:
             self.requests += 1
@@ -281,6 +320,8 @@ class Fixture:
                 self.stage = 1
                 return "P03_UNSELECTED_DONE"
             tool_results = results(messages)
+            if self.scenario == "iterm":
+                return self.iterm_turn(request, tool_results, prompt)
             if self.scenario == "team":
                 return self.team_turn(request, tool_results, prompt)
             return self.policy_turn(request, tool_results)
@@ -323,7 +364,12 @@ def start_provider(fixture):
                     fixture.errors.append(str(error))
                     fixture.changed.notify_all()
                 try:
-                    self.send_error(500, str(error))
+                    body = json.dumps({"error": str(error)}, ensure_ascii=False).encode("utf-8")
+                    self.send_response(500, "Fixture error")
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
                 except OSError:
                     pass
 
@@ -357,34 +403,119 @@ on run argv
   tell application "iTerm"
     repeat with candidateWindow in windows
       if (id of candidateWindow as text) is wantedWindow then
-        set candidateSession to current session of candidateWindow
-        if candidateSession is missing value then
-          if actionName is "close" then return "session missing"
-          error "Owned window has no current session."
-        end if
-        if (unique id of candidateSession) is not wantedSession then error "Owned window session changed."
-        if actionName is "exists" then return "present"
-        if actionName is "text" then return text of candidateSession
-        if actionName is "send" then
-          tell candidateSession to write text (item 4 of argv)
-          return "sent"
-        end if
-        if actionName is "exit" then
-          set controlD to ASCII character 4
-          tell candidateSession to write text controlD newline NO
-          return "sent exit key"
-        end if
-        if actionName is "close" then
-          tell candidateWindow to close
-          return "closed"
-        end if
-        error "Unknown action."
+        repeat with candidateTab in tabs of candidateWindow
+          repeat with candidateSession in sessions of candidateTab
+            if (unique id of candidateSession) is wantedSession then
+              if actionName is "exists" then return "present"
+              if actionName is "text" then return text of candidateSession
+              if actionName is "send" then
+                tell candidateSession to write text (item 4 of argv)
+                return "sent"
+              end if
+              if actionName is "exit" then
+                set controlD to ASCII character 4
+                tell candidateSession to write text controlD newline NO
+                return "sent exit key"
+              end if
+              if actionName is "interrupt" then
+                set controlC to ASCII character 3
+                tell candidateSession to write text controlC newline NO
+                return "sent interrupt key"
+              end if
+              if actionName is "close" then
+                tell candidateWindow to close
+                return "closed"
+              end if
+              error "Unknown action."
+            end if
+          end repeat
+        end repeat
+        if actionName is "close" then return "session missing"
+        if actionName is "exists" then return "missing"
+        error "Owned window session changed."
       end if
     end repeat
   end tell
   if actionName is "close" then return "already closed"
   if actionName is "exists" then return "missing"
   error "Owned window is missing."
+end run
+'''
+
+
+SIBLING = r'''
+on run argv
+  set wantedWindow to item 1 of argv
+  set wantedSession to item 2 of argv
+  set actionName to item 3 of argv
+  tell application "iTerm"
+    repeat with candidateWindow in windows
+      if (id of candidateWindow as text) is wantedWindow then
+        repeat with candidateTab in tabs of candidateWindow
+          repeat with candidateSession in sessions of candidateTab
+            if (unique id of candidateSession as text) is wantedSession then
+              if actionName is "create" then
+                tell candidateSession to set other to (split vertically with same profile command "/bin/sleep 600")
+                return (unique id of other as text) & linefeed & (tty of other as text)
+              end if
+              if actionName is "close" and (tty of candidateSession as text) is (item 4 of argv) then
+                tell candidateSession to close
+                return "closed"
+              end if
+            end if
+          end repeat
+        end repeat
+      end if
+    end repeat
+  end tell
+  error "Fixture sibling session is unavailable or changed"
+end run
+'''
+
+
+WINDOW_SESSIONS = r'''
+on run argv
+  set wantedWindow to item 1 of argv
+  set output to ""
+  tell application "iTerm"
+    repeat with w in windows
+      if (id of w as text) is wantedWindow then
+        repeat with t in tabs of w
+          repeat with s in sessions of t
+            set output to output & (unique id of s as text) & "|" & (tty of s as text) & linefeed
+          end repeat
+        end repeat
+        return output
+      end if
+    end repeat
+  end tell
+  error "Fixture window is missing"
+end run
+'''
+
+
+def window_sessions(window):
+    sessions = set()
+    for line in applescript(WINDOW_SESSIONS, window).splitlines():
+        parts = line.split("|")
+        require(len(parts) == 2 and re.fullmatch(r"[0-9A-Fa-f-]{36}", parts[0]) and re.fullmatch(r"/dev/ttys\d+", parts[1]), "Fixture window returned an invalid session")
+        sessions.add(tuple(parts))
+    return sessions
+
+
+PANE_BY_TTY = r'''
+on run argv
+  set wantedTTY to item 1 of argv
+  tell application "iTerm"
+    repeat with candidateWindow in windows
+      repeat with candidateTab in tabs of candidateWindow
+        repeat with candidateSession in sessions of candidateTab
+          if (tty of candidateSession as text) is wantedTTY then return (id of candidateWindow as text) & linefeed & (unique id of candidateSession as text)
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  return "missing"
 end run
 '''
 
@@ -456,6 +587,15 @@ def same_process(identity):
         raise
     require(current_executable == identity["executable"], f"Executable changed for owned process {identity['pid']}")
     return True
+
+
+def release_fixture_sibling(terminal, identity, tty):
+    if same_process(identity):
+        try:
+            os.kill(identity["pid"], signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    terminal.wait(lambda: not same_process(identity) and applescript(PANE_BY_TTY, tty) == "missing", "fixture sibling process and pane cleanup", 30)
 
 
 def iterm_owner():
@@ -556,13 +696,27 @@ class Terminal:
             "TMPDIR": str(self.root / "tmp"), "GOTMPDIR": str(self.root / "tmp"), "XDG_CACHE_HOME": str(self.root / "cache"), "XDG_RUNTIME_DIR": str(self.root / "tmp"),
             "PIG_HOME": str(self.pig_home), "PIG_CODING_AGENT_DIR": str(self.agent), "PIG_USE_PI_DIRS": "0", "PIG_OFFLINE": "1", "PI_OFFLINE": "1", "PI_TELEMETRY": "0", "PI_SKIP_VERSION_CHECK": "1",
         }
+        if self.extension.is_dir():
+            go = shutil.which("go")
+            require(go is not None, "Go is required to load the source Resource")
+            environment["PATH"] = str(Path(go).parent) + ":" + environment["PATH"]
+            for name in ("GOCACHE", "GOMODCACHE", "GOTMPDIR", "GOTOOLCHAIN", "GOENV"):
+                if name in os.environ:
+                    environment[name] = os.environ[name]
+            environment["PIG_SDK_GO_ROOT"] = os.environ["PIG_LITTER_SDK_DIR"]
         args = [str(self.pig), "--no-extensions"]
         if self.selected:
             args += ["-e", str(self.extension)]
         args += ["--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--session-dir", str(self.sessions), "--approve", "--model", "fixture/parent"]
         if session_path:
             args += ["--session", str(session_path)]
-        command = ["/usr/bin/env", "-i", *[f"{k}={v}" for k, v in environment.items()], *args]
+        command = ["/usr/bin/env", "-i", *[f"{k}={v}" for k, v in environment.items()]]
+        if self.extension.is_dir():
+            fixture_env = generation / "fixture-env.sh"
+            fixture_env.write_text("#!/bin/sh\nexport OPENAI_API_KEY=fixture-only-key\nexport P08_ALLOWED_CHECK=fixture-allowed-value\nexec \"$@\"\n")
+            fixture_env.chmod(0o600)
+            command += ["/bin/sh", str(fixture_env)]
+        command += args
         for argument in command:
             safe_text(argument)
         wrapper = generation / "launch.sh"
@@ -577,6 +731,8 @@ class Terminal:
         wrappers = [p for p in self.owned.values() if p["pid"] == self.window["wrapper_pid"] and p["tty"] == tty]
         hosts = [p for p in self.owned.values() if p["ppid"] == self.window["wrapper_pid"] and p["executable"] == os.path.realpath(self.pig) and p["tty"] == tty]
         extensions = [p for p in self.owned.values() if p["executable"] == os.path.realpath(self.extension)]
+        if self.selected and self.extension.is_dir() and hosts:
+            extensions = [p for p in self.owned.values() if p["ppid"] == hosts[-1]["pid"] and same_process(p)]
         require(wrappers and hosts, "PiG process is not attributed to the iTerm TTY and wrapper")
         self.window["wrapper_identity"] = wrappers[-1]
         if self.selected:
@@ -584,7 +740,28 @@ class Terminal:
         else:
             require(not extensions, "Unselected session started the extension")
         self.window["host"] = hosts[-1]
+        if self.selected and self.extension.is_dir():
+            require(len(extensions) == 1, "Source Resource process is missing or ambiguous")
+            build = subprocess.run(["go", "version", "-m", extensions[0]["executable"]], text=True, capture_output=True, check=True, timeout=10).stdout
+            require("CGO_ENABLED=0" in build, "Source Resource did not use the CGO-disabled host compiler")
+            self.window["source_extension"] = extensions[0]
+            (self.evidence / "source-extension-build.txt").write_text(build)
         owner = iterm_owner()
+        if self.extension.is_dir():
+            snapshot = process_snapshot()
+            ancestors = []
+            current = extensions[0]["pid"]
+            while current in snapshot and current not in ancestors:
+                ancestors.append(current)
+                current = snapshot[current]["ppid"]
+            discovery = {"source_ancestors": ancestors, "ancestry_complete": current == 0, "iterm_is_ancestor": owner["pid"] in ancestors}
+            for name, command in (("previous_pgrep", ["/usr/bin/pgrep", "-u", str(os.getuid()), "-x", "iTerm2"]), ("application_ps", ["/bin/ps", "-p", str(owner["pid"]), "-o", "uid=,pid=,command="])):
+                try:
+                    result = subprocess.run(command, text=True, capture_output=True, timeout=10)
+                    discovery[name] = {"exit": result.returncode, "output": result.stdout.strip()}
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    discovery[name] = {"error": str(error)}
+            (self.evidence / "iterm-process-discovery.json").write_text(json.dumps(discovery, indent=2) + "\n")
         native = native_window(owner, self.window["id"])
         alternate = applescript(OWNED_ALTERNATE, self.window["id"], self.window["session"])
         require(alternate and alternate != "missing value" and "\n" not in alternate, "Alternate window identity is unavailable")
@@ -711,7 +888,7 @@ class Terminal:
         remaining = [p for p in self.owned.values() if same_process(p)]
         if remaining:
             problems.append("Owned processes survived cleanup")
-        if self.window and not remaining:
+        if self.window and not remaining and not self.unsafe:
             try:
                 self.close_window()
             except Exception as error:
@@ -832,9 +1009,53 @@ def run_case(name, scratch, evidence, pig, extension):
     terminal = Terminal(root, evidence, root / "workspace", root / "agent", root / "pig-home", root / "sessions", pig, extension, name != "unselected", server.server_address[1])
     product_problems = []
     teardown_problems = []
+    sibling_ref = None
+    sibling = None
     try:
         terminal.launch()
-        if name == "team":
+        if name == "iterm":
+            fixture.extension = str(extension / "dist" / "pig-litter" if extension.is_dir() else extension)
+            fixture.lead = terminal.window.copy()
+            before = window_sessions(fixture.lead["id"])
+            try:
+                sibling_result = applescript(SIBLING, fixture.lead["id"], fixture.lead["session"], "create")
+            finally:
+                try:
+                    added = window_sessions(fixture.lead["id"]) - before
+                except Exception:
+                    terminal.unsafe = True
+                    raise
+                if len(added) == 1:
+                    sibling_ref = next(iter(added))
+                else:
+                    terminal.unsafe = True
+            parts = sibling_result.splitlines()
+            require(len(parts) == 2 and sibling_ref == tuple(parts), "Fixture sibling identity was not confirmed")
+            sibling_id, sibling_tty = sibling_ref
+            deadline = time.monotonic() + 10
+            sibling_matches = []
+            while time.monotonic() < deadline and not sibling_matches:
+                sibling_matches = [process for process in process_snapshot().values() if process["tty"] == sibling_tty.removeprefix("/dev/") and process["command"] == "/bin/sleep 600"]
+                if not sibling_matches:
+                    time.sleep(0.1)
+            require(len(sibling_matches) == 1, "Fixture sibling process is missing or ambiguous")
+            sibling = sibling_matches[0]
+            sibling["executable"] = executable(sibling["pid"])
+            sibling.update({"session": sibling_id, "terminal": sibling_tty})
+            fixture.observations["sibling"] = sibling
+            terminal.send("P08_ITERM")
+            terminal.await_marker("P08_ITERM_DONE", fixture)
+            require(fixture.stage == 3, "iTerm stage did not complete")
+            member = fixture.observations["native_member"]
+            terminal.wait(lambda: not same_process(member) and applescript(PANE_BY_TTY, member["terminal"]) == "missing", "native member process and pane cleanup", 30)
+            probe = probe_identity(Path(os.environ["RUNNER_TEMP"]) / "collaboration-platform-probe" / "result.json")
+            require(probe and applescript(SESSION, *probe, "exists") == "present", "Unrelated probe window was closed")
+            require(same_process(sibling) and applescript(PANE_BY_TTY, sibling_tty) == fixture.lead["id"] + "\n" + sibling_id, "Unrelated sibling pane changed")
+            require(applescript(SIBLING, fixture.lead["id"], sibling_id, "close", sibling_tty) == "closed", "Fixture sibling pane did not close")
+            release_fixture_sibling(terminal, sibling, sibling_tty)
+            sibling_ref = None
+            fixture.observations["cleanup"] = "native process and pane exited; unrelated sibling and probe remained until fixture cleanup"
+        elif name == "team":
             terminal.send("P03_TEAM_FIRST")
             terminal.await_marker("P03_TEAM_FIRST_DONE", fixture)
             require(fixture.stage == 6, "Team first stage did not complete")
@@ -880,6 +1101,31 @@ def run_case(name, scratch, evidence, pig, extension):
             except Exception as capture_error:
                 product_problems.append(f"Failure capture: {capture_error}")
     finally:
+        if sibling_ref is not None and terminal.window:
+            try:
+                sibling_id, sibling_tty = sibling_ref
+                matches = [p for p in process_snapshot().values() if p["tty"] == sibling_tty.removeprefix("/dev/") and p["command"] == "/bin/sleep 600"]
+                if sibling is None and len(matches) == 1:
+                    sibling = matches[0]
+                    sibling["executable"] = executable(sibling["pid"])
+                native_window(terminal.window["ownership"]["iterm"], terminal.window["id"])
+                present = applescript(PANE_BY_TTY, sibling_tty)
+                if present != "missing":
+                    require(sibling is not None and same_process(sibling) and present == terminal.window["id"] + "\n" + sibling_id, "Fixture sibling identity is uncertain")
+                    require(applescript(SIBLING, terminal.window["id"], sibling_id, "close", sibling_tty) == "closed", "Fixture sibling cleanup failed")
+                require(sibling is not None, "Fixture sibling process identity is unknown")
+                release_fixture_sibling(terminal, sibling, sibling_tty)
+            except Exception as error:
+                terminal.unsafe = True
+                teardown_problems.append(f"Fixture sibling cleanup: {error}")
+        if name == "iterm" and terminal.window and not terminal.unsafe:
+            try:
+                if not idle_editor(terminal.session_action("text")):
+                    terminal.session_action("interrupt")
+                    terminal.wait(lambda: idle_editor(terminal.session_action("text")), "interrupted lead to settle", 10)
+                terminal.session_action("exit")
+            except Exception as error:
+                product_problems.append(f"Graceful lead exit: {error}")
         with fixture.changed:
             fixture.ordinary_release = True
             fixture.changed.notify_all()
@@ -910,17 +1156,128 @@ def run_case(name, scratch, evidence, pig, extension):
     return receipt
 
 
+def product_iterm_scripts(source):
+    names = {"itermFind", "itermSplit", "itermClose", "itermSelect"}
+    entries = re.findall(r"^const (itermFind|itermSplit|itermClose|itermSelect) = \x60([^\x60]*)\x60", source.read_text(), re.MULTILINE)
+    require(len(entries) == len(names) and {name for name, _ in entries} == names, "Product iTerm control scripts are incomplete or duplicated")
+    return dict(entries)
+
+
+def preflight_iterm(source, evidence, probe):
+    capability = json.loads(probe.read_text())
+    require(capability.get("status") == "pass" and capability.get("signature_status") == "verified" and capability.get("automation_status") == "approved", "Signed iTerm capability probe did not pass")
+    identity = probe_identity(probe)
+    tty = capability.get("session_tty", "")
+    require(identity is not None and re.fullmatch(r"/dev/ttys\d+", tty), "Capability session identity is incomplete")
+    window, lead = identity
+    scripts = product_iterm_scripts(source)
+    observations = []
+    product_error = None
+    cleanup_error = "Fixture cleanup was not verified"
+    owner = None
+    before = None
+    child_ref = None
+    child = None
+    attempted = False
+    try:
+        owner = iterm_owner()
+        native_window(owner, window)
+        before = window_sessions(window)
+        require(before == {(lead, tty)}, "Capability window has unrelated or missing sessions")
+        require(applescript(SESSION, window, lead, "exists") == "present", "Capability session changed")
+        for field, value in (("id", lead), ("tty", tty)):
+            found = applescript(scripts["itermFind"], value, field).splitlines()
+            require(found == [window, lead, tty], f"Product session lookup failed for {field}")
+        observations.append("find by id and tty")
+        attempted = True
+        try:
+            reply = applescript(scripts["itermSplit"], window, lead, tty, "/bin/sleep 600").splitlines()
+        finally:
+            added = window_sessions(window) - before
+            if len(added) == 1:
+                child_ref = next(iter(added))
+            require(len(added) <= 1, "Product split created ambiguous sessions")
+        require(child_ref is not None and reply == [window, *child_ref], "Product split did not return its owned session")
+        child_id, child_tty = child_ref
+        deadline = time.monotonic() + 10
+        matches = []
+        while time.monotonic() < deadline and not matches:
+            matches = [p for p in process_snapshot().values() if p["tty"] == child_tty.removeprefix("/dev/") and p["command"] == "/bin/sleep 600"]
+            if not matches:
+                time.sleep(0.1)
+        require(len(matches) == 1, "Product split process is missing or ambiguous")
+        child = matches[0]
+        child["executable"] = executable(child["pid"])
+        require(same_process(child), "Product split process changed")
+        native_window(owner, window)
+        observations.append("split owned session")
+        for field, value in (("id", child_id), ("tty", child_tty)):
+            require(applescript(scripts["itermFind"], value, field).splitlines() == [window, child_id, child_tty], f"Product child lookup failed for {field}")
+        require(applescript(scripts["itermSelect"], window, child_id, child_tty) == "selected", "Product session selection failed")
+        try:
+            applescript(scripts["itermClose"], window, child_id, tty)
+        except RuntimeError as error:
+            require("iTerm owned session changed" in str(error), "Product close rejected the wrong identity unexpectedly")
+        else:
+            raise RuntimeError("Product close accepted the wrong terminal identity")
+        require(child_ref in window_sessions(window) and same_process(child), "Wrong-identity close changed the owned session")
+        require(applescript(scripts["itermClose"], window, child_id, child_tty) == "closed", "Product close failed")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and (same_process(child) or child_ref in window_sessions(window)):
+            time.sleep(0.1)
+        require(not same_process(child) and child_ref not in window_sessions(window), "Product session or process remained after close")
+        require(applescript(scripts["itermClose"], window, child_id, child_tty) == "missing", "Product close was not idempotent")
+        require(applescript(scripts["itermSelect"], window, lead, tty) == "selected", "Capability session could not be reselected")
+        observations.append("select, reject changed identity, close, and close again")
+    except Exception as error:
+        product_error = str(error)
+    finally:
+        if owner is not None and before is not None:
+            try:
+                require(before == {(lead, tty)}, "Capability window has unrelated or missing sessions")
+                native_window(owner, window)
+                added = window_sessions(window) - before
+                if added:
+                    require(attempted and child_ref is not None and added == {child_ref}, "Unknown session remains in the capability window")
+                    child_id, child_tty = child_ref
+                    if child is None:
+                        matches = [p for p in process_snapshot().values() if p["tty"] == child_tty.removeprefix("/dev/") and p["command"] == "/bin/sleep 600"]
+                        require(len(matches) == 1, "Fixture process identity is uncertain")
+                        child = matches[0]
+                        child["executable"] = executable(child["pid"])
+                    require(same_process(child), "Fixture process identity changed before cleanup")
+                    require(applescript(SIBLING, window, child_id, "close", child_tty) == "closed", "Owned fixture session cleanup failed")
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline and (same_process(child) or child_ref in window_sessions(window)):
+                        time.sleep(0.1)
+                    require(not same_process(child) and child_ref not in window_sessions(window), "Owned fixture session or process survived cleanup")
+                require(window_sessions(window) == before, "Capability window sessions changed")
+                require(applescript(SESSION, window, lead, "exists") == "present", "Capability session was not preserved")
+                native_window(owner, window)
+                cleanup_error = None
+            except Exception as error:
+                cleanup_error = str(error)
+    result = {"status": "pass" if not product_error and not cleanup_error else "failed", "product_error": product_error, "cleanup_error": cleanup_error, "window": window, "session": lead, "tty": tty, "child": child_ref, "process": child, "observations": observations}
+    (evidence / "iterm-control-preflight.json").write_text(json.dumps(result, indent=2) + "\n")
+    require(result["status"] == "pass", f"iTerm control preflight failed: {product_error}; cleanup: {cleanup_error}")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", choices=("p03-all", "p03-team", "p03-policy", "p03-unselected"))
+    parser.add_argument("--scenario", choices=("p03-all", "p03-team", "p03-policy", "p03-unselected", "p08-iterm"))
     parser.add_argument("--pig", type=Path)
     parser.add_argument("--extension", type=Path)
     parser.add_argument("--scratch", type=Path)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--cleanup-probe", action="store_true")
+    parser.add_argument("--preflight-iterm-source", type=Path)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
     probe = Path(os.environ["RUNNER_TEMP"]) / "collaboration-platform-probe" / "result.json"
+    if args.preflight_iterm_source:
+        require(sys.platform == "darwin", "iTerm control preflight requires macOS")
+        preflight_iterm(args.preflight_iterm_source, args.evidence, probe)
+        return
     if args.cleanup_probe:
         require(close_probe(probe, args.evidence), "The capability probe window could not be released")
         return
@@ -930,7 +1287,7 @@ def main():
     require(capability.get("status") == "pass" and capability.get("signature_status") == "verified" and capability.get("automation_status") == "approved", "Signed iTerm capability probe did not pass")
     identity = probe_identity(probe)
     require(identity is not None and applescript(SESSION, *identity, "exists") == "present", "The capability probe window is unavailable")
-    cases = ("team", "policy", "unselected") if args.scenario == "p03-all" else (args.scenario.removeprefix("p03-"),)
+    cases = ("team", "policy", "unselected") if args.scenario == "p03-all" else (args.scenario.removeprefix("p03-").removeprefix("p08-"),)
     product_failures = []
     teardown_failures = []
     attempted = []

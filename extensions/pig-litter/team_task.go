@@ -95,8 +95,11 @@ func (g *teamTaskGraph) find(id TaskID) int {
 }
 
 func (o *owner) completionActor(authority controlAuthority) (*MemberRef, error) {
-	if err := o.current(); err != nil {
-		return nil, err
+	o.state.mu.Lock()
+	active := o.state.owner == o && o.state.epoch == o.epoch
+	o.state.mu.Unlock()
+	if !active || o.context.Err() != nil {
+		return nil, reject("unavailable", "the root Session retired")
 	}
 	o.tree.mu.Lock()
 	defer o.tree.mu.Unlock()
@@ -124,6 +127,9 @@ func (o *owner) completionActor(authority controlAuthority) (*MemberRef, error) 
 func (o *owner) applyTaskCompletion(authority controlAuthority, id TaskID) (teamTaskView, string, error) {
 	if !childUUID.MatchString(string(id.Team.Root)) || id.Team.Epoch == 0 || id.Number == 0 {
 		return teamTaskView{}, "", reject("rejected", "invalid task identity")
+	}
+	if err := o.current(); err != nil {
+		return teamTaskView{}, "", err
 	}
 	o.tree.lifecycleMu.Lock()
 	actor, err := o.completionActor(authority)
@@ -157,6 +163,9 @@ func (o *owner) applyTaskCompletion(authority controlAuthority, id TaskID) (team
 		Revision uint64       `json:"revision"`
 	}{Kind: "task_completion", Actor: actor, Task: task, Revision: revision}
 	permit, feedback := runTeamPolicy(ctx, o.policy.TaskCompletion, input)
+	if err := o.current(); err != nil {
+		return teamTaskView{}, "", err
+	}
 	o.tree.lifecycleMu.Lock()
 	defer o.tree.lifecycleMu.Unlock()
 	current, err := o.completionActor(authority)

@@ -9,10 +9,11 @@ type callScope struct {
 }
 
 type callTicket struct {
-	scope     *callScope
-	caller    *run
-	callID    string
-	operation string
+	scope      *callScope
+	caller     *run
+	callID     string
+	operation  string
+	nativeLeaf *string
 }
 
 func newCallScope() *callScope {
@@ -20,6 +21,10 @@ func newCallScope() *callScope {
 }
 
 func (s *callScope) begin(caller *run, callID, operation string) (*callTicket, error) {
+	return s.beginWithLeaf(caller, callID, operation, nil)
+}
+
+func (s *callScope) beginWithLeaf(caller *run, callID, operation string, leaf *string) (*callTicket, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || callID == "" {
@@ -28,7 +33,7 @@ func (s *callScope) begin(caller *run, callID, operation string) (*callTicket, e
 	if s.calls[callID] != nil {
 		return nil, reject("rejected", "duplicate tool call ID in the current turn")
 	}
-	ticket := &callTicket{scope: s, caller: caller, callID: callID, operation: operation}
+	ticket := &callTicket{scope: s, caller: caller, callID: callID, operation: operation, nativeLeaf: leaf}
 	s.calls[callID] = ticket
 	return ticket, nil
 }

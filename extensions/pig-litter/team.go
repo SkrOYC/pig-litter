@@ -328,8 +328,7 @@ func (o *owner) finishTeamMember(r *record, selected *run, outcome Outcome) erro
 		state = "paused"
 	}
 	if err := store.SetState(r.team.Ref, state); err != nil {
-		_ = o.rollbackTeamMember(r.team)
-		return err
+		return errors.Join(err, o.rollbackTeamMember(r.team))
 	}
 	if !closing || paused {
 		if paused {
@@ -383,6 +382,26 @@ func (o *owner) resumeTeamMember(r *record, selected *run) error {
 	if err != nil {
 		return err
 	}
+	selected.mu.Lock()
+	nativeResume := selected.nativeResume != nil
+	selected.mu.Unlock()
+	if nativeResume {
+		o.tree.mu.Lock()
+		session := cloneMemberSession(r.nativeSession)
+		o.tree.mu.Unlock()
+		_, pending, err := store.recoverySnapshot()
+		if err != nil {
+			return err
+		}
+		for _, reservation := range pending {
+			if reservation.Member.Ref == r.team.Ref && reservation.Member.AdmissionID == r.team.AdmissionID {
+				if session == nil || reservation.NativeLaunch != session.Launch && !(reservation.NativeLaunch == "" && reservation.Member.Workspace.Kind == "isolated_worktree") || reservation.Member.Workspace != r.team.Workspace || reservation.Member.PlanRequired != r.team.PlanRequired {
+					return reject("unavailable", "provisional native resume identity changed")
+				}
+				return o.current()
+			}
+		}
+	}
 	lifecycle, err := store.readLifecycle(r.team.Ref)
 	if err != nil {
 		return err
@@ -400,6 +419,15 @@ func (o *owner) resumeTeamMember(r *record, selected *run) error {
 }
 
 func (o *owner) rollbackTeamMember(member *teamMember) error {
+	if o.tree != nil {
+		o.tree.mu.Lock()
+		r := o.tree.records[member.Ref.ID]
+		unresolved := r != nil && r.team != nil && r.team.Ref == member.Ref && r.team.AdmissionID == member.AdmissionID && (r.nativeReservationConflict || r.nativeOwnership != nil || r.nativeReleasing || isPaneBackend(r.backend) && r.nativeSession != nil && r.run != nil && r.run.resume)
+		o.tree.mu.Unlock()
+		if unresolved {
+			return reject("unavailable", "native ownership requires reconciliation before teammate rollback")
+		}
+	}
 	store, err := o.teamStoreForRoot()
 	if err != nil {
 		return err
@@ -553,14 +581,39 @@ func (g *teamAdmissionGate) observe(message *agent.AssistantMessage) {
 }
 
 func (g *teamAdmissionGate) commit(ctx context.Context) error {
-	g.record.teamStateMu.Lock()
-	defer g.record.teamStateMu.Unlock()
-	if err := g.owner.current(); err != nil {
+	store, err := g.prepareCommit(ctx)
+	if err != nil {
 		return err
+	}
+	return g.commitPrepared(store)
+}
+
+func (g *teamAdmissionGate) prepareCommit(ctx context.Context) (*teamStore, error) {
+	if err := g.owner.current(); err != nil {
+		return nil, err
 	}
 	g.owner.tree.mu.Lock()
 	r, err := g.owner.tree.currentLocked(g.run)
-	if err == nil && (r != g.record || r.paused || g.run.ctx.Err() != nil) {
+	if err != nil || r != g.record || r.paused || r.team == nil || g.run.ctx.Err() != nil {
+		g.owner.tree.mu.Unlock()
+		return nil, reject("unavailable", "teammate execution is no longer current")
+	}
+	workspace := r.team.Workspace
+	g.owner.tree.mu.Unlock()
+	if workspace.Kind == "isolated_worktree" {
+		if err := verifyTeamWorktree(ctx, workspace); err != nil {
+			return nil, err
+		}
+	}
+	return g.owner.teamStoreForRoot()
+}
+
+func (g *teamAdmissionGate) commitPrepared(store *teamStore) error {
+	g.record.teamStateMu.Lock()
+	defer g.record.teamStateMu.Unlock()
+	g.owner.tree.mu.Lock()
+	r, err := g.owner.tree.currentLocked(g.run)
+	if err == nil && (r != g.record || r.paused || r.team == nil || g.run.ctx.Err() != nil) {
 		err = reject("unavailable", "teammate execution is no longer current")
 	}
 	if err == nil && !r.readOnly {
@@ -575,15 +628,6 @@ func (g *teamAdmissionGate) commit(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if g.record.team.Workspace.Kind == "isolated_worktree" {
-		if err := verifyTeamWorktree(ctx, g.record.team.Workspace); err != nil {
-			return err
-		}
-	}
-	store, err := g.owner.teamStoreForRoot()
-	if err != nil {
-		return err
-	}
 	member, err := store.Commit(g.record.team.AdmissionID)
 	if err != nil {
 		return err
@@ -593,6 +637,31 @@ func (g *teamAdmissionGate) commit(ctx context.Context) error {
 	}
 	g.committed = true
 	return nil
+}
+
+func (g *teamAdmissionGate) prepareFinish(ctx context.Context, outcome Outcome) (*teamStore, error) {
+	g.mu.Lock()
+	needed := !g.committed && outcome.State == Completed && g.seen && g.stop == ai.StopReasonStop && len(g.calls) == 0
+	g.mu.Unlock()
+	if !needed {
+		return nil, nil
+	}
+	return g.prepareCommit(ctx)
+}
+
+func (g *teamAdmissionGate) finishPrepared(outcome *Outcome, store *teamStore) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.committed || outcome.State != Completed || !g.seen || g.stop != ai.StopReasonStop || len(g.calls) != 0 {
+		return
+	}
+	if store == nil {
+		outcome.State, outcome.Error = Unavailable, "teammate admission was not prepared"
+		return
+	}
+	if err := g.commitPrepared(store); err != nil {
+		outcome.State, outcome.Error = Unavailable, err.Error()
+	}
 }
 
 func (g *teamAdmissionGate) before(ctx context.Context, id, name string, _ json.RawMessage) agent.ToolCallHookResult {

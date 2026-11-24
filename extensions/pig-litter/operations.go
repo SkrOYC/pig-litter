@@ -97,7 +97,7 @@ var schemas = map[string]map[string]any{
 	"team_task_get":    object([]string{"taskId"}, map[string]any{"taskId": taskIDSchema}),
 	"team_task_list":   object([]string{}, map[string]any{}),
 	"team_task_update": object([]string{"taskId", "action"}, map[string]any{"taskId": taskIDSchema, "action": map[string]any{"type": "string", "enum": []string{"edit", "claim", "assign", "complete", "delete"}}, "assignee": text(64), "subject": text(256), "description": map[string]any{"type": "string", "maxLength": 16384}, "addBlockedBy": map[string]any{"type": "array", "maxItems": 128, "items": taskIDSchema}, "addBlocks": map[string]any{"type": "array", "maxItems": 128, "items": taskIDSchema}, "metadata": map[string]any{"type": "object", "maxProperties": 64, "additionalProperties": map[string]any{"anyOf": []any{map[string]any{"type": "string", "maxLength": 4096}, map[string]any{"type": "null"}}}}}),
-	"team_spawn":       object([]string{"type", "task", "name", "workspace"}, map[string]any{"type": text(64), "task": text(16384), "name": text(64), "model": text(256), "planRequired": map[string]any{"type": "boolean"}, "workspace": object([]string{"kind"}, map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"shared_checkout", "isolated_worktree"}}})}),
+	"team_spawn":       object([]string{"type", "task", "name", "workspace"}, map[string]any{"type": text(64), "task": text(16384), "name": text(64), "model": text(256), "backend": map[string]any{"type": "string", "enum": []string{"embedded", "tmux", "iterm2", "auto"}}, "planRequired": map[string]any{"type": "boolean"}, "workspace": object([]string{"kind"}, map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"shared_checkout", "isolated_worktree"}}})}),
 	"team_list":        object([]string{}, map[string]any{}),
 	"team_send":        object([]string{"recipient", "messageId", "text", "summary"}, map[string]any{"recipient": text(64), "messageId": text(128), "text": text(16384), "summary": text(256)}),
 	"litter_spawn":     object([]string{"type", "task"}, map[string]any{"type": text(64), "task": text(16384), "name": text(128), "model": text(256), "cwd": text(4096)}),
@@ -113,6 +113,7 @@ type operationArgs struct {
 	Type, Task, Text, Mode string
 	Name                   *string
 	Model                  string
+	Backend                backendRequest
 	Cwd                    string
 	Offset                 int
 	Limit                  *int
@@ -170,6 +171,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		}
 		if mode, ok := fields["planRequired"]; ok && string(mode) != "true" && string(mode) != "false" {
 			return nil, reject("rejected", "invalid teammate planning mode")
+		}
+		if value, ok := fields["backend"]; ok && string(value) == "null" {
+			return nil, reject("rejected", "invalid teammate backend")
 		}
 	}
 	var args operationArgs
@@ -247,7 +251,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			if caller != nil {
 				actor = &parent.team.Ref
 			}
+			o.tree.lifecycleMu.Lock()
 			task, state, err := store.createTaskWithID(args.Subject, args.Description, args.BlockedBy, args.Metadata, args.SubmissionID, actor)
+			o.tree.lifecycleMu.Unlock()
 			return map[string]any{"state": state, "task": task}, err
 		case "team_task_get":
 			task, err := store.getTask(args.TaskID)
@@ -265,7 +271,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 				if caller != nil {
 					actor = &parent.team.Ref
 				}
+				o.tree.lifecycleMu.Lock()
 				task, state, err := store.editTask(args.TaskID, edit, actor)
+				o.tree.lifecycleMu.Unlock()
 				return map[string]any{"state": state, "task": task}, err
 			}
 			if args.Action == "complete" && args.Assignee == "" {
@@ -276,7 +284,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 				if caller != nil {
 					return nil, reject("permission_denied", "only the team lead can delete a task")
 				}
+				o.tree.lifecycleMu.Lock()
 				task, err := store.deleteTask(args.TaskID)
+				o.tree.lifecycleMu.Unlock()
 				return map[string]any{"state": "deleted", "task": task}, err
 			}
 			var member MemberRef
@@ -303,7 +313,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			} else {
 				return nil, reject("rejected", "a teammate must claim for itself or the lead must assign a task")
 			}
+			o.tree.lifecycleMu.Lock()
 			task, state, err := store.claimTask(args.TaskID, member, explicit)
+			o.tree.lifecycleMu.Unlock()
 			return map[string]any{"state": state, "task": task}, err
 		}
 		return nil, reject("rejected", "unknown task operation")
@@ -348,6 +360,18 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		isTeam := name == "team_spawn"
 		if isTeam && caller != nil {
 			return nil, reject("lead_required", "only the team lead can start a teammate")
+		}
+		choice := backendChoice{kind: backendEmbedded}
+		if isTeam {
+			var err error
+			choice, err = chooseTeamBackend(args.Backend, func() error {
+				source, _ := o.context.ExtensionSourceInfo()
+				_, err := o.currentPaneMemberEnvironment(ctx, source.Path, args.Backend)
+				return err
+			})
+			if err != nil {
+				return nil, err
+			}
 		}
 		if isTeam && (args.Name == nil || args.Workspace == nil || *args.Workspace != (WorkspacePolicy{Kind: args.Workspace.Kind}) || args.Workspace.Kind != "shared_checkout" && args.Workspace.Kind != "isolated_worktree") {
 			return nil, reject("rejected", "a teammate needs a name and explicit workspace policy")
@@ -437,7 +461,11 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 				cwd = workspace.Cwd
 			}
 		}
-		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, available: available, member: member})
+		var backend backendRequest
+		if choice.kind != backendEmbedded {
+			backend = choice.kind
+		}
+		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, available: available, member: member, backend: backend})
 		if err != nil {
 			if member != nil {
 				if cleanupErr := o.rollbackTeamMember(member); cleanupErr != nil {
@@ -471,7 +499,10 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		}
 		value := map[string]any{"state": snapshot.State, "child": snapshot}
 		if member != nil {
-			value = map[string]any{"state": "starting", "admission": member.AdmissionID, "member": member.Ref, "name": member.Name, "cwd": member.Workspace.Cwd, "workspace": member.Workspace, "planRequired": member.PlanRequired}
+			value = map[string]any{"state": "starting", "admission": member.AdmissionID, "member": member.Ref, "name": member.Name, "cwd": member.Workspace.Cwd, "workspace": member.Workspace, "planRequired": member.PlanRequired, "backend": choice.kind}
+			if choice.fallback != "" {
+				value["backendFallback"] = choice.fallback
+			}
 			content, _ := resultContent(name, value, nil)
 			execution.teamResult = sha256.Sum256([]byte(content))
 			execution.teamSessionFile = teamSessionFile
@@ -528,7 +559,11 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"state": inspection.Child.State, "child": inspection.Child, "outcome": inspection.Outcome}, nil
+		result := map[string]any{"state": inspection.Child.State, "child": inspection.Child, "outcome": inspection.Outcome}
+		if inspection.Backend != nil {
+			result["backend"] = inspection.Backend
+		}
+		return result, nil
 	}
 	if name == "litter_wait" {
 		o.beginOutcomeAck(key, selected, name, toolContext)
@@ -553,6 +588,7 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 	}
 	if name == "litter_message" {
 		mode := args.Mode
+		var nativeResume *memberResumePin
 		if mode == "" {
 			mode = "steer"
 		}
@@ -561,8 +597,12 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			o.tree.mu.Lock()
 			target, err := o.tree.currentLocked(selected)
 			var model string
+			var native *record
 			if err == nil {
 				model = target.model
+				if isPaneBackend(target.backend) {
+					native = target
+				}
 			}
 			o.tree.mu.Unlock()
 			if err != nil {
@@ -574,6 +614,12 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			if _, err := o.rootToolNames(); err != nil {
 				return nil, err
 			}
+			if native != nil {
+				nativeResume, err = o.prepareNativeResume(ctx, native, selected)
+				if err != nil {
+					return nil, err
+				}
+			}
 		}
 		snapshot, execution, err := o.tree.message(ctx, caller, selected, mode, args.Text)
 		if err != nil {
@@ -581,6 +627,11 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		}
 		delivery := "queued"
 		if mode == "resume" {
+			if nativeResume != nil {
+				execution.mu.Lock()
+				execution.nativeResume = nativeResume
+				execution.mu.Unlock()
+			}
 			delivery = "resumed"
 			o.deferActivation(key, execution, activationContext.Done(), func() bool { return activationContext.Err() != nil }, name)
 			if toolContext != nil {

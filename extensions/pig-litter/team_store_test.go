@@ -518,6 +518,47 @@ func TestTeamStoreRecoveryRetainsUnsettledIsolatedReservations(t *testing.T) {
 	}
 }
 
+func TestNativeLaunchReservationSurvivesOwnerRecovery(t *testing.T) {
+	store, dir, root, workspace := storeTestOpen(t)
+	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "member", workspace, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch := "0123456789abcdef0123456789abcdef"
+	if err := store.markNativeLaunch(member, launch); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.markNativeLaunch(member, launch); err != nil {
+		t.Fatalf("repeated native launch mark: %v", err)
+	}
+	if err := store.markNativeLaunch(member, "fedcba9876543210fedcba9876543210"); err == nil {
+		t.Fatal("reservation accepted a different native launch")
+	}
+	replacement := "fedcba9876543210fedcba9876543210"
+	if err := store.markNativeLaunch(member, replacement, launch); err != nil {
+		t.Fatalf("replace native launch: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openTeamStore(dir, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	_, pending, err := reopened.recoverySnapshot()
+	if err != nil || len(pending) != 1 || pending[0].Member != member || pending[0].NativeLaunch != replacement {
+		t.Fatalf("recovered native reservation = %#v, %v", pending, err)
+	}
+	if err := reopened.Rollback(member.AdmissionID); err != nil {
+		t.Fatalf("released native reservation did not roll back: %v", err)
+	}
+	_, _, remaining, err := reopened.SnapshotWithReservations()
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("released reservation remains: %#v, %v", remaining, err)
+	}
+}
+
 func TestTeamStoreRejectsInvalidIsolatedReservations(t *testing.T) {
 	cases := []struct {
 		name   string

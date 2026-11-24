@@ -17,6 +17,105 @@ spec.loader.exec_module(driver)
 
 
 class InputAndProviderTests(unittest.TestCase):
+    def test_malformed_sibling_reply_releases_identified_fixture_pane(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            lead = ("11111111-1111-4111-8111-111111111111", "/dev/ttys001")
+            added = ("22222222-2222-4222-8222-222222222222", "/dev/ttys002")
+            actions = []
+            state = {"pane": True, "live": True}
+
+            class Fixture:
+                def __init__(self, *_args):
+                    self.changed = threading.Condition()
+                    self.stage = self.requests = 0
+                    self.errors = []
+                    self.refs = {}
+                    self.rosters = {}
+                    self.observations = {}
+                    self.request_models = {}
+                    self.ordinary_release = False
+
+            class Terminal:
+                def __init__(self, *_args):
+                    self.window = None
+                    self.residues = []
+                    self.unsafe = False
+                    self.interrupted = False
+                def launch(self):
+                    self.window = {"id": "41", "session": lead[0], "tty": lead[1], "ownership": {"iterm": {"pid": 1}}}
+                def session_action(self, action):
+                    if action == "text":
+                        return "idle" if self.interrupted else "busy"
+                    actions.append(action)
+                    if action == "interrupt":
+                        self.interrupted = True
+                def wait(self, predicate, _label, _timeout):
+                    if not predicate():
+                        raise AssertionError("lead did not settle")
+                def frame(self, _name):
+                    return ""
+                def cleanup(self):
+                    actions.append("terminal-cleanup")
+                    self.window = None
+
+            class Server:
+                server_address = ("127.0.0.1", 12345)
+                def shutdown(self):
+                    pass
+                def server_close(self):
+                    pass
+
+            class Thread:
+                def join(self, timeout):
+                    pass
+                def is_alive(self):
+                    return False
+
+            def script(kind, *args):
+                if kind == driver.SIBLING and args[2] == "create":
+                    return "malformed"
+                if kind == driver.PANE_BY_TTY:
+                    return "41\n" + added[0] if state["pane"] else "missing"
+                if kind == driver.SIBLING and args[2] == "close":
+                    actions.append((args[1], args[3]))
+                    state["pane"] = False
+                    return "closed"
+                raise AssertionError(args)
+
+            def terminate(pid, sig):
+                self.assertEqual((pid, sig), (7, driver.signal.SIGTERM))
+                actions.append("terminate-sibling")
+                state["live"] = False
+
+            fixture = Fixture()
+            processes = {7: {"pid": 7, "tty": "ttys002", "command": "/bin/sleep 600", "start": "fixture"}}
+            with mock.patch.object(driver, "Fixture", return_value=fixture), mock.patch.object(driver, "Terminal", Terminal), mock.patch.object(driver, "start_provider", return_value=(Server(), Thread())), mock.patch.object(driver, "window_sessions", side_effect=[{lead}, {lead, added}]), mock.patch.object(driver, "applescript", side_effect=script), mock.patch.object(driver, "process_snapshot", return_value=processes), mock.patch.object(driver, "executable", return_value="/bin/sleep"), mock.patch.object(driver, "same_process", side_effect=lambda _identity: state["live"]), mock.patch.object(driver.os, "kill", side_effect=terminate), mock.patch.object(driver, "native_window"), mock.patch.object(driver, "idle_editor", side_effect=lambda frame: frame == "idle"), mock.patch.object(driver, "save_native", return_value=["fixture"]), mock.patch.object(driver.subprocess, "run", side_effect=OSError("not macOS")):
+                receipt = driver.run_case("iterm", root, root / "evidence", root / "pig", root / "extension")
+            self.assertEqual(actions, [(added[0], added[1]), "terminate-sibling", "interrupt", "exit", "terminal-cleanup"])
+            self.assertEqual(receipt["product_status"], "failed")
+            self.assertEqual(receipt["teardown_status"], "pass")
+            with mock.patch.object(driver, "same_process", side_effect=RuntimeError("identity uncertain")), mock.patch.object(driver.os, "kill") as kill:
+                with self.assertRaisesRegex(RuntimeError, "identity uncertain"):
+                    driver.release_fixture_sibling(Terminal(), {"pid": 7}, added[1])
+                kill.assert_not_called()
+
+            process = subprocess.Popen([driver.sys.executable, "-c", "import time; time.sleep(60)"])
+            try:
+                class WaitForExit:
+                    def wait(self, predicate, _label, _timeout):
+                        process.wait(timeout=5)
+                        if not predicate():
+                            raise AssertionError("owned process or pane survived")
+
+                with mock.patch.object(driver, "same_process", side_effect=lambda _identity: process.poll() is None), mock.patch.object(driver, "applescript", return_value="missing"):
+                    driver.release_fixture_sibling(WaitForExit(), {"pid": process.pid}, added[1])
+                self.assertEqual(process.returncode, -driver.signal.SIGTERM)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+
     def test_unexpected_case_failure_stops_further_cases(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -291,6 +390,100 @@ exit 1
         for value in ("one\ntwo", "one\x1btwo", "one\x7ftwo", "one\x85two"):
             with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "Control character"):
                 driver.safe_text(value)
+
+    def test_preflight_uses_product_scripts_and_preserves_the_probe(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = Path(__file__).resolve().parent.parent / "extensions/pig-litter/team_iterm.go"
+            scripts = driver.product_iterm_scripts(source)
+            self.assertEqual(set(scripts), {"itermFind", "itermSplit", "itermSelect", "itermClose"})
+            window = "41"
+            lead = ("11111111-1111-4111-8111-111111111111", "/dev/ttys001")
+            child = ("22222222-2222-4222-8222-222222222222", "/dev/ttys002")
+            sessions = {lead}
+            process = {"pid": 7, "tty": "ttys002", "command": "/bin/sleep 600", "start": "fixture"}
+            probe = root / "probe.json"
+            probe.write_text(json.dumps({"status": "pass", "signature_status": "verified", "automation_status": "approved", "window_id": window, "session_id": lead[0], "session_tty": lead[1]}))
+            calls = []
+
+            def script(code, *args):
+                calls.append(code)
+                if code == driver.SESSION:
+                    return "present"
+                if code == scripts["itermFind"]:
+                    match = next((item for item in sessions if args[0] == item[0] or args[0] == item[1]), None)
+                    return "\n".join((window, *match)) if match else "missing"
+                if code == scripts["itermSplit"]:
+                    sessions.add(child)
+                    return "\n".join((window, *child))
+                if code == scripts["itermSelect"]:
+                    return "selected"
+                if code == scripts["itermClose"]:
+                    if args[2] != child[1]:
+                        raise RuntimeError("iTerm owned session changed")
+                    if child not in sessions:
+                        return "missing"
+                    sessions.remove(child)
+                    return "closed"
+                raise AssertionError("Unexpected AppleScript")
+
+            with mock.patch.object(driver, "iterm_owner", return_value={"pid": 1}), mock.patch.object(driver, "native_window"), mock.patch.object(driver, "window_sessions", side_effect=lambda _window: set(sessions)), mock.patch.object(driver, "applescript", side_effect=script), mock.patch.object(driver, "process_snapshot", return_value={7: process}), mock.patch.object(driver, "executable", return_value="/bin/sleep"), mock.patch.object(driver, "same_process", side_effect=lambda _process: child in sessions):
+                driver.preflight_iterm(source, root, probe)
+            receipt = json.loads((root / "iterm-control-preflight.json").read_text())
+            self.assertEqual(receipt["status"], "pass")
+            self.assertIsNone(receipt["cleanup_error"])
+            self.assertEqual(sessions, {lead})
+            self.assertTrue(all(scripts[name] in calls for name in scripts))
+
+    def test_preflight_retains_a_probe_window_with_unrelated_sessions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = Path(__file__).resolve().parent.parent / "extensions/pig-litter/team_iterm.go"
+            lead = ("11111111-1111-4111-8111-111111111111", "/dev/ttys001")
+            other = ("22222222-2222-4222-8222-222222222222", "/dev/ttys002")
+            probe = root / "probe.json"
+            probe.write_text(json.dumps({"status": "pass", "signature_status": "verified", "automation_status": "approved", "window_id": "41", "session_id": lead[0], "session_tty": lead[1]}))
+            with mock.patch.object(driver, "iterm_owner", return_value={"pid": 1}), mock.patch.object(driver, "native_window"), mock.patch.object(driver, "window_sessions", return_value={lead, other}), mock.patch.object(driver, "applescript", return_value="present") as control:
+                with self.assertRaisesRegex(RuntimeError, "unrelated or missing sessions"):
+                    driver.preflight_iterm(source, root, probe)
+            result = json.loads((root / "iterm-control-preflight.json").read_text())
+            self.assertEqual(result["status"], "failed")
+            self.assertIsNotNone(result["cleanup_error"])
+            self.assertTrue(all(call.args[0] == driver.SESSION for call in control.call_args_list))
+
+    def test_preflight_never_marks_unverified_ownership_as_clean(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = Path(__file__).resolve().parent.parent / "extensions/pig-litter/team_iterm.go"
+            probe = root / "probe.json"
+            probe.write_text(json.dumps({"status": "pass", "signature_status": "verified", "automation_status": "approved", "window_id": "41", "session_id": "11111111-1111-4111-8111-111111111111", "session_tty": "/dev/ttys001"}))
+            with mock.patch.object(driver, "iterm_owner", side_effect=RuntimeError("application identity unavailable")):
+                with self.assertRaisesRegex(RuntimeError, "application identity unavailable"):
+                    driver.preflight_iterm(source, root, probe)
+            result = json.loads((root / "iterm-control-preflight.json").read_text())
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["cleanup_error"], "Fixture cleanup was not verified")
+
+    def test_provider_reports_unicode_error_in_utf8_body(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fixture = driver.Fixture("iterm", root, root)
+            message = "Can’t set kind to tty"
+            with mock.patch.object(fixture, "response", side_effect=RuntimeError(message)):
+                server, thread = driver.start_provider(fixture)
+                try:
+                    url = f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions"
+                    request = Request(url, data=b"{}", headers={"Content-Type": "application/json"})
+                    with self.assertRaises(HTTPError) as failure:
+                        urlopen(request, timeout=5)
+                    self.assertEqual(failure.exception.reason, "Fixture error")
+                    self.assertEqual(json.loads(failure.exception.read().decode("utf-8")), {"error": message})
+                    self.assertEqual(fixture.errors, [message])
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
 
     def test_unselected_provider_checks_the_registered_tools(self):
         with tempfile.TemporaryDirectory() as temp:

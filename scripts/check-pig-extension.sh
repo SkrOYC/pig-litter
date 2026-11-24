@@ -88,8 +88,7 @@ if [[ -n "${PIG_LITTER_SOURCE_DIR:-}" ]]; then
 fi
 if "$registration_only"; then
   printf 'Registration-only validation does not run unit, race, TUI, or iTerm2 checks.\n'
-  mkdir -p "$root/extensions/pig-litter/dist"
-  go -C "$root/scripts" build -mod=readonly -o "$root/extensions/pig-litter/dist/pig-litter" ./cmd/pig-litter
+  bash "$root/scripts/build-pig-litter.sh"
 else
   bash "$root/scripts/test-pig-litter.sh"
 fi
