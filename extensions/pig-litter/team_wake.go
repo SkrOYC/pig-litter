@@ -2,6 +2,7 @@ package piglitter
 
 import (
 	"errors"
+	"reflect"
 
 	"github.com/MichaelKinsy/PiG/coding"
 	"github.com/MichaelKinsy/PiG/coding/extension"
@@ -9,7 +10,10 @@ import (
 
 var errPeerWakeBlocked = errors.New("peer wake is waiting for room")
 
-type controlWakeBlocked struct{ err error }
+type controlWakeBlocked struct {
+	err   error
+	waits []<-chan struct{}
+}
 
 func (e controlWakeBlocked) Error() string { return e.err.Error() }
 
@@ -126,41 +130,23 @@ func (o *owner) drivePeerWake(recipient MemberRef) {
 					return
 				}
 			}
-			if _, blocked := err.(controlWakeBlocked); blocked {
-				wait := t.wakeBlocker(selected)
-				if wait == nil {
-					continue
+			if blocked, ok := err.(controlWakeBlocked); ok {
+				cases := make([]reflect.SelectCase, 1, len(blocked.waits)+1)
+				cases[0] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(t.ctx.Done())}
+				for _, wait := range blocked.waits {
+					cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(wait)})
 				}
-				select {
-				case <-wait:
-					continue
-				case <-t.ctx.Done():
+				if chosen, _, _ := reflect.Select(cases); chosen == 0 {
 					o.finishPeerWakeRequest(recipient, version)
 					return
 				}
+				continue
 			}
 		}
 		if o.finishPeerWakeRequest(recipient, version) {
 			return
 		}
 	}
-}
-
-func (t *Tree) wakeBlocker(selected *run) <-chan struct{} {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	for _, id := range t.order {
-		run := t.records[id].run
-		if run == selected {
-			continue
-		}
-		select {
-		case <-run.done:
-		default:
-			return run.done
-		}
-	}
-	return nil
 }
 
 func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error) {
@@ -198,10 +184,27 @@ func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error
 		return false, nil
 	}
 	if err := t.roomLocked(r.parentID(), !r.readOnly, r.cwd, r.id, r.team); err != nil {
+		blocked := controlWakeBlocked{err: err}
+		if control != nil {
+			for _, id := range t.order {
+				run := t.records[id].run
+				if run == previous {
+					continue
+				}
+				select {
+				case <-run.done:
+				default:
+					blocked.waits = append(blocked.waits, run.done)
+				}
+			}
+		}
 		t.mu.Unlock()
 		t.lifecycleMu.Unlock()
+		if len(blocked.waits) != 0 {
+			return false, blocked
+		}
 		if control != nil {
-			return false, controlWakeBlocked{err: err}
+			return false, err
 		}
 		return false, errPeerWakeBlocked
 	}

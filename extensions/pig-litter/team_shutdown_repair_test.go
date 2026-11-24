@@ -357,3 +357,121 @@ func TestShutdownRequestWakesWhenEitherCapacitySlotReturns(t *testing.T) {
 		}
 	}
 }
+
+func TestBlockedShutdownRechecksLifecycleBeforeWaking(t *testing.T) {
+	for _, action := range []string{"cancel", "pause", "expire", "close"} {
+		t.Run(action, func(t *testing.T) {
+			store, _, root, workspace := storeTestOpen(t)
+			member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "worker", workspace, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			member, err = store.Commit(member.AdmissionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := defaultConfig()
+			config.Concurrency = 2
+			tree := testTree(t, config)
+			tree.root.id = root
+			_, previous, err := tree.admit(admission{kind: "worker", name: member.Name, cwd: workspace.Cwd, task: "work", agent: AgentDefinition{Role: "worker", Tools: []string{"read"}}, member: &member})
+			if err != nil {
+				t.Fatal(err)
+			}
+			previous.owner.admitted = true
+			var exerciseErr error
+			withCompletionHost(t, tree, func(o *owner) {
+				o.teamStore = store
+				tree.teamFinished, tree.teamPaused = o.finishTeamMember, o.pauseTeamMember
+				tree.finish(previous.owner, previous, Outcome{State: Completed, Text: "Ready."})
+				tree.teamWG.Wait()
+				blockers := make([]*run, 2)
+				for i := range blockers {
+					_, blockers[i], err = tree.admit(admission{kind: "scout", name: fmt.Sprintf("blocker-%d", i+1), cwd: workspace.Cwd, task: "inspect", agent: AgentDefinition{Role: "scout", Tools: []string{"read"}}})
+					if err != nil {
+						exerciseErr = err
+						return
+					}
+				}
+				started := make(chan *run, 1)
+				tree.execute = func(_ *record, selected *run) Outcome {
+					started <- selected
+					return Outcome{State: Completed}
+				}
+				human := controlAuthority{human: func() error { return nil }}
+				timeoutMs := 60000
+				if action == "expire" {
+					timeoutMs = 1000
+				}
+				value, err := o.applyShutdown(human, shutdownCommand{Action: "request", Member: member.Ref, SubmissionID: "blocked-lifecycle", Reason: "Please stop", TimeoutMs: timeoutMs})
+				if err != nil {
+					exerciseErr = err
+					return
+				}
+				request := value["request"].(shutdownRequest)
+				waitForPeerWakeWaiter(t, o)
+				switch action {
+				case "cancel":
+					_, err = o.applyShutdown(human, shutdownCommand{Action: "cancel", RequestID: request.ID})
+				case "pause":
+					_, _, err = tree.stop(nil, previous)
+				case "expire":
+					deadline := time.Now().Add(3 * time.Second)
+					for time.Now().Before(deadline) {
+						var lifecycle memberLifecycle
+						lifecycle, err = store.readLifecycle(member.Ref)
+						if err != nil || lifecycle.Requests[0].State == "expired" {
+							break
+						}
+						time.Sleep(10 * time.Millisecond)
+					}
+				case "close":
+					tree.close()
+				}
+				if err != nil {
+					exerciseErr = err
+					return
+				}
+				if action != "close" {
+					tree.finish(blockers[1].owner, blockers[1], Outcome{State: Completed})
+				}
+				finished := make(chan struct{})
+				go func() { tree.peerWakeWG.Wait(); close(finished) }()
+				select {
+				case <-finished:
+				case <-time.After(3 * time.Second):
+					exerciseErr = fmt.Errorf("wake driver did not stop after %s", action)
+					return
+				}
+				select {
+				case selected := <-started:
+					exerciseErr = fmt.Errorf("%s request woke member %s", action, selected.ref.ID)
+				default:
+				}
+				lifecycle, err := store.readLifecycle(member.Ref)
+				if err != nil {
+					exerciseErr = err
+					return
+				}
+				want := "pending"
+				if action == "cancel" {
+					want = "cancelled"
+				} else if action == "expire" {
+					want = "expired"
+				}
+				if lifecycle.Requests[0].ID != request.ID || lifecycle.Requests[0].State != want {
+					exerciseErr = fmt.Errorf("request identity or state changed after %s: %#v", action, lifecycle.Requests)
+				}
+				if action == "pause" {
+					_, members, err := store.Snapshot()
+					if err != nil || len(members) != 1 || members[0].State != "paused" {
+						exerciseErr = fmt.Errorf("teammate did not remain paused: %#v %v", members, err)
+					}
+				}
+			}, shutdownRepairHost)
+			if exerciseErr != nil {
+				t.Fatal(exerciseErr)
+			}
+		})
+	}
+}
