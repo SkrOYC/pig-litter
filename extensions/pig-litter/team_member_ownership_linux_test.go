@@ -193,7 +193,7 @@ func TestNativeOwnershipPersistsAndReleasesAfterProcessExit(t *testing.T) {
 		}
 		snapshot := cloneMemberOwnership(intent)
 		failAppend.Store(true)
-		if err := o.clearMemberOwnership(ctx, selected.owner, selected, intent, snapshot); err == nil {
+		if err := o.clearMemberOwnership(ctx, selected.owner, selected, intent, snapshot, nil); err == nil {
 			t.Fatal("ownership release ignored a persistence failure")
 		}
 		tree.mu.Lock()
@@ -204,7 +204,7 @@ func TestNativeOwnershipPersistsAndReleasesAfterProcessExit(t *testing.T) {
 			t.Fatal("failed ownership release did not restore the fence")
 		}
 		failAppend.Store(false)
-		if err := o.clearMemberOwnership(ctx, selected.owner, selected, intent, snapshot); err != nil {
+		if err := o.clearMemberOwnership(ctx, selected.owner, selected, intent, snapshot, nil); err != nil {
 			t.Fatal(err)
 		}
 		failAppend.Store(true)

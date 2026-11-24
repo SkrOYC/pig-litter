@@ -22,6 +22,10 @@ func processBirth(int) (string, error) {
 	return "", errors.New("tmux process identity is unavailable on this platform")
 }
 
+func memberProcessScope(int) (string, error) {
+	return "", errors.New("native process scope is unavailable on this platform")
+}
+
 func memberProcessMatchesExecutable(int, string, string) (bool, error) {
 	return false, errors.New("native process identity is unavailable on this platform")
 }

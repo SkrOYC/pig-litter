@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -13,14 +14,16 @@ import (
 )
 
 type memberReadiness struct {
-	Window      string            `json:"window"`
-	Session     ChildID           `json:"session"`
-	Cwd         string            `json:"cwd"`
-	Model       string            `json:"model"`
-	Tools       []string          `json:"tools"`
-	SessionFile string            `json:"sessionFile"`
-	Leaf        *string           `json:"leaf"`
-	Entries     []json.RawMessage `json:"entries"`
+	Window        string            `json:"window"`
+	Session       ChildID           `json:"session"`
+	Cwd           string            `json:"cwd"`
+	Model         string            `json:"model"`
+	Tools         []string          `json:"tools"`
+	SessionFile   string            `json:"sessionFile"`
+	Leaf          *string           `json:"leaf"`
+	Entries       []json.RawMessage `json:"entries"`
+	HistoryCount  *int              `json:"historyCount,omitempty"`
+	HistoryDigest string            `json:"historyDigest,omitempty"`
 }
 
 type memberStartingLog struct {
@@ -74,16 +77,35 @@ func (queue *memberControlQueue) installReadiness(ctx context.Context, binding *
 	tools := slices.Clone(request.Tools)
 	slices.Sort(tools)
 	owned := binding.owned
-	if request.Session != binding.member.ID || request.Cwd != owned.Cwd || request.Model != owned.Model || !slices.Equal(tools, owned.Tools) || !filepath.IsAbs(request.SessionFile) || filepath.Dir(request.SessionFile) != owned.SessionDirectory || !strings.HasSuffix(filepath.Base(request.SessionFile), "_"+string(binding.member.ID)+".jsonl") || len(request.Entries) > 200 {
+	if request.Session != binding.member.ID || request.Cwd != owned.Cwd || request.Model != owned.Model || !slices.Equal(tools, owned.Tools) || !filepath.IsAbs(request.SessionFile) || filepath.Dir(request.SessionFile) != owned.SessionDirectory || !strings.HasSuffix(filepath.Base(request.SessionFile), "_"+string(binding.member.ID)+".jsonl") {
 		return reject("unavailable", "native readiness does not match its owned launch")
 	}
+	binding.run.mu.Lock()
+	resume := binding.run.nativeResume
+	binding.run.mu.Unlock()
+	var pin memberLogPin
+	var fresh *memberStartingLog
+	entries := request.Entries
+	if binding.run.resume {
+		if resume == nil || request.HistoryCount == nil || request.SessionFile != resume.log.path || len(request.Entries) != 0 {
+			return reject("unavailable", "native resume readiness has no matching history")
+		}
+		snapshot, err := readMemberLog(ctx, resume.log)
+		sameLeaf := request.Leaf == nil && resume.leaf == nil || request.Leaf != nil && resume.leaf != nil && *request.Leaf == *resume.leaf
+		if err != nil || len(snapshot.entries) != resume.log.baselineCount || memberEntriesDigest(snapshot.entries) != resume.log.baselineHash || *request.HistoryCount != resume.count || request.HistoryDigest != hex.EncodeToString(resume.digest[:]) || !sameLeaf {
+			return reject("unavailable", "native resume readiness does not match its history")
+		}
+		pin, entries = resume.log, snapshot.entries
+	} else if request.HistoryCount != nil || request.HistoryDigest != "" || len(entries) > 200 {
+		return reject("unavailable", "native readiness history exceeds its bound")
+	}
 	bytesTotal, foundLeaf := 0, request.Leaf == nil
-	for _, raw := range request.Entries {
+	for _, raw := range entries {
 		bytesTotal += len(raw)
 		var entry struct {
 			ID string `json:"id"`
 		}
-		if bytesTotal > 128*1024 || json.Unmarshal(raw, &entry) != nil {
+		if !binding.run.resume && bytesTotal > 128*1024 || json.Unmarshal(raw, &entry) != nil {
 			return reject("unavailable", "native readiness history exceeds its bound")
 		}
 		if request.Leaf != nil && entry.ID != "" && entry.ID == *request.Leaf {
@@ -93,29 +115,29 @@ func (queue *memberControlQueue) installReadiness(ctx context.Context, binding *
 	if !foundLeaf {
 		return reject("unavailable", "native readiness leaf was not observed")
 	}
-	var pin memberLogPin
-	var fresh *memberStartingLog
-	if _, err := os.Lstat(request.SessionFile); errors.Is(err, os.ErrNotExist) {
-		entries := make([]json.RawMessage, len(request.Entries))
-		for index, entry := range request.Entries {
-			entries[index] = bytes.Clone(entry)
-		}
-		fresh = &memberStartingLog{path: request.SessionFile, entries: entries}
-	} else if err != nil {
-		return err
-	} else {
-		pin, err = pinMemberLog(ctx, owned.SessionDirectory, request.SessionFile, owned.Cwd, binding.member.ID)
-		if err != nil {
+	if !binding.run.resume {
+		if _, err := os.Lstat(request.SessionFile); errors.Is(err, os.ErrNotExist) {
+			entries := make([]json.RawMessage, len(request.Entries))
+			for index, entry := range request.Entries {
+				entries[index] = bytes.Clone(entry)
+			}
+			fresh = &memberStartingLog{path: request.SessionFile, entries: entries}
+		} else if err != nil {
 			return err
-		}
-		snapshot, err := readMemberLog(ctx, pin)
-		if err != nil || len(snapshot.entries) != len(request.Entries) || memberEntriesDigest(snapshot.entries) != memberEntriesDigest(request.Entries) {
-			return reject("unavailable", "native readiness does not match its session history")
+		} else {
+			pin, err = pinMemberLog(ctx, owned.SessionDirectory, request.SessionFile, owned.Cwd, binding.member.ID)
+			if err != nil {
+				return err
+			}
+			snapshot, err := readMemberLog(ctx, pin)
+			if err != nil || len(snapshot.entries) != len(request.Entries) || memberEntriesDigest(snapshot.entries) != memberEntriesDigest(request.Entries) {
+				return reject("unavailable", "native readiness does not match its session history")
+			}
 		}
 	}
 	o := queue.owner
 	o.tree.mu.Lock()
-	if !o.memberBindingCurrentLocked(binding) || binding.ready || binding.run.resume || binding.run.ctx.Err() != nil || binding.record.paused {
+	if !o.memberBindingCurrentLocked(binding) || binding.ready || binding.run.ctx.Err() != nil || binding.record.paused {
 		o.tree.mu.Unlock()
 		return reject("unavailable", "native execution cannot accept readiness")
 	}

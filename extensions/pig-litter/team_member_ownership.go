@@ -49,6 +49,9 @@ func validMemberOwnership(ownership *memberOwnership, member *teamMember, cwd, m
 	if ownership.Tools == nil || !slices.IsSorted(ownership.Tools) {
 		return false
 	}
+	if len(ownership.ProcessScope) > 128 || strings.IndexFunc(ownership.ProcessScope, unicode.IsControl) >= 0 {
+		return false
+	}
 	for index, tool := range ownership.Tools {
 		if !validToolPattern(tool) || strings.ContainsAny(tool, "*?[") || index > 0 && ownership.Tools[index-1] == tool {
 			return false
@@ -106,6 +109,27 @@ func cloneMemberOwnership(ownership *memberOwnership) *memberOwnership {
 	return &copy
 }
 
+func cloneMemberSession(session *memberSession) *memberSession {
+	if session == nil {
+		return nil
+	}
+	copy := *session
+	copy.Tools = slices.Clone(session.Tools)
+	return &copy
+}
+
+func validMemberSession(session *memberSession, id ChildID, cwd, model string) bool {
+	if session == nil || !childUUID.MatchString(string(id)) || !filepath.IsAbs(cwd) || filepath.Clean(cwd) != cwd || strings.IndexFunc(cwd, unicode.IsControl) >= 0 || session.Model != model || !exactModel.MatchString(model) || !tmuxLaunchNonce.MatchString(session.Launch) || !filepath.IsAbs(session.File) || filepath.Clean(session.File) != session.File || strings.IndexFunc(session.File, unicode.IsControl) >= 0 || !strings.HasSuffix(filepath.Base(session.File), "_"+string(id)+".jsonl") || session.Tools == nil || !slices.IsSorted(session.Tools) {
+		return false
+	}
+	for index, tool := range session.Tools {
+		if !validToolPattern(tool) || strings.ContainsAny(tool, "*?[") || index > 0 && session.Tools[index-1] == tool {
+			return false
+		}
+	}
+	return true
+}
+
 func sameMemberOwnership(left, right *memberOwnership) bool {
 	if left == nil || right == nil || (left.Pane == nil) != (right.Pane == nil) {
 		return false
@@ -122,6 +146,14 @@ func (o *owner) reserveMemberLaunch(ctx context.Context, r *record, selected *ru
 	}
 	if err := server.verify(ctx); err != nil {
 		return nil, err
+	}
+	processScope, err := memberProcessScope(os.Getpid())
+	if err != nil {
+		return nil, err
+	}
+	serverScope, err := memberProcessScope(server.pid)
+	if err != nil || serverScope != processScope {
+		return nil, reject("unavailable", "tmux server process scope is unavailable")
 	}
 	directory, err := canonicalTeamDirectory(sessionDirectory)
 	if err != nil || directory != sessionDirectory {
@@ -158,7 +190,7 @@ func (o *owner) reserveMemberLaunch(ctx context.Context, r *record, selected *ru
 		tools = []string{}
 	}
 	ownership := &memberOwnership{
-		Backend: backendTmux, Member: r.team.Ref, Admission: r.team.AdmissionID, Execution: selected.noticeID, OwnerEpoch: o.epoch,
+		Backend: backendTmux, Member: r.team.Ref, Admission: r.team.AdmissionID, Execution: selected.noticeID, OwnerEpoch: o.epoch, ProcessScope: processScope,
 		Launch: launch.nonce, Cwd: r.cwd, Model: r.model, Tools: tools, SessionDirectory: sessionDirectory, Executable: launch.executable, ExecutableSHA256: digest, Manifest: launch.manifest,
 		Server: memberServerIdentity{Socket: server.socket, PID: server.pid, Birth: server.birth, Target: server.target},
 	}
@@ -175,6 +207,10 @@ func (o *owner) recordMemberPane(ctx context.Context, r *record, selected *run, 
 	identity := memberPaneIdentity{ID: pane.id, PID: pane.pid, Birth: pane.birth, Command: pane.command}
 	if err := verifyMemberPane(ctx, pane.server, identity); err != nil {
 		return err
+	}
+	processScope, err := memberProcessScope(pane.pid)
+	if err != nil || processScope != ownership.ProcessScope {
+		return reject("unavailable", "native member process scope is unavailable")
 	}
 	o.tree.lifecycleMu.Lock()
 	o.tree.mu.Lock()
@@ -224,10 +260,19 @@ func (o *owner) releaseMemberLaunch(ctx context.Context, r *record, selected *ru
 	if err := pane.close(ctx); err != nil {
 		return err
 	}
-	return o.clearMemberOwnership(ctx, r, selected, ownership, snapshot)
+	o.tree.mu.Lock()
+	var session *memberSession
+	if binding := r.native; binding != nil && binding.log.file != nil {
+		session = &memberSession{File: binding.log.path, Model: snapshot.Model, Tools: slices.Clone(snapshot.Tools), Launch: snapshot.Launch}
+	} else if selected.resume && r.nativeSession != nil {
+		session = cloneMemberSession(r.nativeSession)
+		session.Launch = snapshot.Launch
+	}
+	o.tree.mu.Unlock()
+	return o.clearMemberOwnership(ctx, r, selected, ownership, snapshot, session)
 }
 
-func (o *owner) clearMemberOwnership(ctx context.Context, r *record, selected *run, ownership, snapshot *memberOwnership) error {
+func (o *owner) clearMemberOwnership(ctx context.Context, r *record, selected *run, ownership, snapshot *memberOwnership, session *memberSession) error {
 	// Other persistence paths take lifecycleMu before persistMu, so never wait for the former while holding the latter.
 	for {
 		o.persistMu.Lock()
@@ -244,13 +289,14 @@ func (o *owner) clearMemberOwnership(ctx context.Context, r *record, selected *r
 	defer o.persistMu.Unlock()
 	o.tree.mu.Lock()
 	current, err := o.tree.currentLocked(selected)
-	if err != nil || current != r || r.nativeOwnership != ownership || r.nativeReleasing || !sameMemberOwnership(ownership, snapshot) {
+	if err != nil || current != r || r.nativeOwnership != ownership || r.nativeReleasing || !sameMemberOwnership(ownership, snapshot) || session != nil && (!validMemberSession(session, r.id, r.cwd, r.model) || filepath.Dir(session.File) != snapshot.SessionDirectory || session.Launch != snapshot.Launch || !slices.Equal(session.Tools, snapshot.Tools)) {
 		o.tree.mu.Unlock()
 		o.tree.lifecycleMu.Unlock()
 		return reject("unavailable", "native pane ownership changed during release")
 	}
 	binding := r.native
 	cleanupError := r.nativeCleanupError
+	previousSession := r.nativeSession
 	selected.mu.Lock()
 	member := selected.member
 	selected.member = nil
@@ -258,6 +304,9 @@ func (o *owner) clearMemberOwnership(ctx context.Context, r *record, selected *r
 	r.nativeReleasing = true
 	r.native, r.nativeOwnership = nil, nil
 	r.nativeCleanupError = ""
+	if session != nil {
+		r.nativeSession = cloneMemberSession(session)
+	}
 	o.tree.mu.Unlock()
 	o.tree.lifecycleMu.Unlock()
 	err = o.saveChildStateLocked(r, nil)
@@ -266,6 +315,7 @@ func (o *owner) clearMemberOwnership(ctx context.Context, r *record, selected *r
 		if err != nil {
 			r.native, r.nativeOwnership = binding, ownership
 			r.nativeCleanupError = cleanupError
+			r.nativeSession = previousSession
 			selected.mu.Lock()
 			if selected.member == nil {
 				selected.member = member

@@ -2,6 +2,8 @@ package piglitter
 
 import (
 	"encoding/json"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -68,6 +70,43 @@ func TestRestoredNativeOwnershipFencesResumeAndSessionWriter(t *testing.T) {
 			}, func(method string, raw json.RawMessage) json.RawMessage { return host.call(t, method, raw) })
 		})
 	}
+}
+
+func TestReconciledProvisionalNativeSessionSurvivesReopen(t *testing.T) {
+	store, agentDir, rootID, workspace := storeTestOpen(t)
+	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "member", workspace, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch := "0123456789abcdef0123456789abcdef"
+	if err := store.markNativeLaunch(member, launch); err != nil {
+		t.Fatal(err)
+	}
+	session := &memberSession{File: filepath.Join(agentDir, "session_"+string(member.Ref.ID)+".jsonl"), Model: "fixture/fixed", Tools: []string{"read"}, Launch: launch}
+	saved := savedChild{RootID: rootID, ID: member.Ref.ID, ParentID: rootID, Name: member.Name, Kind: "worker", Model: session.Model, Cwd: workspace.Cwd, Admitted: true, State: Unavailable, NoticeID: "execution", Team: &member, Backend: backendTmux, NativeSession: session}
+	host := &runtimeHost{entries: []map[string]any{{"customType": childEntryType, "data": saved}}}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openTeamStore(agentDir, rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	tree := testTree(t, defaultConfig())
+	tree.root.id = rootID
+	withCompletionHost(t, tree, func(o *owner) {
+		o.teamStore, o.agentDir, o.cwd = reopened, agentDir, workspace.Cwd
+		if err := o.restoreChildren(); err != nil {
+			t.Fatal(err)
+		}
+		tree.mu.Lock()
+		restored := tree.records[member.Ref.ID]
+		tree.mu.Unlock()
+		if restored == nil || restored.team == nil || !restored.paused || restored.nativeOwnership != nil || !reflect.DeepEqual(restored.nativeSession, session) || !restored.team.PlanRequired {
+			t.Fatalf("reconciled provisional session = %#v", restored)
+		}
+	}, func(method string, raw json.RawMessage) json.RawMessage { return host.call(t, method, raw) })
 }
 
 func TestProvisionalNativeOwnershipRejectsDifferentLaunch(t *testing.T) {

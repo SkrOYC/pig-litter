@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ type tmuxMemberScope struct {
 	queue     *memberControlQueue
 	control   *memberControlServer
 	attempted bool
+	marked    bool
 }
 
 func currentTmuxMemberEnvironment(ctx context.Context) (tmuxMemberEnvironment, error) {
@@ -56,10 +58,6 @@ func (o *owner) executeTmuxMember(r *record, selected *run, env tmuxMemberEnviro
 		outcome.Error = err.Error()
 		return
 	}
-	if selected.resume {
-		outcome.Error = "native member resume is not available"
-		return
-	}
 	trusted, err := o.context.IsProjectTrusted()
 	if err != nil {
 		outcome.Error = err.Error()
@@ -70,10 +68,31 @@ func (o *owner) executeTmuxMember(r *record, selected *run, env tmuxMemberEnviro
 		outcome.Error = "native member agent directory is unavailable: " + err.Error()
 		return
 	}
-	sessionDir, err := nativeSessionDirectory(r.cwd, agentDir, r.id, trusted)
-	if err != nil {
-		outcome.Error = err.Error()
-		return
+	var sessionDir string
+	var resumeSession *memberSession
+	if selected.resume {
+		selected.mu.Lock()
+		pin := selected.nativeResume
+		selected.mu.Unlock()
+		o.tree.mu.Lock()
+		resumeSession = cloneMemberSession(r.nativeSession)
+		o.tree.mu.Unlock()
+		if pin == nil || !validMemberSession(resumeSession, r.id, r.cwd, r.model) || pin.log.path != resumeSession.File {
+			outcome.Error = "native resume history is unavailable"
+			return
+		}
+		snapshot, readErr := readMemberLog(selected.ctx, pin.log)
+		if readErr != nil || len(snapshot.entries) != pin.log.baselineCount || memberEntriesDigest(snapshot.entries) != pin.log.baselineHash {
+			outcome.Error = "native resume history changed before launch"
+			return
+		}
+		sessionDir = filepath.Dir(pin.log.path)
+	} else {
+		sessionDir, err = nativeSessionDirectory(r.cwd, agentDir, r.id, trusted)
+		if err != nil {
+			outcome.Error = err.Error()
+			return
+		}
 	}
 	directory, err := newNativeMemberDirectory(agentDir)
 	if err != nil {
@@ -107,6 +126,9 @@ func (o *owner) executeTmuxMember(r *record, selected *run, env tmuxMemberEnviro
 	scope.manifest = filepath.Join(directory, "member-"+launchID+".json")
 	launch := tmuxLaunch{executable: env.executable, manifest: scope.manifest, cwd: r.cwd, nonce: launchID}
 	manifest := nativeMemberManifest{Version: 1, Launch: launchID, Session: r.id, Cwd: r.cwd, Model: r.model, Tools: []string{}, SessionDirectory: sessionDir, AgentDirectory: agentDir, PigHome: env.pigHome, UsePiDirs: env.usePiDirs, Socket: filepath.Join(directory, "member-control.sock"), Capability: hex.EncodeToString(capability[:]), Prompt: selected.prompt, Instructions: r.instructions, MailboxLimit: o.config.MaxMailbox, ProjectTrusted: trusted}
+	if resumeSession != nil {
+		manifest.ResumeFile = resumeSession.File
+	}
 	if err := manifest.validate(directory, filepath.Base(scope.manifest)); err != nil {
 		outcome.Error = err.Error()
 		return
@@ -123,8 +145,9 @@ func (o *owner) executeTmuxMember(r *record, selected *run, env tmuxMemberEnviro
 		return
 	}
 	store, err := o.teamStoreForRoot()
-	if err == nil {
+	if err == nil && !selected.resume {
 		err = store.markNativeLaunch(*member, launchID)
+		scope.marked = err == nil
 	}
 	if err != nil {
 		outcome.Error = err.Error()
@@ -134,6 +157,17 @@ func (o *owner) executeTmuxMember(r *record, selected *run, env tmuxMemberEnviro
 	if err != nil {
 		outcome.Error = err.Error()
 		return
+	}
+	if resumeSession != nil {
+		if !slices.Equal(scope.ownership.Tools, resumeSession.Tools) {
+			outcome.Error = "native teammate tool ceiling changed before launch"
+			return
+		}
+		if err := store.markNativeLaunch(*member, launchID, resumeSession.Launch); err != nil {
+			outcome.Error = err.Error()
+			return
+		}
+		scope.marked = true
 	}
 	manifest.Tools = scope.ownership.Tools
 	if err := manifest.validate(directory, filepath.Base(scope.manifest)); err != nil {
@@ -314,8 +348,17 @@ func (scope *tmuxMemberScope) close() error {
 	}
 	if cleared && scope.ownership != nil && scope.ownership.Pane == nil {
 		snapshot := cloneMemberOwnership(scope.ownership)
+		var session *memberSession
+		if scope.run.resume && scope.marked {
+			scope.owner.tree.mu.Lock()
+			session = cloneMemberSession(scope.record.nativeSession)
+			scope.owner.tree.mu.Unlock()
+			if session != nil {
+				session.Launch = snapshot.Launch
+			}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		failure = errors.Join(failure, scope.owner.clearMemberOwnership(ctx, scope.record, scope.run, scope.ownership, snapshot))
+		failure = errors.Join(failure, scope.owner.clearMemberOwnership(ctx, scope.record, scope.run, scope.ownership, snapshot, session))
 		cancel()
 	}
 	scope.owner.tree.mu.Lock()

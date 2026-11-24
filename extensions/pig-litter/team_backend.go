@@ -97,6 +97,20 @@ type memberLogSnapshot struct {
 	entries []json.RawMessage
 }
 
+type memberSession struct {
+	File   string   `json:"file"`
+	Model  string   `json:"model"`
+	Tools  []string `json:"tools"`
+	Launch string   `json:"launch"`
+}
+
+type memberResumePin struct {
+	log    memberLogPin
+	count  int
+	digest [32]byte
+	leaf   *string
+}
+
 type memberServerIdentity struct {
 	Socket string `json:"socket"`
 	PID    int    `json:"pid"`
@@ -117,6 +131,7 @@ type memberOwnership struct {
 	Admission        string               `json:"admission"`
 	Execution        string               `json:"execution"`
 	OwnerEpoch       uint64               `json:"ownerEpoch"`
+	ProcessScope     string               `json:"processScope,omitempty"`
 	Launch           string               `json:"launch"`
 	Cwd              string               `json:"cwd"`
 	Model            string               `json:"model"`

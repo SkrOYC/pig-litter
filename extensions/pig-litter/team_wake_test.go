@@ -88,6 +88,24 @@ func TestPeerWakeRequiresLiveAndStoredUnpausedState(t *testing.T) {
 	}
 }
 
+func TestNativePeerWakeDoesNotResumeWithoutExplicitInput(t *testing.T) {
+	owner, store, _, recipient, r, previous, started, release := peerWakeTestOwner(t, true)
+	defer close(release)
+	r.backend = backendTmux
+	if woke, err := owner.reservePeerWake(recipient.Ref, previous); err != nil || woke {
+		t.Fatalf("native peer wake started a resume: %v, %v", woke, err)
+	}
+	select {
+	case <-started:
+		t.Fatal("native peer wake launched a member")
+	default:
+	}
+	_, members, err := store.Snapshot()
+	if err != nil || len(members) != 2 || members[1].State != "idle" || r.run != previous {
+		t.Fatalf("native peer wake changed retained state: %#v, %v", members, err)
+	}
+}
+
 func TestPeerWakeWaitsForFinishAndCoalescesRequests(t *testing.T) {
 	owner, store, _, recipient, r, previous, started, release := peerWakeTestOwner(t, false)
 	defer func() {

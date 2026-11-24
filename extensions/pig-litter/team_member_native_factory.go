@@ -5,6 +5,7 @@ package piglitter
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -185,6 +186,12 @@ func (member *nativeMember) sessionReady(ctx context.Context) error {
 		return err
 	}
 	request := memberReadiness{Window: string(window), Session: member.manifest.Session, Cwd: cwd, Model: nativeModelName(model), Tools: tools, SessionFile: *manager.GetSessionFile(), Leaf: manager.GetLeafID(), Entries: entries}
+	if member.manifest.ResumeFile != "" {
+		count, digest := len(entries), memberEntriesDigest(entries)
+		request.Entries = nil
+		request.HistoryCount = &count
+		request.HistoryDigest = hex.EncodeToString(digest[:])
+	}
 	var reply map[string]bool
 	readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

@@ -182,7 +182,7 @@ func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error
 	}
 	t.mu.Lock()
 	r := t.records[recipient.ID]
-	if t.closed || t.root.paused || r == nil || r.team == nil || r.team.Ref != recipient || !r.admitted || r.paused || r.run != previous || previous.state != Completed || previous.finishing {
+	if t.closed || t.root.paused || r == nil || r.team == nil || r.team.Ref != recipient || r.backend == backendTmux || !r.admitted || r.paused || r.run != previous || previous.state != Completed || previous.finishing {
 		t.mu.Unlock()
 		t.lifecycleMu.Unlock()
 		return false, nil

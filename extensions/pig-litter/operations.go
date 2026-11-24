@@ -584,6 +584,7 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 	}
 	if name == "litter_message" {
 		mode := args.Mode
+		var nativeResume *memberResumePin
 		if mode == "" {
 			mode = "steer"
 		}
@@ -592,8 +593,12 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			o.tree.mu.Lock()
 			target, err := o.tree.currentLocked(selected)
 			var model string
+			var native *record
 			if err == nil {
 				model = target.model
+				if target.backend == backendTmux {
+					native = target
+				}
 			}
 			o.tree.mu.Unlock()
 			if err != nil {
@@ -605,6 +610,12 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			if _, err := o.rootToolNames(); err != nil {
 				return nil, err
 			}
+			if native != nil {
+				nativeResume, err = o.prepareNativeResume(ctx, native, selected)
+				if err != nil {
+					return nil, err
+				}
+			}
 		}
 		snapshot, execution, err := o.tree.message(ctx, caller, selected, mode, args.Text)
 		if err != nil {
@@ -612,6 +623,11 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		}
 		delivery := "queued"
 		if mode == "resume" {
+			if nativeResume != nil {
+				execution.mu.Lock()
+				execution.nativeResume = nativeResume
+				execution.mu.Unlock()
+			}
 			delivery = "resumed"
 			o.deferActivation(key, execution, activationContext.Done(), func() bool { return activationContext.Err() != nil }, name)
 			if toolContext != nil {

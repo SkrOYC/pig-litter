@@ -21,6 +21,7 @@ type nativeMemberManifest struct {
 	Model            string   `json:"model"`
 	Tools            []string `json:"tools"`
 	SessionDirectory string   `json:"sessionDirectory"`
+	ResumeFile       string   `json:"resumeFile,omitempty"`
 	AgentDirectory   string   `json:"agentDirectory"`
 	PigHome          string   `json:"pigHome,omitempty"`
 	UsePiDirs        bool     `json:"usePiDirs,omitempty"`
@@ -85,6 +86,9 @@ func (manifest nativeMemberManifest) validate(directory, name string) error {
 	}
 	if manifest.PigHome != "" && !filepath.IsAbs(manifest.PigHome) {
 		return errors.New("native member configuration root must be absolute")
+	}
+	if manifest.ResumeFile != "" && (!filepath.IsAbs(manifest.ResumeFile) || filepath.Clean(manifest.ResumeFile) != manifest.ResumeFile || filepath.Dir(manifest.ResumeFile) != manifest.SessionDirectory || !strings.HasSuffix(filepath.Base(manifest.ResumeFile), "_"+string(manifest.Session)+".jsonl")) {
+		return errors.New("native member resume file does not match its session")
 	}
 	if !filepath.IsAbs(manifest.Socket) || filepath.Dir(manifest.Socket) != directory {
 		return errors.New("native member control socket is outside its private directory")

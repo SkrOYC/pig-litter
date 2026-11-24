@@ -33,6 +33,10 @@ func TestTmuxProvisionalStartupPreservesOwnership(t *testing.T) {
 	}
 }
 
+func TestTmuxNativeResumeAfterRootLoss(t *testing.T) {
+	testTmuxRootOwnedMemberLifetime(t, "resume")
+}
+
 func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 	unresolved := strings.HasPrefix(name, "unresolved_")
 	isolated := strings.HasSuffix(name, "_isolated")
@@ -152,7 +156,7 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 			t.Fatal(err)
 		}
 	}
-	member, err := store.Reserve(memberID, string(storeTestUUID(3)), "member", workspace, name == "unresolved_shared")
+	member, err := store.Reserve(memberID, string(storeTestUUID(3)), "member", workspace, name == "unresolved_shared" || name == "resume")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +425,15 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 			observed = ownership
 			tmux("pipe-pane", "-o", "-t", ownership.Pane.ID, "cat > "+filepath.Join(rootPath, "terminal.raw"))
 			_ = os.WriteFile(filepath.Join(rootPath, "during.ansi"), []byte(tmux("capture-pane", "-p", "-e", "-t", ownership.Pane.ID)), 0o600)
-			if name == "root_loss" {
+			if name == "root_loss" || name == "resume" {
+				if name == "resume" {
+					if err := confirmOldMemberGone(ctx, ownership); err == nil {
+						t.Fatal("live native process was accepted for reconciliation")
+					}
+					if birth, err := processBirth(ownership.Pane.PID); err != nil || birth != ownership.Pane.Birth {
+						t.Fatalf("live reconciliation changed the native process: %q, %v", birth, err)
+					}
+				}
 				closed := make(chan struct{})
 				go func() { tree.close(); close(closed) }()
 				select {
@@ -431,6 +443,9 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 				}
 				if _, err := processBirth(ownership.Pane.PID); !os.IsNotExist(err) {
 					t.Fatalf("native process survived root close: %v", err)
+				}
+				if name == "resume" {
+					retainedOwnership = ownership
 				}
 			} else {
 				root.mu.Lock()
@@ -543,5 +558,166 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 				t.Error(err)
 			}
 		}, func(method string, raw json.RawMessage) json.RawMessage { return host.call(t, method, raw) })
+	}
+	if name == "resume" {
+		if retainedOwnership == nil {
+			t.Fatal("root loss did not retain ownership")
+		}
+		changed := cloneMemberOwnership(retainedOwnership)
+		changed.Pane.ID = unrelated
+		if err := confirmOldMemberGone(ctx, changed); err == nil {
+			t.Fatal("an unrelated pane was accepted for reconciliation")
+		}
+		if panes := tmux("list-panes", "-a", "-F", "#{pane_id}"); !strings.Contains(panes, unrelated) {
+			t.Fatal("reconciliation changed the unrelated pane")
+		}
+		path, err := uniqueNativeSession(retainedOwnership.SessionDirectory, memberID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		original, err := pinMemberLog(ctx, retainedOwnership.SessionDirectory, path, cwd, memberID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := openTeamStore(agentDir, rootID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reopened.Close()
+		recovered := testTree(t, config)
+		recovered.root.id = rootID
+		withCompletionHost(t, recovered, func(o *owner) {
+			trusted := true
+			services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: cwd, AgentDir: agentDir, ProjectTrusted: &trusted})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer services.Close()
+			o.teamStore, o.agentDir, o.cwd, o.services = reopened, agentDir, cwd, services
+			recovered.persist, recovered.teamFinished, recovered.teamResuming = o.saveChild, o.finishTeamMember, o.resumeTeamMember
+			recovered.execute = func(r *record, run *run) Outcome {
+				return o.executeTmuxMember(r, run, tmuxMemberEnvironment{server: server, executable: memberBinary, pigHome: filepath.Join(home, ".pig")})
+			}
+			beforeRequests := probeCount(provider, "event", "request")
+			if err := o.restoreChildren(); err != nil {
+				t.Fatal(err)
+			}
+			recovered.mu.Lock()
+			restored := recovered.records[memberID]
+			planRetained := restored != nil && restored.team != nil && restored.team.PlanRequired
+			recovered.mu.Unlock()
+			if !planRetained {
+				t.Fatal("native recovery lost the teammate planning policy")
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatal("root recovery timed out")
+			case <-time.After(100 * time.Millisecond):
+			}
+			if probeCount(provider, "event", "request") != beforeRequests {
+				t.Fatal("root recovery automatically resumed the native member")
+			}
+			resumeText := "RESUME_ONCE\nQUEUE_GATE"
+			beforeGate := probeCount(provider, "event", "queue_gate_wait")
+			value, ticket, err := runtimeOperation(t, o, "litter_message", "native-resume", map[string]any{"id": memberID, "resume": true, "text": resumeText})
+			if err != nil || value["delivery"] != "resumed" {
+				t.Fatalf("explicit native resume = %#v, %v", value, err)
+			}
+			o.settleAck(ticket, false)
+			resumed, err := recovered.selectRun(memberID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			probeWait(t, ctx, "resumed native provider request", func() bool {
+				select {
+				case <-resumed.done:
+					return true
+				default:
+					return probeCount(provider, "event", "queue_gate_wait") > beforeGate
+				}
+			})
+			if probeCount(provider, "event", "queue_gate_wait") <= beforeGate {
+				t.Errorf("native resume ended before its provider request: %#v", resumed.outcome)
+				return
+			}
+			recovered.mu.Lock()
+			resumedOwnership := cloneMemberOwnership(resumed.owner.nativeOwnership)
+			recovered.mu.Unlock()
+			if resumedOwnership == nil || resumedOwnership.Pane == nil {
+				t.Fatal("resumed native pane was not retained")
+			}
+			tmux("pipe-pane", "-o", "-t", resumedOwnership.Pane.ID, "cat > "+filepath.Join(rootPath, "resume-terminal.raw"))
+			_ = os.WriteFile(filepath.Join(rootPath, "resume.ansi"), []byte(tmux("capture-pane", "-p", "-e", "-t", resumedOwnership.Pane.ID)), 0o600)
+			root.mu.Lock()
+			root.queueProvider = true
+			root.mu.Unlock()
+			select {
+			case <-resumed.done:
+			case <-ctx.Done():
+				t.Fatal("native resume did not settle")
+			}
+			if resumed.executorDone != nil {
+				<-resumed.executorDone
+			}
+			if resumed.outcome == nil || resumed.outcome.State != Completed || resumed.outcome.Text != "QUEUE_GATE_DONE" {
+				t.Errorf("native resume outcome = %#v", resumed.outcome)
+				return
+			}
+			_, roster, pending, err := reopened.SnapshotWithReservations()
+			if err != nil || len(roster) != 1 || !roster[0].PlanRequired || len(pending) != 0 {
+				t.Fatalf("native resume changed the planning policy: %#v %#v %v", roster, pending, err)
+			}
+			entries, err := os.ReadDir(retainedOwnership.SessionDirectory)
+			if err != nil || len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), "_"+string(memberID)+".jsonl") {
+				t.Fatalf("native resume session files = %#v, %v", entries, err)
+			}
+			snapshot, err := readMemberLog(ctx, original)
+			if err != nil || len(snapshot.entries) <= original.baselineCount || memberEntriesDigest(snapshot.entries[:original.baselineCount]) != original.baselineHash {
+				t.Fatalf("native resume changed prior history: %v", err)
+			}
+			newInputs := 0
+			for _, raw := range snapshot.entries[original.baselineCount:] {
+				var entry struct {
+					Message struct {
+						Role    string          `json:"role"`
+						Content json.RawMessage `json:"content"`
+					} `json:"message"`
+				}
+				if json.Unmarshal(raw, &entry) == nil && entry.Message.Role == "user" {
+					var blocks []struct{ Type, Text string }
+					if json.Unmarshal(entry.Message.Content, &blocks) == nil {
+						for _, block := range blocks {
+							if block.Type == "text" && block.Text == "Task:\nQUEUE_GATE" {
+								t.Error("native resume replayed the original task")
+							}
+							if block.Type == "text" && block.Text == resumeText {
+								newInputs++
+							}
+						}
+					}
+				}
+			}
+			if newInputs != 1 {
+				t.Fatalf("native resume appended the new input %d times", newInputs)
+			}
+			if panes := tmux("list-panes", "-a", "-F", "#{pane_id}"); !strings.Contains(panes, unrelated) || strings.Contains(panes, retainedOwnership.Pane.ID) {
+				t.Fatalf("native resume changed unrelated panes: %q", panes)
+			}
+			data, _ := json.Marshal(map[string]any{"session": memberID, "file": path, "priorEntries": original.baselineCount, "newInputs": newInputs, "outcome": resumed.outcome})
+			if err := os.WriteFile(filepath.Join(rootPath, "resume.json"), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, func(method string, raw json.RawMessage) json.RawMessage {
+			if method == "getModelRegistryState" {
+				return json.RawMessage(`{"models":[{"provider":"fixture","id":"fixed"}],"providers":{"fixture":{"configured":true}},"registered":[]}`)
+			}
+			if method == "sendMessage" {
+				return json.RawMessage(`{}`)
+			}
+			return host.call(t, method, raw)
+		})
 	}
 }

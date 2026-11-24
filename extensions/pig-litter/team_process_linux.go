@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 
+	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 )
 
@@ -61,6 +63,39 @@ func processBirth(pid int) (string, error) {
 		return "", fmt.Errorf("invalid process birth for %d: %w", pid, err)
 	}
 	return fields[19], nil
+}
+
+func memberProcessScope(pid int) (string, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	for _, path := range []string{"/proc/self/stat", "/proc/sys/kernel/random/boot_id", "/proc/self/ns", "/proc/" + strconv.Itoa(pid) + "/ns"} {
+		var fs unix.Statfs_t
+		if err := unix.Statfs(path, &fs); err != nil || fs.Type != unix.PROC_SUPER_MAGIC {
+			return "", errors.New("native process scope is not available from procfs")
+		}
+	}
+	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return "", err
+	}
+	bootID, err := uuid.Parse(strings.TrimSpace(string(boot)))
+	if err != nil || bootID == uuid.Nil {
+		return "", errors.New("native process boot identity is invalid")
+	}
+	namespaces := make([]string, 0, 2)
+	for _, name := range []string{"pid", "time"} {
+		link, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/ns/" + name)
+		number, ok := strings.CutPrefix(link, name+":[")
+		if err != nil || !ok || !strings.HasSuffix(number, "]") {
+			return "", errors.New("native process namespace is unavailable")
+		}
+		inode, err := strconv.ParseUint(strings.TrimSuffix(number, "]"), 10, 64)
+		if err != nil || inode == 0 {
+			return "", errors.New("native process namespace is invalid")
+		}
+		namespaces = append(namespaces, fmt.Sprintf("%s:[%d]", name, inode))
+	}
+	return "linux:" + bootID.String() + ":" + strings.Join(namespaces, ":"), nil
 }
 
 func memberProcessMatchesExecutable(pid int, birth, executable string) (bool, error) {

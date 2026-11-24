@@ -93,6 +93,7 @@ type record struct {
 	nativeOwnership                      *memberOwnership
 	nativeReleasing                      bool
 	nativeCleanupError                   string
+	nativeSession                        *memberSession
 	run                                  *run
 	previous                             *run
 	paused                               bool
@@ -170,6 +171,7 @@ type run struct {
 	continuation    string
 	resumePaused    bool
 	resume          bool
+	nativeResume    *memberResumePin
 	peerWake        *peerWakeInput
 	mailbox         chan message
 	mu              sync.Mutex

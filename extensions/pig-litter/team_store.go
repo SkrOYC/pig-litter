@@ -180,8 +180,8 @@ func (s *teamStore) claimLocked(created bool, lock *flock.Flock) error {
 	return nil
 }
 
-func (s *teamStore) markNativeLaunch(member teamMember, launch string) error {
-	if !tmuxLaunchNonce.MatchString(launch) {
+func (s *teamStore) markNativeLaunch(member teamMember, launch string, previous ...string) error {
+	if !tmuxLaunchNonce.MatchString(launch) || len(previous) > 1 || len(previous) == 1 && !tmuxLaunchNonce.MatchString(previous[0]) {
 		return reject("unavailable", "invalid native launch identity")
 	}
 	return s.transact(func(roster *teamRoster) (bool, error) {
@@ -195,7 +195,7 @@ func (s *teamStore) markNativeLaunch(member teamMember, launch string) error {
 			if reservation.Member.Ref != member.Ref || reservation.Member.AdmissionID != member.AdmissionID {
 				continue
 			}
-			if reservation.NativeLaunch != "" && reservation.NativeLaunch != launch {
+			if reservation.NativeLaunch != "" && reservation.NativeLaunch != launch && (len(previous) != 1 || reservation.NativeLaunch != previous[0]) {
 				return false, reject("unavailable", "provisional native launch identity changed")
 			}
 			changed := reservation.NativeLaunch == ""

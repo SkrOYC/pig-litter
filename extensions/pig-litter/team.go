@@ -382,6 +382,26 @@ func (o *owner) resumeTeamMember(r *record, selected *run) error {
 	if err != nil {
 		return err
 	}
+	selected.mu.Lock()
+	nativeResume := selected.nativeResume != nil
+	selected.mu.Unlock()
+	if nativeResume {
+		o.tree.mu.Lock()
+		session := cloneMemberSession(r.nativeSession)
+		o.tree.mu.Unlock()
+		_, pending, err := store.recoverySnapshot()
+		if err != nil {
+			return err
+		}
+		for _, reservation := range pending {
+			if reservation.Member.Ref == r.team.Ref && reservation.Member.AdmissionID == r.team.AdmissionID {
+				if session == nil || reservation.NativeLaunch != session.Launch && !(reservation.NativeLaunch == "" && reservation.Member.Workspace.Kind == "isolated_worktree") || reservation.Member.Workspace != r.team.Workspace || reservation.Member.PlanRequired != r.team.PlanRequired {
+					return reject("unavailable", "provisional native resume identity changed")
+				}
+				return o.current()
+			}
+		}
+	}
 	lifecycle, err := store.readLifecycle(r.team.Ref)
 	if err != nil {
 		return err
@@ -402,7 +422,7 @@ func (o *owner) rollbackTeamMember(member *teamMember) error {
 	if o.tree != nil {
 		o.tree.mu.Lock()
 		r := o.tree.records[member.Ref.ID]
-		unresolved := r != nil && r.team != nil && r.team.Ref == member.Ref && r.team.AdmissionID == member.AdmissionID && (r.nativeOwnership != nil || r.nativeReleasing)
+		unresolved := r != nil && r.team != nil && r.team.Ref == member.Ref && r.team.AdmissionID == member.AdmissionID && (r.nativeOwnership != nil || r.nativeReleasing || r.backend == backendTmux && r.nativeSession != nil && r.run != nil && r.run.resume)
 		o.tree.mu.Unlock()
 		if unresolved {
 			return reject("unavailable", "native ownership requires reconciliation before teammate rollback")

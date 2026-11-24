@@ -21,6 +21,7 @@ func TestNativeMemberManifestBindsPrivateLaunch(t *testing.T) {
 	launch := "0123456789abcdef0123456789abcdef"
 	path := filepath.Join(directory, "member-"+launch+".json")
 	manifest := nativeMemberManifest{Version: 1, Launch: launch, Session: storeTestUUID(2), Cwd: filepath.Join(directory, "work"), Model: "fixture/fixed", Tools: []string{"read", "write"}, SessionDirectory: filepath.Join(directory, "sessions"), AgentDirectory: filepath.Join(directory, "agent"), PigHome: filepath.Join(directory, "pig"), UsePiDirs: true, Socket: filepath.Join(directory, "control.sock"), Capability: strings.Repeat("a", 64), Prompt: "Task:\ninspect", MailboxLimit: 2}
+	manifest.ResumeFile = filepath.Join(manifest.SessionDirectory, "session_"+string(manifest.Session)+".jsonl")
 	write := func(t *testing.T, value any) {
 		t.Helper()
 		data, err := json.Marshal(value)
@@ -30,7 +31,7 @@ func TestNativeMemberManifestBindsPrivateLaunch(t *testing.T) {
 	}
 	write(t, manifest)
 	loaded, err := readNativeMemberManifest(path)
-	if err != nil || loaded.Session != manifest.Session || loaded.Model != manifest.Model || loaded.Cwd != manifest.Cwd || loaded.PigHome != manifest.PigHome || !loaded.UsePiDirs {
+	if err != nil || loaded.Session != manifest.Session || loaded.Model != manifest.Model || loaded.Cwd != manifest.Cwd || loaded.PigHome != manifest.PigHome || !loaded.UsePiDirs || loaded.ResumeFile != manifest.ResumeFile {
 		t.Fatalf("valid manifest = %#v, %v", loaded, err)
 	}
 	for name, change := range map[string]func(*nativeMemberManifest){
@@ -39,6 +40,9 @@ func TestNativeMemberManifestBindsPrivateLaunch(t *testing.T) {
 		"invalid model":   func(value *nativeMemberManifest) { value.Model = "fixed" },
 		"empty seed":      func(value *nativeMemberManifest) { value.Prompt = " \n" },
 		"bad capability":  func(value *nativeMemberManifest) { value.Capability = "not-a-capability" },
+		"foreign session": func(value *nativeMemberManifest) {
+			value.ResumeFile = filepath.Join(value.SessionDirectory, "other_"+string(storeTestUUID(4))+".jsonl")
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			changed := manifest

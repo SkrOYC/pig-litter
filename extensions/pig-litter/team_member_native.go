@@ -106,7 +106,11 @@ func RunNativeMember(path string) error {
 	}
 	defer member.admission.Close()
 	parts := strings.SplitN(manifest.Model, "/", 2)
-	args := []string{"--session-id", string(manifest.Session), "--session-dir", manifest.SessionDirectory, "--model", manifest.Model, "--tools", strings.Join(manifest.Tools, ","), "--no-extensions"}
+	args := []string{"--session-id", string(manifest.Session)}
+	if manifest.ResumeFile != "" {
+		args = []string{"--session", manifest.ResumeFile}
+	}
+	args = append(args, "--session-dir", manifest.SessionDirectory, "--model", manifest.Model, "--tools", strings.Join(manifest.Tools, ","), "--no-extensions")
 	for _, builtin := range []struct{ tool, extension string }{{"codemode", "builtin:codemode"}, {"tool_search", "builtin:tool-search"}} {
 		if slices.Contains(manifest.Tools, builtin.tool) {
 			args = append(args, "-e", builtin.extension)

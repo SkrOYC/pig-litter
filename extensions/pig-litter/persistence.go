@@ -48,6 +48,7 @@ type savedChild struct {
 	Backend            backendRequest   `json:"backend,omitempty"`
 	Native             *memberOwnership `json:"native,omitempty"`
 	NativeCleanupError string           `json:"nativeCleanupError,omitempty"`
+	NativeSession      *memberSession   `json:"nativeSession,omitempty"`
 }
 
 func (o *owner) saveChild(r *record) error {
@@ -84,6 +85,7 @@ func (o *owner) saveChildStateLocked(r *record, terminated *run) error {
 	}
 	saved.Native = cloneMemberOwnership(r.nativeOwnership)
 	saved.NativeCleanupError = r.nativeCleanupError
+	saved.NativeSession = cloneMemberSession(r.nativeSession)
 	saved.PendingInputs = slices.Clone(r.pendingInputs)
 	if r.latest != nil {
 		copy := *r.latest
@@ -322,16 +324,25 @@ func (o *owner) restoreChildren() error {
 		if len(saved.NativeCleanupError) > 1024 || saved.NativeCleanupError != "" && saved.Team == nil {
 			return reject("unavailable", "stored native cleanup status is invalid")
 		}
+		if saved.NativeSession != nil && (saved.Team == nil || saved.Backend != "" && saved.Backend != backendTmux || !validMemberSession(saved.NativeSession, saved.ID, saved.Cwd, saved.Model)) {
+			return reject("unavailable", "stored native session identity is invalid")
+		}
 		if saved.Team != nil {
 			member, exists := members[saved.ID]
 			reservation, provisional := reservations[saved.ID]
 			if !exists && provisional {
 				member, exists = reservation.Member, true
-				if saved.Native == nil {
+				if saved.Native == nil && saved.NativeSession == nil {
 					delete(latest, saved.ID)
 					continue
 				}
-				if reservation.NativeLaunch != "" && reservation.NativeLaunch != saved.Native.Launch {
+				launch := ""
+				if saved.Native != nil {
+					launch = saved.Native.Launch
+				} else {
+					launch = saved.NativeSession.Launch
+				}
+				if reservation.NativeLaunch != "" && reservation.NativeLaunch != launch {
 					return reject("unavailable", "provisional native launch identity does not match its reservation")
 				}
 			}
@@ -341,7 +352,7 @@ func (o *owner) restoreChildren() error {
 				proofs[saved.ID] = proof
 			}
 			if !exists || invalidTeam[saved.ID] || saved.ParentID != o.tree.root.id || member.Ref != saved.Team.Ref || member.AdmissionID != saved.Team.AdmissionID || member.Name != saved.Name || member.Workspace.Cwd != saved.Cwd || member.Workspace != saved.Team.Workspace || member.PlanRequired != saved.Team.PlanRequired || proof.err != nil || proof.known && proof.mode != member.PlanRequired || !proof.known && member.PlanRequired && !provisional {
-				if provisional && saved.Native != nil {
+				if provisional && (saved.Native != nil || saved.NativeSession != nil) {
 					return reject("unavailable", "provisional native ownership does not match its reservation")
 				}
 				invalidTeam[saved.ID] = true
@@ -358,6 +369,9 @@ func (o *owner) restoreChildren() error {
 		}
 		if saved.Native != nil && saved.Backend != "" && saved.Backend != saved.Native.Backend {
 			return reject("unavailable", "stored native member backend does not match its ownership")
+		}
+		if saved.Backend == "" && saved.Native != nil {
+			saved.Backend = saved.Native.Backend
 		}
 		if !seen[saved.ID] {
 			order = append(order, saved.ID)
@@ -392,7 +406,7 @@ func (o *owner) restoreChildren() error {
 	}
 	order = slices.DeleteFunc(order, func(id ChildID) bool { return invalidTeam[id] })
 	for id, saved := range latest {
-		if saved.Native == nil {
+		if saved.Native == nil && (saved.NativeSession == nil || reservations[id].Member.Ref.ID == "") {
 			continue
 		}
 		member, committed := members[id]
@@ -412,10 +426,14 @@ func (o *owner) restoreChildren() error {
 		}
 		saved.Paused = true
 		saved.Team = &member
-		if saved.NativeCleanupError == "" {
+		message := "native teammate requires explicit resume"
+		if saved.Native != nil && saved.NativeCleanupError == "" {
 			saved.NativeCleanupError = "native pane ownership requires reconciliation"
 		}
-		saved.Latest = &Outcome{Run: Ref{id}, Model: saved.Model, State: saved.State, Error: "native pane ownership requires reconciliation"}
+		if saved.Native != nil {
+			message = "native pane ownership requires reconciliation"
+		}
+		saved.Latest = &Outcome{Run: Ref{id}, Model: saved.Model, State: saved.State, Error: message}
 		latest[id] = saved
 	}
 	for len(order) != 0 {
@@ -455,7 +473,7 @@ func (o *owner) restoreChildren() error {
 			if _, exists := o.tree.names[key]; exists && saved.Team == nil {
 				return reject("unavailable", "stored child names conflict")
 			}
-			r := &record{id: id, team: saved.Team, backend: saved.Backend, nativeOwnership: cloneMemberOwnership(saved.Native), nativeCleanupError: saved.NativeCleanupError, parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest, controlPhase: controlPhases[id]}
+			r := &record{id: id, team: saved.Team, backend: saved.Backend, nativeOwnership: cloneMemberOwnership(saved.Native), nativeCleanupError: saved.NativeCleanupError, nativeSession: cloneMemberSession(saved.NativeSession), parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest, controlPhase: controlPhases[id]}
 			r.pendingInputs = saved.PendingInputs
 			r.run = o.tree.newRunLocked(Ref{id}, "")
 			r.run.owner, r.run.noticeID, r.run.state = r, saved.NoticeID, saved.State
