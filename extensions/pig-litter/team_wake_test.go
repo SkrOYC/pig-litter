@@ -1,6 +1,10 @@
 package piglitter
 
 import (
+	"context"
+	"fmt"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -114,5 +118,181 @@ func TestPeerWakeWaitsForFinishAndCoalescesRequests(t *testing.T) {
 	owner.tree.mu.Unlock()
 	if current == previous {
 		t.Fatal("the retained member did not receive a new run")
+	}
+}
+
+func waitForPeerWakeWaiter(t *testing.T, owner *owner) {
+	t.Helper()
+	target := fmt.Sprintf("(*owner).drivePeerWake(%p,", owner)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		buffer := make([]byte, 1<<20)
+		n := runtime.Stack(buffer, true)
+		for _, stack := range strings.Split(string(buffer[:n]), "\n\n") {
+			if strings.Contains(stack, "[select]") && strings.Contains(stack, target) {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("peer wake did not wait for the pending resume")
+}
+
+func TestPeerWakeAfterCancelledResumeAcknowledgement(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		t.Run(map[bool]string{false: "idle", true: "paused"}[paused], func(t *testing.T) {
+			owner, store, sender, recipient, r, previous, started, release := peerWakeTestOwner(t, true)
+			defer close(release)
+			if paused {
+				owner.tree.mu.Lock()
+				r.paused = true
+				owner.tree.mu.Unlock()
+				if err := store.SetState(recipient.Ref, "paused"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, pending, err := owner.tree.resume(nil, previous, "continue")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			owner.acks = make(map[*callTicket]*acknowledgement)
+			ticket := &callTicket{callID: "resume", operation: "litter_message"}
+			owner.deferActivation(ticket, pending, ctx.Done(), func() bool { return ctx.Err() != nil }, "litter_message")
+			receipt, _, err := store.acceptPeer(sender.Ref, peerRequest{Recipient: "bob", MessageID: "wake-1", Text: "hello", Summary: "greeting"})
+			if err != nil || receipt.State != peerAccepted || receipt.Envelope.Sender != sender.Ref || receipt.Envelope.Recipient != recipient.Ref {
+				t.Fatalf("same-ID retry: %#v, %v", receipt, err)
+			}
+			owner.requestPeerWake(recipient.Ref)
+			waitForPeerWakeWaiter(t, owner)
+			cancel()
+			owner.ackWG.Wait()
+			if paused {
+				finished := make(chan struct{})
+				go func() {
+					owner.tree.peerWakeWG.Wait()
+					close(finished)
+				}()
+				select {
+				case <-finished:
+				case <-time.After(3 * time.Second):
+					t.Fatal("peer wake stayed blocked after the cancelled resume")
+				}
+				select {
+				case <-started:
+					t.Fatal("cancelled resume woke a paused teammate")
+				default:
+				}
+			} else {
+				select {
+				case selected := <-started:
+					if selected == pending || selected.peerWake == nil || selected.peerWake.Recipient != recipient.Ref {
+						t.Fatalf("unexpected wake after cancelled resume: %#v", selected)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("accepted peer message remained stranded after the cancelled resume")
+				}
+			}
+			key, err := peerKey(receipt.Envelope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, path := peerPaths(store.dir, key)
+			stored, err := readPeerReceipt(path)
+			want := peerAttempted
+			if paused {
+				want = peerAccepted
+			}
+			if err != nil || stored.Envelope != receipt.Envelope || stored.State != want {
+				t.Fatalf("peer receipt after cancelled resume: %#v, %v", stored, err)
+			}
+			_, members, err := store.Snapshot()
+			wantState := "running"
+			if paused {
+				wantState = "paused"
+			}
+			if err != nil || len(members) != 2 || members[0].Ref != sender.Ref || members[1].Ref != recipient.Ref || members[1].State != wantState {
+				t.Fatalf("cancelled resume changed team membership: %#v, %v", members, err)
+			}
+		})
+	}
+}
+
+func TestPeerWakeWaitsForSettlementAlreadyInProgress(t *testing.T) {
+	owner, _, _, recipient, r, previous, started, release := peerWakeTestOwner(t, true)
+	defer close(release)
+	_, pending, err := owner.tree.resume(nil, previous, "continue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.requestPeerWake(recipient.Ref)
+	waitForPeerWakeWaiter(t, owner)
+	settling, allowSettlement := make(chan struct{}), make(chan struct{})
+	settlementReleased := false
+	defer func() {
+		if !settlementReleased {
+			close(allowSettlement)
+		}
+	}()
+	owner.tree.teamFinished = func(r *record, selected *run, outcome Outcome) error {
+		close(settling)
+		<-allowSettlement
+		return owner.finishTeamMember(r, selected, outcome)
+	}
+	settled := make(chan struct{})
+	go func() {
+		owner.tree.finish(r, pending, Outcome{State: Paused})
+		close(settled)
+	}()
+	<-settling
+	owner.tree.cancelPending(pending)
+	waitForPeerWakeWaiter(t, owner)
+	select {
+	case <-started:
+		t.Fatal("peer wake started before the prior settlement finished")
+	default:
+	}
+	close(allowSettlement)
+	settlementReleased = true
+	<-settled
+	owner.tree.teamFinished = owner.finishTeamMember
+	select {
+	case selected := <-started:
+		if selected == pending || selected.peerWake == nil || selected.peerWake.Recipient != recipient.Ref {
+			t.Fatalf("unexpected wake after settlement: %#v", selected)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("peer wake did not resume after settlement finished")
+	}
+}
+
+func TestCancelledTeamAdmissionReleasesItsReservation(t *testing.T) {
+	store, _, root, workspace := storeTestOpen(t)
+	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "alice", workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := testTree(t, defaultConfig())
+	tree.root.id = root
+	owner := &owner{tree: tree, teamStore: store}
+	tree.teamCanceled = owner.cancelTeamMember
+	worker := AgentDefinition{Role: "worker", Tools: []string{"read"}, CanDelegate: true}
+	_, selected, err := tree.admit(admission{kind: "worker", name: member.Name, cwd: workspace.Cwd, task: "work", agent: worker, member: &member})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree.cancelPending(selected)
+	tree.cancelPending(selected)
+	_, members, err := store.Snapshot()
+	if err != nil || len(members) != 0 {
+		t.Fatalf("cancelled admission retained a member: %#v, %v", members, err)
+	}
+	if _, err := tree.selectRun(member.Ref.ID); err == nil {
+		t.Fatal("cancelled admission remained selectable")
+	}
+	replacement, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "alice", workspace)
+	if err != nil || replacement.Name != "alice" {
+		t.Fatalf("cancelled admission did not release its name: %#v, %v", replacement, err)
 	}
 }

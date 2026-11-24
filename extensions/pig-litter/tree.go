@@ -407,6 +407,9 @@ func (t *Tree) cancelPending(selected *run) {
 		run.state = Stopped
 		run.outcome = &Outcome{Run: selected.ref, State: Stopped, Model: r.model, Error: "child admission ended before final tool success"}
 		close(run.done)
+		if r.team != nil && run.teamFinishDone != nil {
+			close(run.teamFinishDone)
+		}
 		t.live--
 	}
 	if t.pending[selected] != nil {
