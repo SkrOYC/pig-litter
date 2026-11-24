@@ -1,0 +1,16 @@
+{
+  "parent": {
+    "host": "c9cc629ea6dde421e10c18e2e3d04982c389ddb11a25383dd40acb39ae7ccf5e",
+    "patch": "c2dba96a705018206f56ba0d7a88de28278d9acc",
+    "source": "/nix/store/qrcv3ps1026hh5xhz1iddzr2kn0c2l1a-pig-0.7.0",
+    "sourceHash": "sha256-havp1GiH/kWfpblAhjJXryjWQ6iCHkuwXTeVZC4ykGs=",
+    "sdkHash": "sha256-HplunEy30ALTWwfTZwCxNFFrjpeCuk6ZU0Pw1S8FpNA="
+  },
+  "head": {
+    "host": "e728619e3a6f82e01c41ac16e45233df656487960d5ad64ca2395d56b8051070",
+    "patch": "37f2af25961295a39f9b92f400a898baf5b527c1",
+    "source": "/nix/store/0a82yr33famv527mgr2iwv7902pdi0zn-pig-0.7.0",
+    "sourceHash": "sha256-5gZqQ2h4GxeZFvXvumwHnnVZiH+ogxw9+mo1GHG66RE=",
+    "sdkHash": "sha256-+FBG1eKiTzTySLxrNKmR+B9VfSYa8k3zsMciu/1848g="
+  }
+}

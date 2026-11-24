@@ -40,18 +40,23 @@ if [[ -n "${PIG_LITTER_EXPECTED_PIG:-}" ]]; then
   fi
   pig_platform="$(go env GOHOSTOS)/$(go env GOHOSTARCH)"
   mkdir -p "$temp_dir/pig-home/agent"
-  pig_identity="$(PIG_HOME="$temp_dir/pig-home" PIG_CODING_AGENT_DIR="$temp_dir/pig-home/agent" PIG_USE_PI_DIRS=0 PIG_OFFLINE=1 PI_OFFLINE=1 pig verify --json)"
+  verify_status=0
+  pig_identity="$(PIG_HOME="$temp_dir/pig-home" PIG_CODING_AGENT_DIR="$temp_dir/pig-home/agent" PIG_USE_PI_DIRS=0 PIG_OFFLINE=1 PI_OFFLINE=1 pig verify --json)" || verify_status=$?
+  if [[ -n "$evidence_dir" ]]; then
+    printf '%s\n' "$pig_identity" > "$evidence_dir/pig-preview-identity.json"
+    shasum -a 256 "$pig_path" > "$evidence_dir/pig-preview-binary.sha256"
+  fi
+  if (( verify_status != 0 )); then
+    printf 'preview PiG verification failed:\n%s\n' "$pig_identity" >&2
+    exit "$verify_status"
+  fi
   if ! printf '%s\n' "$pig_identity" | jq --exit-status --arg digest "$pig_digest" --arg build "$PIG_LITTER_EXPECTED_PIG_BUILD" --arg platform "$pig_platform" '
     .verified == true and .identity.pigVersion == "0.7.0" and .identity.go == "go1.27.4"
     and .identity.platform == $platform and .identity.build == $build
     and (.targets | length == 1 and .[0].kind == "binary" and .[0].sha256 == $digest)
   ' >/dev/null; then
-    printf 'unexpected preview PiG identity\n' >&2
+    printf 'unexpected preview PiG identity:\n%s\n' "$pig_identity" >&2
     exit 1
-  fi
-  if [[ -n "$evidence_dir" ]]; then
-    printf '%s\n' "$pig_identity" > "$evidence_dir/pig-preview-identity.json"
-    shasum -a 256 "$pig_path" > "$evidence_dir/pig-preview-binary.sha256"
   fi
   pig_kind=preview
 else
@@ -74,8 +79,11 @@ if [[ -n "${PIG_LITTER_SOURCE_DIR:-}" ]]; then
     name=pig
     if [[ "$module" == */extensions/sdk ]]; then expected_dir="$source_dir/extensions/sdk"; name=sdk; fi
     module_info="$(go -C "$root/scripts" list -m -json "$module")"
-    printf '%s\n' "$module_info" | jq --exit-status --arg dir "$expected_dir" '.Main == true and .Dir == $dir and .GoMod == ($dir + "/go.mod")' >/dev/null
     if [[ -n "$evidence_dir" ]]; then printf '%s\n' "$module_info" > "$evidence_dir/standalone-$name-module.json"; fi
+    if ! printf '%s\n' "$module_info" | jq --exit-status --arg dir "$expected_dir" '.Main == true and .Dir == $dir and .GoMod == ($dir + "/go.mod")' >/dev/null; then
+      printf 'unexpected %s module identity:\n%s\n' "$name" "$module_info" >&2
+      exit 1
+    fi
   done
 fi
 if "$registration_only"; then
@@ -102,13 +110,23 @@ for artifact in ./extensions/pig-litter ./extensions/pig-litter/dist/pig-litter;
   language=go
   form=factory
   if [[ -f "$artifact" ]]; then language=binary; form=standalone; fi
-  report="$(pig install --validate-only --json "$artifact")"
-  printf '%s\n' "$report" | jq --exit-status --arg language "$language" --arg form "$form" '
+  if [[ "$form" == factory ]]; then name=source; else name=standalone; fi
+  report_status=0
+  report="$(pig install --validate-only --json "$artifact")" || report_status=$?
+  if [[ -n "$evidence_dir" ]]; then printf '%s\n' "$report" > "$evidence_dir/$name-registration.json"; fi
+  if (( report_status != 0 )); then
+    printf '%s registration failed:\n%s\n' "$name" "$report" >&2
+    exit "$report_status"
+  fi
+  if ! printf '%s\n' "$report" | jq --exit-status --arg language "$language" --arg form "$form" '
     .valid == true and .registered == true and .name == "pig-litter"
     and .definition.language == $language and .definition.form == $form
-    and (.tools == ["litter_inspect", "litter_list", "litter_message", "litter_spawn", "litter_stop", "litter_wait", "team_list", "team_spawn"])
+    and (.tools == ["litter_inspect", "litter_list", "litter_message", "litter_spawn", "litter_stop", "litter_wait", "team_list", "team_send", "team_spawn"])
     and ((.commands // []) | map(if type == "string" then . else .name end) | index("pig-litter")) != null
-  ' >/dev/null
+  ' >/dev/null; then
+    printf 'unexpected %s registration report:\n%s\n' "$name" "$report" >&2
+    exit 1
+  fi
   if [[ "$form" == factory && -n "${source_dir:-}" ]]; then
     runner="$(find "$PIG_HOME/cache/cells/go" -type f -name runner -print -quit)"
     [[ -n "$runner" ]]
@@ -132,21 +150,23 @@ for artifact in ./extensions/pig-litter ./extensions/pig-litter/dist/pig-litter;
       shasum -a 256 "$runner" > "$evidence_dir/source-runner.sha256"
     fi
   fi
-  if [[ -n "$evidence_dir" ]]; then
-    if [[ "$form" == factory ]]; then name=source; else name=standalone; fi
-    printf '%s\n' "$report" > "$evidence_dir/$name-registration.json"
-  fi
 done
-piglet_report="$(pig piglet validate ./piglet.yaml --json --no-input)"
-printf '%s\n' "$piglet_report" | jq --exit-status '
+piglet_status=0
+piglet_report="$(pig piglet validate ./piglet.yaml --json --no-input)" || piglet_status=$?
+if [[ -n "$evidence_dir" ]]; then printf '%s\n' "$piglet_report" > "$evidence_dir/piglet-manifest.json"; fi
+if (( piglet_status != 0 )); then
+  printf 'Piglet validation failed:\n%s\n' "$piglet_report" >&2
+  exit "$piglet_status"
+fi
+if ! printf '%s\n' "$piglet_report" | jq --exit-status '
   .valid == true and .name == "pig-litter"
   and (.extensions | map(.name) | index("pig-litter")) != null
   and (.errors | length) == 0
-' >/dev/null
-if [[ -n "$evidence_dir" ]]; then
-  printf '%s\n' "$piglet_report" > "$evidence_dir/piglet-manifest.json"
+' >/dev/null; then
+  printf 'unexpected Piglet validation report:\n%s\n' "$piglet_report" >&2
+  exit 1
 fi
 for path in "$agent_dir/settings.json" "$workspace/.pig/settings.json"; do
   if [[ -e "$path" ]]; then printf 'validation wrote settings: %s\n' "$path" >&2; exit 1; fi
 done
-printf 'PiG %s (%s host) registered the Go Resource and prebuilt standalone with six child tools and two team tools and validated the Piglet\n' "$pig_version" "$pig_kind"
+printf 'PiG %s (%s host) registered the Go Resource and prebuilt standalone with six child tools and three team tools and validated the Piglet\n' "$pig_version" "$pig_kind"

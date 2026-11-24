@@ -76,10 +76,10 @@ func TestIdleTeamPauseSurvivesLateSettlementAndRestart(t *testing.T) {
 	settling := make(chan struct{})
 	release := make(chan struct{})
 	finished := make(chan struct{})
-	tree.teamFinished = func(r *record, selected *run, outcome Outcome) {
+	tree.teamFinished = func(r *record, selected *run, outcome Outcome) error {
 		close(settling)
 		<-release
-		owner.finishTeamMember(r, selected, outcome)
+		return owner.finishTeamMember(r, selected, outcome)
 	}
 	worker, _ := agentDefaults("worker")
 	_, selected, err := tree.admit(admission{kind: "worker", name: member.Name, cwd: "/work", task: "work", agent: worker, member: &member})

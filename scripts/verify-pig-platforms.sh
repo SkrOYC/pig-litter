@@ -234,12 +234,16 @@ pig --version | tee -a "$evidence_dir/pig-binary.txt"
 
 if [[ -n "$sdk_dir" ]]; then
   go -C "$root_dir/scripts" list -mod=readonly -deps ./cmd/pig-litter > "$evidence_dir/standalone-dependencies.txt"
+  go -C "$root_dir/extensions/pig-litter" list -mod=readonly -buildvcs=false -deps -test -f '{{if .Module}}{{.ImportPath}} {{.Module.Path}} {{.Module.Version}} {{.Module.Dir}}{{end}}' . > "$evidence_dir/extension-test-dependencies.txt" || fail_check "$LINENO"
 else
   go -C "$root_dir/extensions/pig-litter" mod download
   go -C "$root_dir/scripts" mod download
 fi
 export GOPROXY=off
 if [[ -n "$sdk_dir" ]]; then
+  go -C "$root_dir/extensions/pig-litter" env -json GOPROXY GOWORK > "$evidence_dir/extension-test-dependency-env.json" || fail_check "$LINENO"
+  go -C "$root_dir/extensions/pig-litter" list -mod=readonly -buildvcs=false -deps -test -f '{{if .Module}}{{.ImportPath}} {{.Module.Path}} {{.Module.Version}} {{.Module.Dir}}{{end}}' . > "$evidence_dir/extension-test-dependencies-offline.txt" || fail_check "$LINENO"
+  cmp -s "$evidence_dir/extension-test-dependencies.txt" "$evidence_dir/extension-test-dependencies-offline.txt" || fail_check "$LINENO"
   go -C "$root_dir/scripts" list -m -json github.com/MichaelKinsy/PiG > "$evidence_dir/pig-module.json"
   go -C "$root_dir/scripts" list -m -json github.com/MichaelKinsy/PiG/extensions/sdk > "$evidence_dir/sdk-module.json"
   jq --exit-status --arg dir "$source_dir" '

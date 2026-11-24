@@ -42,13 +42,16 @@ type Tree struct {
 	closedDone   chan struct{}
 	completionWG sync.WaitGroup
 	teamWG       sync.WaitGroup
+	peerWakeWG   sync.WaitGroup
+	roomChanged  chan struct{}
 	execute      func(*record, *run) Outcome
 	completion   func(*record, *run, Outcome)
 	changed      func()
 	persist      func(*record) error
-	teamFinished func(*record, *run, Outcome)
+	teamFinished func(*record, *run, Outcome) error
 	teamCanceled func(*record)
 	teamPaused   func(*record, *run) error
+	teamResuming func(*record, *run) error
 	dirty        map[ChildID]*record
 }
 
@@ -67,7 +70,7 @@ type controlAuthority struct {
 
 func newTree(config Config) *Tree {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Tree{config: config, root: &record{id: "root", name: "root"}, ctx: ctx, cancel: cancel, records: map[ChildID]*record{}, names: map[string]ChildID{}, pending: map[*run]*reservation{}, dirty: map[ChildID]*record{}, closedDone: make(chan struct{})}
+	return &Tree{config: config, root: &record{id: "root", name: "root"}, ctx: ctx, cancel: cancel, records: map[ChildID]*record{}, names: map[string]ChildID{}, pending: map[*run]*reservation{}, dirty: map[ChildID]*record{}, closedDone: make(chan struct{}), roomChanged: make(chan struct{})}
 }
 
 func (t *Tree) currentLocked(selected *run) (*record, error) {
@@ -240,9 +243,14 @@ func (t *Tree) roomLocked(parent ChildID, writer bool, cwd string, except ChildI
 	return nil
 }
 
+func (t *Tree) signalRoomChangedLocked() {
+	close(t.roomChanged)
+	t.roomChanged = make(chan struct{})
+}
+
 func (t *Tree) newRunLocked(ref Ref, prompt string) *run {
 	ctx, cancel := context.WithCancel(t.ctx)
-	return &run{ref: ref, noticeID: rand.Text(), state: Starting, ctx: ctx, cancel: cancel, prompt: prompt, done: make(chan struct{}), ready: make(chan struct{}), mailbox: make(chan message, t.config.MaxMailbox)}
+	return &run{ref: ref, noticeID: rand.Text(), state: Starting, ctx: ctx, cancel: cancel, prompt: prompt, done: make(chan struct{}), ready: make(chan struct{}), teamFinishDone: make(chan struct{}), mailbox: make(chan message, t.config.MaxMailbox)}
 }
 
 func (t *Tree) admit(request admission) (Snapshot, *run, error) {
@@ -343,7 +351,7 @@ func (t *Tree) activateChecked(selected *run, accept func() error) error {
 	r.admitted = true
 	r.previous = nil
 	previousInputs := slices.Clone(r.pendingInputs)
-	if run.resume {
+	if run.resume && run.peerWake == nil {
 		r.pendingInputs = append(r.pendingInputs, pendingInput{Text: run.continuation})
 	}
 	t.mu.Unlock()
@@ -352,9 +360,19 @@ func (t *Tree) activateChecked(selected *run, accept func() error) error {
 	if err == nil && accept != nil {
 		err = accept()
 	}
+	if err == nil && r.team != nil && run.resume && run.peerWake == nil {
+		if t.teamResuming == nil {
+			err = reject("unavailable", "teammate resume is unavailable")
+		} else {
+			err = t.teamResuming(r, run)
+		}
+	}
 	t.mu.Lock()
 	if err != nil {
 		r.pendingInputs = previousInputs
+		if r.team != nil && run.resume && run.peerWake == nil && run.resumePaused {
+			r.paused = true
+		}
 	} else {
 		run.admission = admissionReady
 		run.progress.activated = activated
@@ -395,7 +413,11 @@ func (t *Tree) cancelPending(selected *run) {
 		run.state = Stopped
 		run.outcome = &Outcome{Run: selected.ref, State: Stopped, Model: r.model, Error: "child admission ended before final tool success"}
 		close(run.done)
+		if r.team != nil && run.teamFinishDone != nil {
+			close(run.teamFinishDone)
+		}
 		t.live--
+		t.signalRoomChangedLocked()
 	}
 	if t.pending[selected] != nil {
 		delete(t.pending, selected)
@@ -414,7 +436,7 @@ func (t *Tree) cancelPending(selected *run) {
 		t.order = slices.DeleteFunc(t.order, func(id ChildID) bool { return id == r.id })
 	}
 	t.mu.Unlock()
-	if r.team != nil && t.teamCanceled != nil {
+	if r.team != nil && !selected.resume && t.teamCanceled != nil {
 		t.teamCanceled(r)
 	}
 	t.notify()
@@ -480,6 +502,7 @@ mailboxDrained:
 	run.pendingMessages = 0
 	run.messageMu.Unlock()
 	t.live--
+	t.signalRoomChangedLocked()
 	if r.team != nil && t.teamFinished != nil {
 		t.teamWG.Add(1)
 	}
@@ -491,7 +514,13 @@ mailboxDrained:
 	t.mu.Unlock()
 	t.lifecycleMu.Unlock()
 	if r.team != nil && t.teamFinished != nil {
-		t.teamFinished(r, run, raw)
+		err := t.teamFinished(r, run, raw)
+		t.mu.Lock()
+		run.teamFinishErr = err
+		if run.teamFinishDone != nil {
+			close(run.teamFinishDone)
+		}
+		t.mu.Unlock()
 		t.teamWG.Done()
 	}
 	t.notify()
@@ -646,15 +675,23 @@ func (t *Tree) resumeAs(authority controlAuthority, selected *run, text string) 
 		return Snapshot{}, nil, reject("rejected", "resume needs a settled child and text")
 	}
 	if r.team != nil {
-		t.mu.Unlock()
-		return Snapshot{}, nil, reject("unavailable", "teammate resume is not available in this preview")
+		select {
+		case <-r.run.teamFinishDone:
+			if r.run.teamFinishErr != nil {
+				t.mu.Unlock()
+				return Snapshot{}, nil, reject("unavailable", "teammate settlement did not persist")
+			}
+		default:
+			t.mu.Unlock()
+			return Snapshot{}, nil, reject("unavailable", "teammate settlement is still pending")
+		}
 	}
 	prompt := text
 	if r.pendingTask != "" {
 		prompt = "Task:\n" + r.pendingTask + "\n\nResume instructions:\n" + text
 	}
 	defer t.mu.Unlock()
-	if err := t.roomLocked(r.parentID(), !r.readOnly, r.cwd, r.id, nil); err != nil {
+	if err := t.roomLocked(r.parentID(), !r.readOnly, r.cwd, r.id, r.team); err != nil {
 		return Snapshot{}, nil, err
 	}
 	r.previous = r.run
@@ -664,7 +701,9 @@ func (t *Tree) resumeAs(authority controlAuthority, selected *run, text string) 
 	r.run.resume = true
 	r.run.continuation = text
 	r.paused = false
-	t.pending[r.run] = &reservation{parent: r.parentID(), nonce: r.run.noticeID}
+	if r.team == nil {
+		t.pending[r.run] = &reservation{parent: r.parentID(), nonce: r.run.noticeID}
+	}
 	t.live++
 	return t.snapshotLocked(r), r.run, nil
 }
@@ -755,10 +794,12 @@ func (t *Tree) stop(caller, selected *run) (*Outcome, int, error) {
 }
 
 func (t *Tree) stopAs(authority controlAuthority, selected *run) (*Outcome, int, error) {
+	t.lifecycleMu.Lock()
 	t.mu.Lock()
 	target, err := t.controlAsLocked(authority, selected)
 	if err != nil {
 		t.mu.Unlock()
+		t.lifecycleMu.Unlock()
 		return nil, 0, err
 	}
 	var settled *Outcome
@@ -768,6 +809,7 @@ func (t *Tree) stopAs(authority controlAuthority, selected *run) (*Outcome, int,
 	}
 	pending, fresh := t.pauseLocked(target)
 	t.mu.Unlock()
+	t.lifecycleMu.Unlock()
 	if err := t.joinPaused(pending, fresh); err != nil {
 		return nil, len(fresh), err
 	}
@@ -779,6 +821,7 @@ func (t *Tree) stopAs(authority controlAuthority, selected *run) (*Outcome, int,
 
 func (t *Tree) pauseLocked(target *record) ([]*run, []*run) {
 	target.paused = true
+	t.signalRoomChangedLocked()
 	var pending, fresh []*run
 	for _, id := range t.order {
 		r := t.records[id]
@@ -837,13 +880,16 @@ func (t *Tree) joinPaused(pending, fresh []*run) error {
 }
 
 func (t *Tree) pauseRoot() {
+	t.lifecycleMu.Lock()
 	t.mu.Lock()
 	if t.closed {
 		t.mu.Unlock()
+		t.lifecycleMu.Unlock()
 		return
 	}
 	pending, fresh := t.pauseLocked(t.root)
 	t.mu.Unlock()
+	t.lifecycleMu.Unlock()
 	_ = t.joinPaused(pending, fresh)
 }
 
@@ -886,6 +932,7 @@ func (t *Tree) close() {
 	}
 	t.completionWG.Wait()
 	t.teamWG.Wait()
+	t.peerWakeWG.Wait()
 	t.mu.Lock()
 	for selected := range t.pending {
 		delete(t.pending, selected)
