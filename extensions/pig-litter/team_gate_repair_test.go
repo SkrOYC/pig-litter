@@ -307,7 +307,7 @@ func TestPlanSubmitRetryReportsCurrentGrant(t *testing.T) {
 	withCompletionHost(t, tree, func(o *owner) {
 		o.teamStore = store
 		submit := json.RawMessage(`{"action":"submit","submissionId":"retry","text":"Plan the work.","timeoutMs":60000}`)
-		value, err := o.planOperation(submit, selected, selected.owner)
+		value, err := o.planOperation(submit, controlAuthority{caller: selected})
 		if err != nil || value["state"] != "pending" || value["gate"] != "closed" {
 			gotErr = fmt.Errorf("initial submission = %#v, %v", value, err)
 			return
@@ -315,11 +315,11 @@ func TestPlanSubmitRetryReportsCurrentGrant(t *testing.T) {
 		request := value["request"].(planRequest)
 		expected = request.ID
 		decision, _ := json.Marshal(map[string]any{"action": "decide", "requestId": request.ID, "decision": "approve"})
-		if _, err := o.planOperation(decision, nil, nil); err != nil {
+		if _, err := o.planOperation(decision, controlAuthority{}); err != nil {
 			gotErr = err
 			return
 		}
-		got, gotErr = o.planOperation(submit, selected, selected.owner)
+		got, gotErr = o.planOperation(submit, controlAuthority{caller: selected})
 	}, func(method string, _ json.RawMessage) json.RawMessage {
 		if method == "sessionRead" {
 			return json.RawMessage(`"fixture"`)

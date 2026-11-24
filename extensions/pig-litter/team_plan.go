@@ -54,11 +54,6 @@ func parsePlanCommand(raw json.RawMessage) (planCommand, error) {
 	if _, err := exactJSONObject(raw, keys...); err != nil || json.Unmarshal(raw, &command) != nil {
 		return command, reject("rejected", "invalid action-specific plan arguments")
 	}
-	if command.Action == "submit" {
-		if !peerMessageIDPattern.MatchString(command.SubmissionID) || strings.TrimSpace(command.Text) == "" || len(command.Text) > 4096 || command.TimeoutMs < 1000 || command.TimeoutMs > 3600000 {
-			return command, reject("rejected", "invalid plan submission")
-		}
-	}
 	if command.Action == "get" || command.Action == "cancel" || command.Action == "decide" {
 		var requestFields map[string]json.RawMessage
 		if json.Unmarshal(fields["requestId"], &requestFields) != nil {
@@ -83,31 +78,47 @@ func parsePlanCommand(raw json.RawMessage) (planCommand, error) {
 			return command, reject("rejected", "invalid plan member identity")
 		}
 	}
-	if command.Action == "decide" && command.Decision == "reject" && (strings.TrimSpace(command.Reason) == "" || len(command.Reason) > 4096) {
-		return command, reject("rejected", "a plan rejection needs a reason")
-	}
-	return command, nil
+	return command, validatePlanCommand(command)
 }
 
-func (o *owner) planOperation(raw json.RawMessage, caller *run, parent *record) (map[string]any, error) {
+func validatePlanCommand(command planCommand) error {
+	validID := validControlRef(command.RequestID.Member) && command.RequestID.Sequence > 0 && (command.RequestID.Nonce == "" || validPlanNonce(command.RequestID.Nonce))
+	switch command.Action {
+	case "submit":
+		if command.RequestID != (PlanRequestID{}) || command.Decision != "" || command.Reason != "" || !peerMessageIDPattern.MatchString(command.SubmissionID) || strings.TrimSpace(command.Text) == "" || len(command.Text) > 4096 || !utf8.ValidString(command.Text) || command.TimeoutMs < 1000 || command.TimeoutMs > 3600000 {
+			return reject("rejected", "invalid plan submission")
+		}
+	case "get", "cancel", "decide":
+		if !validID || command.SubmissionID != "" || command.Text != "" || command.TimeoutMs != 0 {
+			return reject("rejected", "invalid plan request identity")
+		}
+		if command.Action != "decide" && (command.Decision != "" || command.Reason != "") {
+			return reject("rejected", "unexpected plan decision fields")
+		}
+		if command.Action == "decide" && (command.Decision != "approve" && command.Decision != "reject" || command.Decision == "approve" && command.Reason != "" || command.Decision == "reject" && (strings.TrimSpace(command.Reason) == "" || len(command.Reason) > 4096 || !utf8.ValidString(command.Reason))) {
+			return reject("rejected", "invalid plan decision")
+		}
+	case "list":
+		if command.SubmissionID != "" || command.Text != "" || command.TimeoutMs != 0 || command.RequestID != (PlanRequestID{}) || command.Decision != "" || command.Reason != "" {
+			return reject("rejected", "unexpected plan list fields")
+		}
+	default:
+		return reject("rejected", "unknown plan action")
+	}
+	return nil
+}
+
+func (o *owner) planOperation(raw json.RawMessage, authority controlAuthority) (map[string]any, error) {
 	command, err := parsePlanCommand(raw)
 	if err != nil {
 		return nil, err
 	}
-	if caller != nil && (parent == nil || parent.team == nil) {
-		return nil, reject("permission_denied", "a registered teammate is required")
-	}
-	if caller != nil && command.Action == "decide" {
-		return nil, reject("permission_denied", "only the team lead can decide a plan")
-	}
-	if caller == nil && command.Action == "submit" {
-		return nil, reject("permission_denied", "only a teammate can submit a plan")
-	}
-	if caller != nil && command.Action != "submit" && command.Action != "list" && command.RequestID.Member != parent.team.Ref {
-		return nil, reject("permission_denied", "the plan belongs to another teammate")
-	}
-	if caller != nil && !parent.team.PlanRequired {
-		return map[string]any{"state": "plan_not_required", "gate": "not_required"}, nil
+	return o.applyPlan(authority, command)
+}
+
+func (o *owner) applyPlan(authority controlAuthority, command planCommand) (map[string]any, error) {
+	if err := validatePlanCommand(command); err != nil {
+		return nil, err
 	}
 	o.tree.lifecycleMu.Lock()
 	defer o.tree.lifecycleMu.Unlock()
@@ -115,12 +126,41 @@ func (o *owner) planOperation(raw json.RawMessage, caller *run, parent *record) 
 		return nil, err
 	}
 	o.tree.mu.Lock()
-	if caller != nil {
-		current, err := o.tree.callerLocked(caller)
-		if err != nil || current != parent || current.team == nil {
+	caller := authority.caller
+	var parent *record
+	if authority.human != nil {
+		if err := authority.human(); err != nil {
 			o.tree.mu.Unlock()
-			return nil, reject("unavailable", "the teammate execution is no longer current")
+			return nil, err
 		}
+		caller = nil
+	} else {
+		var err error
+		parent, err = o.tree.callerLocked(caller)
+		if err != nil {
+			o.tree.mu.Unlock()
+			return nil, err
+		}
+	}
+	if caller != nil && (parent == nil || parent.team == nil) {
+		o.tree.mu.Unlock()
+		return nil, reject("permission_denied", "a registered teammate is required")
+	}
+	if caller != nil && command.Action == "decide" {
+		o.tree.mu.Unlock()
+		return nil, reject("permission_denied", "only the team lead can decide a plan")
+	}
+	if caller == nil && command.Action == "submit" {
+		o.tree.mu.Unlock()
+		return nil, reject("permission_denied", "only a teammate can submit a plan")
+	}
+	if caller != nil && command.Action != "submit" && command.Action != "list" && command.RequestID.Member != parent.team.Ref {
+		o.tree.mu.Unlock()
+		return nil, reject("permission_denied", "the plan belongs to another teammate")
+	}
+	if caller != nil && !parent.team.PlanRequired {
+		o.tree.mu.Unlock()
+		return map[string]any{"state": "plan_not_required", "gate": "not_required"}, nil
 	}
 	var execution string
 	if command.Action == "decide" {
@@ -203,4 +243,15 @@ func (o *owner) planOperation(raw json.RawMessage, caller *run, parent *record) 
 		return map[string]any{"state": "listed", "plans": views}, nil
 	}
 	return nil, reject("rejected", "unknown plan action")
+}
+
+func (o *owner) planSnapshot(authority controlAuthority) ([]planView, error) {
+	if authority.caller != nil {
+		return nil, reject("permission_denied", "only the team lead can view all plans")
+	}
+	result, err := o.applyPlan(authority, planCommand{Action: "list"})
+	if err != nil {
+		return nil, err
+	}
+	return result["plans"].([]planView), nil
 }

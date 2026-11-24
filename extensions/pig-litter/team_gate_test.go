@@ -409,22 +409,22 @@ func TestPlanOperationBindsLeadAndCurrentRun(t *testing.T) {
 	withCompletionHost(t, tree, func(o *owner) {
 		o.teamStore = store
 		submit := json.RawMessage(`{"action":"submit","submissionId":"bound","text":"Plan the work.","timeoutMs":60000}`)
-		if _, err := o.planOperation(submit, nil, nil); err == nil {
+		if _, err := o.planOperation(submit, controlAuthority{}); err == nil {
 			t.Fatal("lead submitted a teammate plan")
 		}
-		value, err := o.planOperation(submit, selected, selected.owner)
+		value, err := o.planOperation(submit, controlAuthority{caller: selected})
 		if err != nil || value["state"] != "pending" {
 			t.Fatalf("member submission = %#v, %v", value, err)
 		}
 		request := value["request"].(planRequest)
 		decision, _ := json.Marshal(map[string]any{"action": "decide", "requestId": request.ID, "decision": "approve"})
-		if _, err := o.planOperation(decision, selected, selected.owner); err == nil {
+		if _, err := o.planOperation(decision, controlAuthority{caller: selected}); err == nil {
 			t.Fatal("teammate approved its own plan")
 		}
 		wrong := request.ID
 		wrong.Member.Generation++
 		wrongDecision, _ := json.Marshal(map[string]any{"action": "decide", "requestId": wrong, "decision": "approve"})
-		if _, err := o.planOperation(wrongDecision, nil, nil); err == nil {
+		if _, err := o.planOperation(wrongDecision, controlAuthority{}); err == nil {
 			t.Fatal("lead approved a different member generation")
 		}
 		tree.mu.Lock()
@@ -432,18 +432,18 @@ func TestPlanOperationBindsLeadAndCurrentRun(t *testing.T) {
 		replacement.owner = selected.owner
 		selected.owner.run = replacement
 		tree.mu.Unlock()
-		if _, err := o.planOperation(decision, nil, nil); err == nil {
+		if _, err := o.planOperation(decision, controlAuthority{}); err == nil {
 			t.Fatal("lead approved a request from an old execution")
 		}
 		tree.mu.Lock()
 		selected.owner.run = selected
 		tree.mu.Unlock()
 		replacement.cancel()
-		value, err = o.planOperation(decision, nil, nil)
+		value, err = o.planOperation(decision, controlAuthority{})
 		if err != nil || value["state"] != "approved" || value["gate"] != "granted" {
 			t.Fatalf("lead approval = %#v, %v", value, err)
 		}
-		if _, err := o.planOperation(decision, nil, nil); err == nil {
+		if _, err := o.planOperation(decision, controlAuthority{}); err == nil {
 			t.Fatal("lead replayed an approval")
 		}
 	}, func(method string, _ json.RawMessage) json.RawMessage {

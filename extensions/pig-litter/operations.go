@@ -195,7 +195,7 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		}
 	}
 	if name == "team_plan" {
-		return o.planOperation(raw, caller, parent)
+		return o.planOperation(raw, controlAuthority{caller: caller})
 	}
 	if name == "team_shutdown" {
 		return o.shutdownOperation(raw, controlAuthority{caller: caller})
@@ -269,11 +269,7 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 				return map[string]any{"state": state, "task": task}, err
 			}
 			if args.Action == "complete" && args.Assignee == "" {
-				var actor *MemberRef
-				if caller != nil {
-					actor = &parent.team.Ref
-				}
-				task, state, err := store.completeTask(args.TaskID, actor)
+				task, state, err := o.applyTaskCompletion(controlAuthority{caller: caller}, args.TaskID)
 				return map[string]any{"state": state, "task": task}, err
 			}
 			if args.Action == "delete" && args.Assignee == "" {

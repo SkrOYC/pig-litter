@@ -275,3 +275,14 @@ func (o *owner) applyShutdown(authority controlAuthority, command shutdownComman
 	}
 	return nil, reject("rejected", "unknown shutdown action")
 }
+
+func (o *owner) shutdownSnapshot(authority controlAuthority) ([]shutdownView, error) {
+	if authority.caller != nil {
+		return nil, reject("permission_denied", "only the team lead can view all shutdowns")
+	}
+	result, err := o.applyShutdown(authority, shutdownCommand{Action: "list"})
+	if err != nil {
+		return nil, err
+	}
+	return result["shutdowns"].([]shutdownView), nil
+}

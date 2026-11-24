@@ -92,3 +92,42 @@ func (g *teamTaskGraph) find(id TaskID) int {
 	}
 	return -1
 }
+
+func (o *owner) applyTaskCompletion(authority controlAuthority, id TaskID) (teamTaskView, string, error) {
+	if !childUUID.MatchString(string(id.Team.Root)) || id.Team.Epoch == 0 || id.Number == 0 {
+		return teamTaskView{}, "", reject("rejected", "invalid task identity")
+	}
+	o.tree.lifecycleMu.Lock()
+	defer o.tree.lifecycleMu.Unlock()
+	if err := o.current(); err != nil {
+		return teamTaskView{}, "", err
+	}
+	o.tree.mu.Lock()
+	var actor *MemberRef
+	if authority.human != nil {
+		if err := authority.human(); err != nil {
+			o.tree.mu.Unlock()
+			return teamTaskView{}, "", err
+		}
+	} else {
+		parent, err := o.tree.callerLocked(authority.caller)
+		if err != nil {
+			o.tree.mu.Unlock()
+			return teamTaskView{}, "", err
+		}
+		if authority.caller != nil {
+			if parent.team == nil {
+				o.tree.mu.Unlock()
+				return teamTaskView{}, "", reject("permission_denied", "team membership is required")
+			}
+			ref := parent.team.Ref
+			actor = &ref
+		}
+	}
+	o.tree.mu.Unlock()
+	store, err := o.teamStoreForRoot()
+	if err != nil {
+		return teamTaskView{}, "", err
+	}
+	return store.completeTask(id, actor)
+}
