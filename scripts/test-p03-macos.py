@@ -164,5 +164,106 @@ class InputAndProviderTests(unittest.TestCase):
             self.assertFalse(thread.is_alive())
 
 
+class WindowClosureTests(unittest.TestCase):
+    def terminal(self, root):
+        terminal = driver.Terminal(root, root, root, root, root, root, root / "pig", root / "extension", True, 1)
+        window = {"id": "42", "session": "owned-session", "wrapper_pid": 100, "launch_sent": True}
+        terminal.window = window
+        terminal.generations.append(window)
+        terminal.owned = {"root": {"pid": 100, "start": "birth", "executable": "/bin/sh"}}
+        return terminal, window
+
+    def test_warning_is_acknowledged_after_exit_and_window_disappears(self):
+        with tempfile.TemporaryDirectory() as temp:
+            terminal, window = self.terminal(Path(temp))
+            observations = iter(("present", "missing"))
+
+            def applescript(script, *arguments):
+                if script == driver.SESSION:
+                    self.assertEqual(arguments, ("42", "owned-session", "close"))
+                    return "closed"
+                if script == driver.WINDOW_EXISTS:
+                    self.assertEqual(arguments, ("42",))
+                    return next(observations)
+                self.assertEqual(script, driver.ACKNOWLEDGE_WARNING)
+                self.assertEqual(arguments, ("42", "owned-session"))
+                return "acknowledged owned short-session warning on pig"
+
+            with mock.patch.object(driver, "applescript", side_effect=applescript), mock.patch.object(driver, "same_process", return_value=False), mock.patch.object(terminal, "observe"), mock.patch.object(terminal, "capture_closure"), mock.patch.object(driver.time, "sleep"):
+                terminal.close_window()
+            self.assertIsNone(terminal.window)
+            self.assertEqual(window["close_result"], "closed")
+            self.assertEqual(window["warning_results"][-1]["result"], "acknowledged owned short-session warning on pig")
+            self.assertEqual(window["presence_results"][-1]["result"], "missing")
+
+    def test_missing_session_remains_pending_until_the_window_disappears(self):
+        with tempfile.TemporaryDirectory() as temp:
+            terminal, window = self.terminal(Path(temp))
+            observations = iter(("present", "present", "missing"))
+
+            def applescript(script, *arguments):
+                if script == driver.SESSION:
+                    return "session missing"
+                if script == driver.WINDOW_EXISTS:
+                    return next(observations)
+                return "owned current session missing"
+
+            with mock.patch.object(driver, "applescript", side_effect=applescript), mock.patch.object(driver, "same_process", return_value=False), mock.patch.object(terminal, "observe"), mock.patch.object(terminal, "capture_closure"), mock.patch.object(driver.time, "sleep"):
+                terminal.close_window()
+            self.assertIsNone(terminal.window)
+            self.assertEqual(window["close_result"], "session missing")
+            self.assertEqual([item["result"] for item in window["presence_results"]], ["present", "present", "missing"])
+            self.assertEqual([item["result"] for item in window["warning_results"]], ["owned current session missing", "owned current session missing"])
+
+    def test_missing_session_with_a_persistent_window_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            terminal, window = self.terminal(Path(temp))
+
+            def applescript(script, *_arguments):
+                if script == driver.SESSION:
+                    return "session missing"
+                if script == driver.WINDOW_EXISTS:
+                    return "present"
+                return "owned current session missing"
+
+            with mock.patch.object(driver, "applescript", side_effect=applescript), mock.patch.object(driver, "same_process", return_value=False), mock.patch.object(terminal, "observe"), mock.patch.object(terminal, "capture_closure") as capture, mock.patch.object(driver.time, "sleep"), mock.patch.object(driver.time, "monotonic", side_effect=[0, 0, 31]):
+                with self.assertRaisesRegex(RuntimeError, "Timed out waiting for owned iTerm window to close"):
+                    terminal.close_window()
+            self.assertIs(terminal.window, window)
+            self.assertEqual(window["presence_results"][-1]["result"], "present")
+            self.assertEqual(window["warning_results"][-1]["result"], "owned current session missing")
+            capture.assert_any_call("failure", include_ui=True)
+
+    def test_changed_session_or_live_process_never_closes_window(self):
+        with tempfile.TemporaryDirectory() as temp:
+            terminal, window = self.terminal(Path(temp))
+            with mock.patch.object(driver, "same_process", return_value=True), mock.patch.object(terminal, "capture_closure"), mock.patch.object(driver, "applescript") as apple:
+                with self.assertRaisesRegex(RuntimeError, "Owned processes are still running"):
+                    terminal.close_window()
+                apple.assert_not_called()
+            self.assertIs(terminal.window, window)
+            with mock.patch.object(driver, "same_process", return_value=False), mock.patch.object(terminal, "capture_closure"), mock.patch.object(driver, "applescript", side_effect=RuntimeError("Owned window session changed.")):
+                with self.assertRaisesRegex(RuntimeError, "Owned window session changed"):
+                    terminal.close_window()
+            self.assertIs(terminal.window, window)
+
+    def test_capability_close_waits_for_window_disappearance(self):
+        with tempfile.TemporaryDirectory() as temp:
+            evidence = Path(temp)
+            observations = iter(("present", "missing"))
+
+            def applescript(script, *arguments):
+                if script == driver.SESSION:
+                    self.assertEqual(arguments, ("123", "probe-session", "close"))
+                    return "closed"
+                self.assertEqual(script, driver.WINDOW_EXISTS)
+                self.assertEqual(arguments, ("123",))
+                return next(observations)
+
+            with mock.patch.object(driver, "applescript", side_effect=applescript), mock.patch.object(driver.time, "sleep"):
+                self.assertTrue(driver.close_probe(evidence / "unused", evidence, ("123", "probe-session")))
+            self.assertIn("missing", (evidence / "probe-cleanup.txt").read_text())
+
+
 if __name__ == "__main__":
     unittest.main()
