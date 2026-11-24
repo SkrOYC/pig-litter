@@ -50,13 +50,16 @@ chmod 600 "$allocation"
 allocation_digest="$(sha256sum "$allocation")"
 allocation_digest="${allocation_digest%% *}"
 export GOCACHE="$run_root/cache" GOTMPDIR="$run_root/gotmp" TMPDIR="$run_root/tmp"
-export GOMODCACHE="$run_root/modules" GOPATH="$run_root/gopath" GOENV=off GOTELEMETRY=off
+export GOMODCACHE="$run_root/modules" GOPATH="$run_root/gopath" GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOTELEMETRY=off
 export XDG_CACHE_HOME="$run_root/cache" XDG_RUNTIME_DIR="$run_root/runtime"
 export XDG_STATE_HOME="$run_root/state" XDG_DATA_HOME="$run_root/data"
 export CCACHE_DIR="$run_root/cache/ccache" SCCACHE_DIR="$run_root/cache/sccache"
+cd "$root"
 for command_name in pig-litter verify-tui tui-idle-observer; do
-  printf 'go -C %q build -mod=readonly -modcacherw -o %q %q\n' "$root/scripts" "$run_root/bin/$command_name" "./cmd/$command_name" >> "$build_evidence/build-commands.txt"
-  go -C "$root/scripts" build -mod=readonly -modcacherw -o "$run_root/bin/$command_name" "./cmd/$command_name" 2> >(tee -a "$build_evidence/build.stderr" >&2)
+  build=(devenv shell -- env "GOPATH=$run_root/gopath" "GOCACHE=$run_root/cache" "GOMODCACHE=$run_root/modules" "GOTMPDIR=$run_root/gotmp" go -C "$root/scripts" build -mod=readonly -modcacherw -o "$run_root/bin/$command_name" "./cmd/$command_name")
+  printf '%q ' "${build[@]}" >> "$build_evidence/build-commands.txt"
+  printf '\n' >> "$build_evidence/build-commands.txt"
+  "${build[@]}" 2> >(tee -a "$build_evidence/build.stderr" >&2)
 done
 observer_args=()
 if [[ "$case_name" != unselected ]]; then

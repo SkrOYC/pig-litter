@@ -96,3 +96,117 @@ jobs:
           path: ${{ runner.temp }}/pig-performance-evidence
           include-hidden-files: true
           if-no-files-found: error
+
+  collaboration-capture:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/test/collaboration-parity-contract' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      BASELINE_SHA: 939b4c3f5f2ba8c7f5becef66dbb0ca6eeb14ea7
+      CANDIDATE_CHECKOUT: ${{ github.workspace }}/candidate
+      BASELINE_CHECKOUT: ${{ github.workspace }}/baseline
+    steps:
+      - name: Initialize evidence
+        shell: bash
+        run: |
+          EVIDENCE_DIR="$RUNNER_TEMP/p02-evidence"
+          printf 'EVIDENCE_DIR=%s\n' "$EVIDENCE_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$EVIDENCE_DIR"
+          printf 'candidate=%s\nbaseline=%s\nworkflow_sha=%s\n' "$CANDIDATE_SHA" "$BASELINE_SHA" "$GITHUB_SHA" > "$EVIDENCE_DIR/bootstrap.txt"
+          test "$CANDIDATE_SHA" = "$GITHUB_SHA"
+      - name: Check out exact candidate
+        id: checkout_candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out baseline history
+        id: checkout_baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: master
+          path: baseline
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select exact baseline
+        id: baseline
+        shell: bash
+        run: git -C "$BASELINE_CHECKOUT" checkout --detach "$BASELINE_SHA"
+      - name: Install Bun
+        id: bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.4.4'
+      - name: Install Nix
+        id: nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086
+      - name: Configure read-only devenv cache
+        id: cache
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866
+        with:
+          name: devenv
+          skipPush: true
+          useDaemon: false
+      - name: Install pinned devenv CLI
+        id: devenv
+        shell: bash
+        run: |
+          nix profile add --profile "$RUNNER_TEMP/devenv-profile" --accept-flake-config github:cachix/devenv/b904dcb51fe48c30db250038241507f60752f222#devenv
+          export PATH="$RUNNER_TEMP/devenv-profile/bin:$PATH"
+          printf '%s\n' "$RUNNER_TEMP/devenv-profile/bin" >> "$GITHUB_PATH"
+          devenv version > "$EVIDENCE_DIR/devenv-version.txt"
+          nix --version > "$EVIDENCE_DIR/nix-version.txt"
+          bun --version > "$EVIDENCE_DIR/bun-version.txt"
+      - name: Install terminal capture tools
+        id: tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg xvfb xterm xfonts-base xauth tmux jq procps
+      - name: Compare capture performance
+        id: comparison
+        timeout-minutes: 120
+        shell: bash
+        run: |
+          set -o pipefail
+          "$CANDIDATE_CHECKOUT/scripts/verify-collaboration-performance-github.sh" 2>&1 | tee "$EVIDENCE_DIR/runner.log"
+      - name: Record workflow outcomes
+        if: always()
+        shell: bash
+        env:
+          CANDIDATE_OUTCOME: ${{ steps.checkout_candidate.outcome }}
+          BASELINE_OUTCOME: ${{ steps.checkout_baseline.outcome }}
+          SELECT_OUTCOME: ${{ steps.baseline.outcome }}
+          BUN_OUTCOME: ${{ steps.bun.outcome }}
+          NIX_OUTCOME: ${{ steps.nix.outcome }}
+          CACHE_OUTCOME: ${{ steps.cache.outcome }}
+          DEVENV_OUTCOME: ${{ steps.devenv.outcome }}
+          TOOLS_OUTCOME: ${{ steps.tools.outcome }}
+          COMPARISON_OUTCOME: ${{ steps.comparison.outcome }}
+        run: |
+          mkdir -p "$EVIDENCE_DIR"
+          printf 'candidate=%s\nbaseline=%s\nselect=%s\nbun=%s\nnix=%s\ncache=%s\ndevenv=%s\ntools=%s\ncomparison=%s\n' "$CANDIDATE_OUTCOME" "$BASELINE_OUTCOME" "$SELECT_OUTCOME" "$BUN_OUTCOME" "$NIX_OUTCOME" "$CACHE_OUTCOME" "$DEVENV_OUTCOME" "$TOOLS_OUTCOME" "$COMPARISON_OUTCOME" > "$EVIDENCE_DIR/workflow-outcomes.txt"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: collaboration-capture-control-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p02-evidence
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Upload scenario evidence
+        if: ${{ always() && env.P02_SCENARIO_EVIDENCE != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: collaboration-capture-scenario-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.P02_SCENARIO_EVIDENCE }}
+            !${{ env.P02_SCENARIO_EVIDENCE }}/bootstrap-*/cache/**
+            !${{ env.P02_SCENARIO_EVIDENCE }}/bootstrap-*/modules/**
+            !${{ env.P02_SCENARIO_EVIDENCE }}/bootstrap-*/gopath/**
+            !${{ env.P02_SCENARIO_EVIDENCE }}/bootstrap-*/gotmp/**
+          include-hidden-files: true
+          if-no-files-found: error

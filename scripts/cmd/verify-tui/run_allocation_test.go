@@ -17,6 +17,9 @@ func TestTerminalWrapperAllocatesBeforeItsFirstBuild(t *testing.T) {
 	if err := os.WriteFile(goPath, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(directory, "devenv"), []byte("#!/bin/sh\n[ \"$1\" = shell ] && [ \"$2\" = -- ] || exit 8\nshift 2\nexec \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	wrapper, err := filepath.Abs("../../verify-terminal-ui.sh")
 	if err != nil {
 		t.Fatal(err)

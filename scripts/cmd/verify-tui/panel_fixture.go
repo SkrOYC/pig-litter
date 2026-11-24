@@ -139,6 +139,10 @@ func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string
 		return providerTurn{}, false, nil
 	}
 	marker := latestRootPrompt(request.Messages).marker
+	if marker == "P02_HOOK_ALLOW" || marker == "P02_HOOK_DENY" {
+		turn, err := state.hookTurnLocked(request, marker, tools)
+		return turn, true, err
+	}
 	if marker == "NEW_ROOT_HEADER" || marker == "COLD_ROOT_HEADER" {
 		if err := requireToolInventory(tools, append(append([]string(nil), fileTools...), controlTools...), []string{"ls"}, "context-only root"); err != nil {
 			return providerTurn{}, true, err
@@ -171,7 +175,7 @@ func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string
 		}
 		return providerTurn{kind: "text", text: marker + "_DONE"}, true, nil
 	}
-	if marker != "RECEIPT_WIDGET" && marker != "CHAIN_WIDGET" {
+	if marker != "RECEIPT_WIDGET" && marker != "CHAIN_WIDGET" && marker != "P02_BUSY_HOLD" {
 		return providerTurn{}, false, nil
 	}
 	if state.caseName == caseUnselected {
@@ -181,6 +185,8 @@ func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string
 		return providerTurn{}, true, err
 	}
 	switch marker {
+	case "P02_BUSY_HOLD":
+		return providerTurn{kind: "hold", name: "p02-busy", text: "P02_BUSY_HOLD_DONE"}, true, nil
 	case "RECEIPT_WIDGET":
 		return providerTurn{kind: "hold", name: "root-receipt"}, true, nil
 	case "CHAIN_WIDGET":
