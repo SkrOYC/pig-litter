@@ -2,8 +2,10 @@ package piglitter
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"sort"
 	"strings"
@@ -16,7 +18,10 @@ import (
 )
 
 var controlNames = []string{"litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
+var teamToolNames = []string{"team_spawn", "team_list"}
 var descriptions = map[string]string{
+	"team_spawn":     "Start a named teammate with an explicit workspace policy.",
+	"team_list":      "List the lead and committed teammates in this team.",
 	"litter_spawn":   "Start a background child. Use litter_list to discover named agent types.",
 	"litter_list":    "List available agent types and active immediate children.",
 	"litter_inspect": "Get a child's current status and latest result by ID.",
@@ -42,6 +47,8 @@ func integer(minimum, maximum int) map[string]any {
 }
 
 var schemas = map[string]map[string]any{
+	"team_spawn":     object([]string{"type", "task", "name", "workspace"}, map[string]any{"type": text(64), "task": text(16384), "name": text(64), "model": text(256), "workspace": object([]string{"kind"}, map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"shared_checkout", "isolated_worktree"}}})}),
+	"team_list":      object([]string{}, map[string]any{}),
 	"litter_spawn":   object([]string{"type", "task"}, map[string]any{"type": text(64), "task": text(16384), "name": text(128), "model": text(256), "cwd": text(4096)}),
 	"litter_list":    object([]string{}, map[string]any{"offset": integer(0, 1000000), "limit": integer(1, 50), "agentOffset": integer(0, 1000000), "agentLimit": integer(1, 50)}),
 	"litter_inspect": object([]string{"id"}, map[string]any{"id": text(128)}),
@@ -62,6 +69,7 @@ type operationArgs struct {
 	AgentLimit             *int
 	Resume                 bool
 	TimeoutMs              *int
+	Workspace              *WorkspacePolicy
 }
 
 func pageLimit(request *int, fallback int) int {
@@ -114,7 +122,42 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			return nil, err
 		}
 	}
-	if name == "litter_spawn" {
+	if name == "team_list" {
+		if caller != nil && (parent == nil || parent.team == nil) {
+			return nil, reject("permission_denied", "team membership is required")
+		}
+		store, err := o.teamStoreForRoot()
+		if err != nil {
+			return nil, err
+		}
+		var team TeamID
+		var members, pending []teamMember
+		if caller == nil {
+			team, members, pending, err = store.SnapshotWithReservations()
+		} else {
+			team, members, err = store.Snapshot()
+		}
+		if err != nil {
+			return nil, err
+		}
+		roster := []map[string]any{{"ref": MemberRef{Team: team, ID: team.Root, Generation: 1}, "name": "team-lead", "role": "lead", "state": "running", "cwd": o.cwd}}
+		for _, member := range members {
+			roster = append(roster, map[string]any{"ref": member.Ref, "name": member.Name, "role": "teammate", "state": member.State, "cwd": member.Workspace.Cwd, "workspace": member.Workspace})
+		}
+		result := map[string]any{"state": "listed", "team": team, "members": roster}
+		if caller == nil {
+			result["pending"] = pending
+		}
+		return result, nil
+	}
+	if name == "litter_spawn" || name == "team_spawn" {
+		isTeam := name == "team_spawn"
+		if isTeam && caller != nil {
+			return nil, reject("lead_required", "only the team lead can start a teammate")
+		}
+		if isTeam && (args.Name == nil || args.Workspace == nil || *args.Workspace != (WorkspacePolicy{Kind: args.Workspace.Kind}) || args.Workspace.Kind != "shared_checkout" && args.Workspace.Kind != "isolated_worktree") {
+			return nil, reject("rejected", "a teammate needs a name and explicit workspace policy")
+		}
 		base := o.cwd
 		if parent != nil {
 			base = parent.cwd
@@ -149,7 +192,12 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		}
 		label := ""
 		if args.Name != nil {
-			label, err = safeLabel(*args.Name)
+			if isTeam {
+				label = *args.Name
+				err = validateTeamName(label)
+			} else {
+				label, err = safeLabel(*args.Name)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -158,20 +206,88 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if err != nil {
 			return nil, err
 		}
-		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, available: available})
+		var member *teamMember
+		var store *teamStore
+		var teamSessionFile string
+		if isTeam {
+			if toolContext == nil {
+				return nil, reject("unavailable", "team admission needs a retained root session")
+			}
+			file, fileErr := toolContext.SessionManager().GetSessionFile()
+			if fileErr != nil || file == nil || *file == "" {
+				return nil, reject("unavailable", "team admission needs a retained root session file")
+			}
+			teamSessionFile = *file
+			store, err = o.teamStoreForRoot()
+			if err != nil {
+				return nil, err
+			}
+			id, idErr := ai.UUIDv7(nil)
+			operation, operationErr := ai.UUIDv7(nil)
+			if idErr != nil || operationErr != nil {
+				return nil, reject("unavailable", "cannot allocate teammate identity")
+			}
+			workspace := WorkspacePolicy{Kind: "shared_checkout", Cwd: cwd}
+			if args.Workspace.Kind == "isolated_worktree" {
+				workspace, err = teamWorktreeIntent(ctx, store, cwd, ChildID(id))
+				if err != nil {
+					return nil, err
+				}
+			}
+			reserved, reserveErr := store.Reserve(ChildID(id), operation, label, workspace)
+			if reserveErr != nil {
+				return nil, reserveErr
+			}
+			member, label = &reserved, reserved.Name
+			if workspace.Kind == "isolated_worktree" {
+				cwd = workspace.Cwd
+			}
+		}
+		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, available: available, member: member})
 		if err != nil {
+			if member != nil {
+				if cleanupErr := o.rollbackTeamMember(member); cleanupErr != nil {
+					return nil, fmt.Errorf("%w; %v", err, cleanupErr)
+				}
+			}
 			return nil, err
 		}
+		if member != nil && member.Workspace.Kind == "isolated_worktree" {
+			if err := prepareTeamWorktree(ctx, member.Workspace); err != nil {
+				return nil, o.cancelTeamStart(execution, err)
+			}
+			prepared, err := store.SetWorkspacePhase(member.Ref, "prepared")
+			if err != nil {
+				return nil, o.cancelTeamStart(execution, err)
+			}
+			member = &prepared
+			o.tree.mu.Lock()
+			execution.owner.team = member
+			o.tree.mu.Unlock()
+			if err := o.current(); err != nil {
+				return nil, o.cancelTeamStart(execution, err)
+			}
+		}
 		if err := o.saveChild(execution.owner); err != nil {
+			if member != nil && member.Workspace.Kind == "isolated_worktree" {
+				return nil, o.cancelTeamStart(execution, err)
+			}
 			o.tree.cancelPending(execution)
 			return nil, err
+		}
+		value := map[string]any{"state": snapshot.State, "child": snapshot}
+		if member != nil {
+			value = map[string]any{"state": "starting", "admission": member.AdmissionID, "member": member.Ref, "name": member.Name, "cwd": member.Workspace.Cwd, "workspace": member.Workspace}
+			content, _ := resultContent(name, value, nil)
+			execution.teamResult = sha256.Sum256([]byte(content))
+			execution.teamSessionFile = teamSessionFile
 		}
 		o.deferActivation(key, execution, activationContext.Done(), func() bool { return activationContext.Err() != nil }, name)
 		if toolContext != nil {
 			o.watchRequest(key, *toolContext)
 		}
 		o.widget()
-		return map[string]any{"state": snapshot.State, "child": snapshot}, nil
+		return value, nil
 	}
 	if name == "litter_list" {
 		children, err := o.tree.list(caller)
@@ -233,7 +349,13 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"state": outcome.State, "outcome": outcome, "stoppedCount": count}, nil
+		state := outcome.State
+		o.tree.mu.Lock()
+		if selected.owner.team != nil && selected.owner.paused {
+			state = Paused
+		}
+		o.tree.mu.Unlock()
+		return map[string]any{"state": state, "outcome": outcome, "stoppedCount": count}, nil
 	}
 	if name == "litter_message" {
 		mode := args.Mode

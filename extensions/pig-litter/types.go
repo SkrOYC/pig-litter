@@ -77,6 +77,7 @@ type Snapshot struct {
 
 type record struct {
 	id                                   ChildID
+	team                                 *teamMember
 	parent                               *record
 	depth                                int
 	name, kind, model, instructions, cwd string
@@ -91,6 +92,7 @@ type record struct {
 	paused                               bool
 	latest                               *Outcome
 	deliveryMu                           sync.Mutex
+	teamStateMu                          sync.Mutex
 	agentEnded                           bool
 	receiptMu                            sync.Mutex
 	receipts                             map[*run]*completionReceipt
@@ -150,6 +152,8 @@ type run struct {
 	ready           chan struct{}
 	deliveryError   string
 	reservation     *reservation
+	teamResult      [32]byte
+	teamSessionFile string
 }
 
 type Inspection struct {
