@@ -91,3 +91,41 @@ func TestNativeReadinessDoesNotActivateAfterOwnerLoss(t *testing.T) {
 		tree.persist = nil
 	})
 }
+
+func TestNativeReadinessKeepsPendingToolsWithinTheCeiling(t *testing.T) {
+	for _, test := range []struct {
+		name, want string
+		ready      []string
+		pending    []string
+	}{
+		{name: "allowed MCP pending", ready: []string{"read"}, pending: []string{"mcp__probe__write"}, want: "ok"},
+		{name: "non-MCP pending", pending: []string{"mcp__probe__write", "read"}},
+		{name: "unknown pending", ready: []string{"read"}, pending: []string{"mcp__probe__other"}},
+		{name: "missing allowed tool", ready: []string{"read"}},
+		{name: "duplicate tool", ready: []string{"mcp__probe__write", "read"}, pending: []string{"mcp__probe__write"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			withMemberControlServer(t, false, func(queue *memberControlQueue, binding *memberBinding, client *http.Client) {
+				queue.owner.tree.mu.Lock()
+				binding.ready, binding.log = false, memberLogPin{}
+				binding.ownership.Tools = []string{"mcp__probe__write", "read"}
+				binding.owned = cloneMemberOwnership(binding.ownership)
+				queue.owned = cloneMemberOwnership(binding.ownership)
+				queue.owner.tree.mu.Unlock()
+				token := queue.token()
+				if status, _ := postAuthority(t, client, token, "/input/start", memberStartingWindow{Window: "window"}); status != http.StatusOK {
+					t.Fatalf("starting window status = %d", status)
+				}
+				if status, _ := postAuthority(t, client, token, "/input/installed", memberStartingInstallation{Window: "window"}); status != http.StatusOK {
+					t.Fatalf("starting installation status = %d", status)
+				}
+				path := filepath.Join(binding.owned.SessionDirectory, "pending_"+string(binding.member.ID)+".jsonl")
+				request := memberReadiness{Window: "window", Session: binding.member.ID, Cwd: binding.owned.Cwd, Model: binding.owned.Model, Tools: test.ready, PendingTools: test.pending, SessionFile: path}
+				status, body := postAuthority(t, client, token, "/input/ready", request)
+				if (status == http.StatusOK) != (test.want == "ok") {
+					t.Fatalf("readiness = %d %s", status, body)
+				}
+			})
+		})
+	}
+}

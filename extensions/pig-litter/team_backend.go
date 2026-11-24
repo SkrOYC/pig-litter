@@ -133,6 +133,7 @@ type memberOwnership struct {
 	OwnerEpoch       uint64               `json:"ownerEpoch"`
 	ProcessScope     string               `json:"processScope,omitempty"`
 	Launch           string               `json:"launch"`
+	LaunchPhase      string               `json:"launchPhase,omitempty"`
 	Cwd              string               `json:"cwd"`
 	Model            string               `json:"model"`
 	Tools            []string             `json:"tools"`

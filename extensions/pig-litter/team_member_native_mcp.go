@@ -17,24 +17,24 @@ type frozenMCPAPI struct {
 	servers []extension.RegisteredMcpServer
 }
 
-func (member *nativeMember) waitTools(ctx context.Context, ext *extension.Context) error {
+func (member *nativeMember) waitTools(ctx context.Context, ext *extension.Context) ([]string, []string, error) {
 	if !slices.ContainsFunc(member.manifest.Tools, isMCPTool) {
 		active := slices.Clone(ext.GetActiveTools())
 		slices.Sort(active)
 		if !slices.Equal(active, member.manifest.Tools) {
-			return errors.New("native tool ceiling does not match its launch")
+			return nil, nil, errors.New("native tool ceiling does not match its launch")
 		}
-		return nil
+		return active, nil, nil
 	}
-	wait, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+	wait := time.NewTimer(10 * time.Second)
+	defer wait.Stop()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		active := ext.GetActiveTools()
 		for _, name := range active {
 			if !slices.Contains(member.manifest.Tools, name) {
-				return errors.New("native active tool exceeds its ceiling")
+				return nil, nil, errors.New("native active tool exceeds its ceiling")
 			}
 		}
 		available := map[string]bool{}
@@ -43,19 +43,30 @@ func (member *nativeMember) waitTools(ctx context.Context, ext *extension.Contex
 				continue
 			}
 			if isMCPTool(tool.Name) && !slices.Contains(member.manifest.Tools, tool.Name) {
-				return errors.New("native MCP tool exceeds its ceiling")
+				return nil, nil, errors.New("native MCP tool exceeds its ceiling")
 			}
 			available[tool.Name] = tool.Exposure == extension.ToolExposureCodemode || tool.Exposure == extension.ToolExposureDeferred || slices.Contains(active, tool.Name)
 		}
-		if slices.ContainsFunc(member.manifest.Tools, func(name string) bool { return !available[name] }) {
-			select {
-			case <-wait.Done():
-				return errors.New("native tool ceiling did not become available")
-			case <-ticker.C:
-				continue
+		var ready, pending []string
+		for _, name := range member.manifest.Tools {
+			if available[name] {
+				ready = append(ready, name)
+			} else if isMCPTool(name) {
+				pending = append(pending, name)
+			} else {
+				return nil, nil, errors.New("native non-MCP tool is unavailable")
 			}
 		}
-		return nil
+		if len(pending) == 0 {
+			return ready, nil, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-wait.C:
+			return ready, pending, nil
+		case <-ticker.C:
+		}
 	}
 }
 

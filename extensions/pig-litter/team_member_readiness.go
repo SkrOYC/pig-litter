@@ -19,6 +19,7 @@ type memberReadiness struct {
 	Cwd           string            `json:"cwd"`
 	Model         string            `json:"model"`
 	Tools         []string          `json:"tools"`
+	PendingTools  []string          `json:"pendingTools,omitempty"`
 	SessionFile   string            `json:"sessionFile"`
 	Leaf          *string           `json:"leaf"`
 	Entries       []json.RawMessage `json:"entries"`
@@ -76,6 +77,12 @@ func (queue *memberControlQueue) acceptReadiness(ctx context.Context, request me
 
 func (queue *memberControlQueue) installReadiness(ctx context.Context, binding *memberBinding, request memberReadiness) error {
 	tools := slices.Clone(request.Tools)
+	for _, name := range request.PendingTools {
+		if !isMCPTool(name) {
+			return reject("unavailable", "only MCP tools may be pending")
+		}
+		tools = append(tools, name)
+	}
 	slices.Sort(tools)
 	owned := binding.owned
 	if request.Session != binding.member.ID || request.Cwd != owned.Cwd || request.Model != owned.Model || !slices.Equal(tools, owned.Tools) || !filepath.IsAbs(request.SessionFile) || filepath.Dir(request.SessionFile) != owned.SessionDirectory || !strings.HasSuffix(filepath.Base(request.SessionFile), "_"+string(binding.member.ID)+".jsonl") {

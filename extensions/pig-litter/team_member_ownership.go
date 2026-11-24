@@ -49,6 +49,9 @@ func validMemberOwnership(ownership *memberOwnership, member *teamMember, cwd, m
 	if ownership.Tools == nil || !slices.IsSorted(ownership.Tools) {
 		return false
 	}
+	if ownership.LaunchPhase != "" && ownership.LaunchPhase != "reserved" && ownership.LaunchPhase != "armed" || ownership.LaunchPhase == "reserved" && ownership.Pane != nil {
+		return false
+	}
 	if len(ownership.ProcessScope) > 128 || strings.IndexFunc(ownership.ProcessScope, unicode.IsControl) >= 0 {
 		return false
 	}
@@ -194,6 +197,9 @@ func (o *owner) reserveMemberLaunch(ctx context.Context, r *record, selected *ru
 		Launch: launch.nonce, Cwd: r.cwd, Model: r.model, Tools: tools, SessionDirectory: sessionDirectory, Executable: launch.executable, ExecutableSHA256: digest, Manifest: launch.manifest,
 		Server: memberServerIdentity{Socket: server.socket, PID: server.pid, Birth: server.birth, Target: server.target},
 	}
+	if selected.resume {
+		ownership.LaunchPhase = "reserved"
+	}
 	r.nativeOwnership = ownership
 	o.tree.mu.Unlock()
 	o.tree.lifecycleMu.Unlock()
@@ -201,6 +207,24 @@ func (o *owner) reserveMemberLaunch(ctx context.Context, r *record, selected *ru
 		return ownership, fmt.Errorf("persist native launch intent: %w", err)
 	}
 	return ownership, nil
+}
+
+func (o *owner) armMemberLaunch(r *record, selected *run, ownership *memberOwnership) error {
+	o.tree.lifecycleMu.Lock()
+	o.tree.mu.Lock()
+	current, err := o.tree.currentLocked(selected)
+	if err != nil || current != r || r.nativeOwnership != ownership || ownership.LaunchPhase != "reserved" || ownership.Pane != nil || r.paused || selected.ctx.Err() != nil {
+		o.tree.mu.Unlock()
+		o.tree.lifecycleMu.Unlock()
+		return reject("unavailable", "native launch intent changed before allocation")
+	}
+	ownership.LaunchPhase = "armed"
+	o.tree.mu.Unlock()
+	o.tree.lifecycleMu.Unlock()
+	if err := o.saveChild(r); err != nil {
+		return fmt.Errorf("persist native allocation intent: %w", err)
+	}
+	return nil
 }
 
 func (o *owner) recordMemberPane(ctx context.Context, r *record, selected *run, ownership *memberOwnership, pane tmuxPane) error {
@@ -220,7 +244,7 @@ func (o *owner) recordMemberPane(ctx context.Context, r *record, selected *run, 
 	o.state.mu.Unlock()
 	server := ownership.Server
 	command := ownership.Executable + " --pig-litter-member " + ownership.Manifest
-	if !active || err != nil || current != r || selected.ctx.Err() != nil || r.nativeOwnership != ownership || ownership.Pane != nil || pane.server.socket != server.Socket || pane.server.pid != server.PID || pane.server.birth != server.Birth || pane.server.target != server.Target || pane.command != command || pane.pid <= 0 || pane.birth == "" {
+	if !active || err != nil || current != r || selected.ctx.Err() != nil || r.nativeOwnership != ownership || ownership.LaunchPhase == "reserved" || ownership.Pane != nil || pane.server.socket != server.Socket || pane.server.pid != server.PID || pane.server.birth != server.Birth || pane.server.target != server.Target || pane.command != command || pane.pid <= 0 || pane.birth == "" {
 		o.tree.mu.Unlock()
 		o.tree.lifecycleMu.Unlock()
 		return reject("unavailable", "native pane does not match its launch intent")
@@ -296,6 +320,7 @@ func (o *owner) clearMemberOwnership(ctx context.Context, r *record, selected *r
 	}
 	binding := r.native
 	cleanupError := r.nativeCleanupError
+	reservationConflict := r.nativeReservationConflict
 	previousSession := r.nativeSession
 	selected.mu.Lock()
 	member := selected.member
@@ -304,6 +329,7 @@ func (o *owner) clearMemberOwnership(ctx context.Context, r *record, selected *r
 	r.nativeReleasing = true
 	r.native, r.nativeOwnership = nil, nil
 	r.nativeCleanupError = ""
+	r.nativeReservationConflict = false
 	if session != nil {
 		r.nativeSession = cloneMemberSession(session)
 	}
@@ -315,6 +341,7 @@ func (o *owner) clearMemberOwnership(ctx context.Context, r *record, selected *r
 		if err != nil {
 			r.native, r.nativeOwnership = binding, ownership
 			r.nativeCleanupError = cleanupError
+			r.nativeReservationConflict = reservationConflict
 			r.nativeSession = previousSession
 			selected.mu.Lock()
 			if selected.member == nil {

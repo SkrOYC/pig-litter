@@ -45,6 +45,7 @@ type nativeMember struct {
 	boundary     uint64
 	approved     uint64
 	continuation chan struct{}
+	pendingTools []string
 	control      context.CancelFunc
 	calls        map[string]struct{}
 	causes       map[string]context.Context
@@ -125,6 +126,8 @@ func RunNativeMember(path string) error {
 	}
 	if manifest.ProjectTrusted {
 		args = append(args, "--approve")
+	} else {
+		args = append(args, "--no-approve")
 	}
 	if !manifest.PeerWake {
 		args = append(args, "--", manifest.Prompt)

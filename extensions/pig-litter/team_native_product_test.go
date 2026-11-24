@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/MichaelKinsy/PiG/coding/extension"
 )
 
 type productMemberCase struct {
@@ -44,6 +47,27 @@ func TestTmuxNativeMCP(t *testing.T) {
 		{name: "mcp_direct", task: "case direct-mcp-allow", tools: []string{"mcp__probe__write", "read"}, marker: "direct-mcp-allow.txt", report: "PROBE_TOOL_DONE", exists: true},
 		{name: "mcp_nested", task: "case codemode-mcp-allow", tools: []string{"codemode", "mcp__probe__write", "read"}, marker: "codemode-mcp-allow.txt", report: "PROBE_TOOL_DONE", exists: true},
 		{name: "mcp_denied", task: "case direct-mcp-deny", tools: []string{"mcp__probe__write", "read"}, marker: "direct-mcp-deny.txt", report: "PROBE_TOOL_DONE", planRequired: true},
+	} {
+		t.Run(test.name, func(t *testing.T) { testTmuxCompiledProductMember(t, test) })
+	}
+}
+
+func TestTmuxNativeMCPPending(t *testing.T) {
+	for _, test := range []productMemberCase{
+		{name: "mcp_unavailable", task: "work without the server", tools: []string{"mcp__probe__write", "read"}, report: "PROBE_DONE"},
+		{name: "mcp_late", task: "use the late server", tools: []string{"mcp__probe__write", "read"}, marker: "late.txt", report: "PROBE_TOOL_DONE", exists: true},
+	} {
+		t.Run(test.name, func(t *testing.T) { testTmuxCompiledProductMember(t, test) })
+	}
+}
+
+func TestTmuxNativeMCPConfiguration(t *testing.T) {
+	for _, test := range []productMemberCase{
+		{name: "mcp_registered", task: "use registered server", tools: []string{"mcp__probe__write", "read"}, marker: "registered.txt", report: "PROBE_TOOL_DONE", exists: true},
+		{name: "mcp_resource", task: "list resources", tools: []string{"list_mcp_resources", "read"}, report: "PROBE_TOOL_DONE"},
+		{name: "mcp_trusted", task: "use project server", tools: []string{"mcp__probe__write", "read"}, marker: "trusted.txt", report: "PROBE_TOOL_DONE", exists: true},
+		{name: "mcp_untrusted", task: "work without project server", tools: []string{"mcp__probe__write", "read"}, report: "PROBE_DONE"},
+		{name: "mcp_reload", task: "use frozen server", tools: []string{"mcp__probe__write", "read"}, marker: "reload.txt", report: "PROBE_TOOL_DONE", exists: true, terminalControls: true},
 	} {
 		t.Run(test.name, func(t *testing.T) { testTmuxCompiledProductMember(t, test) })
 	}
@@ -131,8 +155,19 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 	if err := os.WriteFile(filepath.Join(agentDir, "models.json"), []byte(models), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	var mcpQueue *atomic.Pointer[memberControlQueue]
+	var mcpInits atomic.Int32
+	var registered []extension.RegisteredMcpServer
+	rootCwd := cwd
 	if strings.HasPrefix(name, "mcp_") {
 		var requests atomic.Int32
+		var nativeQueue atomic.Pointer[memberControlQueue]
+		releaseMCP := make(chan struct{})
+		if name == "mcp_late" {
+			if err := os.WriteFile(filepath.Join(cwd, "mcp-seed"), []byte("READY"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
 		mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/v1/chat/completions" {
 				body, _ := io.ReadAll(r.Body)
@@ -141,9 +176,33 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 					_, _ = file.Write(append(line, '\n'))
 					_ = file.Close()
 				}
-				if requests.Add(1) == 1 {
+				if name == "mcp_unavailable" || name == "mcp_untrusted" {
+					runtimeAnswer(w, "PROBE_DONE")
+				} else if count := requests.Add(1); count == 1 || name == "mcp_late" && count == 2 {
+					if name == "mcp_late" && count == 1 {
+						close(releaseMCP)
+						for {
+							queue := nativeQueue.Load()
+							if queue != nil {
+								snapshot, err := queue.Snapshot(r.Context(), memberHistoryBound{})
+								if err == nil && slices.Contains(snapshot.tools, "mcp__probe__write") {
+									break
+								}
+							}
+							select {
+							case <-r.Context().Done():
+								return
+							case <-time.After(20 * time.Millisecond):
+							}
+						}
+						runtimeToolAnswer(w, "read-seed", "read", map[string]any{"path": filepath.Join(cwd, "mcp-seed")})
+						return
+					}
 					target := filepath.Join(rootPath, "files", marker)
 					tool, args := "mcp__probe__write", any(map[string]any{"path": target, "content": "PROBE_WRITTEN"})
+					if name == "mcp_resource" {
+						tool, args = "list_mcp_resources", map[string]any{"server": "probe"}
+					}
 					if name == "mcp_nested" {
 						tool = "codemode"
 						args = map[string]any{"code": fmt.Sprintf(`if ("mcp__probe__blocked" in tools) throw new Error("excluded tool is visible"); return await tools.mcp__probe__write({path:%q,content:"PROBE_WRITTEN"});`, target)}
@@ -181,10 +240,26 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 			var result any
 			switch request.Method {
 			case "initialize":
+				mcpInits.Add(1)
+				if name == "mcp_unavailable" {
+					http.Error(w, "unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				if name == "mcp_late" {
+					select {
+					case <-releaseMCP:
+					case <-r.Context().Done():
+						return
+					}
+				}
 				w.Header().Set("Mcp-Session-Id", "p08-fixture")
-				result = map[string]any{"protocolVersion": request.Params.ProtocolVersion, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "probe", "version": "1"}}
+				result = map[string]any{"protocolVersion": request.Params.ProtocolVersion, "capabilities": map[string]any{"tools": map[string]any{}, "resources": map[string]any{}}, "serverInfo": map[string]any{"name": "probe", "version": "1"}}
 			case "tools/list":
 				result = map[string]any{"tools": []any{map[string]any{"name": "write", "description": "Write a fixture file", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}}, "required": []string{"path", "content"}}}, map[string]any{"name": "blocked", "description": "Excluded fixture tool", "inputSchema": map[string]any{"type": "object"}}}}
+			case "resources/list":
+				result = map[string]any{"resources": []any{map[string]any{"uri": "docs://allowed", "name": "fixture"}}}
+			case "resources/templates/list":
+				result = map[string]any{"resourceTemplates": []any{}}
 			case "tools/call":
 				target := request.Params.Arguments.Path
 				if request.Params.Name != "write" || !strings.HasPrefix(target, filepath.Join(rootPath, "files")+string(os.PathSeparator)) || request.Params.Arguments.Content != "PROBE_WRITTEN" || os.WriteFile(target, []byte(request.Params.Arguments.Content), 0o600) != nil {
@@ -200,14 +275,36 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result})
 		}))
 		defer mcp.Close()
+		if name == "mcp_late" {
+			t.Cleanup(func() { nativeQueue.Store(nil) })
+		}
 		config := fmt.Sprintf(`{"mcpServers":{"probe":{"url":%q,"exposure":"direct"}}}`, mcp.URL)
-		if err := os.WriteFile(filepath.Join(agentDir, "mcp.json"), []byte(config), 0o600); err != nil {
-			t.Fatal(err)
+		switch name {
+		case "mcp_registered":
+			registered = []extension.RegisteredMcpServer{{Name: "probe", Config: extension.McpServerConfig{URL: mcp.URL, Exposure: extension.McpExposureDirect}, ExtensionPath: "fixture-extension"}}
+		case "mcp_trusted", "mcp_untrusted":
+			rootCwd = filepath.Join(rootPath, "root")
+			for _, path := range []string{filepath.Join(rootCwd, ".pig"), filepath.Join(cwd, ".pig")} {
+				if err := os.MkdirAll(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(rootCwd, ".pig", "mcp.json"), []byte(config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cwd, ".pig", "mcp.json"), []byte(`{"mcpServers":{"probe":{"url":"http://127.0.0.1:1","exposure":"direct"}}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			if err := os.WriteFile(filepath.Join(agentDir, "mcp.json"), []byte(config), 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
 		models := fmt.Sprintf(`{"providers":{"fixture":{"api":"openai-completions","baseUrl":%q,"apiKey":"fixture-only","models":[{"id":"fixed","name":"fixed","contextWindow":32000,"maxTokens":1024}]}}}`, mcp.URL+"/v1")
 		if err := os.WriteFile(filepath.Join(agentDir, "models.json"), []byte(models), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		mcpQueue = &nativeQueue
 	}
 	socket := filepath.Join(rootPath, "tmux.sock")
 	tmux := func(args ...string) string {
@@ -256,6 +353,9 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 	tree := testTree(t, config)
 	tree.root.id = rootID
 	worker, _ := agentDefaults("worker")
+	if name == "mcp_resource" {
+		worker.Tools = append(worker.Tools, "list_mcp_resources")
+	}
 	_, selected, err := tree.admit(admission{kind: "worker", name: "member", model: "fixture/fixed", cwd: cwd, task: task, agent: worker, member: &member})
 	if err != nil {
 		t.Fatal(err)
@@ -286,7 +386,7 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 	if dropReplies || causal || staleWake || rootLoss || terminalControls {
 		controlPath = filepath.Join(rootPath, "control-proxy.sock")
 	}
-	manifest := nativeMemberManifest{Version: 1, Launch: launchID, Session: memberID, Cwd: cwd, Model: "fixture/fixed", Tools: tools, SessionDirectory: sessionDir, AgentDirectory: agentDir, PigHome: filepath.Join(rootPath, "home", ".pig"), Socket: controlPath, Capability: hex.EncodeToString(capability[:]), Prompt: selected.prompt, Instructions: worker.Instructions, MailboxLimit: 2, ProjectTrusted: true}
+	manifest := nativeMemberManifest{Version: 1, Launch: launchID, Session: memberID, Cwd: cwd, Model: "fixture/fixed", Tools: tools, SessionDirectory: sessionDir, AgentDirectory: agentDir, PigHome: filepath.Join(rootPath, "home", ".pig"), Socket: controlPath, Capability: hex.EncodeToString(capability[:]), Prompt: selected.prompt, Instructions: worker.Instructions, MailboxLimit: 2, ProjectTrusted: name != "mcp_untrusted"}
 	data, err := json.Marshal(manifest)
 	if err != nil || os.WriteFile(manifestPath, data, 0o600) != nil {
 		t.Fatal("write product manifest", err)
@@ -295,9 +395,9 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 	if startupFailure {
 		available = []string{"read"}
 	}
-	host := &runtimeHost{tools: available}
+	host := &runtimeHost{tools: available, untrusted: name == "mcp_untrusted"}
 	withCompletionHost(t, tree, func(o *owner) {
-		o.cwd, o.agentDir, o.teamStore = cwd, agentDir, store
+		o.cwd, o.agentDir, o.teamStore = rootCwd, agentDir, store
 		if policyRefuse {
 			o.policy.TeammateIdle = []string{"/bin/sh", "-c", `if [ -e "$1" ]; then printf '{"permit":true}'; else : > "$1"; printf '{"permit":false,"feedback":"Complete the review."}'; fi`, "policy", filepath.Join(rootPath, "policy-ran")}
 		}
@@ -319,6 +419,9 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 		queue, err := o.newMemberControlQueueWithCapability(selected.owner, selected, ownership, capability)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if mcpQueue != nil {
+			mcpQueue.Store(queue)
 		}
 		defer queue.Close()
 		binding, err := o.installProvisionalMemberHandle(ctx, selected.owner, selected, sessionDir, launchID, queue)
@@ -436,10 +539,19 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 			if _, err := os.Stat(before); !os.IsNotExist(err) {
 				t.Fatalf("terminal shell created a file: %v", err)
 			}
+			if name == "mcp_reload" {
+				changed := `{"mcpServers":{"probe":{"url":"http://127.0.0.1:1","exposure":"direct"}}}`
+				if err := os.WriteFile(filepath.Join(agentDir, "mcp.json"), []byte(changed), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			send("/reload")
 			probeWait(t, ctx, "native reload", func() bool {
 				return strings.Contains(tmux("capture-pane", "-p", "-t", pane.id), "Reloaded keybindings")
 			})
+			if name == "mcp_reload" {
+				probeWait(t, ctx, "frozen MCP reconnect", func() bool { return mcpInits.Load() >= 2 })
+			}
 			if snapshot, err := queue.Snapshot(ctx, memberHistoryBound{}); err != nil || snapshot.session != memberID || snapshot.model != "fixture/fixed" {
 				t.Fatalf("root control after reload = %#v, %v", snapshot, err)
 			}
@@ -574,6 +686,31 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 				t.Fatalf("tool side effect %s = %q, %v", marker, data, err)
 			}
 		}
+		if name == "mcp_untrusted" && mcpInits.Load() != 0 {
+			t.Fatal("untrusted root project started its MCP server")
+		}
+		if name == "mcp_resource" && !probeRequestContains(provider, "docs://allowed") {
+			t.Fatal("allowed MCP resource was not delivered to the model")
+		}
+		if name == "mcp_unavailable" || name == "mcp_late" || name == "mcp_untrusted" {
+			if !probeRequestContains(provider, "Some allowed tools are still connecting") {
+				t.Fatal("the model did not receive the pending tool notice")
+			}
+		}
+		if strings.HasPrefix(name, "mcp_") {
+			for _, row := range probeRows(provider) {
+				body, _ := row["body"].(map[string]any)
+				declared, _ := body["tools"].([]any)
+				for _, value := range declared {
+					item, _ := value.(map[string]any)
+					function, _ := item["function"].(map[string]any)
+					tool, _ := function["name"].(string)
+					if !slices.Contains(tools, tool) {
+						t.Fatalf("model saw tool outside the frozen ceiling: %q", tool)
+					}
+				}
+			}
+		}
 		queue.mu.Lock()
 		var inputs []map[string]any
 		for _, input := range queue.running {
@@ -636,7 +773,7 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 			return json.RawMessage(`{}`)
 		}
 		return host.call(t, method, raw)
-	})
+	}, registered...)
 }
 
 type productReplyDropper struct {

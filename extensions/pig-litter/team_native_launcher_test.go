@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -763,6 +764,20 @@ func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 			recovered.mu.Unlock()
 			if resumedOwnership == nil || resumedOwnership.Pane == nil {
 				t.Fatal("resumed native pane was not retained")
+			}
+			host.mu.Lock()
+			phases := []string{}
+			for _, entry := range host.entries {
+				data, _ := json.Marshal(entry["data"])
+				var saved savedChild
+				if json.Unmarshal(data, &saved) == nil && saved.Native != nil && saved.Native.Launch == resumedOwnership.Launch && saved.Native.Pane == nil {
+					phases = append(phases, saved.Native.LaunchPhase)
+				}
+			}
+			host.mu.Unlock()
+			reserved, armed := slices.Index(phases, "reserved"), slices.Index(phases, "armed")
+			if reserved < 0 || armed <= reserved {
+				t.Fatalf("native launch phases were not stored before allocation: %v", phases)
 			}
 			tmux("pipe-pane", "-o", "-t", resumedOwnership.Pane.ID, "cat > "+filepath.Join(rootPath, "resume-terminal.raw"))
 			_ = os.WriteFile(filepath.Join(rootPath, "resume.ansi"), []byte(tmux("capture-pane", "-p", "-e", "-t", resumedOwnership.Pane.ID)), 0o600)

@@ -169,6 +169,10 @@ func (o *owner) executeTmuxMember(r *record, selected *run, env tmuxMemberEnviro
 			return
 		}
 		scope.marked = true
+		if err := o.armMemberLaunch(r, selected, scope.ownership); err != nil {
+			outcome.Error = err.Error()
+			return
+		}
 	}
 	manifest.Tools = scope.ownership.Tools
 	if err := manifest.validate(directory, filepath.Base(scope.manifest)); err != nil {

@@ -21,10 +21,6 @@ func (o *owner) prepareNativeResume(ctx context.Context, r *record, selected *ru
 		return nil, err
 	}
 	o.tree.mu.Lock()
-	if r.nativeReservationConflict {
-		o.tree.mu.Unlock()
-		return nil, reject("unavailable", "native launch reservation requires reconciliation")
-	}
 	if o.tree.records[r.id] != r || r.run != selected || r.backend != backendTmux || r.nativeReleasing || r.native != nil || !selected.state.terminal() || selected.finishing {
 		o.tree.mu.Unlock()
 		return nil, reject("unavailable", "native teammate is not ready for reconciliation")
@@ -40,16 +36,55 @@ func (o *owner) prepareNativeResume(ctx context.Context, r *record, selected *ru
 	ownership := r.nativeOwnership
 	prior := cloneMemberOwnership(ownership)
 	session := cloneMemberSession(r.nativeSession)
+	conflict := r.nativeReservationConflict
+	var member *teamMember
+	if r.team != nil {
+		copy := *r.team
+		member = &copy
+	}
 	o.tree.mu.Unlock()
-	if prior != nil {
-		if err := confirmOldMemberGone(ctx, prior); err != nil {
-			return nil, err
+	var store *teamStore
+	unstarted := false
+	previousLaunch := ""
+	if conflict {
+		if prior == nil || member == nil || !validMemberSession(session, r.id, r.cwd, r.model) || filepath.Dir(session.File) != prior.SessionDirectory || !slices.Equal(session.Tools, prior.Tools) {
+			return nil, reject("unavailable", "native launch reservation requires reconciliation")
 		}
-		path, err := uniqueNativeSession(prior.SessionDirectory, r.id)
+		previousLaunch = session.Launch
+		var err error
+		store, err = o.teamStoreForRoot()
 		if err != nil {
 			return nil, err
 		}
-		session = &memberSession{File: path, Model: prior.Model, Tools: slices.Clone(prior.Tools), Launch: prior.Launch}
+		_, reservations, err := store.recoverySnapshot()
+		if err != nil {
+			return nil, err
+		}
+		matched := slices.ContainsFunc(reservations, func(reservation teamReservation) bool {
+			return reservation.Member.Ref == member.Ref && reservation.Member.AdmissionID == member.AdmissionID && reservation.Member.Workspace == member.Workspace && reservation.NativeLaunch == session.Launch
+		})
+		if !matched {
+			return nil, reject("unavailable", "native launch reservation changed during reconciliation")
+		}
+		unstarted = prior.LaunchPhase == "reserved" && prior.Pane == nil
+	}
+	if prior != nil {
+		var err error
+		if unstarted {
+			err = confirmReservedMemberUnstarted(ctx, prior)
+		} else {
+			err = confirmOldMemberGone(ctx, prior)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !unstarted {
+			path, err := uniqueNativeSession(prior.SessionDirectory, r.id)
+			if err != nil {
+				return nil, err
+			}
+			session = &memberSession{File: path, Model: prior.Model, Tools: slices.Clone(prior.Tools), Launch: prior.Launch}
+		}
 	}
 	if !validMemberSession(session, r.id, r.cwd, r.model) {
 		return nil, reject("unavailable", "native teammate has no retained session to resume")
@@ -74,11 +109,59 @@ func (o *owner) prepareNativeResume(ctx context.Context, r *record, selected *ru
 		if err := o.current(); err != nil {
 			return nil, err
 		}
-		if err := o.clearMemberOwnership(ctx, r, selected, ownership, prior, session); err != nil {
+		if conflict && !unstarted {
+			if err := store.markNativeLaunch(*member, prior.Launch, previousLaunch); err != nil {
+				return nil, err
+			}
+		}
+		clearedSession := session
+		if unstarted {
+			clearedSession = nil
+		}
+		if err := o.clearMemberOwnership(ctx, r, selected, ownership, prior, clearedSession); err != nil {
 			return nil, err
 		}
 	}
 	return resume, nil
+}
+
+func confirmReservedMemberUnstarted(ctx context.Context, ownership *memberOwnership) error {
+	if ownership == nil || ownership.LaunchPhase != "reserved" || ownership.Pane != nil {
+		return reject("unavailable", "native allocation intent is uncertain")
+	}
+	scope, err := memberProcessScope(os.Getpid())
+	if err != nil || ownership.ProcessScope == "" || scope != ownership.ProcessScope {
+		return reject("unavailable", "native process scope is unavailable or changed")
+	}
+	command, err := exec.LookPath("tmux")
+	if err != nil {
+		return reject("unavailable", "tmux is unavailable for native reconciliation")
+	}
+	identity := ownership.Server
+	server := tmuxServer{command: command, socket: identity.Socket, pid: identity.PID, birth: identity.Birth, target: identity.Target}
+	if err := server.verify(ctx); err != nil {
+		return reject("unavailable", "native tmux server is unavailable or changed")
+	}
+	serverScope, err := memberProcessScope(identity.PID)
+	if err != nil || serverScope != scope {
+		return reject("unavailable", "native tmux server scope is unavailable or changed")
+	}
+	panes, err := server.panes(ctx)
+	if err != nil {
+		return reject("unavailable", "native tmux panes cannot be verified")
+	}
+	launchCommand := ownership.Executable + " --pig-litter-member " + ownership.Manifest
+	target := false
+	for _, pane := range panes {
+		target = target || pane.id == identity.Target
+		if pane.command == launchCommand {
+			return reject("unavailable", "native allocation may have started")
+		}
+	}
+	if !target || server.verify(ctx) != nil {
+		return reject("unavailable", "native tmux server or target changed")
+	}
+	return nil
 }
 
 func (o *owner) projectNativeResume(ctx context.Context, pin memberLogPin, cwd string, id ChildID) (*memberResumePin, error) {

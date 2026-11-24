@@ -107,6 +107,17 @@ func (member *nativeMember) factory(api extension.API) error {
 		}
 		return nil
 	})
+	api.OnBeforeAgentStart(func(context.Context, extension.BeforeAgentStartEvent) (extension.BeforeAgentStartEventResult, error) {
+		member.mu.Lock()
+		pending := member.pendingTools
+		member.pendingTools = nil
+		member.mu.Unlock()
+		if len(pending) == 0 {
+			return extension.BeforeAgentStartEventResult{}, nil
+		}
+		message := "<system-notice>\nSome allowed tools are still connecting: " + strings.Join(pending, ", ") + ". They can become available during this run.\n</system-notice>"
+		return extension.BeforeAgentStartEventResult{Message: &extension.CustomMessageRef{CustomType: "pig_litter_pending_tools", Content: message}}, nil
+	})
 	api.OnTurnStart(func(ctx context.Context, _ extension.TurnStartEvent) error {
 		if err := member.waitWindow(ctx); err != nil {
 			member.stop(ctx)
@@ -216,7 +227,8 @@ func (member *nativeMember) sessionReady(ctx context.Context) error {
 	if ChildID(manager.GetSessionId()) != member.manifest.Session || cwd != member.manifest.Cwd || nativeModelName(model) != member.manifest.Model {
 		return errors.New("native readiness does not match its launch")
 	}
-	if err := member.waitTools(ctx, ext); err != nil {
+	tools, pending, err := member.waitTools(ctx, ext)
+	if err != nil {
 		return err
 	}
 	member.mu.Lock()
@@ -229,7 +241,7 @@ func (member *nativeMember) sessionReady(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	request := memberReadiness{Window: string(window), Session: member.manifest.Session, Cwd: cwd, Model: nativeModelName(model), Tools: slices.Clone(member.manifest.Tools), SessionFile: *manager.GetSessionFile(), Leaf: manager.GetLeafID(), Entries: entries}
+	request := memberReadiness{Window: string(window), Session: member.manifest.Session, Cwd: cwd, Model: nativeModelName(model), Tools: tools, PendingTools: pending, SessionFile: *manager.GetSessionFile(), Leaf: manager.GetLeafID(), Entries: entries}
 	if member.manifest.ResumeFile != "" {
 		count, digest := len(entries), memberEntriesDigest(entries)
 		request.Entries = nil
@@ -244,6 +256,7 @@ func (member *nativeMember) sessionReady(ctx context.Context) error {
 	}
 	member.mu.Lock()
 	member.ready = true
+	member.pendingTools = pending
 	member.mu.Unlock()
 	return nil
 }
