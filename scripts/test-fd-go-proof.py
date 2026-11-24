@@ -26,7 +26,15 @@ class ProofTests(unittest.TestCase):
             proof = scratch / "proof.json"
             proof.write_text(json.dumps({"fixture": str(fixture), "replacement_sentinel_sha256": hashlib.sha256(b"outside remains unchanged\n").hexdigest()}))
             self.assertEqual(probe.verify(scratch, proof)["sha256"], "dfa942d4d5d7dea95af6182b5125f5073356310417a876507043a8a51a426601")
+            alias = scratch.parent / (scratch.name + "-alias")
+            alias.symlink_to(scratch, target_is_directory=True)
+            try:
+                proof.write_text(json.dumps({"fixture": str(alias / fixture.name), "replacement_sentinel_sha256": hashlib.sha256(b"outside remains unchanged\n").hexdigest()}))
+                self.assertEqual(probe.verify(scratch, proof)["status"], "verified")
+            finally:
+                alias.unlink()
             sentinel.write_text("changed\n")
+            proof.write_text(json.dumps({"fixture": str(fixture), "replacement_sentinel_sha256": hashlib.sha256(b"outside remains unchanged\n").hexdigest()}))
             with self.assertRaisesRegex(RuntimeError, "sentinel differs"):
                 probe.verify(scratch, proof)
 

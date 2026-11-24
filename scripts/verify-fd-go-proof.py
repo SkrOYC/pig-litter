@@ -15,7 +15,7 @@ def verify(scratch, proof_path):
     scratch = scratch.resolve(strict=True)
     proof = json.loads(proof_path.read_text())
     fixture = Path(proof["fixture"])
-    if not fixture.is_absolute() or fixture.parent != scratch or not fixture.name.startswith("fd-go."):
+    if not fixture.is_absolute() or fixture.parent.resolve(strict=True) != scratch or not fixture.name.startswith("fd-go."):
         raise RuntimeError("Fixture is outside the private allocation")
     path = fixture
     for component in (None, "outside", "pig-platform", "go-mod", "sentinel"):
