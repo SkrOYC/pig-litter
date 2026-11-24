@@ -16,6 +16,8 @@ import time
 import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from iterm_window import ACKNOWLEDGE_WARNING, UI_CENSUS, WINDOW_EXISTS
+
 
 NAMES = ("alpha", "beta", "gamma")
 FILE_TOOLS = {"read", "write", "edit", "bash"}
@@ -354,6 +356,10 @@ on run argv
     repeat with candidateWindow in windows
       if (id of candidateWindow as text) is wantedWindow then
         set candidateSession to current session of candidateWindow
+        if candidateSession is missing value then
+          if actionName is "close" then return "session missing"
+          error "Owned window has no current session."
+        end if
         if (unique id of candidateSession) is not wantedSession then error "Owned window session changed."
         if actionName is "exists" then return "present"
         if actionName is "text" then return text of candidateSession
@@ -387,6 +393,30 @@ def applescript(script, *arguments):
     result = subprocess.run(["/usr/bin/osascript", "-", *arguments], input=script, text=True, capture_output=True, timeout=30)
     require(result.returncode == 0, f"AppleScript failed: {result.stderr.strip()}")
     return result.stdout.rstrip("\n")
+
+
+def window_presence(window):
+    result = applescript(WINDOW_EXISTS, window)
+    require(result in ("present", "missing"), f"Unexpected iTerm window presence: {result}")
+    return result
+
+
+def capture_window_diagnostics(prefix, include_ui=False):
+    records = []
+    try:
+        target = Path(str(prefix) + ".png")
+        result = subprocess.run(["/usr/sbin/screencapture", "-x", str(target)], capture_output=True, text=True, timeout=15)
+        records.append({"capture": "screenshot", "path": str(target), "returncode": result.returncode, "bytes": target.stat().st_size if target.is_file() else 0, "stderr": result.stderr})
+    except Exception as error:
+        records.append({"capture": "screenshot", "error": str(error)})
+    if include_ui:
+        try:
+            result = subprocess.run(["/usr/bin/osascript", "-"], input=UI_CENSUS, capture_output=True, text=True, timeout=10)
+            Path(str(prefix) + "-ui.txt").write_text(result.stdout + result.stderr)
+            records.append({"capture": "ui", "returncode": result.returncode, "stderr": result.stderr})
+        except Exception as error:
+            records.append({"capture": "ui", "error": str(error)})
+    return records
 
 
 def process_snapshot():
@@ -518,6 +548,7 @@ class Terminal:
             safe_text(argument)
         wrapper = generation / "launch.sh"
         wrapper.write_text("#!/bin/sh\ncd " + shlex.quote(safe_text(str(self.workspace))) + " || exit 125\nprintf '%s\\n' \"$$\" > " + shlex.quote(str(generation / "wrapper.pid")) + "\n" + shlex.join(command) + "\nresult=$?\nprintf '%s\\n' \"$result\" > " + shlex.quote(str(generation / "exit.txt")) + "\nexit \"$result\"\n")
+        self.window["launch_sent"] = True
         self.session_action("send", "exec /bin/sh " + shlex.quote(str(wrapper)))
         self.wait(lambda: (generation / "wrapper.pid").exists(), "owned terminal wrapper", 30)
         self.window["wrapper_pid"] = int((generation / "wrapper.pid").read_text().strip())
@@ -528,6 +559,7 @@ class Terminal:
         hosts = [p for p in self.owned.values() if p["ppid"] == self.window["wrapper_pid"] and p["executable"] == os.path.realpath(self.pig) and p["tty"] == tty]
         extensions = [p for p in self.owned.values() if p["executable"] == os.path.realpath(self.extension)]
         require(wrappers and hosts, "PiG process is not attributed to the iTerm TTY and wrapper")
+        self.window["wrapper_identity"] = wrappers[-1]
         if self.selected:
             require(extensions, "Selected extension process was not observed under the owned wrapper")
         else:
@@ -572,11 +604,47 @@ class Terminal:
         self.wait(lambda: not any(same_process(process) for process in self.owned.values()), "owned processes to exit", 30)
         self.close_window()
 
+    def capture_closure(self, name, include_ui=False):
+        prefix = self.evidence / f"closure-{self.generation}-{name}"
+        self.window.setdefault("closure_captures", []).extend(capture_window_diagnostics(prefix, include_ui))
+
     def close_window(self):
         if self.window is None:
             return
-        self.window["close_result"] = self.session_action("close")
-        self.wait(lambda: self.session_action("exists") == "missing", "owned iTerm window to close", 30)
+        try:
+            wrapper = self.window.get("wrapper_identity")
+            if self.window.get("launch_sent"):
+                require(wrapper is not None and wrapper in self.owned.values(), "Owned wrapper process identity was not observed")
+            if wrapper is not None:
+                require(not any(same_process(process) for process in self.owned.values()), "Owned processes are still running")
+                self.window["process_exit_observed"] = {"time": time.time(), "wrapper": wrapper, "owned_count": len(self.owned)}
+            self.window["close_result"] = self.session_action("close")
+            self.window.setdefault("close_results", []).append({"time": time.time(), "result": self.window["close_result"]})
+            require(self.window["close_result"] in ("closed", "already closed", "session missing"), "Unexpected iTerm close result")
+            captured = False
+
+            def closed():
+                nonlocal captured
+                presence = window_presence(self.window["id"])
+                self.window.setdefault("presence_results", []).append({"time": time.time(), "result": presence})
+                if presence == "missing":
+                    return True
+                if wrapper is not None:
+                    if not captured:
+                        self.capture_closure("before-warning")
+                        captured = True
+                    warning = applescript(ACKNOWLEDGE_WARNING, self.window["id"], self.window["session"])
+                    self.window.setdefault("warning_results", []).append({"time": time.time(), "result": warning})
+                    require(warning != "owned session changed", "Owned window session changed.")
+                    if warning.startswith("acknowledged owned short-session warning"):
+                        self.capture_closure("after-warning")
+                return False
+
+            self.wait(closed, "owned iTerm window to close", 30)
+        except Exception as error:
+            self.window["closure_error"] = str(error)
+            self.capture_closure("failure", include_ui=True)
+            raise
         self.window = None
 
     def cleanup(self):
@@ -687,9 +755,29 @@ def close_probe(path, evidence, identity=None):
     if identity is None:
         (evidence / "probe-cleanup.txt").write_text("No attributable capability window was available.\n")
         return False
-    closed = applescript(SESSION, *identity, "close")
-    (evidence / "probe-cleanup.txt").write_text(closed + "\n")
-    return closed in ("closed", "already closed")
+    observations = []
+    try:
+        closed = applescript(SESSION, *identity, "close")
+        observations.append(closed)
+        require(closed in ("closed", "already closed", "session missing"), "Unexpected capability window close result")
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            presence = window_presence(identity[0])
+            observations.append(presence)
+            if presence == "missing":
+                (evidence / "probe-cleanup.txt").write_text("\n".join(observations) + "\n")
+                return True
+            time.sleep(0.4)
+    except Exception as error:
+        observations.append(f"error: {error}")
+        (evidence / "probe-cleanup.txt").write_text("\n".join(observations) + "\n")
+        captures = capture_window_diagnostics(evidence / "probe-cleanup-failure", include_ui=True)
+        (evidence / "probe-cleanup-diagnostics.json").write_text(json.dumps(captures, indent=2) + "\n")
+        raise
+    (evidence / "probe-cleanup.txt").write_text("\n".join(observations) + "\n")
+    captures = capture_window_diagnostics(evidence / "probe-cleanup-failure", include_ui=True)
+    (evidence / "probe-cleanup-diagnostics.json").write_text(json.dumps(captures, indent=2) + "\n")
+    return False
 
 
 def run_case(name, scratch, evidence, pig, extension):
@@ -786,7 +874,7 @@ def main():
     args.evidence.mkdir(parents=True, exist_ok=True)
     probe = Path(os.environ["RUNNER_TEMP"]) / "collaboration-platform-probe" / "result.json"
     if args.cleanup_probe:
-        close_probe(probe, args.evidence)
+        require(close_probe(probe, args.evidence), "The capability probe window could not be released")
         return
     require(all((args.scenario, args.pig, args.extension, args.scratch)), "Missing product verification argument")
     require(sys.platform == "darwin", "P03 iTerm verification requires macOS")
