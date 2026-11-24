@@ -20,6 +20,7 @@ on:
           - iterm-lifecycle
           - intel-window-forensics
           - intel-pig-window-forensics
+          - fd-go-cache
           - p03-all
           - p03-team
           - p03-policy
@@ -399,5 +400,85 @@ jobs:
             ${{ runner.temp }}/intel-pig-window-forensics/
             ${{ runner.temp }}/collaboration-platform-probe/
           include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  fd-go-cache:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario == 'fd-go-cache' }}
+    name: Go file-descriptor cache probe on ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(inputs.architecture == 'intel' && '["macos-15-intel"]' || inputs.architecture == 'arm' && '["macos-15"]' || '["macos-15-intel","macos-15"]') }}
+    env:
+      PROBE_RUNNER_LABEL: ${{ matrix.runner }}
+      SELECTED_ARCHITECTURE: ${{ inputs.architecture }}
+      SELECTED_SCENARIO: ${{ inputs.scenario }}
+    steps:
+      - name: Check out the diagnostic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: driver
+          persist-credentials: false
+      - name: Check diagnostic identity and controls
+        shell: bash
+        run: |
+          evidence="$RUNNER_TEMP/fd-go-cache"
+          mkdir -p "$evidence"
+          git -C driver rev-parse HEAD > "$evidence/driver-commit.txt" || exit 1
+          git -C driver rev-parse 'HEAD^{tree}' > "$evidence/driver-tree.txt" || exit 1
+          git -C driver status --porcelain=v1 --untracked-files=all > "$evidence/driver-status.txt" || exit 1
+          test ! -s "$evidence/driver-status.txt" || exit 1
+          case "$SELECTED_ARCHITECTURE" in intel|arm|both) ;; *) exit 1 ;; esac
+          printf 'scenario=%s\narchitecture=%s\nworkflow_sha=%s\nrunner=%s\n' "$SELECTED_SCENARIO" "$SELECTED_ARCHITECTURE" "$GITHUB_WORKFLOW_SHA" "$PROBE_RUNNER_LABEL" > "$evidence/inputs.txt"
+          python3 -B driver/scripts/test-fd-go-proof.py
+      - name: Set up Go 1.27.4
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - name: Run the isolated file-descriptor probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/fd-go-cache"
+          case "$PROBE_RUNNER_LABEL:$RUNNER_ARCH:$(uname -m)" in
+            macos-15-intel:X64:x86_64) expected_arch=amd64 ;;
+            macos-15:ARM64:arm64) expected_arch=arm64 ;;
+            *) exit 1 ;;
+          esac
+          go_version=$(go version) || exit 1
+          printf '%s\n' "$go_version" > "$evidence/go-version.txt"
+          test "$go_version" = "go version go1.27.4 darwin/$expected_arch" || exit 1
+          fixture_sha=30031c595872a19a0caa15f10c29fd427ac4ba056bd1bbfdbc7bab9440bc6754
+          actual_sha=$(shasum -a 256 driver/scripts/fd-go-probe.py | awk '{print $1}') || exit 1
+          test "$actual_sha" = "$fixture_sha" || exit 1
+          df -P /private/tmp > "$evidence/scratch-filesystem.txt" || exit 1
+          device=$(tail -1 "$evidence/scratch-filesystem.txt" | awk '{print $1}') || exit 1
+          [[ "$device" == /dev/disk* ]] || exit 1
+          physical_tmp=$(cd /private/tmp && pwd -P) || exit 1
+          test "$physical_tmp" = /private/tmp || exit 1
+          scratch=$(mktemp -d /private/tmp/fdg.XXXXXXXX) || exit 1
+          scratch_id=$(stat -f '%d:%i' "$scratch") || exit 1
+          printf 'path=%s\nidentity=%s\n' "$scratch" "$scratch_id" > "$evidence/scratch.txt"
+          cp driver/scripts/fd-go-probe.py "$scratch/fd-go-probe.py" || exit 1
+          staged_sha=$(shasum -a 256 "$scratch/fd-go-probe.py" | awk '{print $1}') || exit 1
+          test "$staged_sha" = "$fixture_sha" || exit 1
+          printf 'original=%s\nstaged=%s\n' "$actual_sha" "$staged_sha" > "$evidence/fixture-sha256.txt"
+          probe_status=0
+          python3 -B "$scratch/fd-go-probe.py" > "$evidence/proof.json" 2> "$evidence/probe.stderr" || probe_status=$?
+          printf '%s\n' "$probe_status" > "$evidence/probe-exit.txt"
+          sentinel_status=0
+          python3 -B driver/scripts/verify-fd-go-proof.py --scratch "$scratch" --proof "$evidence/proof.json" --report "$evidence/outside-sentinel.json" || sentinel_status=$?
+          test "$sentinel_status" -eq 0 || exit 1
+          test "$probe_status" -eq 0 || exit 1
+      - name: Upload file-descriptor probe evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: fd-go-cache-${{ matrix.runner }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fd-go-cache/
           if-no-files-found: error
           retention-days: 14
