@@ -102,6 +102,38 @@ class InputAndProviderTests(unittest.TestCase):
             self.assertFalse(marker.exists(), details)
             self.assertEqual(recorded_result, "exit_code=1\n", details)
 
+    def test_wrong_runner_stops_before_creating_build_scratch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            candidate = root / "candidate"
+            candidate.mkdir()
+            subprocess.run(["git", "init", "-q", str(candidate)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(candidate), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-q", "--allow-empty", "-m", "fixture"], check=True, capture_output=True)
+            sha = subprocess.run(["git", "-C", str(candidate), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+            evidence = root / "evidence"
+            marker = root / "ran"
+            repo = Path(__file__).resolve().parent.parent
+            environment = os.environ | {"PIG_PLATFORM_ROOT_DIR": str(candidate), "PIG_PLATFORM_SCRATCH_PARENT": str(root), "RUNNER_OS": "unexpected", "RUNNER_ARCH": "X64"}
+            result = subprocess.run(["bash", "-x", str(repo / "scripts/verify-pig-platforms.sh"), sha, "linux", "amd64", str(evidence), "--", "touch", str(marker)], env=environment, capture_output=True, text=True, check=False)
+            result_file = evidence / "result.txt"
+            recorded_result = result_file.read_text() if result_file.exists() else "<missing>"
+            details = f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}\nresult.txt:\n{recorded_result}"
+            self.assertEqual(result.returncode, 1, details)
+            self.assertEqual(recorded_result, "exit_code=1\n", details)
+            self.assertFalse(marker.exists(), details)
+            self.assertEqual(list(root.glob("pig-platform.*")), [], details)
+
+    def test_macos_driver_rejects_wrong_candidate_before_scratch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = Path(__file__).resolve().parent.parent
+            environment = os.environ | {"CANDIDATE_SHA": "0" * 40, "CANDIDATE_ROOT": str(repo), "DRIVER_ROOT": str(repo), "EVIDENCE_DIR": str(root), "P03_SCENARIO": "p03-all"}
+            result = subprocess.run(["bash", "-x", str(repo / "scripts/verify-p03-macos.sh")], env=environment, capture_output=True, text=True, check=False)
+            details = f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            self.assertEqual(result.returncode, 1, details)
+            self.assertIn("verification check failed at line", result.stderr)
+            self.assertFalse((root / "scratch.txt").exists(), details)
+
     def test_terminal_text_accepts_quotes_and_rejects_control_characters(self):
         self.assertEqual(driver.safe_text("a path with 'quotes' and $(literal)"), "a path with 'quotes' and $(literal)")
         for value in ("one\ntwo", "one\x1btwo", "one\x7ftwo", "one\x85two"):

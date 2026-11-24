@@ -2,6 +2,11 @@
 set -euo pipefail
 umask 077
 
+fail_check() {
+  printf 'verification check failed at line %s\n' "$1" >&2
+  exit 1
+}
+
 candidate=${CANDIDATE_SHA:?}
 repo=${CANDIDATE_ROOT:?}
 driver=${DRIVER_ROOT:?}
@@ -10,13 +15,13 @@ scenario=${P03_SCENARIO:?}
 mkdir -p "$evidence"
 
 if [[ "${1:-}" == --run-prepared ]]; then
-  [[ $# -eq 1 ]]
+  [[ $# -eq 1 ]] || fail_check "$LINENO"
   actual_arch=$(go env GOARCH)
   case "$(uname -m):$actual_arch" in x86_64:amd64|arm64:arm64) ;; *) exit 1 ;; esac
-  [[ "$(go version)" == "go version go1.27.4 darwin/$actual_arch" ]]
-  [[ "${PIG_LITTER_SDK_DIR:?}" == "${PIG_LITTER_SOURCE_DIR:?}/extensions/sdk" ]]
-  [[ "$(go env GOWORK)" == "${GOWORK:?}" && "$GOWORK" != off ]]
-  [[ "$(shasum -a 256 "${PIG_LITTER_EXPECTED_PIG:?}" | awk '{print $1}')" == "${PIG_LITTER_EXPECTED_PIG_SHA256:?}" ]]
+  [[ "$(go version)" == "go version go1.27.4 darwin/$actual_arch" ]] || fail_check "$LINENO"
+  [[ "${PIG_LITTER_SDK_DIR:?}" == "${PIG_LITTER_SOURCE_DIR:?}/extensions/sdk" ]] || fail_check "$LINENO"
+  [[ "$(go env GOWORK)" == "${GOWORK:?}" && "$GOWORK" != off ]] || fail_check "$LINENO"
+  [[ "$(shasum -a 256 "${PIG_LITTER_EXPECTED_PIG:?}" | awk '{print $1}')" == "${PIG_LITTER_EXPECTED_PIG_SHA256:?}" ]] || fail_check "$LINENO"
   cd "$repo"
   {
     go version
@@ -33,15 +38,15 @@ if [[ "${1:-}" == --run-prepared ]]; then
     go version -m "$P03_SCRATCH/bin/pig-litter"
   } >> "$evidence/build-identity.txt"
   python3 "$driver/scripts/p03-macos.py" --scenario "$scenario" --pig "$PIG_LITTER_EXPECTED_PIG" --extension "$P03_SCRATCH/bin/pig-litter" --scratch "$P03_SCRATCH" --evidence "$evidence"
-  [[ "$(shasum -a 256 "$PIG_LITTER_EXPECTED_PIG" | awk '{print $1}')" == "$PIG_LITTER_EXPECTED_PIG_SHA256" ]]
+  [[ "$(shasum -a 256 "$PIG_LITTER_EXPECTED_PIG" | awk '{print $1}')" == "$PIG_LITTER_EXPECTED_PIG_SHA256" ]] || fail_check "$LINENO"
   exit
 fi
-[[ $# -eq 0 ]]
+[[ $# -eq 0 ]] || fail_check "$LINENO"
 
-[[ "$candidate" =~ ^[0-9a-f]{40}$ ]]
-[[ "$(git -C "$repo" rev-parse HEAD)" == "$candidate" ]]
-[[ -z "$(git -C "$repo" status --porcelain=v1 --untracked-files=all)" ]]
-[[ "$(uname -s)" == Darwin ]]
+[[ "$candidate" =~ ^[0-9a-f]{40}$ ]] || fail_check "$LINENO"
+[[ "$(git -C "$repo" rev-parse HEAD)" == "$candidate" ]] || fail_check "$LINENO"
+[[ -z "$(git -C "$repo" status --porcelain=v1 --untracked-files=all)" ]] || fail_check "$LINENO"
+[[ "$(uname -s)" == Darwin ]] || fail_check "$LINENO"
 case "${PROBE_RUNNER_LABEL:?}:$(uname -m)" in
   macos-15-intel:x86_64) expected_arch=amd64 ;;
   macos-15:arm64) expected_arch=arm64 ;;
@@ -63,7 +68,7 @@ case "$device" in
   /dev/disk*) ;;
   *) printf 'The /private/tmp filesystem is not an identified disk: %s\n' "$device" >&2; exit 1 ;;
 esac
-[[ "$(cd /private/tmp && pwd -P)" == /private/tmp ]]
+[[ "$(cd /private/tmp && pwd -P)" == /private/tmp ]] || fail_check "$LINENO"
 scratch=$(mktemp -d /private/tmp/p03.XXXXXXXX)
 scratch_id=$(stat -f '%d:%i' "$scratch")
 printf 'path=%s\nidentity=%s\n' "$scratch" "$scratch_id" > "$evidence/scratch.txt"
