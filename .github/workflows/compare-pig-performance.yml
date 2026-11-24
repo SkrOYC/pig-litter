@@ -15,13 +15,18 @@ on:
         required: false
         default: false
         type: boolean
+      p04_release:
+        description: Release the P04 hosted measurement after its functional smoke
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 jobs:
   compare:
-    if: ${{ github.event_name != 'workflow_dispatch' || github.ref != 'refs/heads/feat/collaboration-P03-team-runtime' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (github.ref != 'refs/heads/feat/collaboration-P03-team-runtime' && github.ref != 'refs/heads/feat/collaboration-P04-message-receipts') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     env:
@@ -335,5 +340,116 @@ jobs:
             !${{ env.P03_SCENARIO_EVIDENCE }}/**/cache/**
             !${{ env.P03_SCENARIO_EVIDENCE }}/**/modules/**
             !${{ env.P03_SCENARIO_EVIDENCE }}/**/docs/**
+          include-hidden-files: true
+          if-no-files-found: error
+
+  collaboration-message-performance:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/feat/collaboration-P04-message-receipts' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      P04_RELEASE: ${{ inputs.p04_release }}
+      BASELINE_SHA: e40b6bbe985c5663ebea7756f175f210402044fd
+      CANDIDATE_CHECKOUT: ${{ github.workspace }}/candidate
+      BASELINE_CHECKOUT: ${{ github.workspace }}/baseline
+    steps:
+      - name: Initialize evidence
+        shell: bash
+        run: |
+          EVIDENCE_DIR="$RUNNER_TEMP/p04-evidence"
+          printf 'EVIDENCE_DIR=%s\n' "$EVIDENCE_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$EVIDENCE_DIR"
+          printf 'candidate=%s\nparent=%s\ngithub_sha=%s\nworkflow_sha=%s\nrelease=%s\n' "$CANDIDATE_SHA" "$BASELINE_SHA" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$P04_RELEASE" > "$EVIDENCE_DIR/bootstrap.txt"
+          test "$CANDIDATE_SHA" = "$GITHUB_SHA"
+          test "$P04_RELEASE" = true
+      - name: Check out exact candidate
+        id: checkout_candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out exact parent
+        id: checkout_parent
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.BASELINE_SHA }}
+          path: baseline
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Bun
+        id: bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.4.4'
+      - name: Install Nix
+        id: nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086
+      - name: Configure read-only devenv cache
+        id: cache
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866
+        with:
+          name: devenv
+          skipPush: true
+          useDaemon: false
+      - name: Install pinned devenv CLI
+        id: devenv
+        shell: bash
+        run: |
+          nix profile add --profile "$RUNNER_TEMP/devenv-profile" --accept-flake-config github:cachix/devenv/b904dcb51fe48c30db250038241507f60752f222#devenv
+          export PATH="$RUNNER_TEMP/devenv-profile/bin:$PATH"
+          printf '%s\n' "$RUNNER_TEMP/devenv-profile/bin" >> "$GITHUB_PATH"
+          devenv version > "$EVIDENCE_DIR/devenv-version.txt"
+          nix --version > "$EVIDENCE_DIR/nix-version.txt"
+          bun --version > "$EVIDENCE_DIR/bun-version.txt"
+      - name: Test measurement policy
+        id: tests
+        shell: bash
+        run: bun test "$CANDIDATE_CHECKOUT/scripts/p04-performance/policy.test.mjs"
+      - name: Compare message performance
+        id: comparison
+        timeout-minutes: 120
+        shell: bash
+        run: |
+          set -o pipefail
+          bash "$CANDIDATE_CHECKOUT/scripts/p04-performance/hosted.sh" 2>&1 | tee "$EVIDENCE_DIR/runner.log"
+      - name: Record workflow outcomes
+        if: always()
+        shell: bash
+        env:
+          CANDIDATE_OUTCOME: ${{ steps.checkout_candidate.outcome }}
+          PARENT_OUTCOME: ${{ steps.checkout_parent.outcome }}
+          BUN_OUTCOME: ${{ steps.bun.outcome }}
+          NIX_OUTCOME: ${{ steps.nix.outcome }}
+          CACHE_OUTCOME: ${{ steps.cache.outcome }}
+          DEVENV_OUTCOME: ${{ steps.devenv.outcome }}
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          COMPARISON_OUTCOME: ${{ steps.comparison.outcome }}
+        run: |
+          mkdir -p "$EVIDENCE_DIR"
+          printf 'candidate=%s\nparent=%s\nbun=%s\nnix=%s\ncache=%s\ndevenv=%s\ntests=%s\ncomparison=%s\n' "$CANDIDATE_OUTCOME" "$PARENT_OUTCOME" "$BUN_OUTCOME" "$NIX_OUTCOME" "$CACHE_OUTCOME" "$DEVENV_OUTCOME" "$TESTS_OUTCOME" "$COMPARISON_OUTCOME" > "$EVIDENCE_DIR/workflow-outcomes.txt"
+      - name: Upload control evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: collaboration-message-performance-control-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p04-evidence
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Upload scenario evidence
+        if: ${{ always() && env.P04_SCENARIO_EVIDENCE != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: collaboration-message-performance-scenario-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.P04_SCENARIO_EVIDENCE }}
+            /tmp/p04-parent-*/agent/sessions/**
+            /tmp/p04-parent-*/agent/pig-litter/roots/**
+            /tmp/p04-parent-*/root-sessions/**
+            /tmp/p04-peer-perf-*/agent/sessions/**
+            /tmp/p04-peer-perf-*/agent/pig-litter/roots/**
+            /tmp/p04-peer-perf-*/root-sessions/**
           include-hidden-files: true
           if-no-files-found: error
