@@ -13,3 +13,14 @@ func TestHookNativeEvidenceRequiresBothAttributedToolResults(t *testing.T) {
 		t.Fatal("accepted a missing denial and duplicated allowed result")
 	}
 }
+
+func TestHookScenarioIsRegisteredForResearch(t *testing.T) {
+	catalog := collaborationTestCatalog(t)
+	attempt := collaborationAttempt{
+		Scenario: "host-tool-veto", ScenarioRevision: 1,
+		Purpose: "research", Channel: "research", Platform: "linux",
+	}
+	if !collaborationP02ScenarioRegistered(catalog, attempt) {
+		t.Fatal("the implemented hook driver is not registered for research evidence")
+	}
+}

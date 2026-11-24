@@ -2278,7 +2278,7 @@
     {
       "id": "host-tool-veto",
       "owner": "P02",
-      "status": "planned",
+      "status": "implemented",
       "expected": "A real rejecting tool hook refuses direct and nested fixture writes before their side effects, or records a reproducible unsupported result."
     },
     {
