@@ -187,6 +187,23 @@ func TestToolInventoriesAcceptEffectiveActorsAndRejectEscalation(t *testing.T) {
 	}
 }
 
+func TestRootInventoryRequiresTheCompleteTeamToolSet(t *testing.T) {
+	ordinary := append(append([]string(nil), fileTools...), controlTools...)
+	complete := append(append([]string(nil), ordinary...), teamTools...)
+	if err := requireRootToolInventory(ordinary, false, "baseline"); err != nil {
+		t.Fatalf("ordinary baseline was rejected: %v", err)
+	}
+	if err := requireRootToolInventory(complete, true, "collaboration"); err != nil {
+		t.Fatalf("complete collaboration inventory was rejected: %v", err)
+	}
+	if err := requireRootToolInventory(append(append([]string(nil), ordinary...), teamTools[0]), false, "partial"); err == nil {
+		t.Fatal("partial collaboration inventory was accepted")
+	}
+	if err := requireRootToolInventory(ordinary, true, "missing"); err == nil {
+		t.Fatal("required collaboration tools were omitted")
+	}
+}
+
 func TestTmuxSocketCleanupOnlyRemovesStaleOwnedSocket(t *testing.T) {
 	socket := filepath.Join(t.TempDir(), "tmux.sock")
 	listener, err := net.Listen("unix", socket)

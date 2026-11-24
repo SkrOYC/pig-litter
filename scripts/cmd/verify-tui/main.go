@@ -49,6 +49,7 @@ var (
 		"litter_stop",
 		"litter_wait",
 	}
+	teamTools = []string{"team_spawn", "team_list", "team_send", "team_plan", "team_shutdown", "team_task_create", "team_task_get", "team_task_list", "team_task_update"}
 	heldNames = []string{"held-a", "held-b"}
 )
 
@@ -1653,8 +1654,7 @@ func (state *fixtureState) decide(request openAIRequest) (providerTurn, error) {
 		state.parentMarker = true
 		return providerTurn{kind: "text", text: "UNSELECTED_PARENT_MARKER"}, nil
 	}
-	selectedTools := append(append([]string(nil), fileTools...), controlTools...)
-	if err := requireToolInventory(tools, selectedTools, []string{"ls"}, "selected root"); err != nil {
+	if err := requireRootToolInventory(tools, false, "selected root"); err != nil {
 		return providerTurn{}, err
 	}
 	switch marker.marker {
@@ -2405,6 +2405,20 @@ func requestToolNames(tools []openAITool) []string {
 		}
 	}
 	return result
+}
+
+func requireRootToolInventory(got []string, teamRequired bool, actor string) error {
+	required := append(append([]string(nil), fileTools...), controlTools...)
+	for _, name := range teamTools {
+		if contains(got, name) {
+			teamRequired = true
+			break
+		}
+	}
+	if teamRequired {
+		required = append(required, teamTools...)
+	}
+	return requireToolInventory(got, required, []string{"ls"}, actor)
 }
 
 func requireToolInventory(got, required, optional []string, actor string) error {

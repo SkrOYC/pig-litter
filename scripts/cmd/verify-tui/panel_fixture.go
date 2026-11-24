@@ -156,11 +156,7 @@ func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string
 		return turn, true, err
 	}
 	if marker == "NEW_ROOT_HEADER" || marker == "COLD_ROOT_HEADER" {
-		required := append(append([]string(nil), fileTools...), controlTools...)
-		if state.scenario == "team-preview" || state.scenario == "team-message" || state.scenario == "team-controls" || state.scenario == "team-tasks" || state.scenario == "team-pause" || state.scenario == "team-plans" || state.scenario == "team-policy" || state.scenario == "team-shutdown" {
-			required = append(required, "team_spawn", "team_list", "team_send", "team_plan", "team_shutdown", "team_task_create", "team_task_get", "team_task_list", "team_task_update")
-		}
-		if err := requireToolInventory(tools, required, []string{"ls"}, "context-only root"); err != nil {
+		if err := requireRootToolInventory(tools, strings.HasPrefix(state.scenario, "team-"), "context-only root"); err != nil {
 			return providerTurn{}, true, err
 		}
 		return providerTurn{kind: "text", text: marker + "_DONE"}, true, nil
@@ -197,7 +193,7 @@ func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string
 	if state.caseName == caseUnselected {
 		return providerTurn{}, true, fmt.Errorf("unselected root invoked a child panel fixture")
 	}
-	if err := requireToolInventory(tools, append(append([]string(nil), fileTools...), controlTools...), []string{"ls"}, "panel root"); err != nil {
+	if err := requireRootToolInventory(tools, false, "panel root"); err != nil {
 		return providerTurn{}, true, err
 	}
 	switch marker {
