@@ -33,7 +33,21 @@ func TestLocalPeerFixtureProcess(t *testing.T) {
 		return
 	}
 	options := fixtureOptions(root, localFixtureTarget, "target", os.Getenv("LOCAL_PEER_FIXTURE_ACCEPT") == "1")
-	options.NativeSessionHostPID = os.Getpid()
+	var host localProcessIdentity
+	if supplied := os.Getenv("LOCAL_PEER_FIXTURE_HOST_IDENTITY"); supplied != "" {
+		if err := json.Unmarshal([]byte(supplied), &host); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+	} else {
+		var err error
+		host, err = observeLocalProcess(os.Getpid())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+	}
+	options.NativeSessionHost = &host
 	peer, err := startLocalPeer(options)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -67,6 +81,10 @@ type fixtureProcess struct {
 }
 
 func startFixtureProcess(t *testing.T, root string, accept bool) *fixtureProcess {
+	return startFixtureProcessWithHost(t, root, accept, nil)
+}
+
+func startFixtureProcessWithHost(t *testing.T, root string, accept bool, host *localProcessIdentity) *fixtureProcess {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestLocalPeerFixtureProcess$")
 	accepted := "0"
@@ -74,6 +92,13 @@ func startFixtureProcess(t *testing.T, root string, accept bool) *fixtureProcess
 		accepted = "1"
 	}
 	cmd.Env = append(os.Environ(), "LOCAL_PEER_FIXTURE_ROOT="+root, "LOCAL_PEER_FIXTURE_ACCEPT="+accepted)
+	if host != nil {
+		data, err := json.Marshal(host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.Env = append(cmd.Env, "LOCAL_PEER_FIXTURE_HOST_IDENTITY="+string(data))
+	}
 	input, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -482,7 +507,9 @@ func TestLocalPeerExitNeedsProcessEvidence(t *testing.T) {
 	if err != nil || presence.NativeHost == nil {
 		t.Fatalf("native host identity = %+v, %v", presence.NativeHost, err)
 	}
-	if _, err := watchLocalProcess(localProcessIdentity{PID: presence.NativeHost.PID, Birth: "incorrect"}); err == nil {
+	changed := *presence.NativeHost
+	changed.Birth = "incorrect"
+	if _, err := watchLocalProcess(changed); err == nil {
 		t.Fatal("a changed native process identity was accepted")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
@@ -705,5 +732,334 @@ func TestLocalPeerExitDuringSourceDowntimeIsUncertain(t *testing.T) {
 	}
 	if _, found, err := source.offerLocal(); err != nil || found {
 		t.Fatalf("source claimed an unseen exit = %t, %v", found, err)
+	}
+}
+
+func TestLocalSubscriptionRetryRequiresCurrentHostIdentity(t *testing.T) {
+	root, err := os.MkdirTemp("", "li-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	source, err := startLocalPeer(fixtureOptions(root, localFixtureSource, "source", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.close()
+	target, err := startLocalPeer(fixtureOptions(root, localFixtureTarget, "target", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.close()
+	if err := target.setLocalActivity(localActivityBusy); err != nil {
+		t.Fatal(err)
+	}
+	expires := time.Now().Add(time.Minute).UTC().Round(0)
+	first, err := source.subscribe(context.Background(), target.ref, "identity-retry", expires)
+	if err != nil || first.Status != "subscribed" {
+		t.Fatalf("initial subscription = %+v, %v", first, err)
+	}
+	presence, err := source.lookup(target.ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription := localSubscription{Source: source.ref, Target: target.ref, ID: "identity-retry", Incarnation: presence.Incarnation, Expires: expires}
+	target.mu.Lock()
+	target.nativeHost = &localProcessIdentity{PID: os.Getpid(), Birth: "different"}
+	target.mu.Unlock()
+	result, err := source.exchange(context.Background(), target.ref, "subscribe", subscription)
+	if err != nil || result.Status != "stale_identity" {
+		t.Fatalf("retry after native host changed = %+v, %v", result, err)
+	}
+}
+
+func dropNextLocalReply(t *testing.T, path string) (<-chan error, func()) {
+	t.Helper()
+	forwardPath := path + "-forward"
+	if err := os.Rename(path, forwardPath); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		client, err := listener.AcceptUnix()
+		if err != nil {
+			done <- err
+			return
+		}
+		defer client.Close()
+		upstream, err := net.Dial("unix", forwardPath)
+		if err != nil {
+			done <- err
+			return
+		}
+		defer upstream.Close()
+		request, err := readLocalFrame(client)
+		if err == nil {
+			err = writeLocalFrame(upstream, request)
+		}
+		if err == nil {
+			var response []byte
+			response, err = readLocalFrame(upstream)
+			if err == nil {
+				var reply localReply
+				var result localResult
+				if json.Unmarshal(response, &reply) != nil || json.Unmarshal(reply.Body, &result) != nil || result.Status != "subscribed" {
+					err = fmt.Errorf("unexpected dropped subscription response: %s", response)
+				}
+			}
+		}
+		done <- err
+	}()
+	return done, func() {
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(forwardPath, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestLocalPeerLostSubscriptionAcknowledgmentIsUncertain(t *testing.T) {
+	root, err := os.MkdirTemp("", "la-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	options := fixtureOptions(root, localFixtureSource, "source", true)
+	source, err := startLocalPeer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = source.close() }()
+	host, err := observeLocalProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetOptions := fixtureOptions(root, localFixtureTarget, "target", true)
+	targetOptions.NativeSessionHost = &host
+	target, err := startLocalPeer(targetOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.close()
+	if err := target.setLocalActivity(localActivityBusy); err != nil {
+		t.Fatal(err)
+	}
+	expires := time.Now().Add(time.Minute).UTC().Round(0)
+	path := filepath.Join(target.registryDir, target.socketName())
+	dropped, restore := dropNextLocalReply(t, path)
+	_, err = source.subscribe(context.Background(), target.ref, "lost-subscribe", expires)
+	if !errors.Is(err, errLocalUncertain) {
+		t.Fatalf("lost acknowledgment = %v", err)
+	}
+	if err := <-dropped; err != nil {
+		t.Fatal(err)
+	}
+	restore()
+	if got := source.localSubscriptionStatus(target.ref, "lost-subscribe"); got.Status != "uncertain" {
+		t.Fatalf("lost acknowledgment status = %+v", got)
+	}
+	result, err := source.subscribe(context.Background(), target.ref, "lost-subscribe", expires)
+	if err != nil || result.Status != "subscribed" || result.ExitMonitoring != "armed" {
+		t.Fatalf("retry after lost acknowledgment = %+v, %v", result, err)
+	}
+	if err := source.close(); err != nil {
+		t.Fatal(err)
+	}
+	dropped, restore = dropNextLocalReply(t, path)
+	source, err = startLocalPeer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-dropped:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovery did not request a fresh acknowledgment")
+	}
+	restore()
+	if got := source.localSubscriptionStatus(target.ref, "lost-subscribe"); got.Status != "subscribed" || got.ExitMonitoring != "uncertain" {
+		t.Fatalf("lost recovery acknowledgment status = %+v", got)
+	}
+	result, err = source.subscribe(context.Background(), target.ref, "lost-subscribe", expires)
+	if err != nil || result.Status != "subscribed" || result.ExitMonitoring != "armed" {
+		t.Fatalf("retry after lost recovery acknowledgment = %+v, %v", result, err)
+	}
+}
+
+func TestLocalNativeHostFixtureProcess(t *testing.T) {
+	if os.Getenv("LOCAL_NATIVE_HOST_FIXTURE") != "1" {
+		return
+	}
+	host, err := observeLocalProcess(os.Getpid())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	data, err := json.Marshal(host)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	fmt.Println(string(data))
+	_, _ = io.Copy(io.Discard, os.Stdin)
+}
+
+func TestLocalPeerWatchesNativeHostAfterExtensionProcessExits(t *testing.T) {
+	root, err := os.MkdirTemp("", "lh-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	source, err := startLocalPeer(fixtureOptions(root, localFixtureSource, "source", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.close()
+	native := exec.Command(os.Args[0], "-test.run=^TestLocalNativeHostFixtureProcess$")
+	native.Env = append(os.Environ(), "LOCAL_NATIVE_HOST_FIXTURE=1")
+	native.Stderr = os.Stderr
+	input, err := native.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := native.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := native.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if native.ProcessState == nil {
+			_ = native.Process.Kill()
+			_ = native.Wait()
+		}
+	})
+	lines := bufio.NewScanner(output)
+	if !lines.Scan() {
+		t.Fatalf("native host did not publish its identity: %v", lines.Err())
+	}
+	var host localProcessIdentity
+	if err := json.Unmarshal(lines.Bytes(), &host); err != nil {
+		t.Fatal(err)
+	}
+	child := startFixtureProcessWithHost(t, root, true, &host)
+	defer func() {
+		if child != nil {
+			child.close(t)
+		}
+	}()
+	if got := child.command(t, "busy"); got != "busy <nil>" {
+		t.Fatalf("busy = %q", got)
+	}
+	result, err := source.subscribe(context.Background(), child.ref, "separate-native-host", time.Now().Add(time.Minute))
+	if err != nil || result.Status != "subscribed" || result.ExitMonitoring != "armed" {
+		t.Fatalf("subscribe = %+v, %v", result, err)
+	}
+	ref := child.ref
+	child.close(t)
+	child = nil
+	time.Sleep(150 * time.Millisecond)
+	if _, found, err := source.offerLocal(); err != nil || found {
+		t.Fatalf("extension process exit produced a notice = %t, %v", found, err)
+	}
+	if err := input.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	notice := awaitLocalOffer(t, source)
+	if !strings.Contains(notice.Body.Text, "exited") || notice.Envelope.Sender != ref {
+		t.Fatalf("native host exit notice = %+v", notice)
+	}
+}
+
+func TestLocalPeerPublishesSuppliedHostIdentityWithoutResampling(t *testing.T) {
+	root, err := os.MkdirTemp("", "ls-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	source, err := startLocalPeer(fixtureOptions(root, localFixtureSource, "source", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.close()
+	supplied := localProcessIdentity{PID: os.Getpid(), Birth: "claimed-birth", Scope: "claimed-scope"}
+	options := fixtureOptions(root, localFixtureTarget, "target", true)
+	options.NativeSessionHost = &supplied
+	target, err := startLocalPeer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.close()
+	if err := target.setLocalActivity(localActivityBusy); err != nil {
+		t.Fatal(err)
+	}
+	supplied.Birth = "modified-after-start"
+	presence, err := source.lookup(target.ref)
+	if err != nil || presence.NativeHost == nil || *presence.NativeHost != (localProcessIdentity{PID: os.Getpid(), Birth: "claimed-birth", Scope: "claimed-scope"}) {
+		t.Fatalf("signed host identity = %+v, %v", presence.NativeHost, err)
+	}
+	result, err := source.subscribe(context.Background(), target.ref, "unobservable-host", time.Now().Add(time.Minute))
+	if err != nil || result.Status != "subscribed" || result.ExitMonitoring != "uncertain" {
+		t.Fatalf("unobservable host subscription = %+v, %v", result, err)
+	}
+}
+
+func TestLocalPeerDoesNotReportExitAfterLostAcknowledgment(t *testing.T) {
+	root, err := os.MkdirTemp("", "lx-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	source, err := startLocalPeer(fixtureOptions(root, localFixtureSource, "source", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.close()
+	child := startFixtureProcess(t, root, true)
+	defer func() {
+		if child != nil {
+			child.close(t)
+		}
+	}()
+	if got := child.command(t, "busy"); got != "busy <nil>" {
+		t.Fatalf("busy = %q", got)
+	}
+	presence, err := source.lookup(child.ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dropped, restore := dropNextLocalReply(t, filepath.Join(source.registryDir, presence.Socket))
+	_, err = source.subscribe(context.Background(), child.ref, "lost-before-exit", time.Now().Add(time.Minute))
+	if !errors.Is(err, errLocalUncertain) {
+		t.Fatalf("lost acknowledgment = %v", err)
+	}
+	if err := <-dropped; err != nil {
+		t.Fatal(err)
+	}
+	restore()
+	ref := child.ref
+	child.close(t)
+	child = nil
+	time.Sleep(150 * time.Millisecond)
+	if result := source.localSubscriptionStatus(ref, "lost-before-exit"); result.Status != "uncertain" {
+		t.Fatalf("lost acknowledgment status = %+v", result)
+	}
+	if _, found, err := source.offerLocal(); err != nil || found {
+		t.Fatalf("unacknowledged subscription produced an exit notice = %t, %v", found, err)
 	}
 }

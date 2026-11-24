@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 )
 
@@ -18,51 +19,93 @@ func localOwned(info os.FileInfo) bool {
 	return ok && stat.Uid == uint32(os.Geteuid())
 }
 
-type localProcessWatch struct{ fd int }
+type platformLocalProcessWatch struct{ fd int }
 
-func localProcessBirth(pid int) (string, error) {
+func observeLocalProcess(pid int) (localProcessIdentity, error) {
+	var zero localProcessIdentity
 	if pid <= 0 {
-		return "", errors.New("invalid native host PID")
+		return zero, errors.New("invalid native host PID")
+	}
+	self, err := os.ReadFile("/proc/self/stat")
+	if err != nil {
+		return zero, err
+	}
+	selfStart := strings.IndexByte(string(self), '(')
+	if selfStart < 0 || strings.TrimSpace(string(self[:selfStart])) != strconv.Itoa(os.Getpid()) {
+		return zero, errors.New("process records use a different PID namespace")
 	}
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
-		return "", err
+		return zero, err
 	}
-	end := strings.LastIndexByte(string(data), ')')
-	if end < 0 {
-		return "", errors.New("invalid native host process record")
+	text := string(data)
+	start, end := strings.IndexByte(text, '('), strings.LastIndexByte(text, ')')
+	if start < 0 || end <= start || strings.TrimSpace(text[:start]) != strconv.Itoa(pid) {
+		return zero, errors.New("invalid native host process record")
 	}
-	fields := strings.Fields(string(data[end+1:]))
+	fields := strings.Fields(text[end+1:])
 	if len(fields) <= 19 {
-		return "", errors.New("invalid native host process record")
+		return zero, errors.New("invalid native host process record")
 	}
-	if _, err := strconv.ParseUint(fields[19], 10, 64); err != nil {
-		return "", err
+	birth, err := strconv.ParseUint(fields[19], 10, 64)
+	if err != nil {
+		return zero, err
 	}
 	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
 	if err != nil {
-		return "", err
+		return zero, err
 	}
-	return strings.TrimSpace(string(boot)) + ":" + fields[19], nil
+	bootID, err := uuid.Parse(strings.TrimSpace(string(boot)))
+	if err != nil || bootID == uuid.Nil {
+		return zero, errors.New("invalid boot identity")
+	}
+	namespaces := make([]string, 0, 2)
+	for _, name := range []string{"pid", "time"} {
+		own, err := os.Readlink("/proc/self/ns/" + name)
+		if err != nil {
+			return zero, err
+		}
+		target, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/%s", pid, name))
+		if err != nil || target != own {
+			return zero, errors.New("native host namespace is unavailable")
+		}
+		number, ok := strings.CutPrefix(own, name+":[")
+		if !ok || !strings.HasSuffix(number, "]") {
+			return zero, errors.New("invalid native host namespace")
+		}
+		inode, err := strconv.ParseUint(strings.TrimSuffix(number, "]"), 10, 64)
+		if err != nil || inode == 0 {
+			return zero, errors.New("invalid native host namespace")
+		}
+		namespaces = append(namespaces, fmt.Sprintf("%s:[%d]", name, inode))
+	}
+	return localProcessIdentity{PID: pid, Birth: fmt.Sprintf("linux:%d", birth), Scope: "linux:" + bootID.String() + ":" + strings.Join(namespaces, ":")}, nil
 }
 
-func watchLocalProcess(identity localProcessIdentity) (*localProcessWatch, error) {
-	before, err := localProcessBirth(identity.PID)
-	if err != nil || before != identity.Birth {
-		return nil, errors.New("native host process identity is unavailable")
-	}
-	fd, err := unix.PidfdOpen(identity.PID, 0)
+func openLocalProcessWatch(pid int) (localProcessWatch, error) {
+	fd, err := unix.PidfdOpen(pid, 0)
 	if err != nil {
 		return nil, err
 	}
-	after, err := localProcessBirth(identity.PID)
-	if err != nil || after != identity.Birth {
-		return nil, errors.Join(errors.New("native host changed while arming exit observation"), unix.Close(fd))
-	}
-	return &localProcessWatch{fd: fd}, nil
+	return &platformLocalProcessWatch{fd: fd}, nil
 }
 
-func (w *localProcessWatch) wait(stop <-chan struct{}, expires time.Time) bool {
+func (w *platformLocalProcessWatch) exited() (bool, error) {
+	fds := []unix.PollFd{{Fd: int32(w.fd), Events: unix.POLLIN}}
+	count, err := unix.Poll(fds, 0)
+	if err != nil || count > 0 && fds[0].Revents&(unix.POLLERR|unix.POLLNVAL) != 0 {
+		return false, errors.Join(err, errors.New("native host watch unavailable"))
+	}
+	if count == 0 {
+		return false, nil
+	}
+	if fds[0].Revents&(unix.POLLIN|unix.POLLHUP) != 0 {
+		return true, nil
+	}
+	return false, errors.New("unexpected native host watch event")
+}
+
+func (w *platformLocalProcessWatch) wait(stop <-chan struct{}, expires time.Time) bool {
 	defer unix.Close(w.fd)
 	for time.Now().Before(expires) {
 		select {
@@ -83,14 +126,14 @@ func (w *localProcessWatch) wait(stop <-chan struct{}, expires time.Time) bool {
 		if err != nil || count > 0 && fds[0].Revents&(unix.POLLERR|unix.POLLNVAL) != 0 {
 			return false
 		}
-		if count > 0 && fds[0].Revents&(unix.POLLIN|unix.POLLHUP) != 0 {
-			return true
+		if count > 0 {
+			return fds[0].Revents&(unix.POLLIN|unix.POLLHUP) != 0
 		}
 	}
 	return false
 }
 
-func (w *localProcessWatch) close() error { return unix.Close(w.fd) }
+func (w *platformLocalProcessWatch) close() error { return unix.Close(w.fd) }
 
 func localPeerUID(conn *net.UnixConn) (uint32, error) {
 	raw, err := conn.SyscallConn()

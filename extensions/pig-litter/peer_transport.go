@@ -704,7 +704,7 @@ func localSubscriptionPath(dir, prefix string, subscription localSubscription) s
 func validLocalSubscription(subscription localSubscription) bool {
 	incarnation, err := hex.DecodeString(subscription.Incarnation)
 	host := subscription.NativeHost
-	return validLocalRef(subscription.Source) && validLocalRef(subscription.Target) && subscription.Source != subscription.Target && peerMessageIDPattern.MatchString(subscription.ID) && !strings.HasPrefix(subscription.ID, "localnotice:") && err == nil && len(incarnation) == 16 && hex.EncodeToString(incarnation) == subscription.Incarnation && !subscription.Expires.IsZero() && ((host.PID == 0 && host.Birth == "") || (host.PID > 0 && host.Birth != "" && len(host.Birth) <= 128))
+	return validLocalRef(subscription.Source) && validLocalRef(subscription.Target) && subscription.Source != subscription.Target && peerMessageIDPattern.MatchString(subscription.ID) && !strings.HasPrefix(subscription.ID, "localnotice:") && err == nil && len(incarnation) == 16 && hex.EncodeToString(incarnation) == subscription.Incarnation && !subscription.Expires.IsZero() && (host == (localProcessIdentity{}) || validLocalProcessIdentity(host))
 }
 
 func equalLocalSubscription(a, b localSubscription) bool {
@@ -825,7 +825,7 @@ func (p *localPeer) subscribe(ctx context.Context, target localSessionRef, id st
 	if stored.Status != "saved" {
 		return stored, nil
 	}
-	var watch *localProcessWatch
+	var watch localProcessWatch
 	if subscription.NativeHost.PID != 0 {
 		watch, _ = watchLocalProcess(subscription.NativeHost)
 	}
@@ -860,8 +860,13 @@ func (p *localPeer) subscribe(ctx context.Context, target localSessionRef, id st
 		return result, nil
 	}
 	result.ExitMonitoring = "unavailable"
+	if subscription.NativeHost.PID != 0 {
+		result.ExitMonitoring = "uncertain"
+	}
 	if watch != nil {
-		if p.startLocalWatch(subscription, watch) {
+		if !confirmLocalWatch(subscription.NativeHost, watch, observeLocalProcess) {
+			_ = watch.close()
+		} else if p.startLocalWatch(subscription, watch) {
 			result.ExitMonitoring = "armed"
 		}
 	}
@@ -931,6 +936,11 @@ func (p *localPeer) registerLocalSubscription(subscription localSubscription) lo
 	if !p.accept {
 		return localResult{Status: "denied"}
 	}
+	var host localProcessIdentity
+	if p.nativeHost != nil {
+		host = *p.nativeHost
+	}
+	sameIdentity := subscription.Incarnation == p.incarnation && subscription.NativeHost == host
 	path := localSubscriptionPath(p.stateDir, "subin-", subscription)
 	existing, err := readLocalSubscription(path)
 	if err == nil {
@@ -944,7 +954,7 @@ func (p *localPeer) registerLocalSubscription(subscription localSubscription) lo
 			p.wakeLocalNotices()
 			return localResult{Status: "already_idle"}
 		}
-		if subscription.Incarnation != p.incarnation {
+		if !sameIdentity {
 			return localResult{Status: "stale_identity"}
 		}
 		return localResult{Status: "subscribed"}
@@ -952,14 +962,7 @@ func (p *localPeer) registerLocalSubscription(subscription localSubscription) lo
 	if !errors.Is(err, os.ErrNotExist) {
 		return localResult{Status: "uncertain"}
 	}
-	if subscription.Incarnation != p.incarnation {
-		return localResult{Status: "stale_identity"}
-	}
-	var host localProcessIdentity
-	if p.nativeHost != nil {
-		host = *p.nativeHost
-	}
-	if subscription.NativeHost != host {
+	if !sameIdentity {
 		return localResult{Status: "stale_identity"}
 	}
 	if p.activity == localActivityUnknown {
@@ -1163,7 +1166,7 @@ func (p *localPeer) flushLocalNotices(ctx context.Context) bool {
 	return retry
 }
 
-func (p *localPeer) startLocalWatch(subscription localSubscription, watch *localProcessWatch) bool {
+func (p *localPeer) startLocalWatch(subscription localSubscription, watch localProcessWatch) bool {
 	key := localMessageKey(subscription.Source, subscription.Target, subscription.ID)
 	p.mu.Lock()
 	if p.closed || p.watching[key] {
@@ -1223,8 +1226,19 @@ func (p *localPeer) recoverLocalWatches() {
 			continue
 		}
 		watch, err := watchLocalProcess(record.Subscription.NativeHost)
-		if err == nil {
-			p.startLocalWatch(record.Subscription, watch)
+		if err != nil {
+			continue
 		}
+		ctx, cancel := context.WithTimeout(context.Background(), localDeadline)
+		result, err := p.exchange(ctx, record.Subscription.Target, "subscribe", record.Subscription)
+		cancel()
+		if err != nil || result.Status != "subscribed" || !confirmLocalWatch(record.Subscription.NativeHost, watch, observeLocalProcess) {
+			_ = watch.close()
+			if err == nil && result.Status == "already_idle" {
+				p.recordLocalNotice(record.Subscription.Target, record.Subscription.ID, record.Subscription.Incarnation, localNoticeIdle)
+			}
+			continue
+		}
+		p.startLocalWatch(record.Subscription, watch)
 	}
 }

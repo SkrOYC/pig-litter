@@ -60,19 +60,24 @@ func validLocalRef(ref localSessionRef) bool {
 }
 
 type localPeerOptions struct {
-	RegistryDir          string
-	StateDir             string
-	Session              ChildID
-	SessionFile          string
-	CWD                  string
-	Name                 string
-	AcceptInbound        bool
-	NativeSessionHostPID int
+	RegistryDir       string
+	StateDir          string
+	Session           ChildID
+	SessionFile       string
+	CWD               string
+	Name              string
+	AcceptInbound     bool
+	NativeSessionHost *localProcessIdentity
 }
 
 type localProcessIdentity struct {
 	PID   int    `json:"pid"`
 	Birth string `json:"birth"`
+	Scope string `json:"scope"`
+}
+
+func validLocalProcessIdentity(identity localProcessIdentity) bool {
+	return identity.PID > 0 && identity.Birth != "" && len(identity.Birth) <= 128 && identity.Scope != "" && len(identity.Scope) <= 256
 }
 
 type localIdentity struct {
@@ -195,12 +200,12 @@ func startLocalPeer(options localPeerOptions) (*localPeer, error) {
 		lastSenders: make(map[string]time.Time), stop: make(chan struct{}), stopped: make(chan struct{}),
 		watching: make(map[string]bool), noticeWake: make(chan struct{}, 1), noticeStopped: make(chan struct{}),
 	}
-	if options.NativeSessionHostPID != 0 {
-		birth, birthErr := localProcessBirth(options.NativeSessionHostPID)
-		if birthErr != nil {
-			return nil, errors.Join(birthErr, registryLease.Close(), lease.Close())
+	if options.NativeSessionHost != nil {
+		if !validLocalProcessIdentity(*options.NativeSessionHost) {
+			return nil, errors.Join(errors.New("invalid native host identity"), registryLease.Close(), lease.Close())
 		}
-		peer.nativeHost = &localProcessIdentity{PID: options.NativeSessionHostPID, Birth: birth}
+		host := *options.NativeSessionHost
+		peer.nativeHost = &host
 	}
 	if err := peer.loadIdentity(options.Session, file, cwd); err != nil {
 		return nil, errors.Join(err, registryLease.Close(), lease.Close())
@@ -219,7 +224,11 @@ func startLocalPeer(options localPeerOptions) (*localPeer, error) {
 	go peer.heartbeat()
 	go peer.driveLocalNotices()
 	peer.wakeLocalNotices()
-	peer.recoverLocalWatches()
+	peer.watches.Add(1)
+	go func() {
+		defer peer.watches.Done()
+		peer.recoverLocalWatches()
+	}()
 	return peer, nil
 }
 
@@ -373,7 +382,7 @@ func readLocalPresence(path string, now time.Time) (localPresence, error) {
 	if _, err := hex.DecodeString(presence.Incarnation); err != nil || !presence.Expires.After(now) || presence.Expires.After(now.Add(2*localPresenceTTL)) {
 		return presence, errors.New("expired or invalid local presence")
 	}
-	if presence.NativeHost != nil && (presence.NativeHost.PID <= 0 || presence.NativeHost.Birth == "" || len(presence.NativeHost.Birth) > 128) {
+	if presence.NativeHost != nil && !validLocalProcessIdentity(*presence.NativeHost) {
 		return presence, errors.New("invalid native host identity")
 	}
 	public, _ := hex.DecodeString(presence.Ref.Key)

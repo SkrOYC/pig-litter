@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 )
 
@@ -16,44 +18,60 @@ func localOwned(info os.FileInfo) bool {
 	return ok && stat.Uid == uint32(os.Geteuid())
 }
 
-type localProcessWatch struct{ fd int }
+type platformLocalProcessWatch struct{ fd int }
 
-func localProcessBirth(pid int) (string, error) {
+func observeLocalProcess(pid int) (localProcessIdentity, error) {
 	if pid <= 0 {
-		return "", errors.New("invalid native host PID")
+		return localProcessIdentity{}, errors.New("invalid native host PID")
 	}
 	process, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if err != nil {
-		return "", err
+		return localProcessIdentity{}, err
 	}
 	start := process.Proc.P_starttime
-	if int(process.Proc.P_pid) != pid || start.Sec <= 0 {
-		return "", errors.New("invalid native host process record")
+	if int(process.Proc.P_pid) != pid || start.Sec <= 0 || start.Usec < 0 || start.Usec >= 1000000 {
+		return localProcessIdentity{}, errors.New("invalid native host process record")
 	}
-	return fmt.Sprintf("%d.%d", start.Sec, start.Usec), nil
+	boot, err := unix.Sysctl("kern.bootsessionuuid")
+	if err != nil {
+		return localProcessIdentity{}, err
+	}
+	bootID, err := uuid.Parse(strings.TrimSpace(boot))
+	if err != nil || bootID == uuid.Nil {
+		return localProcessIdentity{}, errors.New("invalid boot identity")
+	}
+	return localProcessIdentity{PID: pid, Birth: fmt.Sprintf("darwin:%d:%d", start.Sec, start.Usec), Scope: "darwin:" + bootID.String()}, nil
 }
 
-func watchLocalProcess(identity localProcessIdentity) (*localProcessWatch, error) {
-	before, err := localProcessBirth(identity.PID)
-	if err != nil || before != identity.Birth {
-		return nil, errors.New("native host process identity is unavailable")
-	}
+func openLocalProcessWatch(pid int) (localProcessWatch, error) {
 	fd, err := unix.Kqueue()
 	if err != nil {
 		return nil, err
 	}
-	change := unix.Kevent_t{Ident: uint64(identity.PID), Filter: unix.EVFILT_PROC, Flags: unix.EV_ADD | unix.EV_ENABLE, Fflags: unix.NOTE_EXIT}
+	change := unix.Kevent_t{Ident: uint64(pid), Filter: unix.EVFILT_PROC, Flags: unix.EV_ADD | unix.EV_ENABLE, Fflags: unix.NOTE_EXIT}
 	if _, err := unix.Kevent(fd, []unix.Kevent_t{change}, nil, nil); err != nil {
 		return nil, errors.Join(err, unix.Close(fd))
 	}
-	after, err := localProcessBirth(identity.PID)
-	if err != nil || after != identity.Birth {
-		return nil, errors.Join(errors.New("native host changed while arming exit observation"), unix.Close(fd))
-	}
-	return &localProcessWatch{fd: fd}, nil
+	return &platformLocalProcessWatch{fd: fd}, nil
 }
 
-func (w *localProcessWatch) wait(stop <-chan struct{}, expires time.Time) bool {
+func (w *platformLocalProcessWatch) exited() (bool, error) {
+	var events [1]unix.Kevent_t
+	timeout := unix.NsecToTimespec(0)
+	count, err := unix.Kevent(w.fd, nil, events[:], &timeout)
+	if err != nil || count > 0 && events[0].Flags&unix.EV_ERROR != 0 {
+		return false, errors.Join(err, errors.New("native host watch unavailable"))
+	}
+	if count == 0 {
+		return false, nil
+	}
+	if events[0].Filter == unix.EVFILT_PROC && events[0].Fflags&unix.NOTE_EXIT != 0 {
+		return true, nil
+	}
+	return false, errors.New("unexpected native host watch event")
+}
+
+func (w *platformLocalProcessWatch) wait(stop <-chan struct{}, expires time.Time) bool {
 	defer unix.Close(w.fd)
 	for time.Now().Before(expires) {
 		select {
@@ -70,14 +88,14 @@ func (w *localProcessWatch) wait(stop <-chan struct{}, expires time.Time) bool {
 		if err != nil || count > 0 && events[0].Flags&unix.EV_ERROR != 0 {
 			return false
 		}
-		if count > 0 && events[0].Filter == unix.EVFILT_PROC && events[0].Fflags&unix.NOTE_EXIT != 0 {
-			return true
+		if count > 0 {
+			return events[0].Filter == unix.EVFILT_PROC && events[0].Fflags&unix.NOTE_EXIT != 0
 		}
 	}
 	return false
 }
 
-func (w *localProcessWatch) close() error { return unix.Close(w.fd) }
+func (w *platformLocalProcessWatch) close() error { return unix.Close(w.fd) }
 
 func localPeerUID(conn *net.UnixConn) (uint32, error) {
 	raw, err := conn.SyscallConn()
