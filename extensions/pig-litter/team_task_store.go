@@ -2,6 +2,8 @@ package piglitter
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -128,13 +130,64 @@ func (s *teamStore) saveTaskMutation(graph *teamTaskGraph) error {
 }
 
 func (s *teamStore) createTask(subject, description string, dependencies []TaskID, metadata map[string]string) (teamTaskView, error) {
+	task, _, err := s.createTaskWithID(subject, description, dependencies, metadata, "", nil)
+	return task, err
+}
+
+func taskCreationKey(caller MemberRef, submissionID string) string {
+	return fmt.Sprintf("%s/%d/%s", caller.ID, caller.Generation, submissionID)
+}
+
+func (s *teamStore) createTaskWithID(subject, description string, dependencies []TaskID, metadata map[string]string, submissionID string, actor *MemberRef) (teamTaskView, string, error) {
 	var result teamTaskView
-	err := s.taskTransaction(func(graph *teamTaskGraph) (bool, error) {
+	var state string
+	err := s.taskTransactionForMember(actor, true, func(graph *teamTaskGraph) (bool, error) {
 		if strings.TrimSpace(subject) == "" || len(subject) > 256 || !utf8.ValidString(subject) || len(description) > 16384 || !utf8.ValidString(description) {
 			return false, reject("rejected", "task subject or description is invalid")
 		}
 		if len(dependencies) > 128 || len(metadata) > 64 {
 			return false, reject("rejected", "too many task dependencies or metadata entries")
+		}
+		if submissionID != "" && !peerMessageIDPattern.MatchString(submissionID) {
+			return false, reject("rejected", "invalid task submission ID")
+		}
+		if dependencies == nil {
+			dependencies = []TaskID{}
+		}
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		payload, err := json.Marshal(struct {
+			Subject      string            `json:"subject"`
+			Description  string            `json:"description"`
+			Dependencies []TaskID          `json:"blockedBy"`
+			Metadata     map[string]string `json:"metadata"`
+		}{subject, description, dependencies, metadata})
+		if err != nil {
+			return false, err
+		}
+		hash := sha256.Sum256(payload)
+		digest := hex.EncodeToString(hash[:])
+		caller := teamLeadRef(graph.Team)
+		if actor != nil {
+			caller = *actor
+		}
+		key := taskCreationKey(caller, submissionID)
+		if submissionID != "" {
+			if previous, exists := graph.Creations[key]; exists {
+				if previous.Digest != digest {
+					return false, reject("rejected", "task submission ID has different content")
+				}
+				index := graph.find(previous.ID)
+				if index < 0 {
+					return false, reject("unavailable", "task created by this submission was deleted")
+				}
+				if err := s.syncDir(s.dir); err != nil {
+					return false, err
+				}
+				result, state = graph.view(index), "already_created"
+				return false, nil
+			}
 		}
 		seen := make(map[TaskID]bool, len(dependencies))
 		for _, dependency := range dependencies {
@@ -152,29 +205,97 @@ func (s *teamStore) createTask(subject, description string, dependencies []TaskI
 			return false, errors.New("task ID allocation exhausted")
 		}
 		graph.HighWater++
-		if dependencies == nil {
-			dependencies = []TaskID{}
-		}
-		if metadata == nil {
-			metadata = map[string]string{}
-		}
 		graph.Tasks = append(graph.Tasks, teamTask{ID: TaskID{Team: graph.Team, Number: graph.HighWater}, Subject: subject, Description: description, State: TaskPending, BlockedBy: dependencies, Metadata: metadata})
+		if submissionID != "" {
+			if graph.Creations == nil {
+				graph.Creations = make(map[string]teamTaskCreation)
+			}
+			graph.Creations[key] = teamTaskCreation{ID: graph.Tasks[len(graph.Tasks)-1].ID, Caller: caller, SubmissionID: submissionID, Digest: digest}
+		}
 		result = graph.view(len(graph.Tasks) - 1)
+		state = "created"
 		return true, nil
 	})
-	return result, err
+	return result, state, err
 }
 
 func (s *teamStore) listTasks() ([]teamTaskView, error) {
 	var result []teamTaskView
 	err := s.taskTransaction(func(graph *teamTaskGraph) (bool, error) {
-		result = make([]teamTaskView, 0, len(graph.Tasks))
-		for i := range graph.Tasks {
-			result = append(result, graph.view(i))
-		}
+		result = graph.views()
 		return false, nil
 	})
 	return result, err
+}
+
+func (s *teamStore) editTask(id TaskID, edit teamTaskEdit, actor *MemberRef) (teamTaskView, string, error) {
+	var result teamTaskView
+	var state string
+	err := s.taskTransactionForMember(actor, true, func(graph *teamTaskGraph) (bool, error) {
+		index := graph.find(id)
+		if index < 0 {
+			return false, reject("rejected", "task is unavailable in this team")
+		}
+		if edit.Subject == nil && edit.Description == nil && len(edit.AddBlockedBy) == 0 && len(edit.AddBlocks) == 0 && len(edit.Metadata) == 0 {
+			return false, reject("rejected", "task edit has no changes")
+		}
+		if len(edit.AddBlockedBy) > 128 || len(edit.AddBlocks) > 128 || len(edit.Metadata) > 64 {
+			return false, reject("rejected", "too many task dependencies or metadata entries")
+		}
+		changed := false
+		task := &graph.Tasks[index]
+		if edit.Subject != nil && task.Subject != *edit.Subject {
+			task.Subject, changed = *edit.Subject, true
+		}
+		if edit.Description != nil && task.Description != *edit.Description {
+			task.Description, changed = *edit.Description, true
+		}
+		for key, value := range edit.Metadata {
+			old, exists := task.Metadata[key]
+			if value == nil {
+				if exists {
+					delete(task.Metadata, key)
+					changed = true
+				}
+			} else if !exists || old != *value {
+				task.Metadata[key], changed = *value, true
+			}
+		}
+		for _, dependency := range edit.AddBlockedBy {
+			if graph.find(dependency) < 0 {
+				return false, reject("rejected", "task dependency is missing or belongs to another team")
+			}
+			if !slices.Contains(task.BlockedBy, dependency) {
+				task.BlockedBy = append(task.BlockedBy, dependency)
+				changed = true
+			}
+		}
+		for _, dependent := range edit.AddBlocks {
+			dependentIndex := graph.find(dependent)
+			if dependentIndex < 0 {
+				return false, reject("rejected", "dependent task is missing or belongs to another team")
+			}
+			if !slices.Contains(graph.Tasks[dependentIndex].BlockedBy, id) {
+				graph.Tasks[dependentIndex].BlockedBy = append(graph.Tasks[dependentIndex].BlockedBy, id)
+				changed = true
+			}
+		}
+		if err := validateTeamTasks(*graph, s.root); err != nil {
+			return false, reject("rejected", err.Error())
+		}
+		for _, view := range graph.views() {
+			if view.State == TaskCompleted && view.Blocked {
+				return false, reject("rejected", "a completed task cannot have an unfinished prerequisite")
+			}
+		}
+		result = graph.view(index)
+		state = "unchanged"
+		if changed {
+			state = "updated"
+		}
+		return changed, nil
+	})
+	return result, state, err
 }
 
 func (s *teamStore) getTask(id TaskID) (teamTaskView, error) {
@@ -312,9 +433,18 @@ func validateTeamTasks(graph teamTaskGraph, root ChildID) error {
 	if graph.Version != 1 || graph.Team != (TeamID{Root: root, Epoch: 1}) || graph.Tasks == nil {
 		return errors.New("invalid task metadata header")
 	}
-	seen := make(map[TaskID]bool, len(graph.Tasks))
-	for _, task := range graph.Tasks {
-		if task.ID.Team != graph.Team || task.ID.Number == 0 || task.ID.Number > graph.HighWater || seen[task.ID] || strings.TrimSpace(task.Subject) == "" || len(task.Subject) > 256 || !utf8.ValidString(task.Subject) || len(task.Description) > 16384 || !utf8.ValidString(task.Description) || task.BlockedBy == nil || task.Metadata == nil || len(task.BlockedBy) > 128 || len(task.Metadata) > 64 {
+	creationIDs := make(map[TaskID]bool, len(graph.Creations))
+	for key, creation := range graph.Creations {
+		digest, err := hex.DecodeString(creation.Digest)
+		if !peerMessageIDPattern.MatchString(creation.SubmissionID) || creation.Caller.Team != graph.Team || !childUUID.MatchString(string(creation.Caller.ID)) || creation.Caller.Generation == 0 || key != taskCreationKey(creation.Caller, creation.SubmissionID) || creation.ID.Team != graph.Team || creation.ID.Number == 0 || creation.ID.Number > graph.HighWater || creationIDs[creation.ID] || err != nil || len(digest) != sha256.Size || hex.EncodeToString(digest) != creation.Digest {
+			return errors.New("invalid task creation receipt")
+		}
+		creationIDs[creation.ID] = true
+	}
+	indices := make(map[TaskID]int, len(graph.Tasks))
+	for index, task := range graph.Tasks {
+		_, duplicate := indices[task.ID]
+		if task.ID.Team != graph.Team || task.ID.Number == 0 || task.ID.Number > graph.HighWater || duplicate || strings.TrimSpace(task.Subject) == "" || len(task.Subject) > 256 || !utf8.ValidString(task.Subject) || len(task.Description) > 16384 || !utf8.ValidString(task.Description) || task.BlockedBy == nil || task.Metadata == nil || len(task.BlockedBy) > 128 || len(task.Metadata) > 64 {
 			return errors.New("invalid task record")
 		}
 		if task.State != TaskPending && task.State != TaskInProgress && task.State != TaskCompleted {
@@ -328,16 +458,38 @@ func validateTeamTasks(graph teamTaskGraph, root ChildID) error {
 				return errors.New("invalid task metadata")
 			}
 		}
-		seen[task.ID] = true
+		indices[task.ID] = index
 	}
-	for _, task := range graph.Tasks {
+	indegree := make([]int, len(graph.Tasks))
+	dependents := make([][]int, len(graph.Tasks))
+	for index, task := range graph.Tasks {
 		dependencies := map[TaskID]bool{}
 		for _, dependency := range task.BlockedBy {
-			if !seen[dependency] || dependencies[dependency] || dependency.Number >= task.ID.Number {
+			dependencyIndex, exists := indices[dependency]
+			if !exists || dependencies[dependency] {
 				return errors.New("invalid task dependency")
 			}
 			dependencies[dependency] = true
+			indegree[index]++
+			dependents[dependencyIndex] = append(dependents[dependencyIndex], index)
 		}
+	}
+	queue := make([]int, 0, len(graph.Tasks))
+	for index, count := range indegree {
+		if count == 0 {
+			queue = append(queue, index)
+		}
+	}
+	for next := 0; next < len(queue); next++ {
+		for _, dependent := range dependents[queue[next]] {
+			indegree[dependent]--
+			if indegree[dependent] == 0 {
+				queue = append(queue, dependent)
+			}
+		}
+	}
+	if len(queue) != len(graph.Tasks) {
+		return errors.New("task dependency cycle")
 	}
 	return nil
 }
