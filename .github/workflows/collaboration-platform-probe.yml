@@ -337,13 +337,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/intel-pig-window-forensics"
-          git -C driver rev-parse HEAD > "$RUNNER_TEMP/intel-pig-window-forensics/driver-commit.txt"
-          git -C driver rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/intel-pig-window-forensics/driver-tree.txt"
-          git -C driver status --porcelain=v1 --untracked-files=all > "$RUNNER_TEMP/intel-pig-window-forensics/driver-status.txt"
+          git -C driver rev-parse HEAD > "$RUNNER_TEMP/intel-pig-window-forensics/driver-commit.txt" || exit 1
+          git -C driver rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/intel-pig-window-forensics/driver-tree.txt" || exit 1
+          git -C driver status --porcelain=v1 --untracked-files=all > "$RUNNER_TEMP/intel-pig-window-forensics/driver-status.txt" || exit 1
           printf 'scenario=%s\narchitecture=%s\ncandidate=%s\nworkflow_sha=%s\nrunner=%s\n' "$SELECTED_SCENARIO" "$SELECTED_ARCHITECTURE" "$CANDIDATE_SHA" "$GITHUB_WORKFLOW_SHA" "$PROBE_RUNNER_LABEL" > "$RUNNER_TEMP/intel-pig-window-forensics/inputs.txt"
-          test ! -s "$RUNNER_TEMP/intel-pig-window-forensics/driver-status.txt"
-          test "$SELECTED_ARCHITECTURE" = intel
-          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test ! -s "$RUNNER_TEMP/intel-pig-window-forensics/driver-status.txt" || exit 1
+          test "$SELECTED_ARCHITECTURE" = intel || exit 1
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
       - name: Check out the exact product candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -373,15 +373,19 @@ jobs:
         run: |
           set -euo pipefail
           evidence="$RUNNER_TEMP/intel-pig-window-forensics"
-          test "$(git -C "$CANDIDATE_ROOT" rev-parse HEAD)" = "$CANDIDATE_SHA"
-          test -z "$(git -C "$CANDIDATE_ROOT" status --porcelain=v1 --untracked-files=all)"
-          git -C "$CANDIDATE_ROOT" rev-parse 'HEAD^{tree}' > "$evidence/candidate-tree.txt"
-          df -P /private/tmp > "$evidence/scratch-filesystem.txt"
-          device=$(df -P /private/tmp | tail -1 | awk '{print $1}')
-          [[ "$device" == /dev/disk* ]]
-          [[ "$(cd /private/tmp && pwd -P)" == /private/tmp ]]
-          scratch=$(mktemp -d /private/tmp/itp.XXXXXXXX)
-          printf 'path=%s\nidentity=%s\n' "$scratch" "$(stat -f '%d:%i' "$scratch")" > "$evidence/scratch.txt"
+          actual_candidate=$(git -C "$CANDIDATE_ROOT" rev-parse HEAD) || exit 1
+          test "$actual_candidate" = "$CANDIDATE_SHA" || exit 1
+          git -C "$CANDIDATE_ROOT" status --porcelain=v1 --untracked-files=all > "$evidence/candidate-status.txt" || exit 1
+          test ! -s "$evidence/candidate-status.txt" || exit 1
+          git -C "$CANDIDATE_ROOT" rev-parse 'HEAD^{tree}' > "$evidence/candidate-tree.txt" || exit 1
+          df -P /private/tmp > "$evidence/scratch-filesystem.txt" || exit 1
+          device=$(tail -1 "$evidence/scratch-filesystem.txt" | awk '{print $1}') || exit 1
+          [[ "$device" == /dev/disk* ]] || exit 1
+          physical_tmp=$(cd /private/tmp && pwd -P) || exit 1
+          test "$physical_tmp" = /private/tmp || exit 1
+          scratch=$(mktemp -d /private/tmp/itp.XXXXXXXX) || exit 1
+          scratch_id=$(stat -f '%d:%i' "$scratch") || exit 1
+          printf 'path=%s\nidentity=%s\n' "$scratch" "$scratch_id" > "$evidence/scratch.txt"
           export GOTELEMETRY=off
           PIG_PLATFORM_ROOT_DIR="$CANDIDATE_ROOT" PIG_PLATFORM_SCRATCH_PARENT="$scratch" PIG_PLATFORM_CACHE_DIR='' PIG_PLATFORM_RECORD_CACHE_IDENTITY=1 \
             bash "$DRIVER_ROOT/scripts/verify-pig-platforms.sh" "$CANDIDATE_SHA" darwin amd64 "$evidence/native-platform" -- \

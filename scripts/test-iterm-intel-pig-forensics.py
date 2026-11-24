@@ -2,7 +2,9 @@
 import importlib.util
 import os
 from pathlib import Path
+import subprocess
 import tempfile
+import textwrap
 import unittest
 from unittest import mock
 
@@ -112,6 +114,67 @@ class PigForensicsTests(unittest.TestCase):
             self.assertTrue(first["provider_joined"] and second["provider_joined"])
             self.assertTrue((evidence / "startup-only/result.json").is_file())
             self.assertTrue((evidence / "deterministic-prompt/result.json").is_file())
+
+    def test_mac_identity_and_disk_guards_stop_before_scratch_allocation(self):
+        workflow = Path(__file__).resolve().parents[1] / ".github/workflows/collaboration-platform-probe.yml"
+        job = workflow.read_text().split("  intel-pig-window-forensics:\n", 1)[1]
+
+        def script_for(step):
+            after = job.split("      - name: " + step + "\n", 1)[1].split("        run: |\n", 1)[1]
+            lines = []
+            for line in after.splitlines():
+                if line and not line.startswith("          "):
+                    break
+                lines.append(line)
+            return textwrap.dedent("\n".join(lines)) + "\n"
+
+        identity = script_for("Record and check diagnostic inputs")
+        prepare = script_for("Prepare the pinned native host and observe unselected PiG")
+        for line in (identity + prepare).splitlines():
+            condition = line.strip()
+            if condition.startswith(("test ", "[[ ")):
+                self.assertTrue(condition.endswith("|| exit 1"), condition)
+        shell = os.environ.get("BASH_FOR_TESTS", "/bin/bash")
+        with tempfile.TemporaryDirectory(prefix="itp-guards.") as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            (root / "driver").mkdir()
+            candidate = "a" * 40
+            git = bin_dir / "git"
+            git.write_text("#!/bin/sh\ncase \"$*\" in *status*) exit 0;; *HEAD*) printf '%s\\n' \"${FAKE_GIT_HEAD}\";; esac\n")
+            git.chmod(0o755)
+            df = bin_dir / "df"
+            df.write_text("#!/bin/sh\nprintf 'Filesystem Blocks Used Available Capacity Mounted\\n%s 10 1 9 10%% /private/tmp\\n' \"$FAKE_DEVICE\"\n")
+            df.chmod(0o755)
+            mktemp = bin_dir / "mktemp"
+            mktemp.write_text("#!/bin/sh\nprintf reached > \"$SCRATCH_REACHED\"\nexit 1\n")
+            mktemp.chmod(0o755)
+            env = os.environ | {"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"], "RUNNER_TEMP": str(root), "CANDIDATE_ROOT": str(root / "candidate"), "CANDIDATE_SHA": candidate, "FAKE_GIT_HEAD": candidate, "FAKE_DEVICE": "/dev/disk1", "SCRATCH_REACHED": str(root / "scratch-reached"), "SELECTED_SCENARIO": "intel-pig-window-forensics", "SELECTED_ARCHITECTURE": "intel", "GITHUB_WORKFLOW_SHA": "b" * 40, "PROBE_RUNNER_LABEL": "macos-15-intel"}
+            marker = root / "after-guard"
+            valid = subprocess.run([shell, "-e", "-o", "pipefail", "-c", identity + "\nprintf reached > \"$AFTER_GUARD\"\n"], cwd=root, env=env | {"AFTER_GUARD": str(marker)}, capture_output=True, text=True)
+            self.assertEqual(valid.returncode, 0, valid.stderr)
+            self.assertTrue(marker.exists())
+            valid_disk = "cd() { return 0; }\npwd() { printf '/private/tmp\\n'; }\n"
+            reached = subprocess.run([shell, "-e", "-o", "pipefail", "-c", valid_disk + prepare], cwd=root, env=env, capture_output=True, text=True)
+            self.assertNotEqual(reached.returncode, 0)
+            self.assertTrue((root / "scratch-reached").exists())
+            (root / "scratch-reached").unlink()
+            cases = [
+                (identity, {"SELECTED_ARCHITECTURE": "arm"}, ""),
+                (identity, {"CANDIDATE_SHA": "invalid"}, ""),
+                (prepare, {"FAKE_GIT_HEAD": "c" * 40}, ""),
+                (prepare, {"FAKE_DEVICE": "tmpfs"}, ""),
+                (prepare, {}, "cd() { return 0; }\n"),
+            ]
+            for script, changes, prefix in cases:
+                with self.subTest(changes=changes, prefix=prefix):
+                    marker = root / "after-guard"
+                    marker.unlink(missing_ok=True)
+                    result = subprocess.run([shell, "-e", "-o", "pipefail", "-c", prefix + script + "\nprintf reached > \"$AFTER_GUARD\"\n"], cwd=root, env=env | changes | {"AFTER_GUARD": str(marker)}, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(marker.exists())
+                    self.assertFalse((root / "scratch-reached").exists())
 
     def test_pig_diagnostic_has_an_exclusive_workflow_selector(self):
         workflow = Path(__file__).resolve().parents[1] / ".github/workflows/collaboration-platform-probe.yml"
