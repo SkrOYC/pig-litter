@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -15,6 +16,75 @@ spec.loader.exec_module(driver)
 
 
 class InputAndProviderTests(unittest.TestCase):
+    def test_probe_window_stays_open_across_failed_cases(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            probe_dir = root / "collaboration-platform-probe"
+            probe_dir.mkdir()
+            (probe_dir / "result.json").write_text(json.dumps({"status": "pass", "signature_status": "verified", "automation_status": "approved", "window_id": "123", "session_id": "probe-session"}))
+            events = []
+
+            def applescript(_script, *arguments):
+                self.assertEqual(arguments[:2], ("123", "probe-session"))
+                events.append(arguments[2])
+                return {"exists": "present", "close": "closed"}[arguments[2]]
+
+            def run_case(name, *_args):
+                events.append(name)
+                if name == "policy":
+                    raise RuntimeError("policy failed")
+
+            arguments = ["p03-macos.py", "--scenario", "p03-all", "--pig", "/pig", "--extension", "/extension", "--scratch", str(root), "--evidence", str(root / "evidence")]
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(root)}), mock.patch.object(driver.sys, "platform", "darwin"), mock.patch.object(driver.sys, "argv", arguments), mock.patch.object(driver, "applescript", applescript), mock.patch.object(driver, "run_case", run_case):
+                with self.assertRaisesRegex(RuntimeError, "policy failed"):
+                    driver.main()
+            self.assertEqual(events, ["exists", "team", "policy", "unselected", "close"])
+            self.assertEqual(json.loads((root / "evidence/summary.json").read_text())["result"], "failed")
+            self.assertFalse((root / "evidence/cleanup-ok").exists())
+
+    def test_exit_waits_for_owned_process_before_closing_window(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            generation = root / "generation-1"
+            generation.mkdir()
+            process = subprocess.Popen(["/bin/sh", "-c", "read -r line"], stdin=subprocess.PIPE, text=True)
+            released = False
+            terminal = driver.Terminal(root, root, root, root, root, root, root / "pig", root / "extension", True, 1)
+            terminal.window = {"id": "42", "session": "owned", "generation_dir": str(generation), "wrapper_pid": process.pid}
+            terminal.owned = {"wrapper": {"pid": process.pid}}
+
+            def same_process(_identity):
+                nonlocal released
+                if process.poll() is not None:
+                    return False
+                if not released:
+                    process.stdin.write("done\n")
+                    process.stdin.flush()
+                    released = True
+                return True
+
+            def session_action(action, _value=None):
+                if action == "text":
+                    return "─" * 30 + "\n\n" + "─" * 30 + "\nparent"
+                if action == "exit":
+                    (generation / "exit.txt").write_text("0\n")
+                    return "sent"
+                if action == "close":
+                    self.assertIsNotNone(process.poll(), "The wrapper was still running when its window closed")
+                    return "closed"
+                return "missing"
+
+            try:
+                with mock.patch.object(driver, "same_process", same_process), mock.patch.object(terminal, "observe"), mock.patch.object(terminal, "session_action", session_action):
+                    terminal.exit_host()
+                self.assertTrue(released)
+                self.assertIsNone(terminal.window)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=5)
+                process.stdin.close()
+
     def test_wrong_candidate_never_runs_the_prepared_command(self):
         with tempfile.TemporaryDirectory() as temp:
             evidence = Path(temp) / "evidence"
@@ -22,12 +92,15 @@ class InputAndProviderTests(unittest.TestCase):
             repo = Path(__file__).resolve().parent.parent
             environment = os.environ | {"PIG_PLATFORM_ROOT_DIR": str(repo)}
             result = subprocess.run(
-                ["bash", str(repo / "scripts/verify-pig-platforms.sh"), "0" * 40, "linux", "amd64", str(evidence), "--", "bash", "-c", 'printf ran > "$1"', "callback", str(marker)],
+                ["bash", "-x", str(repo / "scripts/verify-pig-platforms.sh"), "0" * 40, "linux", "amd64", str(evidence), "--", "bash", "-c", 'printf ran > "$1"', "callback", str(marker)],
                 env=environment, capture_output=True, text=True, check=False,
             )
-            self.assertEqual(result.returncode, 1)
-            self.assertFalse(marker.exists())
-            self.assertEqual((evidence / "result.txt").read_text(), "exit_code=1\n")
+            result_file = evidence / "result.txt"
+            recorded_result = result_file.read_text() if result_file.exists() else "<missing>"
+            details = f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}\nresult.txt:\n{recorded_result}"
+            self.assertEqual(result.returncode, 1, details)
+            self.assertFalse(marker.exists(), details)
+            self.assertEqual(recorded_result, "exit_code=1\n", details)
 
     def test_terminal_text_accepts_quotes_and_rejects_control_characters(self):
         self.assertEqual(driver.safe_text("a path with 'quotes' and $(literal)"), "a path with 'quotes' and $(literal)")

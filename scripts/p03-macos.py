@@ -355,6 +355,7 @@ on run argv
       if (id of candidateWindow as text) is wantedWindow then
         set candidateSession to current session of candidateWindow
         if (unique id of candidateSession) is not wantedSession then error "Owned window session changed."
+        if actionName is "exists" then return "present"
         if actionName is "text" then return text of candidateSession
         if actionName is "send" then
           tell candidateSession to write text (item 4 of argv)
@@ -374,6 +375,7 @@ on run argv
     end repeat
   end tell
   if actionName is "close" then return "already closed"
+  if actionName is "exists" then return "missing"
   error "Owned window is missing."
 end run
 '''
@@ -460,6 +462,9 @@ class Terminal:
             return
         snapshot = process_snapshot()
         root_pid = self.window["wrapper_pid"]
+        root_identity = next((process for process in self.owned.values() if process["pid"] == root_pid), None)
+        if root_identity and not same_process(root_identity):
+            return
         descendants = {root_pid}
         while True:
             expanded = descendants | {pid for pid, p in snapshot.items() if p["ppid"] in descendants}
@@ -564,12 +569,14 @@ class Terminal:
         exit_status = int((generation / "exit.txt").read_text().strip())
         self.window["exit_status"] = exit_status
         require(exit_status == 0, f"PiG exited with status {exit_status}")
+        self.wait(lambda: not any(same_process(process) for process in self.owned.values()), "owned processes to exit", 30)
         self.close_window()
 
     def close_window(self):
         if self.window is None:
             return
         self.window["close_result"] = self.session_action("close")
+        self.wait(lambda: self.session_action("exists") == "missing", "owned iTerm window to close", 30)
         self.window = None
 
     def cleanup(self):
@@ -578,11 +585,6 @@ class Terminal:
             self.observe()
         except Exception as error:
             problems.append(str(error))
-        if self.window:
-            try:
-                self.close_window()
-            except Exception as error:
-                problems.append(str(error))
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and any(same_process(p) for p in self.owned.values()):
             time.sleep(0.2)
@@ -601,6 +603,11 @@ class Terminal:
         remaining = [p for p in self.owned.values() if same_process(p)]
         if remaining:
             problems.append("Owned processes survived cleanup")
+        if self.window and not remaining:
+            try:
+                self.close_window()
+            except Exception as error:
+                problems.append(str(error))
         (self.evidence / "terminal.json").write_text(json.dumps({"generations": self.generations, "inputs": self.inputs, "observed_processes": list(self.owned.values()), "survivors": remaining, "cleanup_errors": problems}, indent=2) + "\n")
         require(not problems, "; ".join(problems))
 
@@ -663,18 +670,26 @@ def fixture_files(root, port):
     (root / "workspace" / "litter.yaml").write_text("concurrency: 6\ndepth: 2\n")
 
 
-def close_probe(path, evidence):
+def probe_identity(path):
     if not path.exists():
-        (evidence / "probe-cleanup.txt").write_text("No capability result was available.\n")
-        return
+        return None
     result = json.loads(path.read_text())
     window, session = result.get("window_id", ""), result.get("session_id", "")
     if not window or not session:
-        (evidence / "probe-cleanup.txt").write_text("Capability probe recorded no attributable window.\n")
-        return
+        return None
     require(re.fullmatch(r"\d+", window), "Capability probe window identity is invalid")
-    closed = applescript(SESSION, window, session, "close")
+    return window, session
+
+
+def close_probe(path, evidence, identity=None):
+    if identity is None:
+        identity = probe_identity(path)
+    if identity is None:
+        (evidence / "probe-cleanup.txt").write_text("No attributable capability window was available.\n")
+        return False
+    closed = applescript(SESSION, *identity, "close")
     (evidence / "probe-cleanup.txt").write_text(closed + "\n")
+    return closed in ("closed", "already closed")
 
 
 def run_case(name, scratch, evidence, pig, extension):
@@ -724,10 +739,15 @@ def run_case(name, scratch, evidence, pig, extension):
         require(not fixture.errors, f"Provider failed: {fixture.errors}")
     except Exception as error:
         problems.append(str(error))
+        try:
+            target = evidence / "failure.png"
+            subprocess.run(["/usr/sbin/screencapture", "-x", str(target)], timeout=30, check=True, capture_output=True)
+            require(target.is_file() and target.stat().st_size > 0, "Failure screenshot was empty")
+        except Exception as capture_error:
+            problems.append(f"Failure screenshot: {capture_error}")
         if terminal.window:
             try:
                 terminal.frame("failure")
-                subprocess.run(["/usr/sbin/screencapture", "-x", str(evidence / "failure.png")], timeout=30, check=False)
             except Exception as capture_error:
                 problems.append(f"Failure capture: {capture_error}")
     finally:
@@ -772,7 +792,8 @@ def main():
     require(sys.platform == "darwin", "P03 iTerm verification requires macOS")
     capability = json.loads(probe.read_text())
     require(capability.get("status") == "pass" and capability.get("signature_status") == "verified" and capability.get("automation_status") == "approved", "Signed iTerm capability probe did not pass")
-    close_probe(probe, args.evidence)
+    identity = probe_identity(probe)
+    require(identity is not None and applescript(SESSION, *identity, "exists") == "present", "The capability probe window is unavailable")
     cases = ("team", "policy", "unselected") if args.scenario == "p03-all" else (args.scenario.removeprefix("p03-"),)
     failures = []
     for name in cases:
@@ -780,6 +801,10 @@ def main():
             run_case(name, args.scratch, args.evidence / name, args.pig, args.extension)
         except Exception as error:
             failures.append(str(error))
+    try:
+        require(close_probe(probe, args.evidence, identity), "The capability probe window could not be released")
+    except Exception as error:
+        failures.append(f"Capability probe cleanup: {error}")
     (args.evidence / "summary.json").write_text(json.dumps({"cases": list(cases), "failures": failures, "result": "failed" if failures else "pass"}, indent=2) + "\n")
     require(not failures, "; ".join(failures))
     (args.evidence / "cleanup-ok").write_text("All owned windows, processes, and providers were released.\n")
