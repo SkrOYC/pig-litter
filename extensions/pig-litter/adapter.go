@@ -53,6 +53,7 @@ type owner struct {
 	outcomeAcks              map[*callTicket]*outcomeAcknowledgement
 	afterOutcomeSnapshot     func()
 	afterOutcomeReservation  func()
+	afterObserverCapture     func()
 	rootMu                   sync.Mutex
 	root                     *rootGeneration
 	rootClosed               bool

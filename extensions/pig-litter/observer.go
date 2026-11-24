@@ -861,6 +861,9 @@ func (o *owner) initialObserverActivity(pair *observerPair) (string, error) {
 		return "", reject("unavailable", "observer pairing is no longer active")
 	}
 	digest := o.captureObserverActivity(pair)
+	if o.afterObserverCapture != nil {
+		o.afterObserverCapture()
+	}
 	data, err := json.Marshal(digest)
 	if err != nil || len(data) > 4096 {
 		return "", reject("unavailable", "observer activity is unavailable")
@@ -876,6 +879,7 @@ func (o *owner) initialObserverActivity(pair *observerPair) (string, error) {
 		pair.digestPending = nil
 	}
 	pair.mu.Unlock()
+	o.observerProgress(pair.observed)
 	return string(data), nil
 }
 

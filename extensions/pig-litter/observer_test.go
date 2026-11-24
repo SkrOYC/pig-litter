@@ -3,6 +3,7 @@ package piglitter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,16 +24,19 @@ import (
 
 func TestEmbeddedObserverReportsAndIsolation(t *testing.T) {
 	for _, target := range []string{"worker", "coordinator"} {
-		t.Run(target, func(t *testing.T) { testEmbeddedObserver(t, target, false, false, false, false) })
+		t.Run(target, func(t *testing.T) { testEmbeddedObserver(t, target, false, false, false, "") })
 	}
-	t.Run("silence", func(t *testing.T) { testEmbeddedObserver(t, "worker", true, false, false, false) })
-	t.Run("team_observer_worker", func(t *testing.T) { testEmbeddedObserver(t, "worker", false, true, false, false) })
-	t.Run("team_observer_coordinator", func(t *testing.T) { testEmbeddedObserver(t, "coordinator", false, true, false, false) })
-	t.Run("observed_teammate", func(t *testing.T) { testEmbeddedObserver(t, "worker", false, false, true, false) })
-	t.Run("changed_activity", func(t *testing.T) { testEmbeddedObserver(t, "worker", false, false, false, true) })
+	t.Run("silence", func(t *testing.T) { testEmbeddedObserver(t, "worker", true, false, false, "") })
+	t.Run("team_observer_worker", func(t *testing.T) { testEmbeddedObserver(t, "worker", false, true, false, "") })
+	t.Run("team_observer_coordinator", func(t *testing.T) { testEmbeddedObserver(t, "coordinator", false, true, false, "") })
+	t.Run("observed_teammate", func(t *testing.T) { testEmbeddedObserver(t, "worker", false, false, true, "") })
+	t.Run("changed_activity", func(t *testing.T) { testEmbeddedObserver(t, "worker", false, false, false, "activity") })
+	t.Run("shutdown_observer", func(t *testing.T) { testEmbeddedObserver(t, "worker", false, true, false, "shutdown") })
+	t.Run("stop_active_observer", func(t *testing.T) { testEmbeddedObserver(t, "worker", false, true, false, "shutdown_stop") })
+	t.Run("activity_before_publication", func(t *testing.T) { testEmbeddedObserver(t, "worker", false, false, false, "startup") })
 }
 
-func testEmbeddedObserver(t *testing.T, target string, silent, team, teamWorker, activity bool) {
+func testEmbeddedObserver(t *testing.T, target string, silent, team, teamWorker bool, mode string) {
 	t.Helper()
 	t.Setenv("PIG_OFFLINE", "1")
 	dir := t.TempDir()
@@ -51,6 +55,14 @@ func testEmbeddedObserver(t *testing.T, target string, silent, team, teamWorker,
 	workerRelease := make(chan struct{})
 	activityStart := make(chan struct{})
 	activityDone := make(chan struct{})
+	initialCaptured := make(chan struct{})
+	initialRelease := make(chan struct{})
+	workerToolStart := filepath.Join(dir, "worker-tool-started")
+	shutdownEntered := make(chan struct{})
+	shutdownRelease := make(chan struct{})
+	var releaseInitial, releaseShutdown sync.Once
+	defer releaseInitial.Do(func() { close(initialRelease) })
+	defer releaseShutdown.Do(func() { close(shutdownRelease) })
 	var release sync.Once
 	defer release.Do(func() { close(workerRelease) })
 	var requestsMu sync.Mutex
@@ -61,7 +73,17 @@ func testEmbeddedObserver(t *testing.T, target string, silent, team, teamWorker,
 		body, _ := io.ReadAll(request.Body)
 		if strings.Contains(string(body), "WORKER_PRIVATE_TASK") {
 			workerCall := workerCalls.Add(1)
-			if activity && workerCall <= 2 {
+			if mode == "startup" && workerCall == 1 {
+				close(workerStarted)
+				select {
+				case <-activityStart:
+				case <-request.Context().Done():
+					return
+				}
+				runtimeToolAnswer(w, "held-worker-bash", "bash", map[string]any{"command": fmt.Sprintf("touch %q; sleep 3", workerToolStart)})
+				return
+			}
+			if mode == "activity" && workerCall <= 2 {
 				if workerCall == 1 {
 					close(workerStarted)
 					select {
@@ -73,7 +95,7 @@ func testEmbeddedObserver(t *testing.T, target string, silent, team, teamWorker,
 				runtimeToolAnswer(w, fmt.Sprintf("activity-read-%d", workerCall), "ls", map[string]any{"path": dir})
 				return
 			}
-			if activity && workerCall == 3 {
+			if mode == "activity" && workerCall == 3 {
 				close(activityDone)
 			}
 			if teamWorker && workerCall == 1 {
@@ -97,7 +119,7 @@ func testEmbeddedObserver(t *testing.T, target string, silent, team, teamWorker,
 		observerRequests = append(observerRequests, string(body))
 		requestsMu.Unlock()
 		call := observerCalls.Add(1)
-		if activity && call == 1 {
+		if mode == "activity" && call == 1 {
 			close(activityStart)
 			select {
 			case <-activityDone:
@@ -105,6 +127,17 @@ func testEmbeddedObserver(t *testing.T, target string, silent, team, teamWorker,
 				return
 			}
 			time.Sleep(1200 * time.Millisecond)
+		}
+		if mode == "startup" && call == 1 {
+			time.Sleep(1200 * time.Millisecond)
+		}
+		if (mode == "shutdown" || mode == "shutdown_stop") && call == 2 {
+			close(shutdownEntered)
+			select {
+			case <-shutdownRelease:
+			case <-request.Context().Done():
+				return
+			}
 		}
 		if silent {
 			runtimeAnswer(w, "OBSERVER_FINAL_PRIVATE_SENTINEL")
@@ -174,6 +207,9 @@ func testEmbeddedObserver(t *testing.T, target string, silent, team, teamWorker,
 		tree.observerArm, tree.observerRetire = o.armObserver, o.retireObservers
 		tree.teamFinished, tree.teamCanceled, tree.teamPaused = o.finishTeamMember, o.cancelTeamMember, o.pauseTeamMember
 		tree.teamSettled = o.settleShutdown
+		if mode == "startup" {
+			o.afterObserverCapture = func() { close(initialCaptured); <-initialRelease }
+		}
 		defer o.state.retire()
 		teamAdmission := func(callID string, args map[string]any) (map[string]any, *callTicket) {
 			ticket, err := o.callScope(nil).begin(nil, callID, "team_spawn")
@@ -192,6 +228,9 @@ func testEmbeddedObserver(t *testing.T, target string, silent, team, teamWorker,
 			return value, ticket
 		}
 		workerArgs := map[string]any{"type": "scout", "task": "WORKER_PRIVATE_TASK", "model": "fixture/child"}
+		if mode == "startup" {
+			workerArgs["type"] = "worker"
+		}
 		var workerValue map[string]any
 		var workerTicket *callTicket
 		var worker *run
@@ -234,6 +273,75 @@ func testEmbeddedObserver(t *testing.T, target string, silent, team, teamWorker,
 			t.Fatal("observer started before admission acknowledgement")
 		}
 		o.settleAck(ticket, false)
+		if mode == "shutdown_stop" {
+			select {
+			case <-shutdownEntered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("observer did not reach its active team turn")
+			}
+			_, _, err := runtimeOperation(t, o, "team_shutdown", "observer-shutdown-stop", map[string]any{"action": "request", "member": observer.owner.team.Ref, "submissionId": "observer-stop", "reason": "ARBITRARY_SHUTDOWN_SECRET", "timeoutMs": 60000})
+			var refusal *treeError
+			if !errors.As(err, &refusal) || refusal.code != "permission_denied" {
+				t.Errorf("team shutdown did not refuse an observer target: %v", err)
+			}
+			stopped, _, err := runtimeOperation(t, o, "litter_stop", "observer-stop-live", map[string]any{"id": observer.ref.ID})
+			outcome, _ := stopped["outcome"].(*Outcome)
+			if err != nil || stopped["stoppedCount"] != 1 || outcome == nil || outcome.State != Paused {
+				t.Errorf("parent could not stop the active observer: %#v %v", stopped, err)
+			}
+			if observer.owner.observer.presentation()["state"] != "retired" {
+				t.Error("stopping the observer did not retire its pairing")
+			}
+			release.Do(func() { close(workerRelease) })
+			if _, err := tree.wait(context.Background(), worker, 5000); err != nil {
+				t.Error(err)
+			}
+			return
+		}
+		var shutdownErr error
+		if mode == "shutdown" {
+			select {
+			case <-shutdownEntered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("observer did not reach its active team turn")
+			}
+			_, _, shutdownErr = runtimeOperation(t, o, "team_shutdown", "observer-shutdown", map[string]any{"action": "request", "member": observer.owner.team.Ref, "submissionId": "observer-stop", "reason": "ARBITRARY_SHUTDOWN_SECRET", "timeoutMs": 60000})
+			if shutdownErr != nil {
+				store := o.teamStore
+				lifecycle, err := store.snapshotLifecycle(observer.owner.team.Ref)
+				if err != nil || len(lifecycle.Requests) != 0 {
+					t.Errorf("rejected shutdown changed the lifecycle: %#v %v", lifecycle, err)
+				}
+				_, legacy, _, err := store.requestShutdown(observer.owner.team.Ref, "legacy-request", "LEGACY_CONTROL_SECRET", 60000)
+				if err != nil {
+					t.Errorf("could not prepare a retained control notice: %v", err)
+				} else {
+					o.routeControlNotice(legacy)
+					o.requestPeerWake(observer.owner.team.Ref)
+				}
+			}
+			tree.teamWG.Wait()
+			releaseShutdown.Do(func() { close(shutdownRelease) })
+		}
+		if mode == "startup" {
+			select {
+			case <-initialCaptured:
+			case <-time.After(5 * time.Second):
+				t.Fatal("initial observer digest was not captured")
+			}
+			close(activityStart)
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if _, err := os.Stat(workerToolStart); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("worker did not enter the held tool")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			releaseInitial.Do(func() { close(initialRelease) })
+		}
 		outcome, err := tree.wait(context.Background(), observer, 5000)
 		if err != nil || outcome.Text != "" || strings.Contains(outcome.Error, "OBSERVER_FINAL_PRIVATE_SENTINEL") {
 			t.Fatalf("observer settlement leaked text: %#v %v", outcome, err)
@@ -257,6 +365,15 @@ func testEmbeddedObserver(t *testing.T, target string, silent, team, teamWorker,
 			_, err := o.addressedSend(context.Background(), json.RawMessage(`{"recipient":"team:activity-observer","messageId":"peer","text":"forbidden","summary":"forbidden"}`))
 			if err == nil {
 				t.Fatal("teammate observer accepted a peer message")
+			}
+		}
+		if mode == "shutdown" {
+			tree.peerWakeWG.Wait()
+			tree.mu.Lock()
+			current := observer.owner.run
+			tree.mu.Unlock()
+			if current != observer || observerCalls.Load() != 11 {
+				t.Errorf("control wake resumed the observer: calls=%d", observerCalls.Load())
 			}
 		}
 		release.Do(func() { close(workerRelease) })
@@ -340,7 +457,7 @@ func testEmbeddedObserver(t *testing.T, target string, silent, team, teamWorker,
 		if !silent && !strings.Contains(observerRequests[2], `activity.json`) {
 			t.Fatal("observer did not receive the virtual activity")
 		}
-		if activity {
+		if mode == "activity" {
 			initial := runtimeRequestText([]byte(observerRequests[0]))
 			changed := runtimeRequestText([]byte(observerRequests[1]))
 			if !strings.Contains(initial, "Paired worker structural activity") || !strings.Contains(changed, `"toolStarts":2`) {
@@ -348,6 +465,24 @@ func testEmbeddedObserver(t *testing.T, target string, silent, team, teamWorker,
 			}
 			if strings.Count(changed, `"toolStarts":`) != 2 {
 				t.Fatalf("burst did not coalesce to one changed digest: %s", changed)
+			}
+		}
+		if mode == "startup" {
+			initial := runtimeRequestText([]byte(observerRequests[0]))
+			changed := runtimeRequestText([]byte(observerRequests[1]))
+			if !strings.Contains(initial, `"toolStarts":0`) || !strings.Contains(changed, `"toolStarts":1`) || !strings.Contains(changed, `"shell":1`) {
+				t.Errorf("activity before initial publication was lost: initial=%s changed=%s", initial, changed)
+			}
+		}
+		if mode == "shutdown" {
+			for _, request := range observerRequests {
+				if strings.Contains(request, "ARBITRARY_SHUTDOWN_SECRET") || strings.Contains(request, "LEGACY_CONTROL_SECRET") {
+					t.Error("shutdown reason reached the observer model")
+				}
+			}
+			var refusal *treeError
+			if !errors.As(shutdownErr, &refusal) || refusal.code != "permission_denied" {
+				t.Errorf("team shutdown did not refuse an observer target: %v", shutdownErr)
 			}
 		}
 		if !silent && !strings.Contains(observerRequests[len(observerRequests)-1], "observer report arguments are invalid or unavailable") {

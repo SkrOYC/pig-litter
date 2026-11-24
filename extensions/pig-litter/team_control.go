@@ -173,6 +173,10 @@ func (o *owner) applyShutdown(authority controlAuthority, command shutdownComman
 			o.tree.mu.Unlock()
 			return nil, reject("unavailable", "the teammate is unavailable for shutdown")
 		}
+		if target.role == "observer" {
+			o.tree.mu.Unlock()
+			return nil, reject("permission_denied", "observers do not accept shutdown requests")
+		}
 	}
 	if command.Action == "respond" {
 		target = actor
