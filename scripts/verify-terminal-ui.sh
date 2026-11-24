@@ -65,7 +65,7 @@ export XDG_STATE_HOME="$run_root/state" XDG_DATA_HOME="$run_root/data"
 export CCACHE_DIR="$run_root/cache/ccache" SCCACHE_DIR="$run_root/cache/sccache"
 cd "$root"
 overlay_args=()
-if [[ "$scenario" == team-preview || "$scenario" == team-message || "$scenario" == team-controls || "$scenario" == team-tasks || "$scenario" == team-pause || "$scenario" == team-plans ]]; then
+if [[ "$scenario" == team-preview || "$scenario" == team-message || "$scenario" == team-controls || "$scenario" == team-tasks || "$scenario" == team-pause || "$scenario" == team-plans || "$scenario" == team-policy || "$scenario" == team-shutdown ]]; then
   setup_env=("GOPATH=$run_root/gopath" "GOCACHE=$run_root/cache" "GOMODCACHE=$run_root/modules" "GOTMPDIR=$run_root/gotmp" "TMPDIR=$run_root/tmp" GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOTELEMETRY=off)
   module_dir="$(devenv shell -- env "${setup_env[@]}" go -C "$root/scripts" mod download -modcacherw -json github.com/MichaelKinsy/PiG | jq -r '.Dir')"
   cp -a "$module_dir" "$run_root/pig-module"
@@ -81,7 +81,7 @@ for command_name in pig-litter verify-tui tui-idle-observer; do
   printf '\n' >> "$build_evidence/build-commands.txt"
   "${build[@]}" 2> >(tee -a "$build_evidence/build.stderr" >&2)
 done
-if [[ "$scenario" == team-preview || "$scenario" == team-message || "$scenario" == team-controls || "$scenario" == team-tasks || "$scenario" == team-pause || "$scenario" == team-plans ]]; then
+if [[ "$scenario" == team-preview || "$scenario" == team-message || "$scenario" == team-controls || "$scenario" == team-tasks || "$scenario" == team-pause || "$scenario" == team-plans || "$scenario" == team-policy || "$scenario" == team-shutdown ]]; then
   : > "$run_root/resume-probe.log"
   P07_RESUME_TRACE="$run_root/resume-probe.log" "$run_root/bin/verify-tui" --p07-resume-probe "$run_root"
   [[ "$(cat "$run_root/resume-probe.log")" == p07-missing-session ]] || { printf 'resume instrumentation positive control failed\n' >&2; exit 1; }

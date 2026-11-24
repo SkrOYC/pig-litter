@@ -30,6 +30,7 @@ type humanMember struct {
 type humanResult struct {
 	selected *run
 	feedback string
+	detail   string
 	err      error
 }
 

@@ -64,10 +64,12 @@ type teamViewFrame struct {
 	Reservations     []teamMember
 	Tasks            []teamTaskView
 	Plans            []planView
+	Shutdowns        []shutdownView
 	Assigned         map[MemberRef][]int
 	RosterHealth     viewHealth
 	TaskHealth       viewHealth
 	PlanHealth       viewHealth
+	ShutdownHealth   viewHealth
 	PreferenceHealth viewHealth
 	Preference       *MemberRef
 	PreferenceLoaded bool
@@ -75,31 +77,31 @@ type teamViewFrame struct {
 }
 
 type teamView struct {
-	owner      *owner
-	ctx        context.Context
-	cancel     context.CancelFunc
-	invalidate func()
-	mu         sync.Mutex
-	frame      *teamViewFrame
-	selected   *MemberRef
-	request    uint64
-	inspect    MemberRef
-	wake       chan struct{}
-	history    chan struct{}
-	plans      chan struct{}
-	watchPlans bool
-	planEpoch  uint64
-	joined     chan struct{}
-	callbacks  sync.WaitGroup
-	closed     bool
+	owner        *owner
+	ctx          context.Context
+	cancel       context.CancelFunc
+	invalidate   func()
+	mu           sync.Mutex
+	frame        *teamViewFrame
+	selected     *MemberRef
+	request      uint64
+	inspect      MemberRef
+	wake         chan struct{}
+	history      chan struct{}
+	controls     chan struct{}
+	watching     teamControlSection
+	controlEpoch uint64
+	joined       chan struct{}
+	callbacks    sync.WaitGroup
+	closed       bool
 }
 
 func newTeamView(ctx context.Context, owner *owner, invalidate func()) *teamView {
 	ctx, cancel := context.WithCancel(ctx)
-	v := &teamView{owner: owner, ctx: ctx, cancel: cancel, invalidate: invalidate, frame: &teamViewFrame{RosterHealth: viewHealth{Status: "loading"}, TaskHealth: viewHealth{Status: "loading"}, PlanHealth: viewHealth{Status: "loading"}}, wake: make(chan struct{}, 1), history: make(chan struct{}, 1), plans: make(chan struct{}, 1), joined: make(chan struct{})}
+	v := &teamView{owner: owner, ctx: ctx, cancel: cancel, invalidate: invalidate, frame: &teamViewFrame{RosterHealth: viewHealth{Status: "loading"}, TaskHealth: viewHealth{Status: "loading"}, PlanHealth: viewHealth{Status: "loading"}, ShutdownHealth: viewHealth{Status: "loading"}}, wake: make(chan struct{}, 1), history: make(chan struct{}, 1), controls: make(chan struct{}, 1), joined: make(chan struct{})}
 	go v.collect()
 	go v.inspectLoop()
-	go v.planLoop()
+	go v.controlLoop()
 	return v
 }
 
@@ -146,6 +148,15 @@ func (v *teamView) Close() {
 	v.callbacks.Wait()
 }
 
+func (v *teamView) beginAction() (ownerAction, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.closed || v.ctx.Err() != nil {
+		return ownerAction{}, reject("unavailable", "the team view closed")
+	}
+	return v.owner.beginAction(v.ctx)
+}
+
 func (v *teamView) notify() {
 	v.mu.Lock()
 	if v.closed || v.ctx.Err() != nil {
@@ -170,6 +181,7 @@ func (v *teamView) publish(frame *teamViewFrame) {
 	frame.Transcript = v.frame.Transcript
 	if frame.Team != nil && v.frame.Team != nil && *frame.Team == *v.frame.Team {
 		frame.Plans, frame.PlanHealth = v.frame.Plans, v.frame.PlanHealth
+		frame.Shutdowns, frame.ShutdownHealth = v.frame.Shutdowns, v.frame.ShutdownHealth
 	}
 	v.frame = frame
 	v.owner.state.mu.Unlock()
@@ -192,7 +204,7 @@ func (v *teamView) collect() {
 	var lastSaved *MemberRef
 	for {
 		v.refresh(&lastSaved)
-		v.queuePlans()
+		v.queueControls()
 		select {
 		case <-v.ctx.Done():
 			v.saveSelection(&lastSaved)
@@ -230,7 +242,7 @@ func (v *teamView) refresh(lastSaved **MemberRef) {
 		return
 	}
 	if frame.Team == nil || *frame.Team != team {
-		frame = teamViewFrame{Team: &team, TaskHealth: viewHealth{Status: "loading"}, PlanHealth: viewHealth{Status: "loading"}}
+		frame = teamViewFrame{Team: &team, TaskHealth: viewHealth{Status: "loading"}, PlanHealth: viewHealth{Status: "loading"}, ShutdownHealth: viewHealth{Status: "loading"}}
 		*lastSaved = nil
 	}
 	frame.Team = &team
@@ -427,7 +439,7 @@ func (v *teamView) inspectLoop() {
 func (v *teamView) readTranscript(ref MemberRef, request uint64) (teamTranscript, historyIdentity) {
 	result := teamTranscript{Member: ref, Request: request, Health: viewHealth{Status: "unavailable"}}
 	var identity historyIdentity
-	action, err := v.owner.beginAction(v.ctx)
+	action, err := v.beginAction()
 	if err != nil {
 		result.Health.Error = err.Error()
 		return result, identity

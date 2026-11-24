@@ -421,6 +421,25 @@ func (media *collaborationMedia) awaitEncodedObservation(ctx context.Context) er
 	})
 }
 
+func (media *collaborationMedia) markPanelObservation(ctx context.Context) error {
+	// The observer is a separate terminal, so let it paint before and after the sampled frame.
+	for step := 0; step < 2; step++ {
+		timer := time.NewTimer(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if step == 0 {
+			if err := media.markObservation(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func withoutEnvironment(env []string, key string) []string {
 	result := make([]string, 0, len(env))
 	for _, entry := range env {

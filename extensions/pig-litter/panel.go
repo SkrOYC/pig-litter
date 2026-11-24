@@ -2,6 +2,7 @@ package piglitter
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"slices"
 	"strings"
@@ -25,9 +26,13 @@ const (
 	panelTranscript
 	panelTasks
 	panelTaskDetail
+	panelTaskFeedback
 	panelPlans
 	panelPlanDetail
 	panelPlanReject
+	panelShutdowns
+	panelShutdownDetail
+	panelShutdownRequest
 )
 
 type panelChild struct {
@@ -37,49 +42,57 @@ type panelChild struct {
 }
 
 type childPanel struct {
-	mu                 sync.Mutex
-	owner              *owner
-	ctx                context.Context
-	cancel             context.CancelFunc
-	height             func() int
-	mode, previous     panelMode
-	previousScroll     int
-	selected           *run
-	listTop, scroll    int
-	renderedScroll     int
-	pageRows           int
-	draft, messageMode string
-	cursor             int
-	feedback           string
-	pending            <-chan humanResult
-	pendingCancel      context.CancelFunc
-	pendingSelection   *run
-	invalidate         func()
-	invalidateWG       sync.WaitGroup
-	stop, joined       chan struct{}
-	dispose            sync.Once
-	closed             bool
-	reportRun          *run
-	reportOutcome      Outcome
-	reportPresent      bool
-	reportState        State
-	reportWidth        int
-	reportLines        []string
-	team               *teamView
-	member             MemberRef
-	memberSelected     bool
-	teamRequest        uint64
-	messageTarget      *humanMember
-	task               TaskID
-	taskSelected       bool
-	taskTop            int
-	tasksReturn        panelMode
-	tasksReturnScroll  int
-	plan               PlanRequestID
-	planSelected       bool
-	planTop            int
-	plansReturn        panelMode
-	plansReturnScroll  int
+	mu                    sync.Mutex
+	owner                 *owner
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	height                func() int
+	mode, previous        panelMode
+	previousScroll        int
+	selected              *run
+	listTop, scroll       int
+	renderedScroll        int
+	pageRows              int
+	draft, messageMode    string
+	cursor                int
+	feedback              string
+	feedbackDetail        string
+	pending               <-chan humanResult
+	pendingCancel         context.CancelFunc
+	pendingSelection      *run
+	invalidate            func()
+	invalidateWG          sync.WaitGroup
+	stop, joined          chan struct{}
+	dispose               sync.Once
+	closed                bool
+	reportRun             *run
+	reportOutcome         Outcome
+	reportPresent         bool
+	reportState           State
+	reportWidth           int
+	reportLines           []string
+	team                  *teamView
+	member                MemberRef
+	memberSelected        bool
+	teamRequest           uint64
+	messageTarget         *humanMember
+	task                  TaskID
+	taskSelected          bool
+	taskTop               int
+	tasksReturn           panelMode
+	tasksReturnScroll     int
+	plan                  PlanRequestID
+	planSelected          bool
+	planTop               int
+	plansReturn           panelMode
+	plansReturnScroll     int
+	shutdown              ShutdownRequestID
+	shutdownSelected      bool
+	shutdownTop           int
+	shutdownsReturn       panelMode
+	shutdownsReturnScroll int
+	shutdownTarget        *humanMember
+	shutdownSubmission    string
 }
 
 func (t *Tree) panelChildren() []panelChild {
@@ -219,10 +232,16 @@ func (p *childPanel) receive() {
 			p.feedback = "Action failed | " + result.err.Error()
 		} else {
 			p.feedback = result.feedback
-			if p.mode == panelMessage || p.mode == panelResume || p.mode == panelPlanReject {
+			if result.detail != "" && p.team != nil {
+				p.previous, p.previousScroll = p.mode, p.scroll
+				p.mode, p.scroll, p.renderedScroll = panelTaskFeedback, 0, 0
+				p.feedbackDetail = result.detail
+			}
+			if p.mode == panelMessage || p.mode == panelResume || p.mode == panelPlanReject || p.mode == panelShutdownRequest {
 				p.mode = p.previous
 				p.draft, p.cursor = "", 0
 				p.messageTarget = nil
+				p.shutdownTarget, p.shutdownSubmission = nil, ""
 			}
 		}
 	default:
@@ -533,6 +552,10 @@ func (p *childPanel) composerInput(data string) {
 				p.decideSelectedPlan(p.team.Snapshot(), "reject", p.draft)
 				return
 			}
+			if p.mode == panelShutdownRequest {
+				p.requestShutdown(p.draft)
+				return
+			}
 			kind := humanMessage
 			if p.mode == panelResume {
 				kind = humanResume
@@ -688,6 +711,20 @@ func (p *childPanel) planSelection(frame *teamViewFrame) int {
 	return slices.IndexFunc(frame.Plans, func(plan planView) bool { return plan.Request.ID == p.plan })
 }
 
+func (p *childPanel) shutdownSelection(frame *teamViewFrame) int {
+	if !p.shutdownSelected && len(frame.Shutdowns) != 0 {
+		index := slices.IndexFunc(frame.Shutdowns, func(view shutdownView) bool { return view.Request.State == "pending" })
+		if index < 0 {
+			index = 0
+		}
+		p.shutdown, p.shutdownSelected = frame.Shutdowns[index].Request.ID, true
+	}
+	if !p.shutdownSelected {
+		return -1
+	}
+	return slices.IndexFunc(frame.Shutdowns, func(view shutdownView) bool { return view.Request.ID == p.shutdown })
+}
+
 func (p *childPanel) renderTeam(width int) []string {
 	frame := p.team.Snapshot()
 	index := p.teamSelection(frame)
@@ -696,10 +733,10 @@ func (p *childPanel) renderTeam(width int) []string {
 		height = 24
 	}
 	budget := max(1, height-8)
-	legend := []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " detail  v report  t transcript", "m message  p pause subtree  k tasks  g plans  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " close"}
-	if p.mode == panelMessage || p.mode == panelPlanReject {
+	legend := []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " detail  v report  t transcript", "m message  p pause  s shutdown  h shutdowns  k tasks  g plans", panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " close"}
+	if p.mode == panelMessage || p.mode == panelPlanReject || p.mode == panelShutdownRequest {
 		legend = []string{panelKeyText("tui.input.submit") + " submit  " + panelKeyText("tui.select.cancel") + " cancel", panelKeyText("tui.editor.cursorLeft") + "/" + panelKeyText("tui.editor.cursorRight") + " edit  " + panelKeyText("tui.editor.deleteToLineStart") + " clear  " + panelKeyText("tui.input.tab") + " steer/follow_up"}
-		if p.mode == panelPlanReject {
+		if p.mode != panelMessage {
 			legend[1] = panelKeyText("tui.editor.cursorLeft") + "/" + panelKeyText("tui.editor.cursorRight") + " edit  " + panelKeyText("tui.editor.deleteToLineStart") + " clear"
 		}
 	} else if p.mode == panelTasks {
@@ -710,10 +747,14 @@ func (p *childPanel) renderTeam(width int) []string {
 		legend = []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " detail  a approve  r reject  " + panelPageKeys() + " page  " + panelKeyText("tui.select.cancel") + " back"}
 	} else if p.mode == panelPlanDetail {
 		legend = []string{panelMoveKeys() + " scroll  a approve  r reject  " + panelPageKeys() + " page  " + panelKeyText("tui.select.cancel") + " back"}
+	} else if p.mode == panelShutdowns {
+		legend = []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " detail  x cancel request  " + panelPageKeys() + " page  " + panelKeyText("tui.select.cancel") + " back"}
+	} else if p.mode == panelShutdownDetail {
+		legend = []string{panelMoveKeys() + " scroll  x cancel request  " + panelPageKeys() + " page  " + panelKeyText("tui.select.cancel") + " back"}
 	} else if p.mode != panelList && p.mode != panelDetail {
 		legend = []string{panelMoveKeys() + " scroll  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " back"}
 	} else if p.mode == panelDetail {
-		legend = []string{panelMoveKeys() + " scroll  v report  t transcript", "m message  p pause subtree  k tasks  g plans  " + panelKeyText("tui.select.cancel") + " back"}
+		legend = []string{panelMoveKeys() + " scroll  v report  t transcript", "m message  p pause  s shutdown  h shutdowns  k tasks  g plans", panelKeyText("tui.select.cancel") + " back"}
 	}
 	if width >= 80 {
 		legend = widthx.WrapTextWithAnsi(paintText(strings.Join(legend, "  "), false), width)
@@ -807,7 +848,9 @@ func (p *childPanel) renderTeam(width int) []string {
 		if frame.PlanHealth.Error != "" {
 			content = append(content, "Plans "+frame.PlanHealth.Status+" | "+frame.PlanHealth.Error)
 		}
-		if p.planSelected && planIndex < 0 {
+		if frame.Team == nil && frame.RosterHealth.Status == "fresh" {
+			content = append(content, "No team")
+		} else if p.planSelected && planIndex < 0 {
 			content = append(content, "Selected plan unavailable")
 		} else if frame.PlanHealth.Status == "loading" {
 			content = append(content, "Loading plans")
@@ -829,6 +872,36 @@ func (p *childPanel) renderTeam(width int) []string {
 			}
 			content = append(content, prefix+teamPlanSummary(frame, frame.Plans[i]))
 		}
+	} else if p.mode == panelShutdowns {
+		shutdownIndex := p.shutdownSelection(frame)
+		title += fmt.Sprintf(" | shutdowns (%d/%d)", shutdownIndex+1, len(frame.Shutdowns))
+		if frame.ShutdownHealth.Error != "" {
+			content = append(content, "Shutdowns "+frame.ShutdownHealth.Status+" | "+frame.ShutdownHealth.Error)
+		}
+		if frame.Team == nil && frame.RosterHealth.Status == "fresh" {
+			content = append(content, "No team")
+		} else if p.shutdownSelected && shutdownIndex < 0 {
+			content = append(content, "Selected shutdown request unavailable")
+		} else if frame.ShutdownHealth.Status == "loading" {
+			content = append(content, "Loading shutdown requests")
+		} else if len(frame.Shutdowns) == 0 {
+			content = append(content, "No shutdown requests")
+		}
+		rows := max(0, contentBudget-len(content))
+		p.shutdownTop = min(p.shutdownTop, max(0, len(frame.Shutdowns)-rows))
+		if shutdownIndex >= 0 && shutdownIndex < p.shutdownTop {
+			p.shutdownTop = shutdownIndex
+		}
+		if rows > 0 && shutdownIndex >= p.shutdownTop+rows {
+			p.shutdownTop = shutdownIndex - rows + 1
+		}
+		for i := p.shutdownTop; i < min(len(frame.Shutdowns), p.shutdownTop+rows); i++ {
+			prefix := "  "
+			if i == shutdownIndex {
+				prefix = "> "
+			}
+			content = append(content, prefix+teamShutdownSummary(frame, frame.Shutdowns[i]))
+		}
 	} else {
 		switch p.mode {
 		case panelDetail:
@@ -848,6 +921,9 @@ func (p *childPanel) renderTeam(width int) []string {
 			} else {
 				content = toolPaintRows(teamTaskDetail(frame, frame.Tasks[taskIndex]), "", width)
 			}
+		case panelTaskFeedback:
+			title += " | task feedback"
+			content = toolPaintRows([]string{"Task completion was refused", "Policy feedback", p.feedbackDetail}, "", width)
 		case panelPlanDetail:
 			title += " | plan detail"
 			planIndex := p.planSelection(frame)
@@ -859,6 +935,21 @@ func (p *childPanel) renderTeam(width int) []string {
 		case panelPlanReject:
 			title += " | reject plan"
 			content = []string{fmt.Sprintf("Reject plan #%d", p.plan.Sequence), "Enter feedback for the teammate", p.draftLine(width)}
+		case panelShutdownDetail:
+			title += " | shutdown detail"
+			shutdownIndex := p.shutdownSelection(frame)
+			if shutdownIndex < 0 {
+				content = []string{"Selected shutdown request unavailable"}
+			} else {
+				content = toolPaintRows(teamShutdownDetail(frame, frame.Shutdowns[shutdownIndex]), "", width)
+			}
+		case panelShutdownRequest:
+			title += " | request shutdown"
+			content = []string{"Response window 5 minutes"}
+			if p.shutdownTarget != nil {
+				content = append(content, "Target "+p.shutdownTarget.Name+" | UUID "+string(p.shutdownTarget.Ref.ID))
+			}
+			content = append(content, "Enter a reason for the teammate", p.draftLine(width))
 		case panelMessage:
 			title += " | message"
 			content = []string{"Message mode " + p.messageMode}
@@ -871,7 +962,7 @@ func (p *childPanel) renderTeam(width int) []string {
 		for _, section := range []struct {
 			name   string
 			health viewHealth
-		}{{"Roster", frame.RosterHealth}, {"Tasks", frame.TaskHealth}, {"Plans", frame.PlanHealth}, {"Selection", frame.PreferenceHealth}} {
+		}{{"Roster", frame.RosterHealth}, {"Tasks", frame.TaskHealth}, {"Plans", frame.PlanHealth}, {"Shutdowns", frame.ShutdownHealth}, {"Selection", frame.PreferenceHealth}} {
 			if section.health.Error != "" {
 				issues = append(issues, section.name+" "+section.health.Status+" | "+section.health.Error)
 			}
@@ -1060,21 +1151,30 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 			return sdk.RemoteComponentResult{Done: true}
 		case panelReport, panelTranscript:
 			p.mode, p.scroll = p.previous, p.previousScroll
-		case panelMessage, panelPlanReject:
+		case panelMessage, panelPlanReject, panelShutdownRequest:
 			if p.pendingCancel != nil {
 				p.pendingCancel()
 			}
 			p.mode, p.scroll = p.previous, p.previousScroll
 			p.draft, p.cursor, p.messageTarget = "", 0, nil
+			p.shutdownTarget, p.shutdownSubmission = nil, ""
 		case panelTasks:
 			p.mode, p.scroll = p.tasksReturn, p.tasksReturnScroll
 		case panelTaskDetail:
 			p.mode, p.scroll = panelTasks, 0
+		case panelTaskFeedback:
+			p.mode, p.scroll = p.previous, p.previousScroll
+			p.feedbackDetail = ""
 		case panelPlans:
-			p.team.StopWatchingPlans()
+			p.team.watchControl(teamControlNone)
 			p.mode, p.scroll = p.plansReturn, p.plansReturnScroll
 		case panelPlanDetail:
 			p.mode, p.scroll = panelPlans, 0
+		case panelShutdowns:
+			p.team.watchControl(teamControlNone)
+			p.mode, p.scroll = p.shutdownsReturn, p.shutdownsReturnScroll
+		case panelShutdownDetail:
+			p.mode, p.scroll = panelShutdowns, 0
 		default:
 			p.mode, p.scroll = panelList, 0
 		}
@@ -1083,7 +1183,7 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 	if p.closed || p.pending != nil {
 		return sdk.RemoteComponentResult{}
 	}
-	if p.mode == panelMessage || p.mode == panelPlanReject {
+	if p.mode == panelMessage || p.mode == panelPlanReject || p.mode == panelShutdownRequest {
 		p.composerInput(data)
 		return sdk.RemoteComponentResult{}
 	}
@@ -1138,6 +1238,17 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 				planIndex = min(max(0, planIndex+step), len(frame.Plans)-1)
 			}
 			p.plan, p.planSelected = frame.Plans[planIndex].Request.ID, true
+		} else if p.mode == panelShutdowns && len(frame.Shutdowns) != 0 {
+			shutdownIndex := p.shutdownSelection(frame)
+			if shutdownIndex < 0 {
+				shutdownIndex = 0
+				if step < 0 {
+					shutdownIndex = len(frame.Shutdowns) - 1
+				}
+			} else {
+				shutdownIndex = min(max(0, shutdownIndex+step), len(frame.Shutdowns)-1)
+			}
+			p.shutdown, p.shutdownSelected = frame.Shutdowns[shutdownIndex].Request.ID, true
 		} else {
 			p.scroll = max(0, p.renderedScroll+step)
 		}
@@ -1152,7 +1263,14 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 		p.plansReturn, p.plansReturnScroll = p.mode, p.scroll
 		p.mode, p.scroll, p.renderedScroll = panelPlans, 0, 0
 		p.feedback = ""
-		p.team.WatchPlans()
+		p.team.watchControl(teamControlPlans)
+		return sdk.RemoteComponentResult{}
+	}
+	if key == "h" && (p.mode == panelList || p.mode == panelDetail) {
+		p.shutdownsReturn, p.shutdownsReturnScroll = p.mode, p.scroll
+		p.mode, p.scroll, p.renderedScroll = panelShutdowns, 0, 0
+		p.feedback = ""
+		p.team.watchControl(teamControlShutdowns)
 		return sdk.RemoteComponentResult{}
 	}
 	if p.mode == panelTasks && panelKeyMatches(data, "tui.select.confirm") {
@@ -1186,10 +1304,31 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 		}
 		return sdk.RemoteComponentResult{}
 	}
+	if p.mode == panelShutdowns && panelKeyMatches(data, "tui.select.confirm") {
+		if p.shutdownSelection(frame) >= 0 {
+			p.mode, p.scroll, p.renderedScroll = panelShutdownDetail, 0, 0
+		}
+		return sdk.RemoteComponentResult{}
+	}
+	if key == "x" && (p.mode == panelShutdowns || p.mode == panelShutdownDetail) {
+		p.cancelSelectedShutdown(frame)
+		return sdk.RemoteComponentResult{}
+	}
 	if index < 0 {
 		return sdk.RemoteComponentResult{}
 	}
 	switch {
+	case key == "s" && (p.mode == panelList || p.mode == panelDetail):
+		if frame.RosterHealth.Status != "fresh" {
+			p.feedback = "Selected teammate is unavailable"
+			return sdk.RemoteComponentResult{}
+		}
+		member := frame.Members[index].Member
+		p.shutdownTarget = &humanMember{Ref: member.Ref, AdmissionID: member.AdmissionID, Name: member.Name}
+		p.shutdownSubmission = rand.Text()
+		p.previous, p.previousScroll = p.mode, p.scroll
+		p.mode, p.draft, p.cursor = panelShutdownRequest, "", 0
+		p.feedback = ""
 	case panelKeyMatches(data, "tui.select.confirm") && p.mode == panelList:
 		p.mode, p.scroll, p.renderedScroll = panelDetail, 0, 0
 	case key == "v" && (p.mode == panelList || p.mode == panelDetail):

@@ -221,6 +221,80 @@ func TestTeamPanelCompletesSelectedTaskThroughLeadAuthority(t *testing.T) {
 	}, func(string, json.RawMessage) json.RawMessage { return json.RawMessage(`"fixture"`) })
 }
 
+func TestTeamPanelShowsCompletionPolicyFeedback(t *testing.T) {
+	fixture, store, members, _ := teamViewFixture(t)
+	task, err := store.createTask("Run the checks", "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.claimTask(task.ID, members[0].Ref, true); err != nil {
+		t.Fatal(err)
+	}
+	withCompletionHost(t, fixture.tree, func(o *owner) {
+		o.teamStore, o.agentDir = store, fixture.agentDir
+		policyDir := t.TempDir()
+		ready, release := filepath.Join(policyDir, "ready"), filepath.Join(policyDir, "release")
+		defer os.WriteFile(release, nil, 0o600)
+		o.policy.TaskCompletion = []string{"/bin/sh", "-c", `: > "$1"; while [ ! -f "$2" ]; do sleep 0.02; done; printf '{"permit":false,"feedback":"Run the checks first."}'`, "policy", ready, release}
+		panel := newChildPanel(o, nil, func() int { return 32 })
+		panel.mu.Lock()
+		panel.team = newTeamView(panel.ctx, o, panel.requestRender)
+		panel.mu.Unlock()
+		defer panel.Dispose()
+		waitTeamFrame(t, panel.team, func(frame *teamViewFrame) bool { return len(frame.Tasks) == 1 })
+		panelKey(t, panel, "k")
+		panel.Render(80)
+		panelKey(t, panel, "c")
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(ready); err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if _, err := os.Stat(ready); err != nil {
+			t.Fatal("completion policy did not start")
+		}
+		panelKey(t, panel, "\x1b")
+		if err := os.WriteFile(release, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		deadline = time.Now().Add(5 * time.Second)
+		var text string
+		for time.Now().Before(deadline) {
+			text = strings.Join(panel.Render(80), "\n")
+			if strings.Contains(text, "Run the checks first.") {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if !strings.Contains(text, "Task #1 was not completed") || !strings.Contains(text, "Run the checks first.") {
+			t.Fatalf("policy refusal feedback was not visible: %s", text)
+		}
+		retained, err := store.getTask(task.ID)
+		if err != nil || retained.State != TaskInProgress || retained.Owner == nil || *retained.Owner != members[0].Ref {
+			t.Fatalf("policy refusal changed task ownership or state: %+v, %v", retained, err)
+		}
+		panelKey(t, panel, "\x1b")
+		panelKey(t, panel, "k")
+		panel.Render(80)
+		o.policy.TaskCompletion = nil
+		panelKey(t, panel, "c")
+		deadline = time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			text = strings.Join(panel.Render(80), "\n")
+			if strings.Contains(text, "Task #1 completed") {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		completed, err := store.getTask(task.ID)
+		if err != nil || completed.State != TaskCompleted || !strings.Contains(text, "Task #1 completed") {
+			t.Fatalf("task did not complete after policy permitted it: %+v, %v, %s", completed, err, text)
+		}
+	}, func(string, json.RawMessage) json.RawMessage { return json.RawMessage(`"fixture"`) })
+}
+
 func TestTeamPanelRetainsMemberAndDisplaysOwnedTasksAndPrivateHistory(t *testing.T) {
 	o, store, members, _ := teamViewFixture(t)
 	task, err := store.createTask("Assigned marker", "Task description", nil, nil)
