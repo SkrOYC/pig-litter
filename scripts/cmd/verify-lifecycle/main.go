@@ -1168,7 +1168,7 @@ func main() {
 	extension := flag.String("extension", filepath.Join(filepath.Dir(self), "pig-litter"), "Built pig-litter standalone")
 	scenario := flag.String("scenario", "core", "core, cwd, unbounded, nested, checks, admission, messages, lifecycle, pause, completion, shadow, codemode, persistence, team-roster, or team-worktree")
 	measurePerformance := flag.Bool("measure-performance", false, "Record Linux core fixture performance")
-	evidenceRoot := flag.String("evidence-root", filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(self)))), ".verification", "evidence", "go-lifecycle"), "Evidence directory")
+	evidenceRoot := flag.String("evidence-root", filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(self)))), ".verification", "go-lifecycle"), "Evidence directory")
 	flag.Parse()
 	if *measurePerformance && (*scenario != "core" || !performanceSupported()) {
 		fmt.Fprintln(os.Stderr, "performance measurement requires the core scenario on Linux")

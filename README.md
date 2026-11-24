@@ -199,7 +199,7 @@ devenv shell -- scripts/test-pig-litter.sh
 devenv shell -- check-pig-extension
 ```
 
-The second command validates the source factory, prebuilt standalone, and Piglet against the pinned release. The coordinator owns released-host lifecycle and terminal verification. Compilation and pure tests alone do not prove those checks.
+The second command validates the source factory, prebuilt standalone, and Piglet against the pinned release. Released-host lifecycle and terminal verification require separate runs; compilation and pure tests alone do not prove those checks.
 
 Run the Go loopback fixtures in a disposable workspace with isolated fixture credentials and a restricted `PATH` containing pinned PiG and the required terminal tools.
 
@@ -218,6 +218,10 @@ devenv shell -- scripts/verify-stock-lifecycle.sh --scenario pause
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario admission
 devenv shell -- scripts/verify-stock-lifecycle.sh --scenario persistence
 ```
+
+The fixtures record provider requests, stdout, stderr, and results under `.verification/go-lifecycle`. They verify native file and terminal operations, tool ceilings, child working directories, concurrency, depth, privacy, results, usage, retained resume, and subtree pause. Additional cases check provider and tool failures, scout leaf enforcement, model restrictions, conversation retention, message ordering, replacement, and live-child exit. The RPC completion case forwards extension protocol frames unchanged to observe delivery acknowledgements. It verifies that a busy RPC parent processes a hidden child completion without another user prompt, and that an idle parent appends it without inference.
+
+The optional configured-provider harness is available through `bun scripts/verify-pig-litter/live.mjs --help`. Its doctor checks readiness without a model request; selected runs use the configured provider. The replay helper checks recorded lifecycle output with `bun scripts/verify-pig-litter/replay.mjs PATH_TO_STDOUT_JSONL`.
 
 The `unbounded` scenario keeps a child active beyond two minutes and requires successful completion. Fixture deadlines bound the verification process without limiting product child runs.
 

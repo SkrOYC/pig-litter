@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-evidence_root="$root/.verification/evidence/go-tui"
+evidence_root="$root/.verification/go-tui"
 case_name= scenario= previous=
 for argument in "$@"; do
   case "$argument" in

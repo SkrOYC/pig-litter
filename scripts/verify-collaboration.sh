@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-evidence_root="$root/.verification/evidence/collaboration"
+evidence_root="$root/.verification/collaboration"
 previous=
 for argument in "$@"; do
   if [[ "$previous" == --evidence-root ]]; then
