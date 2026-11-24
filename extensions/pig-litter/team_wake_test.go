@@ -296,3 +296,38 @@ func TestCancelledTeamAdmissionReleasesItsReservation(t *testing.T) {
 		t.Fatalf("cancelled admission did not release its name: %#v, %v", replacement, err)
 	}
 }
+
+func TestPeerWakeWaitingForRoomStopsOnPauseOrRootClosure(t *testing.T) {
+	for _, action := range []string{"pause", "close"} {
+		t.Run(action, func(t *testing.T) {
+			owner, _, _, recipient, _, previous, started, release := peerWakeTestOwner(t, true)
+			defer close(release)
+			owner.tree.mu.Lock()
+			owner.tree.config.Concurrency = 1
+			owner.tree.live = 1
+			owner.tree.mu.Unlock()
+			owner.requestPeerWake(recipient.Ref)
+			owner.requestPeerWake(recipient.Ref)
+			waitForPeerWakeWaiter(t, owner)
+			if action == "pause" {
+				if _, _, err := owner.tree.stop(nil, previous); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				owner.tree.close()
+			}
+			finished := make(chan struct{})
+			go func() { owner.tree.peerWakeWG.Wait(); close(finished) }()
+			select {
+			case <-finished:
+			case <-time.After(3 * time.Second):
+				t.Fatal("wake did not stop while waiting for capacity")
+			}
+			select {
+			case <-started:
+				t.Fatal("paused or closed recipient started")
+			default:
+			}
+		})
+	}
+}

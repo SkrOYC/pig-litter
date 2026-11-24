@@ -43,6 +43,7 @@ type Tree struct {
 	completionWG sync.WaitGroup
 	teamWG       sync.WaitGroup
 	peerWakeWG   sync.WaitGroup
+	roomChanged  chan struct{}
 	execute      func(*record, *run) Outcome
 	completion   func(*record, *run, Outcome)
 	changed      func()
@@ -69,7 +70,7 @@ type controlAuthority struct {
 
 func newTree(config Config) *Tree {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Tree{config: config, root: &record{id: "root", name: "root"}, ctx: ctx, cancel: cancel, records: map[ChildID]*record{}, names: map[string]ChildID{}, pending: map[*run]*reservation{}, dirty: map[ChildID]*record{}, closedDone: make(chan struct{})}
+	return &Tree{config: config, root: &record{id: "root", name: "root"}, ctx: ctx, cancel: cancel, records: map[ChildID]*record{}, names: map[string]ChildID{}, pending: map[*run]*reservation{}, dirty: map[ChildID]*record{}, closedDone: make(chan struct{}), roomChanged: make(chan struct{})}
 }
 
 func (t *Tree) currentLocked(selected *run) (*record, error) {
@@ -242,6 +243,11 @@ func (t *Tree) roomLocked(parent ChildID, writer bool, cwd string, except ChildI
 	return nil
 }
 
+func (t *Tree) signalRoomChangedLocked() {
+	close(t.roomChanged)
+	t.roomChanged = make(chan struct{})
+}
+
 func (t *Tree) newRunLocked(ref Ref, prompt string) *run {
 	ctx, cancel := context.WithCancel(t.ctx)
 	return &run{ref: ref, noticeID: rand.Text(), state: Starting, ctx: ctx, cancel: cancel, prompt: prompt, done: make(chan struct{}), ready: make(chan struct{}), teamFinishDone: make(chan struct{}), mailbox: make(chan message, t.config.MaxMailbox)}
@@ -411,6 +417,7 @@ func (t *Tree) cancelPending(selected *run) {
 			close(run.teamFinishDone)
 		}
 		t.live--
+		t.signalRoomChangedLocked()
 	}
 	if t.pending[selected] != nil {
 		delete(t.pending, selected)
@@ -495,6 +502,7 @@ mailboxDrained:
 	run.pendingMessages = 0
 	run.messageMu.Unlock()
 	t.live--
+	t.signalRoomChangedLocked()
 	if r.team != nil && t.teamFinished != nil {
 		t.teamWG.Add(1)
 	}
@@ -813,6 +821,7 @@ func (t *Tree) stopAs(authority controlAuthority, selected *run) (*Outcome, int,
 
 func (t *Tree) pauseLocked(target *record) ([]*run, []*run) {
 	target.paused = true
+	t.signalRoomChangedLocked()
 	var pending, fresh []*run
 	for _, id := range t.order {
 		r := t.records[id]

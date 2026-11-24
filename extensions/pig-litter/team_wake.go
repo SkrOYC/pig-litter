@@ -1,9 +1,13 @@
 package piglitter
 
 import (
+	"errors"
+
 	"github.com/MichaelKinsy/PiG/coding"
 	"github.com/MichaelKinsy/PiG/coding/extension"
 )
+
+var errPeerWakeBlocked = errors.New("peer wake is waiting for room")
 
 func (o *owner) sendPeerWake(session *coding.Session, r *record, selected *run) error {
 	store, ok := o.peerRunStore(r, selected)
@@ -69,7 +73,7 @@ func (o *owner) drivePeerWake(recipient MemberRef) {
 			t.mu.Unlock()
 			return
 		}
-		version, selected := r.peerWakeVersion, r.run
+		version, selected, roomChanged := r.peerWakeVersion, r.run, t.roomChanged
 		if r.paused || t.root.paused || selected == nil {
 			r.peerWakePending = false
 			t.mu.Unlock()
@@ -98,9 +102,18 @@ func (o *owner) drivePeerWake(recipient MemberRef) {
 			continue
 		}
 		if finished {
-			started, _ := o.reservePeerWake(recipient, selected)
+			started, err := o.reservePeerWake(recipient, selected)
 			if started {
 				continue
+			}
+			if err == errPeerWakeBlocked {
+				select {
+				case <-roomChanged:
+					continue
+				case <-t.ctx.Done():
+					o.finishPeerWakeRequest(recipient, version)
+					return
+				}
 			}
 		}
 		if o.finishPeerWakeRequest(recipient, version) {
@@ -141,7 +154,7 @@ func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error
 	if err := t.roomLocked(r.parentID(), !r.readOnly, r.cwd, r.id, r.team); err != nil {
 		t.mu.Unlock()
 		t.lifecycleMu.Unlock()
-		return false, err
+		return false, errPeerWakeBlocked
 	}
 	selected := t.newRunLocked(Ref{r.id}, "")
 	selected.owner, selected.resume, selected.peerWake = r, true, &peerWakeInput{Recipient: recipient}
