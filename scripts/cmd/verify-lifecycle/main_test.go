@@ -243,7 +243,7 @@ func TestFixtureToolProfilesMatchEveryProviderActor(t *testing.T) {
 	scout := []string{"read"}
 	coordinator := []string{"read", "ls", "litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
 	worker := []string{"read", "write", "edit", "bash", "litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
-	lead := append(append([]string(nil), worker...), "team_spawn", "team_list")
+	lead := append(append([]string(nil), worker...), teamTools...)
 	childWorker := append(append([]string(nil), worker...), "ls", "codemode", "tool_search")
 	for _, test := range []struct {
 		name, model string

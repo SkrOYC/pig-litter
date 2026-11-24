@@ -92,6 +92,7 @@ type fixture struct {
 	stage                                                                   int
 	team                                                                    *teamRosterFixture
 	worktree                                                                *teamWorktreeFixture
+	taskGraph                                                               *teamTaskFixture
 	runs                                                                    []ref
 	resumed, worker, stopped                                                ref
 	nestedParent, grandchild, sibling, admissionProvisional                 ref
@@ -110,6 +111,7 @@ type fixture struct {
 	aborted                                                                 map[string]bool
 	sequence                                                                atomic.Uint64
 	performance                                                             *performance
+	p05Trace                                                                *p05SpawnWaitTrace
 }
 
 func content(raw json.RawMessage) string {
@@ -265,6 +267,9 @@ func (f *fixture) answer(w http.ResponseWriter, model, text string, calls []call
 				break
 			}
 		}
+	}
+	if f.p05Trace != nil && model == "parent_p05_perf" && len(calls) == 1 {
+		f.p05Trace.mark(calls[0].name, time.Now())
 	}
 	_, _ = fmt.Fprintf(w, "data: %s\n\ndata: %s\n\ndata: [DONE]\n\n", first, last)
 }
@@ -634,7 +639,7 @@ func (f *fixture) cwdNestedRequest(body modelRequest) (string, []call, error) {
 
 func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 	var arrival time.Time
-	if f.performance != nil {
+	if f.performance != nil || f.p05Trace != nil {
 		arrival = time.Now()
 	}
 	defer request.Body.Close()
@@ -767,6 +772,14 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 		text, calls, err = f.parentTeamWorktree(request.Context(), body)
 	case "team_isolated":
 		text, calls, err = f.teamWorktreeMember(request.Context(), body)
+	case "parent_team_tasks":
+		text, calls, err = f.parentTeamTasks(request.Context(), body)
+	case "task_alpha", "task_beta", "task_gamma", "task_delta":
+		text, calls, err = f.teamTaskMember(request.Context(), body)
+	case "parent_p05_perf":
+		text, calls, err = f.parentP05SpawnWait(body, arrival)
+	case "p05_perf_child":
+		text = "P05 performance child complete"
 	case "persistence_child":
 		text, calls, err = f.persistenceChild(body)
 	case "parent_admission":
@@ -931,6 +944,9 @@ func runWithContext(parent context.Context, directory, pig, extension, scenario 
 		return err
 	}
 	f := &fixture{scenario: scenario, held: map[string]chan struct{}{}, changed: make(chan struct{}), checks: map[string]bool{}, aborted: map[string]bool{}, expectedCWD: expectedCWD, relativeCWD: relativeCWD, absoluteTarget: absoluteTarget, homeTarget: homeTarget, homeOutput: homeOutput, bashPath: bashPath, performance: perf}
+	if scenario == "p05-spawn-wait" {
+		f.p05Trace = &p05SpawnWaitTrace{}
+	}
 	server := &http.Server{Handler: http.HandlerFunc(f.serve), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = server.Serve(listener) }()
 	defer func() {
@@ -995,6 +1011,9 @@ func runWithContext(parent context.Context, directory, pig, extension, scenario 
 	if scenario == "team-worktree" {
 		return f.runTeamWorktree(ctx, directory, workspace, agentDir, pig, extension, stdout, stderr)
 	}
+	if scenario == "team-tasks" {
+		return f.runTeamTasks(ctx, directory, workspace, agentDir, pig, extension, stdout, stderr)
+	}
 	model := "fixture/parent"
 	if scenario == "unbounded" {
 		model = "fixture/parent_unbounded"
@@ -1025,6 +1044,8 @@ func runWithContext(parent context.Context, directory, pig, extension, scenario 
 		}
 	} else if scenario == "shadow" {
 		model = "fixture/parent_shadow"
+	} else if scenario == "p05-spawn-wait" {
+		model = "fixture/parent_p05_perf"
 	} else if scenario == "codemode" {
 		model = "fixture/parent_codemode"
 		configuration := "concurrency: 3\ndepth: 2\nmax_result_bytes: 8192\nagents:\n  scout:\n    instructions: CODEMODE_SCOUT_INSTRUCTIONS\n    tools: [read]\n    can_delegate: false\n"
@@ -1067,6 +1088,15 @@ func runWithContext(parent context.Context, directory, pig, extension, scenario 
 	}
 	if !f.done {
 		return errors.New("parent fixture did not complete")
+	}
+	if f.p05Trace != nil {
+		measurement, err := f.p05Trace.result()
+		if err != nil {
+			return err
+		}
+		if err := writeJSON(filepath.Join(directory, "p05-spawn-wait.json"), measurement); err != nil {
+			return err
+		}
 	}
 	if scenario == "core" {
 		output, err := os.ReadFile(filepath.Join(workspace, "output.txt"))

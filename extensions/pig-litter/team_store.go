@@ -328,14 +328,17 @@ func (s *teamStore) Reservations() ([]teamMember, error) {
 }
 
 func (s *teamStore) SetState(ref MemberRef, state string) error {
-	if state != "running" && state != "idle" && state != "interrupted" && state != "unavailable" && state != "paused" {
+	if state != "running" && state != "idle" && state != "interrupted" && state != "unavailable" && state != "paused" && state != "terminated" {
 		return errors.New("invalid team member state transition")
 	}
-	return s.transact(func(roster *teamRoster) (bool, error) {
+	err := s.transact(func(roster *teamRoster) (bool, error) {
 		for i := range roster.Members {
 			if roster.Members[i].Ref == ref {
 				if roster.Members[i].State == state {
 					return false, nil
+				}
+				if roster.Members[i].State == "terminated" {
+					return false, reject("unavailable", "terminated teammate cannot change state")
 				}
 				roster.Members[i].State = state
 				return true, nil
@@ -343,6 +346,10 @@ func (s *teamStore) SetState(ref MemberRef, state string) error {
 		}
 		return false, errors.New("team member reference not found")
 	})
+	if err != nil || state != "terminated" {
+		return err
+	}
+	return s.reconcileTerminatedTasks()
 }
 
 func (s *teamStore) PauseMember(ref MemberRef) (bool, error) {
@@ -350,6 +357,9 @@ func (s *teamStore) PauseMember(ref MemberRef) (bool, error) {
 	err := s.transact(func(roster *teamRoster) (bool, error) {
 		for i := range roster.Members {
 			if roster.Members[i].Ref == ref {
+				if roster.Members[i].State == "terminated" {
+					return false, reject("unavailable", "terminated teammate cannot be paused")
+				}
 				committed = true
 				if roster.Members[i].State == "paused" {
 					return false, nil
@@ -465,21 +475,11 @@ func (s *teamStore) transact(change func(*teamRoster) (bool, error)) error {
 	if err := checkLockedFile(s.lead); err != nil {
 		return fmt.Errorf("team owner lease: %w", err)
 	}
-	var lock *flock.Flock
-	if s.uncertain != nil {
-		if err := s.reconcileLocked(); err != nil {
-			return err
-		}
-		lock = s.uncertain.lock
-		s.uncertain = nil
-	} else {
-		var err error
-		lock, err = lockTeamFile(filepath.Join(s.dir, "team.lock"), false)
-		if err != nil {
-			return err
-		}
+	lock, err := s.lockRosterLocked()
+	if err != nil {
+		return err
 	}
-	err := func() error {
+	err = func() error {
 		roster, err := loadTeamRoster(s.dir, s.root)
 		if err != nil {
 			return err
@@ -507,6 +507,18 @@ func (s *teamStore) transact(change func(*teamRoster) (bool, error)) error {
 		return errors.Join(err, closeErr)
 	}
 	return err
+}
+
+func (s *teamStore) lockRosterLocked() (*flock.Flock, error) {
+	if s.uncertain != nil {
+		if err := s.reconcileLocked(); err != nil {
+			return nil, err
+		}
+		lock := s.uncertain.lock
+		s.uncertain = nil
+		return lock, nil
+	}
+	return lockTeamFile(filepath.Join(s.dir, "team.lock"), false)
 }
 
 func (s *teamStore) saveLocked(lock *flock.Flock, roster teamRoster) error {
@@ -787,7 +799,7 @@ func allocatedStoreName(requested, actual string) bool {
 
 func validStoredMemberState(state string) bool {
 	switch state {
-	case "starting", "running", "idle", "interrupted", "unavailable", "paused":
+	case "starting", "running", "idle", "interrupted", "unavailable", "paused", "terminated":
 		return true
 	default:
 		return false
