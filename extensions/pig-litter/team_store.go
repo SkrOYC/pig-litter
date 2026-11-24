@@ -55,6 +55,7 @@ type teamStore struct {
 	closeLock  func(*flock.Flock) error
 	uncertain  *uncertainTeamWrite
 	closed     bool
+	peerAuth   map[string]peerAuthorization
 }
 
 type uncertainTeamWrite struct {
@@ -327,7 +328,7 @@ func (s *teamStore) Reservations() ([]teamMember, error) {
 }
 
 func (s *teamStore) SetState(ref MemberRef, state string) error {
-	if state != "idle" && state != "interrupted" && state != "unavailable" && state != "paused" {
+	if state != "running" && state != "idle" && state != "interrupted" && state != "unavailable" && state != "paused" {
 		return errors.New("invalid team member state transition")
 	}
 	return s.transact(func(roster *teamRoster) (bool, error) {
@@ -368,6 +369,26 @@ func (s *teamStore) PauseMember(ref MemberRef) (bool, error) {
 		return false, err
 	}
 	return committed, nil
+}
+
+func (s *teamStore) ResumeMember(expected teamMember, wasPaused bool) error {
+	return s.transact(func(roster *teamRoster) (bool, error) {
+		for index := range roster.Members {
+			member := &roster.Members[index]
+			if member.Ref != expected.Ref {
+				continue
+			}
+			if member.AdmissionID != expected.AdmissionID || member.Name != expected.Name || member.Workspace != expected.Workspace {
+				return false, reject("unavailable", "teammate identity or workspace changed")
+			}
+			if !wasPaused && member.State == "paused" || member.State != "paused" && member.State != "idle" && member.State != "interrupted" && member.State != "unavailable" {
+				return false, reject("unavailable", "teammate roster state does not permit resume")
+			}
+			member.State = "running"
+			return true, nil
+		}
+		return false, reject("unavailable", "teammate is no longer in the roster")
+	})
 }
 
 func (s *teamStore) Snapshot() (TeamID, []teamMember, error) {

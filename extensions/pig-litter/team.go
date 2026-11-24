@@ -302,7 +302,7 @@ func (o *owner) cancelTeamMember(r *record) {
 	_ = o.rollbackTeamMember(r.team)
 }
 
-func (o *owner) finishTeamMember(r *record, selected *run, outcome Outcome) {
+func (o *owner) finishTeamMember(r *record, selected *run, outcome Outcome) error {
 	r.teamStateMu.Lock()
 	defer r.teamStateMu.Unlock()
 	o.tree.mu.Lock()
@@ -310,11 +310,11 @@ func (o *owner) finishTeamMember(r *record, selected *run, outcome Outcome) {
 	paused := r.paused
 	o.tree.mu.Unlock()
 	if !current {
-		return
+		return nil
 	}
 	store, err := o.teamStoreForRoot()
 	if err != nil {
-		return
+		return err
 	}
 	state := "unavailable"
 	if outcome.State == Completed {
@@ -325,7 +325,9 @@ func (o *owner) finishTeamMember(r *record, selected *run, outcome Outcome) {
 	}
 	if err := store.SetState(r.team.Ref, state); err != nil {
 		_ = o.rollbackTeamMember(r.team)
+		return err
 	}
+	return nil
 }
 
 func (o *owner) pauseTeamMember(r *record, selected *run) error {
@@ -347,6 +349,31 @@ func (o *owner) pauseTeamMember(r *record, selected *run) error {
 	}
 	_, err = store.PauseMember(ref)
 	return err
+}
+
+func (o *owner) resumeTeamMember(r *record, selected *run) error {
+	if err := o.current(); err != nil {
+		return err
+	}
+	if err := selected.ctx.Err(); err != nil {
+		return err
+	}
+	if r.team.Workspace.Kind == "isolated_worktree" {
+		if err := verifyTeamWorktree(selected.ctx, r.team.Workspace); err != nil {
+			return err
+		}
+	}
+	store, err := o.teamStoreForRoot()
+	if err != nil {
+		return err
+	}
+	if err := store.ResumeMember(*r.team, selected.resumePaused); err != nil {
+		return err
+	}
+	if err := selected.ctx.Err(); err != nil {
+		return err
+	}
+	return o.current()
 }
 
 func (o *owner) rollbackTeamMember(member *teamMember) error {

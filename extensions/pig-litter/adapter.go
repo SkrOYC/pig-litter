@@ -192,6 +192,7 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 	tree.execute, tree.completion, tree.changed = o.executeRun, o.sendCompletion, o.widget
 	tree.teamFinished, tree.teamCanceled, tree.teamPaused = o.finishTeamMember, o.cancelTeamMember, o.pauseTeamMember
+	tree.teamResuming = o.resumeTeamMember
 	if err := o.restoreTeamStore(); err != nil {
 		tree.close()
 		services.Close()
@@ -474,7 +475,7 @@ func (o *owner) settleAck(key *callTicket, failed bool) {
 		return
 	}
 	ack.once.Do(func() {
-		if !failed && ack.run.owner.team != nil {
+		if !failed && ack.run.owner.team != nil && ack.operation == "team_spawn" {
 			o.ackWG.Add(1)
 			go o.activateTeamWhenStored(key, ack.run)
 			close(ack.done)
@@ -571,7 +572,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			allowed[name] = struct{}{}
 		}
 	}
-	extensions, registrations, err := o.childExtensions(r, allowed)
+	extensions, registrations, err := o.childExtensions(r, run, allowed)
 	if err != nil {
 		outcome.Error = err.Error()
 		return
@@ -604,13 +605,13 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	var session *coding.Session
 	if run.resume {
 		session, err = runtime.Resume(string(r.id), options)
-		if err == nil {
+		if err == nil && run.peerWake == nil {
 			run.prompt = run.continuation
 			o.tree.mu.Lock()
 			r.pendingTask = ""
 			o.tree.mu.Unlock()
 		}
-		if err != nil && r.pendingTask != "" && (len(r.pendingInputs) == 0 || r.pendingInputs[0].After == nil) {
+		if err != nil && run.peerWake == nil && r.pendingTask != "" && (len(r.pendingInputs) == 0 || r.pendingInputs[0].After == nil) {
 			options.SessionID = string(r.id)
 			session, err = runtime.New(options)
 		}
@@ -739,7 +740,12 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	if len(pendingTools) != 0 {
 		session.QueueSteer("<system-notice>\nSome allowed tools are still connecting: "+strings.Join(pendingTools, ", ")+". They can become available during this run.\n</system-notice>", nil)
 	}
-	sendErr := o.tree.sendInput(session, run)
+	var sendErr error
+	if run.peerWake != nil {
+		sendErr = o.sendPeerWake(session, r, run)
+	} else {
+		sendErr = o.tree.sendInput(session, run)
+	}
 	stopDelivery()
 	<-deliveryDone
 	session.ClearQueue()
@@ -919,10 +925,11 @@ func newExtension(state *extensionState) *sdk.Extension {
 			state.calls = newCallScope()
 			o.rootCalls = state.calls
 			state.mu.Unlock()
+			peerErr := o.observeRootPeers()
 			o.confirmCompletions(o.tree.root)
 			o.tree.root.markAgentEnded(false)
 			o.retireScope(previous)
-			return nil, nil
+			return nil, peerErr
 		})
 	})
 	ext.OnEvent("turn_end", func(ctx sdk.Context, _ map[string]any) (any, error) {
@@ -964,11 +971,12 @@ func newExtension(state *extensionState) *sdk.Extension {
 	})
 	ext.OnEvent("agent_settled", func(ctx sdk.Context, _ map[string]any) (any, error) {
 		return state.observe(ctx, func(o *owner) (any, error) {
+			peerErr := o.observeRootPeers()
 			o.tree.root.markAgentEnded(false)
 			o.settleRoot()
 			o.retireScope(o.callScope(nil))
 			o.retireReceipts(o.tree.root)
-			return nil, nil
+			return nil, peerErr
 		})
 	})
 	ext.OnSessionStart(func(ctx sdk.Context, _ map[string]any) (any, error) {

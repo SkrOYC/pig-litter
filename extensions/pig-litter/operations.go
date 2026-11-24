@@ -18,10 +18,11 @@ import (
 )
 
 var controlNames = []string{"litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
-var teamToolNames = []string{"team_spawn", "team_list"}
+var teamToolNames = []string{"team_spawn", "team_list", "team_send"}
 var descriptions = map[string]string{
 	"team_spawn":     "Start a named teammate with an explicit workspace policy.",
-	"team_list":      "List the lead and committed teammates in this team.",
+	"team_list":      "List the team and classify the caller's inbox receipts.",
+	"team_send":      "Send an ordinary message to a named teammate.",
 	"litter_spawn":   "Start a background child. Use litter_list to discover named agent types.",
 	"litter_list":    "List available agent types and active immediate children.",
 	"litter_inspect": "Get a child's current status and latest result by ID.",
@@ -49,6 +50,7 @@ func integer(minimum, maximum int) map[string]any {
 var schemas = map[string]map[string]any{
 	"team_spawn":     object([]string{"type", "task", "name", "workspace"}, map[string]any{"type": text(64), "task": text(16384), "name": text(64), "model": text(256), "workspace": object([]string{"kind"}, map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"shared_checkout", "isolated_worktree"}}})}),
 	"team_list":      object([]string{}, map[string]any{}),
+	"team_send":      object([]string{"recipient", "messageId", "text", "summary"}, map[string]any{"recipient": text(64), "messageId": text(128), "text": text(16384), "summary": text(256)}),
 	"litter_spawn":   object([]string{"type", "task"}, map[string]any{"type": text(64), "task": text(16384), "name": text(128), "model": text(256), "cwd": text(4096)}),
 	"litter_list":    object([]string{}, map[string]any{"offset": integer(0, 1000000), "limit": integer(1, 50), "agentOffset": integer(0, 1000000), "agentLimit": integer(1, 50)}),
 	"litter_inspect": object([]string{"id"}, map[string]any{"id": text(128)}),
@@ -122,6 +124,37 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			return nil, err
 		}
 	}
+	if name == "team_send" {
+		if caller == nil || parent == nil || parent.team == nil {
+			return nil, reject("permission_denied", "a registered teammate is required")
+		}
+		request, err := parsePeerRequest(raw)
+		if err != nil {
+			return nil, err
+		}
+		o.teamMu.Lock()
+		store := o.teamStore
+		o.teamMu.Unlock()
+		if store == nil {
+			return nil, reject("unavailable", "team store is unavailable")
+		}
+		receipt, _, err := store.acceptPeer(parent.team.Ref, request)
+		if err != nil {
+			return nil, err
+		}
+		if receipt.Envelope.Recipient == teamLeadRef(receipt.Envelope.Team) {
+			if receipt.State != peerObserved {
+				o.sendRootPeers(ctx, store, receipt.Envelope.Team)
+			}
+		} else if receipt.State == peerAccepted {
+			o.requestPeerWake(receipt.Envelope.Recipient)
+		}
+		delivery := string(receipt.State)
+		if receipt.State == peerObserved {
+			delivery = "unverified"
+		}
+		return map[string]any{"state": "accepted", "messageId": request.MessageID, "delivery": delivery}, nil
+	}
 	if name == "team_list" {
 		if caller != nil && (parent == nil || parent.team == nil) {
 			return nil, reject("permission_denied", "team membership is required")
@@ -140,11 +173,19 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if err != nil {
 			return nil, err
 		}
-		roster := []map[string]any{{"ref": MemberRef{Team: team, ID: team.Root, Generation: 1}, "name": "team-lead", "role": "lead", "state": "running", "cwd": o.cwd}}
+		roster := []map[string]any{{"ref": teamLeadRef(team), "name": "team-lead", "role": "lead", "state": "running", "cwd": o.cwd}}
 		for _, member := range members {
 			roster = append(roster, map[string]any{"ref": member.Ref, "name": member.Name, "role": "teammate", "state": member.State, "cwd": member.Workspace.Cwd, "workspace": member.Workspace})
 		}
-		result := map[string]any{"state": "listed", "team": team, "members": roster}
+		recipient := teamLeadRef(team)
+		if caller != nil {
+			recipient = parent.team.Ref
+		}
+		inbox, err := store.peerInbox(recipient)
+		if err != nil {
+			return nil, err
+		}
+		result := map[string]any{"state": "listed", "team": team, "members": roster, "inbox": inbox}
 		if caller == nil {
 			result["pending"] = pending
 		}
