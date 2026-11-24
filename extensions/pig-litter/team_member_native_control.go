@@ -122,6 +122,21 @@ func (member *nativeMember) applyControl(ctx context.Context, api extension.API,
 		value := command.Completion
 		api.SendMessage(extension.SendMessagePayload{CustomType: "litter_completion", Content: value.Content, Details: value.Details}, &extension.SendMessageOptions{TriggerTurn: &value.Trigger, DeliverAs: extension.DeliverAs(value.Mode)})
 		reply.Disposition = memberInputUncertain
+	case "observer":
+		value := command.Observer
+		if value == nil || len(value.Content) > 4096 || (value.Activity == nil) == (value.Report == nil) || member.manifest.Observer != (value.Activity != nil) {
+			reply.Error = "native observer message is invalid"
+			return reply
+		}
+		payload := extension.SendMessagePayload{Content: value.Content}
+		if value.Activity != nil {
+			payload.CustomType, payload.Details = "pig_litter_observer_activity", value.Activity
+		} else {
+			payload.CustomType, payload.Details, payload.Display = "pig_litter_observer_report", value.Report, true
+		}
+		trigger := false
+		api.SendMessage(payload, &extension.SendMessageOptions{TriggerTurn: &trigger})
+		reply.Disposition = memberInputUncertain
 	case "audit":
 		if command.Audit == nil {
 			reply.Error = "native audit request is invalid"

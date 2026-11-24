@@ -322,19 +322,22 @@ func (member *nativeMember) beforeTool(ctx context.Context, event extension.Tool
 	if err != nil {
 		return extension.ToolCallEventResult{Block: true, Reason: "native tool input is invalid"}, nil
 	}
+	canonical := bytes.Clone(arguments)
 	if call.WireInput != nil {
 		arguments = bytes.Clone(*call.WireInput)
 	}
+	invalidObserverReport := false
 	if member.manifest.Observer && call.ToolName == "observer_report" {
 		original, ok := member.observerTrace.take(call.ToolCallID)
 		id, body, originalErr := parseObserverReport(original)
 		validatedID, validatedBody, validatedErr := parseObserverReport(arguments)
 		if !ok || originalErr != nil || validatedErr != nil || id != validatedID || body != validatedBody {
-			return extension.ToolCallEventResult{Block: true, Reason: "observer report arguments are invalid or unavailable"}, nil
+			invalidObserverReport = true
+			arguments = canonical
 		}
 	}
 	var decision memberToolDecision
-	if err := member.call(ctx, "/member/tool", memberToolRequest{Turn: turn, ID: call.ToolCallID, Parent: call.ParentToolCallID, Name: call.ToolName, Arguments: arguments}, &decision); err != nil {
+	if err := member.call(ctx, "/member/tool", memberToolRequest{Turn: turn, ID: call.ToolCallID, Parent: call.ParentToolCallID, Name: call.ToolName, Arguments: arguments, InvalidObserverReport: invalidObserverReport}, &decision); err != nil {
 		member.stop(ctx)
 		return extension.ToolCallEventResult{Block: true, Reason: "native member authority is unavailable"}, nil
 	}

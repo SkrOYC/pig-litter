@@ -58,11 +58,12 @@ type memberResponseRequest struct {
 }
 
 type memberToolRequest struct {
-	Turn      uint64          `json:"turn"`
-	ID        string          `json:"id"`
-	Parent    string          `json:"parent,omitempty"`
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
+	Turn                  uint64          `json:"turn"`
+	ID                    string          `json:"id"`
+	Parent                string          `json:"parent,omitempty"`
+	Name                  string          `json:"name"`
+	Arguments             json.RawMessage `json:"arguments"`
+	InvalidObserverReport bool            `json:"invalidObserverReport,omitempty"`
 }
 
 type memberToolDecision struct {
@@ -264,6 +265,14 @@ func (queue *memberControlQueue) serveAuthority(w http.ResponseWriter, r *http.R
 		if decodeMemberControl(w, r, &request) != nil {
 			fail()
 			return
+		}
+		if authority.binding.record.role == "observer" {
+			pair := authority.binding.record.observer
+			if pair == nil {
+				http.Error(w, "native observer pairing is unavailable", http.StatusConflict)
+				return
+			}
+			authority.owner.pauseObserverDigest(pair)
 		}
 		snapshot, err := authority.owner.memberLogSnapshot(r.Context(), authority.binding)
 		if err != nil {
@@ -530,6 +539,12 @@ func (authority *memberAuthority) startTurn(ctx context.Context, id uint64) erro
 	authority.mu.Unlock()
 	o.tree.lifecycleMu.Unlock()
 	o.retireScope(previous)
+	o.tree.observeProgress(binding.run, agent.TurnStartEvent{})
+	o.observerProgress(binding.run)
+	if binding.record.role == "observer" {
+		o.observerReady(binding.record.observer)
+	}
+	o.startObserverRecovery()
 	o.widget()
 	return nil
 }
@@ -551,6 +566,14 @@ func (authority *memberAuthority) turnHistoryStart(ctx context.Context) (int, er
 		}
 	}
 	entries, err := o.memberLogEntries(ctx, binding)
+	if err == nil && binding.record.role == "observer" {
+		for _, raw := range entries {
+			var message map[string]any
+			if json.Unmarshal(raw, &message) == nil && message["type"] == "custom_message" {
+				o.observeObserverDigest(binding.run, message)
+			}
+		}
+	}
 	return len(entries), err
 }
 
@@ -582,6 +605,9 @@ func (authority *memberAuthority) endTurn(id uint64) error {
 		return reject("unavailable", "native execution is unavailable")
 	}
 	o.retireScope(scope)
+	o.tree.observeProgress(binding.run, agent.TurnEndEvent{})
+	o.observerProgress(binding.run)
+	o.startObserverRecovery()
 	o.tree.mu.Lock()
 	if o.memberBindingCurrentLocked(binding) {
 		o.tree.teamWG.Add(1)
@@ -728,6 +754,8 @@ func (authority *memberAuthority) authorize(ctx context.Context, request memberT
 	authority.approved[request.ID] = memberAuthorizedCall{name: request.Name, digest: digest, response: response}
 	first := authority.first
 	authority.mu.Unlock()
+	authority.owner.tree.observeProgress(authority.binding.run, agent.ToolExecutionStartEvent{ToolCallID: request.ID, ToolName: request.Name})
+	authority.owner.observerProgress(authority.binding.run)
 	decision := memberToolDecision{}
 	planDenied := false
 	authority.gate.observe(first)
@@ -737,6 +765,8 @@ func (authority *memberAuthority) authorize(ctx context.Context, request memberT
 		decision = denied("tool is outside the teammate ceiling")
 	} else if result := authority.gate.before(ctx, request.ID, request.Name, request.Arguments); result.Block {
 		decision = memberToolDecision{Block: true, Reason: result.Reason, Terminate: result.Terminate}
+	} else if request.InvalidObserverReport {
+		decision = denied("observer report arguments are invalid or unavailable")
 	} else if result := authority.owner.beforePlanTool(authority.binding.record, authority.binding.run, request.ID, request.Name, request.Arguments); result.Block {
 		decision = memberToolDecision{Block: true, Reason: result.Reason, Terminate: result.Terminate}
 		authority.binding.run.mu.Lock()
@@ -910,5 +940,7 @@ func (authority *memberAuthority) observeToolEnd(request memberToolResult) error
 		authority.owner.tree.mu.Unlock()
 	}
 	authority.mu.Unlock()
+	authority.owner.tree.observeProgress(authority.binding.run, agent.ToolExecutionEndEvent{ToolCallID: request.CallID, ToolName: request.Name})
+	authority.owner.observerProgress(authority.binding.run)
 	return nil
 }

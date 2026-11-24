@@ -38,8 +38,15 @@ type memberCompletionInput struct {
 	trigger bool
 }
 
+type memberObserverInput struct {
+	content  string
+	activity *observerActivityMarker
+	report   *observerMarker
+}
+
 func (memberTextInput) memberInput()       {}
 func (memberCompletionInput) memberInput() {}
+func (memberObserverInput) memberInput()   {}
 
 type memberInputDisposition uint8
 

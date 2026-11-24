@@ -62,6 +62,12 @@ type observerAttempt struct {
 	Owner           string           `json:"owner"`
 	WriterExecution string           `json:"writerExecution"`
 	Root            bool             `json:"root"`
+	Native          bool             `json:"native,omitempty"`
+}
+
+type observerActivityMarker struct {
+	PairingID string `json:"pairingId"`
+	Sequence  uint64 `json:"sequence"`
 }
 
 type observerMemberPin struct {
@@ -119,6 +125,7 @@ type observerPair struct {
 	digestPending  *observerDigest
 	digestTimer    *time.Timer
 	digestInFlight uint64
+	digestPaused   bool
 	digestSequence uint64
 	digestSent     observerDigest
 	digestSentAt   time.Time
@@ -536,6 +543,15 @@ func (o *owner) prepareObserver(pair *observerPair) error {
 		var log *coding.SessionManager
 		if target != nil {
 			log = target.activeLog
+			if target.native != nil && target.native.ready && o.memberBindingCurrentLocked(target.native) {
+				path := target.native.log.path
+				if path == "" && target.native.startingLog != nil {
+					path = target.native.startingLog.path
+				}
+				if path != "" {
+					file = &path
+				}
+			}
 		}
 		if log != nil {
 			file = log.GetSessionFile()
@@ -840,7 +856,7 @@ func (o *owner) captureObserverActivity(pair *observerPair) observerDigest {
 		sourceAt = progress.activated
 	}
 	availability := "available"
-	if native || sourceAt.IsZero() {
+	if sourceAt.IsZero() || native && progress.sourceAt.IsZero() {
 		availability = "unavailable"
 	} else if now.Sub(sourceAt) > 30*time.Second {
 		availability = "stale"
@@ -906,7 +922,7 @@ func (o *owner) observerProgress(selected *run) {
 }
 
 func (o *owner) scheduleObserverDigestLocked(pair *observerPair) {
-	if pair.digestPending == nil || pair.digestInFlight != 0 || pair.digestTimer != nil || pair.journal.State != "armed" {
+	if pair.digestPaused || pair.digestPending == nil || pair.digestInFlight != 0 || pair.digestTimer != nil || pair.journal.State != "armed" {
 		return
 	}
 	delay := time.Until(pair.digestSentAt.Add(time.Second))
@@ -932,12 +948,13 @@ func (o *owner) flushObserverDigest(pair *observerPair) {
 	}
 	pair.observer.mu.Lock()
 	session := pair.observer.session
+	member := pair.observer.member
 	pair.observer.mu.Unlock()
-	if session == nil {
+	if session == nil && member == nil {
 		return
 	}
 	pair.mu.Lock()
-	if pair.digestPending == nil || pair.digestInFlight != 0 || pair.journal.State != "armed" {
+	if pair.digestPaused || pair.digestPending == nil || pair.digestInFlight != 0 || pair.journal.State != "armed" {
 		pair.mu.Unlock()
 		return
 	}
@@ -951,8 +968,13 @@ func (o *owner) flushObserverDigest(pair *observerPair) {
 	pair.mu.Unlock()
 	content, err := json.Marshal(digest)
 	if err == nil && len(content) <= 4096 {
-		trigger := false
-		err = session.SendCustomMessage(action.ctx, extension.CustomMessageRef{CustomType: "pig_litter_observer_activity", Content: string(content), Details: map[string]any{"pairingId": pair.journal.ID, "sequence": sequence}}, &extension.SendMessageOptions{TriggerTurn: &trigger})
+		marker := &observerActivityMarker{PairingID: pair.journal.ID, Sequence: sequence}
+		if session != nil {
+			trigger := false
+			err = session.SendCustomMessage(action.ctx, extension.CustomMessageRef{CustomType: "pig_litter_observer_activity", Content: string(content), Details: marker}, &extension.SendMessageOptions{TriggerTurn: &trigger})
+		} else {
+			_, err = member.Queue(action.ctx, memberObserverInput{content: string(content), activity: marker})
+		}
 	}
 	if err != nil || len(content) > 4096 {
 		pair.mu.Lock()
@@ -963,6 +985,19 @@ func (o *owner) flushObserverDigest(pair *observerPair) {
 			}
 		}
 		pair.mu.Unlock()
+	}
+}
+
+func (o *owner) pauseObserverDigest(pair *observerPair) {
+	// A queued native message can flush after the settlement decision.
+	o.tree.lifecycleMu.Lock()
+	defer o.tree.lifecycleMu.Unlock()
+	pair.mu.Lock()
+	defer pair.mu.Unlock()
+	pair.digestPaused = true
+	if pair.digestTimer != nil {
+		pair.digestTimer.Stop()
+		pair.digestTimer = nil
 	}
 }
 
@@ -1268,7 +1303,7 @@ func (o *owner) deliverObserverReport(ctx context.Context, pair *observerPair, i
 		if report.State == "attempted" {
 			current, err := embeddedPeerHost()
 			prior := report.Attempt
-			quiescent := err == nil && !prior.Root && prior.Owner != pair.store.owner && (prior.Host == current || peerHostGone(prior.Host, current))
+			quiescent := err == nil && !prior.Root && (prior.Native && peerHostGone(prior.Host, current) || !prior.Native && prior.Owner != pair.store.owner && (prior.Host == current || peerHostGone(prior.Host, current)))
 			if !quiescent {
 				reason("previous handoff remains uncertain")
 				return
@@ -1323,8 +1358,10 @@ func (o *owner) deliverObserverReport(ctx context.Context, pair *observerPair, i
 	root := target == o.tree.root
 	var host peerHostIdentity
 	var session *coding.Session
+	var native memberControl
 	var selected *run
 	var boundary string
+	nativeTarget := false
 	if root {
 		file, err := o.context.SessionManager().GetSessionFile()
 		if err != nil || file == nil {
@@ -1358,7 +1395,59 @@ func (o *owner) deliverObserverReport(ctx context.Context, pair *observerPair, i
 		}
 		o.tree.mu.Lock()
 		selected = target.run
+		nativeTarget = target.backend != "" && target.backend != backendEmbedded
+		binding := target.native
+		if binding != nil && (!binding.ready || !o.memberBindingCurrentLocked(binding)) {
+			binding = nil
+		}
 		o.tree.mu.Unlock()
+		if nativeTarget && report.State == "attempted" {
+			prior := report.Attempt
+			entry, err := nativeObserverEntry(pair.journal.TargetFile, observerDetails(pair.journal, *report), report.Text, prior.After)
+			if err != nil {
+				reason("recipient marker could not be reconciled")
+				return
+			}
+			if entry != "" {
+				report.State, report.NativeEntry, report.Reason = "observed", entry, ""
+				_ = pair.saveLocked(false)
+				return
+			}
+			if !prior.Native || !peerHostGone(prior.Host, host) {
+				reason("previous handoff remains uncertain")
+				return
+			}
+		}
+		if nativeTarget {
+			if binding == nil || binding.owned.Pane == nil || o.ensureMemberLog(ctx, binding) != nil {
+				reason("native recipient is unavailable")
+				return
+			}
+			o.tree.mu.Lock()
+			current := o.memberBindingCurrentLocked(binding) && binding.ready
+			path := binding.log.path
+			o.tree.mu.Unlock()
+			canonical, pathErr := canonicalObserverPath(path)
+			birth, birthErr := processBirth(binding.owned.Pane.PID)
+			writer, writerErr := peerObservedHost(binding.owned.Pane.PID)
+			if !current || pathErr != nil || canonical != pair.journal.TargetFile || birthErr != nil || birth != binding.owned.Pane.Birth || writerErr != nil {
+				reason("native recipient identity changed")
+				return
+			}
+			snapshot, snapshotErr := binding.control.Snapshot(ctx, memberHistoryBound{})
+			if snapshotErr != nil || snapshot.session != target.id {
+				reason("native recipient session boundary is unavailable")
+				return
+			}
+			if snapshot.leaf != nil {
+				boundary = *snapshot.leaf
+			}
+			host, native = writer, binding.control
+		}
+		if selected == nil {
+			reason("recipient execution is unavailable")
+			return
+		}
 		selected.mu.Lock()
 		session = selected.session
 		selected.mu.Unlock()
@@ -1379,7 +1468,7 @@ func (o *owner) deliverObserverReport(ctx context.Context, pair *observerPair, i
 		}
 	}
 	marker := observerDetails(pair.journal, *report)
-	if report.State == "attempted" {
+	if report.State == "attempted" && !nativeTarget {
 		prior := report.Attempt
 		quiet := false
 		if !prior.Root && !root && prior.Owner == pair.store.owner {
@@ -1404,7 +1493,7 @@ func (o *owner) deliverObserverReport(ctx context.Context, pair *observerPair, i
 			return
 		}
 	}
-	if !root && session == nil {
+	if !root && session == nil && !nativeTarget {
 		err := o.withChildLogLocked(target, func(log *coding.SessionManager) error {
 			file := log.GetSessionFile()
 			if file == nil {
@@ -1436,7 +1525,7 @@ func (o *owner) deliverObserverReport(ctx context.Context, pair *observerPair, i
 			writerExecution = selected.noticeID
 		}
 		report.State = "attempted"
-		report.Attempt = &observerAttempt{Host: host, SessionFile: pair.journal.TargetFile, After: boundary, Owner: pair.store.owner, WriterExecution: writerExecution, Root: root}
+		report.Attempt = &observerAttempt{Host: host, SessionFile: pair.journal.TargetFile, After: boundary, Owner: pair.store.owner, WriterExecution: writerExecution, Root: root, Native: nativeTarget}
 		report.Reason = ""
 		if err := pair.saveLocked(false); err != nil {
 			return
@@ -1448,6 +1537,8 @@ func (o *owner) deliverObserverReport(ctx context.Context, pair *observerPair, i
 				options.DeliverAs = "nextTurn"
 			}
 			err = o.context.SendCustomMessage(sdk.CustomMessage{CustomType: "pig_litter_observer_report", Content: report.Text, Display: true, Details: marker}, options)
+		} else if nativeTarget {
+			_, err = native.Queue(ctx, memberObserverInput{content: report.Text, report: &marker})
 		} else {
 			err = session.SendCustomMessage(ctx, extension.CustomMessageRef{CustomType: "pig_litter_observer_report", Content: report.Text, Display: true, Details: marker}, &extension.SendMessageOptions{TriggerTurn: &trigger})
 		}

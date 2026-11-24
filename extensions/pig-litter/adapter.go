@@ -564,7 +564,9 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		if err != nil {
 			return Outcome{State: Unavailable, Error: err.Error()}
 		}
-		return o.executeTmuxMember(r, run, env)
+		outcome := o.executeTmuxMember(r, run, env)
+		o.startObserverRecovery()
+		return outcome
 	}
 	if r.backend != "" {
 		return Outcome{State: Unavailable, Error: "the selected native teammate backend is unavailable"}
