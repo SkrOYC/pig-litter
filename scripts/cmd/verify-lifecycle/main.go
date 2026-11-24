@@ -90,6 +90,8 @@ type fixture struct {
 	requests                                                                []modelRequest
 	failure                                                                 error
 	stage                                                                   int
+	team                                                                    *teamRosterFixture
+	worktree                                                                *teamWorktreeFixture
 	runs                                                                    []ref
 	resumed, worker, stopped                                                ref
 	nestedParent, grandchild, sibling, admissionProvisional                 ref
@@ -757,6 +759,14 @@ func (f *fixture) serve(w http.ResponseWriter, request *http.Request) {
 		text, calls, err = f.parentCodemode(request.Context(), body)
 	case "parent_persistence":
 		text, calls, err = f.parentPersistence(body)
+	case "parent_team_roster":
+		text, calls, err = f.parentTeamRoster(request.Context(), body)
+	case "team_alpha", "team_beta", "team_gamma":
+		text, calls, err = f.teamRosterMember(request.Context(), body)
+	case "parent_team_worktree":
+		text, calls, err = f.parentTeamWorktree(request.Context(), body)
+	case "team_isolated":
+		text, calls, err = f.teamWorktreeMember(request.Context(), body)
 	case "persistence_child":
 		text, calls, err = f.persistenceChild(body)
 	case "parent_admission":
@@ -979,6 +989,12 @@ func runWithContext(parent context.Context, directory, pig, extension, scenario 
 	if scenario == "persistence" {
 		return f.runPersistence(ctx, directory, workspace, agentDir, pig, extension, stdout, stderr)
 	}
+	if scenario == "team-roster" {
+		return f.runTeamRoster(ctx, directory, workspace, agentDir, pig, extension, stdout, stderr)
+	}
+	if scenario == "team-worktree" {
+		return f.runTeamWorktree(ctx, directory, workspace, agentDir, pig, extension, stdout, stderr)
+	}
 	model := "fixture/parent"
 	if scenario == "unbounded" {
 		model = "fixture/parent_unbounded"
@@ -1120,7 +1136,7 @@ func main() {
 	}
 	pig := flag.String("pig-bin", "", "Released PiG binary")
 	extension := flag.String("extension", filepath.Join(filepath.Dir(self), "pig-litter"), "Built pig-litter standalone")
-	scenario := flag.String("scenario", "core", "core, cwd, unbounded, nested, checks, admission, messages, lifecycle, pause, completion, shadow, codemode, or persistence")
+	scenario := flag.String("scenario", "core", "core, cwd, unbounded, nested, checks, admission, messages, lifecycle, pause, completion, shadow, codemode, persistence, team-roster, or team-worktree")
 	measurePerformance := flag.Bool("measure-performance", false, "Record Linux core fixture performance")
 	evidenceRoot := flag.String("evidence-root", filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(self)))), ".pstack", "evidence", "go-lifecycle"), "Evidence directory")
 	flag.Parse()

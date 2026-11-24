@@ -3,6 +3,7 @@ package piglitter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -64,9 +65,21 @@ type owner struct {
 	actionCancel             context.CancelFunc
 	actionsClosed            bool
 	persistMu                sync.Mutex
+	teamMu                   sync.Mutex
+	teamStore                *teamStore
 	widgetMu                 sync.Mutex
 	widgetStopped            bool
 	widgetUnsubscribe        func()
+}
+
+func withRetirementError(primary, retirement error) error {
+	if primary == nil {
+		return retirement
+	}
+	if retirement == nil {
+		return primary
+	}
+	return errors.Join(primary, retirement)
 }
 
 func configuredAgentDir() string {
@@ -127,6 +140,14 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 		existing, epoch = s.owner, s.epoch
 		s.mu.Unlock()
 	}
+	if existing != nil && existing.epoch != epoch {
+		if err := s.retire(); err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		existing, epoch = s.owner, s.epoch
+		s.mu.Unlock()
+	}
 	if existing != nil && existing.sessionID == id {
 		if err := existing.current(); err != nil {
 			return nil, err
@@ -137,7 +158,9 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 		return existing, nil
 	}
 	if existing != nil {
-		s.retire()
+		if err := s.retire(); err != nil {
+			return nil, err
+		}
 		s.mu.Lock()
 		epoch = s.epoch
 		s.mu.Unlock()
@@ -168,10 +191,20 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 	tree.root.paused = !recover
 	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 	tree.execute, tree.completion, tree.changed = o.executeRun, o.sendCompletion, o.widget
-	if err := o.restoreChildren(); err != nil {
+	tree.teamFinished, tree.teamCanceled, tree.teamPaused = o.finishTeamMember, o.cancelTeamMember, o.pauseTeamMember
+	if err := o.restoreTeamStore(); err != nil {
 		tree.close()
 		services.Close()
 		return nil, err
+	}
+	if err := o.restoreChildren(); err != nil {
+		tree.close()
+		held, closeErr := o.closeTeamStore()
+		services.Close()
+		if held {
+			s.retainClosingOwner(o)
+		}
+		return nil, withRetirementError(err, closeErr)
 	}
 	o.recovered = o.recoveryBatch()
 	tree.persist = o.saveChild
@@ -179,8 +212,12 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 	if s.epoch != epoch {
 		s.mu.Unlock()
 		tree.close()
+		held, closeErr := o.closeTeamStore()
 		services.Close()
-		return nil, reject("unavailable", "the root Session changed during initialization")
+		if held {
+			s.retainClosingOwner(o)
+		}
+		return nil, withRetirementError(reject("unavailable", "the root Session changed during initialization"), closeErr)
 	}
 	s.owner = o
 	if s.calls == nil {
@@ -189,12 +226,10 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 	o.rootCalls = s.calls
 	s.mu.Unlock()
 	if err := o.current(); err != nil {
-		s.retire()
-		return nil, err
+		return nil, withRetirementError(err, s.retire())
 	}
 	if err := o.startWidget(); err != nil {
-		s.retire()
-		return nil, err
+		return nil, withRetirementError(err, s.retire())
 	}
 	o.widget()
 	if recover {
@@ -253,8 +288,18 @@ func (o *owner) startRecovery(caller *run) {
 	}()
 }
 
-func (s *extensionState) retire() {
+func (s *extensionState) retainClosingOwner(o *owner) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.owner == nil {
+		s.epoch++
+		s.owner = o
+	}
+}
+
+func (s *extensionState) retire() error {
+	s.mu.Lock()
+	alreadyRetired := s.owner != nil && s.owner.epoch != s.epoch
 	s.epoch++
 	previous := s.owner
 	var retirement chan struct{}
@@ -270,7 +315,15 @@ func (s *extensionState) retire() {
 		if retiring != nil {
 			<-retiring
 		}
-		return
+		return nil
+	}
+	if alreadyRetired {
+		held, err := previous.closeTeamStore()
+		if held {
+			s.retainClosingOwner(previous)
+		}
+		close(retirement)
+		return err
 	}
 	previous.stopWidget()
 	previous.actionMu.Lock()
@@ -304,8 +357,13 @@ func (s *extensionState) retire() {
 	previous.tree.close()
 	previous.rootWG.Wait()
 	previous.ackWG.Wait()
+	held, err := previous.closeTeamStore()
 	previous.services.Close()
+	if held {
+		s.retainClosingOwner(previous)
+	}
 	close(retirement)
+	return err
 }
 
 func (o *owner) modelFor(ctx context.Context, name string, runtime *coding.ModelRuntime) (*ai.Model, error) {
@@ -416,6 +474,12 @@ func (o *owner) settleAck(key *callTicket, failed bool) {
 		return
 	}
 	ack.once.Do(func() {
+		if !failed && ack.run.owner.team != nil {
+			o.ackWG.Add(1)
+			go o.activateTeamWhenStored(key, ack.run)
+			close(ack.done)
+			return
+		}
 		close(ack.done)
 		if failed {
 			o.tree.cancelPending(ack.run)
@@ -449,6 +513,11 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = err.Error()
 		return
 	}
+	var teamGate *teamAdmissionGate
+	if r.team != nil {
+		teamGate = &teamAdmissionGate{owner: o, record: r, run: run}
+		defer teamGate.finish(&outcome)
+	}
 	trusted := true
 	if err := o.saveChild(r); err != nil {
 		outcome.State = Unavailable
@@ -475,12 +544,19 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	tools := []agent.AgentTool{}
 	allowed := map[string]struct{}{}
 	for _, name := range expandTools(r.tools, available) {
-		if withinParent(r.parent, o.tree.root, name) {
+		if !slices.Contains(teamToolNames, name) && withinParent(r.parent, o.tree.root, name) {
 			allowed[name] = struct{}{}
 		}
 	}
-	if r.canDelegate {
-		for _, name := range controlNames {
+	if r.canDelegate || r.team != nil {
+		names := []string{}
+		if r.canDelegate {
+			names = append(names, controlNames...)
+		}
+		if r.team != nil {
+			names = append(names, teamToolNames...)
+		}
+		for _, name := range names {
 			if !slices.Contains(available, name) {
 				continue
 			}
@@ -522,6 +598,9 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	allowedNames := slices.Sorted(maps.Keys(allowed))
 	scope := &extension.ToolScope{Builtin: &allowedNames, Extensions: map[string]*[]string{extension.McpAdapterEntry: &allowedNames}}
 	options := coding.SessionStartOptions{Model: model, ResourceLoader: loader, ExtraTools: tools, AllowedTools: allowed, ToolScope: scope}
+	if teamGate != nil {
+		options.BeforeToolCall = []agent.BeforeToolCallHook{teamGate.before}
+	}
 	var session *coding.Session
 	if run.resume {
 		session, err = runtime.Resume(string(r.id), options)
@@ -615,6 +694,9 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			}
 		case agent.MessageEndEvent:
 			if event.Message.Assistant != nil {
+				if teamGate != nil {
+					teamGate.observe(event.Message.Assistant)
+				}
 				observedMu.Lock()
 				terminal = event.Message.Assistant
 				observedMu.Unlock()
@@ -777,16 +859,20 @@ func Extension() *sdk.Extension {
 	return newExtension(&extensionState{})
 }
 
-func Run() error {
+func Run() (err error) {
 	state := &extensionState{}
-	defer state.retire()
+	defer func() { err = withRetirementError(err, state.retire()) }()
 	return newExtension(state).Run()
 }
 
 func newExtension(state *extensionState) *sdk.Extension {
 	ext := sdk.New("pig-litter")
-	for _, name := range controlNames {
-		ext.RegisterTool(sdk.ToolDefinition{Name: name, Label: name, Description: descriptions[name], PromptSnippet: descriptions[name], PromptGuidelines: promptGuidelines[name], Parameters: schemas[name], RenderShell: sdk.ToolRenderShellDefault, RenderCall: toolCallRenderer(name), RenderResult: toolResultRenderer(name), ExecutionMode: "parallel", Execute: func(ctx sdk.Context, params map[string]any) (any, error) {
+	for _, name := range append(slices.Clone(controlNames), teamToolNames...) {
+		renderCall, renderResult := toolCallRenderer(name), toolResultRenderer(name)
+		if slices.Contains(teamToolNames, name) {
+			renderCall, renderResult = nil, nil
+		}
+		ext.RegisterTool(sdk.ToolDefinition{Name: name, Label: name, Description: descriptions[name], PromptSnippet: descriptions[name], PromptGuidelines: promptGuidelines[name], Parameters: schemas[name], RenderShell: sdk.ToolRenderShellDefault, RenderCall: renderCall, RenderResult: renderResult, ExecutionMode: "parallel", Execute: func(ctx sdk.Context, params map[string]any) (any, error) {
 			o, err := state.ensure(ctx)
 			if err != nil {
 				return sdkResult(name, nil, err), nil
@@ -886,13 +972,13 @@ func newExtension(state *extensionState) *sdk.Extension {
 		})
 	})
 	ext.OnSessionStart(func(ctx sdk.Context, _ map[string]any) (any, error) {
-		state.retire()
+		err := state.retire()
 		state.mu.Lock()
 		state.sessionContext = &ctx
 		state.mu.Unlock()
-		return nil, nil
+		return nil, err
 	})
-	ext.OnSessionShutdown(func(_ sdk.Context, _ map[string]any) (any, error) { state.retire(); return nil, nil })
+	ext.OnSessionShutdown(func(_ sdk.Context, _ map[string]any) (any, error) { return nil, state.retire() })
 	ext.Command("pig-litter", "Show Pig Litter child controls", state.openPanel)
 	return ext
 }

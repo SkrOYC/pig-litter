@@ -243,6 +243,7 @@ func TestFixtureToolProfilesMatchEveryProviderActor(t *testing.T) {
 	scout := []string{"read"}
 	coordinator := []string{"read", "ls", "litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
 	worker := []string{"read", "write", "edit", "bash", "litter_spawn", "litter_list", "litter_inspect", "litter_message", "litter_stop", "litter_wait"}
+	lead := append(append([]string(nil), worker...), "team_spawn", "team_list")
 	childWorker := append(append([]string(nil), worker...), "ls", "codemode", "tool_search")
 	for _, test := range []struct {
 		name, model string
@@ -261,7 +262,10 @@ func TestFixtureToolProfilesMatchEveryProviderActor(t *testing.T) {
 		{"worker root excludes codemode", "worker", removeTool(childWorker, "codemode"), false},
 		{"worker missing bash", "worker", removeTool(childWorker, "bash"), true},
 		{"worker missing controls", "worker", removeTool(childWorker, "litter_spawn"), true},
-		{"root full worker", "parent", worker, false},
+		{"root full worker", "parent", lead, false},
+		{"baseline root without team tools", "parent", worker, false},
+		{"team fixture root missing team tools", "parent_team_roster", worker, true},
+		{"ordinary worker gains team tools", "worker", append(append([]string(nil), childWorker...), "team_list"), true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := requireFixtureModelTools(modelRequestWithTools(test.model, test.got...))
