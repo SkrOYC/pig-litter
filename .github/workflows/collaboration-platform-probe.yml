@@ -20,6 +20,7 @@ on:
           - iterm-lifecycle
           - intel-window-forensics
           - intel-pig-window-forensics
+          - intel-zero-tab-close
           - fd-go-cache
           - p03-all
           - p03-team
@@ -317,7 +318,7 @@ jobs:
           retention-days: 14
 
   intel-pig-window-forensics:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario == 'intel-pig-window-forensics' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["intel-pig-window-forensics","intel-zero-tab-close"]'), inputs.scenario) }}
     name: Intel PiG window forensics
     runs-on: macos-15-intel
     timeout-minutes: 105
@@ -356,6 +357,7 @@ jobs:
         run: |
           python3 -B driver/scripts/test-iterm-intel-window-forensics.py
           python3 -B driver/scripts/test-iterm-intel-pig-forensics.py
+          python3 -B driver/scripts/test-iterm-zero-close.py
       - name: Verify iTerm2 and scoped consent
         working-directory: driver
         shell: bash
@@ -374,6 +376,12 @@ jobs:
         run: |
           set -euo pipefail
           evidence="$RUNNER_TEMP/intel-pig-window-forensics"
+          case "$SELECTED_SCENARIO" in
+            intel-pig-window-forensics) INTEL_ZERO_TAB_CLOSE=0 ;;
+            intel-zero-tab-close) INTEL_ZERO_TAB_CLOSE=1 ;;
+            *) exit 1 ;;
+          esac
+          export INTEL_ZERO_TAB_CLOSE
           actual_candidate=$(git -C "$CANDIDATE_ROOT" rev-parse HEAD) || exit 1
           test "$actual_candidate" = "$CANDIDATE_SHA" || exit 1
           git -C "$CANDIDATE_ROOT" status --porcelain=v1 --untracked-files=all > "$evidence/candidate-status.txt" || exit 1
@@ -401,7 +409,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: intel-pig-window-forensics-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ inputs.scenario }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/intel-pig-window-forensics/
             ${{ runner.temp }}/collaboration-platform-probe/
@@ -412,7 +420,7 @@ jobs:
         if: always() && steps.upload_native_evidence.outcome == 'failure'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: intel-pig-window-forensics-${{ github.run_id }}-${{ github.run_attempt }}-retry
+          name: ${{ inputs.scenario }}-${{ github.run_id }}-${{ github.run_attempt }}-retry
           path: |
             ${{ runner.temp }}/intel-pig-window-forensics/
             ${{ runner.temp }}/collaboration-platform-probe/

@@ -2,12 +2,15 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -17,6 +20,39 @@ spec.loader.exec_module(probe)
 
 
 class PigForensicsTests(unittest.TestCase):
+    def test_zero_tab_mode_uses_one_case_and_leaves_control_live(self):
+        with tempfile.TemporaryDirectory(prefix="itp-main.") as directory:
+            root = Path(directory)
+            capability = root / "collaboration-platform-probe"
+            capability.mkdir()
+            (capability / "result.json").write_text(json.dumps({"status": "pass", "signature_status": "verified", "automation_status": "approved", "session_tty": "/dev/ttys001"}))
+            evidence = root / "evidence"
+            scratch = root / "scratch"
+            scratch.mkdir()
+            diagnostic = mock.Mock()
+            diagnostic.failures = []
+            diagnostic.state.return_value = "present:owned"
+            diagnostic.snapshot.return_value = [{"number": 39, "owner_pid": 99}]
+
+            def run_case(name, _pig, _control, prompted):
+                (evidence / name).mkdir()
+                return {"case": name, "prompted": prompted, "error": None, "provider_joined": True}
+
+            diagnostic.run_case.side_effect = run_case
+            processes = {99: {"pid": 99, "start": "iterm birth", "tty": "??", "command": "/Applications/iTerm.app/Contents/MacOS/iTerm2"}, 72: {"pid": 72, "start": "control birth", "tty": "ttys001", "command": "-bash"}}
+            digest = "d" * 64
+            env = {"RUNNER_TEMP": str(root), "PROBE_RUNNER_LABEL": "macos-15-intel", "PIG_LITTER_EXPECTED_PIG": "/pig", "PIG_LITTER_EXPECTED_PIG_SHA256": digest, "INTEL_ZERO_TAB_CLOSE": "1"}
+
+            def command(argv, **_kwargs):
+                return SimpleNamespace(stdout="x86_64\n" if argv[0].endswith("uname") else digest + "  /pig\n")
+
+            with mock.patch.dict(os.environ, env), mock.patch.object(sys, "argv", ["probe", "--scratch", str(scratch), "--evidence", str(evidence)]), mock.patch.object(sys, "platform", "darwin"), mock.patch.object(probe.subprocess, "run", side_effect=command), mock.patch.object(probe.driver, "probe_identity", return_value=("39", "control")), mock.patch.object(probe.driver, "process_snapshot", return_value=processes), mock.patch.object(probe.driver, "applescript"), mock.patch.object(probe, "PigForensics", return_value=diagnostic), mock.patch.object(probe.iterm_zero_close, "probe", return_value={"state": "missing"}):
+                probe.main()
+            summary = json.loads((evidence / "summary.json").read_text())
+            self.assertEqual((summary["result"], summary["mode"], summary["control_cleanup_state"]), ("observed", "zero-tab-close", "left-live"))
+            self.assertEqual([(call.args[0], call.args[3]) for call in diagnostic.run_case.call_args_list], [("startup-only", False)])
+            self.assertEqual(diagnostic.action.call_args_list, [])
+
     def test_native_log_report_preserves_census_and_missing_files(self):
         report_path = Path(__file__).with_name("report-intel-native.py")
         report_spec = importlib.util.spec_from_file_location("report_intel_native", report_path)
@@ -235,6 +271,7 @@ class PigForensicsTests(unittest.TestCase):
                 (identity, {"SELECTED_ARCHITECTURE": "arm"}, ""),
                 (identity, {"CANDIDATE_SHA": "invalid"}, ""),
                 (prepare, {"FAKE_GIT_HEAD": "c" * 40}, ""),
+                (prepare, {"SELECTED_SCENARIO": "invalid"}, ""),
                 (prepare, {"FAKE_DEVICE": "tmpfs"}, ""),
                 (prepare, {}, "cd() { return 0; }\n"),
             ]
@@ -253,7 +290,8 @@ class PigForensicsTests(unittest.TestCase):
         product = text.split("  p03-macos:\n", 1)[1].split("\n  iterm-lifecycle:\n", 1)[0]
         self.assertNotIn("intel-pig-window-forensics", product)
         diagnostic = text.split("  intel-pig-window-forensics:\n", 1)[1]
-        self.assertIn("inputs.scenario == 'intel-pig-window-forensics'", diagnostic)
+        self.assertIn("contains(fromJSON('[\"intel-pig-window-forensics\",\"intel-zero-tab-close\"]'), inputs.scenario)", diagnostic)
+        self.assertNotIn("intel-zero-tab-close", product)
         self.assertIn("runs-on: macos-15-intel", diagnostic)
         self.assertIn('test "$SELECTED_ARCHITECTURE" = intel', diagnostic)
         self.assertIn('bash "$DRIVER_ROOT/scripts/verify-pig-platforms.sh"', diagnostic)

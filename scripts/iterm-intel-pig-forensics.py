@@ -11,6 +11,8 @@ import subprocess
 import sys
 import time
 
+import iterm_zero_close
+
 
 spec = importlib.util.spec_from_file_location("intel_window_forensics", Path(__file__).with_name("iterm-intel-window-forensics.py"))
 window_probe = importlib.util.module_from_spec(spec)
@@ -79,8 +81,9 @@ def verify_pig_title(title, nonce):
 
 
 class PigForensics(window_probe.Forensics):
-    def __init__(self, evidence, scratch):
+    def __init__(self, evidence, scratch, zero_tab_close=False):
         super().__init__(evidence, scratch)
+        self.zero_tab_close = zero_tab_close
         self.case_name = "setup"
         self.fixture = None
         self.server = None
@@ -160,10 +163,15 @@ class PigForensics(window_probe.Forensics):
             target = {"window": terminal.window["id"], "session": terminal.window["session"], "tty": terminal.window["tty"], "process": terminal.window["wrapper_identity"]}
             self.owned.append(target)
             result["target"] = target
+            result["host"] = terminal.window["host"]
             self.event(name + ".identity", target=target, host=terminal.window["host"], processes=list(terminal.owned.values()))
             nonce = "P03_PIG_" + os.urandom(12).hex()
             title = self.action(name + ".set-title", window_probe.SET_TITLE, target["window"], target["session"], nonce)
             verify_pig_title(title, nonce)
+            if self.zero_tab_close:
+                result["nonce"] = nonce
+                result["alternate_id"] = iterm_zero_close.capture_alternate(self, driver, target)
+                self.event(name + ".alternate-id", value=result["alternate_id"])
             self.event(name + ".title", nonce=nonce, session_and_window=title)
             self.check_control(name + ".control-before", control)
             check_fixture(self.fixture, prompted=False)
@@ -185,10 +193,12 @@ class PigForensics(window_probe.Forensics):
             generation = Path(terminal.window["generation_dir"])
             terminal.wait(lambda: (generation / "exit.txt").exists(), "PiG exit status", 30)
             exit_status = int((generation / "exit.txt").read_text().strip())
+            result["exit_status"] = exit_status
             self.event(name + ".exit-marker", status=exit_status)
             if exit_status != 0:
                 raise RuntimeError(f"PiG exit marker was {exit_status}")
             terminal.wait(lambda: not any(driver.same_process(process) for process in terminal.owned.values()), "owned processes to exit", 30)
+            result["processes_exited"] = True
             self.event(name + ".processes-exited", processes=list(terminal.owned.values()))
             state = self.state(name + ".immediate-exit", target)
             self.event(name + ".immediate-result", state=state)
@@ -198,8 +208,9 @@ class PigForensics(window_probe.Forensics):
             if state == "present:changed":
                 raise RuntimeError("PiG window session changed before close")
             if state != "missing":
-                closed = self.action(name + ".guarded-close", driver.SESSION, target["window"], target["session"], "close")
-                self.event(name + ".close-result", value=closed)
+                if not self.zero_tab_close:
+                    closed = self.action(name + ".guarded-close", driver.SESSION, target["window"], target["session"], "close")
+                    self.event(name + ".close-result", value=closed)
                 state = self.observe_disappearance(target)
             result["state"] = state
             native_settled = self.snapshot(name + "-after-close")
@@ -258,7 +269,11 @@ def main():
     actual_hash = subprocess.run(["/usr/bin/shasum", "-a", "256", str(pig)], capture_output=True, text=True, check=True).stdout.split()[0]
     if actual_hash != expected_hash:
         raise RuntimeError("The prepared PiG host hash differs")
-    diagnostic = PigForensics(args.evidence, args.scratch)
+    mode = os.environ.get("INTEL_ZERO_TAB_CLOSE", "0")
+    if mode not in ("0", "1"):
+        raise RuntimeError("Unknown zero-tab diagnostic mode")
+    zero_tab_close = mode == "1"
+    diagnostic = PigForensics(args.evidence, args.scratch, zero_tab_close=zero_tab_close)
     diagnostic.capability_tty = tty
     control = {"window": identity[0], "session": identity[1], "tty": tty}
     diagnostic.control = control
@@ -281,22 +296,42 @@ def main():
         native_baseline = diagnostic.snapshot("baseline")
         require_native_mapping(native_baseline, control, diagnostic.iterm["pid"])
         diagnostic.event("control.native-mapping-confirmed", window=control["window"], owner_pid=diagnostic.iterm["pid"])
-        for name, prompted in (("startup-only", False), ("deterministic-prompt", True)):
+        cases = (("startup-only", False),) if zero_tab_close else (("startup-only", False), ("deterministic-prompt", True))
+        for name, prompted in cases:
             result = diagnostic.run_case(name, pig, control, prompted)
             results.append(result)
             if result["error"] or not result["provider_joined"]:
                 break
+        if zero_tab_close and len(results) == 1 and not results[0]["error"] and results[0]["provider_joined"]:
+            try:
+                results[0]["zero_close"] = iterm_zero_close.probe(diagnostic, driver, native_windows, results[0], control)
+            except Exception as error:
+                results[0]["zero_close_error"] = repr(error)
+                diagnostic.event("owned-zero.exception", error=repr(error))
+                diagnostic.failures.append(repr(error))
+                try:
+                    diagnostic.snapshot("startup-only-owned-close-exception")
+                except Exception as capture_error:
+                    diagnostic.event("owned-zero.capture-exception", error=repr(capture_error))
+            (args.evidence / "startup-only/result.json").write_text(json.dumps(results[0], indent=2) + "\n")
     except Exception as error:
         diagnostic.event("exception", error=repr(error))
         diagnostic.failures.append(repr(error))
     finally:
         try:
-            diagnostic.snapshot("before-control-cleanup")
-            closed = diagnostic.action("control.guarded-close", driver.SESSION, *identity, "close")
-            diagnostic.event("control.close-result", value=closed)
-            control_state = diagnostic.observe_disappearance(control, seconds=10)
-            diagnostic.event("control.cleanup-result", state=control_state)
-            diagnostic.snapshot("after-control-cleanup")
+            if zero_tab_close:
+                diagnostic.check_control("control.left-live", control)
+                records = diagnostic.snapshot("control-left-live")
+                require_native_mapping(records, control, diagnostic.iterm["pid"])
+                control_state = "left-live"
+                diagnostic.event("control.left-live-result", state=control_state)
+            else:
+                diagnostic.snapshot("before-control-cleanup")
+                closed = diagnostic.action("control.guarded-close", driver.SESSION, *identity, "close")
+                diagnostic.event("control.close-result", value=closed)
+                control_state = diagnostic.observe_disappearance(control, seconds=10)
+                diagnostic.event("control.cleanup-result", state=control_state)
+                diagnostic.snapshot("after-control-cleanup")
         except Exception as error:
             diagnostic.event("control.cleanup-exception", error=repr(error))
             diagnostic.failures.append(repr(error))
@@ -308,7 +343,8 @@ def main():
         except Exception as error:
             diagnostic.event("pig.hash-exception", error=repr(error))
             diagnostic.failures.append(repr(error))
-        summary = {"result": "observed" if len(results) == 2 and not diagnostic.failures and all(not result["error"] and result["provider_joined"] for result in results) else "incomplete", "pig_sha256": actual_hash, "iterm": diagnostic.iterm, "control": control, "control_cleanup_state": control_state, "cases": results, "failures": diagnostic.failures}
+        expected_cases = 1 if zero_tab_close else 2
+        summary = {"result": "observed" if len(results) == expected_cases and not diagnostic.failures and all(not result["error"] and result["provider_joined"] for result in results) else "incomplete", "mode": "zero-tab-close" if zero_tab_close else "two-case", "pig_sha256": actual_hash, "iterm": diagnostic.iterm, "control": control, "control_cleanup_state": control_state, "cases": results, "failures": diagnostic.failures}
         (args.evidence / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     if summary["result"] != "observed":
         raise RuntimeError("PiG diagnostic incomplete; inspect the event ledger")
