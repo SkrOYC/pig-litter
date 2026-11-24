@@ -61,6 +61,29 @@ func (p *panelProof) noticeLedger(member previewMember) ([]byte, error) {
 	return os.ReadFile(filepath.Join(p.agentDir, "pig-litter", "roots", p.rootID, fmt.Sprintf("plan-%s-%d.json", member.Ref.ID, member.Ref.Generation)))
 }
 
+func (p *panelProof) waitRenderedNotices(expected, forbidden []string) error {
+	return waitFor(p.ctx, "rendered notice output", stageTimeout, func() (bool, error) {
+		if err := p.rawActive(); err != nil {
+			return false, err
+		}
+		data, err := os.ReadFile(filepath.Join(p.evidence, "pty.raw"))
+		if err != nil {
+			return false, err
+		}
+		for _, text := range forbidden {
+			if bytes.Contains(data, []byte(text)) {
+				return false, fmt.Errorf("raw notice JSON appeared in terminal output")
+			}
+		}
+		for _, text := range expected {
+			if !bytes.Contains(data, []byte(text)) {
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+}
+
 func (p *panelProof) captureTurnNotices(members []previewMember) error {
 	ledgers := map[string][]byte{}
 	if err := waitFor(p.ctx, "native turn notice receipts", stageTimeout, func() (bool, error) {
@@ -105,22 +128,18 @@ func (p *panelProof) captureTurnNotices(members []previewMember) error {
 	}); err != nil {
 		return err
 	}
-	frame, err := p.frame("p07-readable-turn-notices")
-	if err != nil {
+	if _, err := p.frame("p07-readable-turn-notices"); err != nil {
 		return err
 	}
+	var expected []string
 	for _, member := range members {
-		if !strings.Contains(frame.scrollback, "Teammate "+member.Name+" | available") || !strings.Contains(frame.scrollback, "P07_REPORT_"+strings.ToUpper(member.Name)) {
-			return fmt.Errorf("rendered turn notice omitted %s: %s", member.Name, frame.scrollback)
-		}
+		label := "Teammate " + member.Name + " | available"
+		expected = append(expected, label, "P07_REPORT_"+strings.ToUpper(member.Name))
 		if err := writePrivate(filepath.Join(p.evidence, "p07-turn-notice-"+strings.ToLower(member.Name)+".json"), ledgers[member.Name]); err != nil {
 			return err
 		}
 	}
-	if strings.Contains(frame.scrollback, `"kind":"available"`) {
-		return fmt.Errorf("raw turn notice JSON appeared in the terminal")
-	}
-	return nil
+	return p.waitRenderedNotices(expected, []string{`"kind":"available"`})
 }
 
 func (p *panelProof) captureShutdownNotices(member previewMember) error {
@@ -169,12 +188,11 @@ func (p *panelProof) captureShutdownNotices(member previewMember) error {
 	}); err != nil {
 		return err
 	}
-	frame, err := p.frame("p07-readable-shutdown-notices")
-	if err != nil {
+	if _, err := p.frame("p07-readable-shutdown-notices"); err != nil {
 		return err
 	}
-	if !strings.Contains(frame.scrollback, "Teammate "+member.Name+" | shutdown accepted") || !strings.Contains(frame.scrollback, "Teammate "+member.Name+" | shutdown complete") || strings.Contains(frame.scrollback, `"kind":"shutdown_approved"`) || strings.Contains(frame.scrollback, `"kind":"shutdown_terminated"`) {
-		return fmt.Errorf("shutdown notices were not rendered as readable text: %s", frame.scrollback)
+	if err := p.waitRenderedNotices([]string{"Teammate " + member.Name + " | shutdown accepted", "Teammate " + member.Name + " | shutdown complete"}, []string{`"kind":"shutdown_approved"`, `"kind":"shutdown_terminated"`}); err != nil {
+		return err
 	}
 	return writePrivate(filepath.Join(p.evidence, "p07-shutdown-notices.json"), saved)
 }
