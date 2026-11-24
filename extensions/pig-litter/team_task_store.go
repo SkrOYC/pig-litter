@@ -1,0 +1,521 @@
+package piglitter
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"unicode/utf8"
+)
+
+const teamTaskJSONLimit = 8 * 1024 * 1024
+
+func (s *teamStore) taskTransaction(change func(*teamTaskGraph) (bool, error)) error {
+	return s.taskTransactionForMember(nil, true, change)
+}
+
+func (s *teamStore) reconcileTerminatedTasks() error {
+	return s.taskTransactionForMember(nil, false, func(*teamTaskGraph) (bool, error) { return false, nil })
+}
+
+func (s *teamStore) taskTransactionForMember(member *MemberRef, initialize bool, change func(*teamTaskGraph) (bool, error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("team store is closed")
+	}
+	if err := checkLockedFile(s.lead); err != nil {
+		return fmt.Errorf("team owner lease: %w", err)
+	}
+	rosterLock, err := s.lockRosterLocked()
+	if err != nil {
+		return err
+	}
+	roster, readErr := loadTeamRoster(s.dir, s.root)
+	if err := errors.Join(readErr, rosterLock.Close()); err != nil {
+		return err
+	}
+	if roster.OwnerEpoch != s.ownerEpoch || roster.OwnerToken != s.ownerToken {
+		return errors.New("team owner lease is stale")
+	}
+	terminated := make(map[MemberRef]bool)
+	memberValid := member == nil
+	for _, candidate := range roster.Members {
+		if candidate.State == "terminated" {
+			terminated[candidate.Ref] = true
+		} else if member != nil && candidate.Ref == *member {
+			memberValid = true
+		}
+	}
+	if !memberValid {
+		return reject("unavailable", "teammate is terminated or not a committed member")
+	}
+	lockPath := filepath.Join(s.dir, "tasks.lock")
+	_, statErr := os.Lstat(lockPath)
+	initial := errors.Is(statErr, os.ErrNotExist)
+	if statErr != nil && !initial {
+		return statErr
+	}
+	if initial {
+		if _, err := os.Lstat(filepath.Join(s.dir, "tasks.json")); !errors.Is(err, os.ErrNotExist) {
+			if err == nil {
+				return errors.New("task lock is missing for existing task metadata")
+			}
+			return err
+		}
+		if !initialize {
+			return nil
+		}
+	}
+	lock, err := lockTeamFile(lockPath, true)
+	if err != nil {
+		return err
+	}
+	err = func() error {
+		if initial {
+			graph := teamTaskGraph{Version: 1, Team: roster.Team, Tasks: []teamTask{}}
+			if err := saveTeamTasks(s.dir, graph, s.syncDir); err != nil {
+				return err
+			}
+		}
+		graph, err := loadTeamTasks(s.dir, s.root)
+		if err != nil {
+			return err
+		}
+		released := false
+		for i := range graph.Tasks {
+			task := &graph.Tasks[i]
+			if task.Owner != nil && task.State != TaskCompleted && terminated[*task.Owner] {
+				task.Owner = nil
+				task.State = TaskPending
+				released = true
+			}
+		}
+		if released {
+			if err := s.saveTaskMutation(&graph); err != nil {
+				return err
+			}
+		} else if len(terminated) != 0 {
+			// A prior release may have renamed tasks.json before its directory sync failed.
+			if err := s.syncDir(s.dir); err != nil {
+				return err
+			}
+		}
+		changed, err := change(&graph)
+		if err != nil || !changed {
+			return err
+		}
+		return s.saveTaskMutation(&graph)
+	}()
+	return errors.Join(err, lock.Close())
+}
+
+func (s *teamStore) saveTaskMutation(graph *teamTaskGraph) error {
+	if graph.Revision == math.MaxUint64 {
+		return errors.New("task revision exhausted")
+	}
+	graph.Revision++
+	if err := validateTeamTasks(*graph, s.root); err != nil {
+		return err
+	}
+	return saveTeamTasks(s.dir, *graph, s.syncDir)
+}
+
+func (s *teamStore) createTask(subject, description string, dependencies []TaskID, metadata map[string]string) (teamTaskView, error) {
+	task, _, err := s.createTaskWithID(subject, description, dependencies, metadata, "", nil)
+	return task, err
+}
+
+func taskCreationKey(caller MemberRef, submissionID string) string {
+	return fmt.Sprintf("%s/%d/%s", caller.ID, caller.Generation, submissionID)
+}
+
+func (s *teamStore) createTaskWithID(subject, description string, dependencies []TaskID, metadata map[string]string, submissionID string, actor *MemberRef) (teamTaskView, string, error) {
+	var result teamTaskView
+	var state string
+	err := s.taskTransactionForMember(actor, true, func(graph *teamTaskGraph) (bool, error) {
+		if strings.TrimSpace(subject) == "" || len(subject) > 256 || !utf8.ValidString(subject) || len(description) > 16384 || !utf8.ValidString(description) {
+			return false, reject("rejected", "task subject or description is invalid")
+		}
+		if len(dependencies) > 128 || len(metadata) > 64 {
+			return false, reject("rejected", "too many task dependencies or metadata entries")
+		}
+		if submissionID != "" && !peerMessageIDPattern.MatchString(submissionID) {
+			return false, reject("rejected", "invalid task submission ID")
+		}
+		if dependencies == nil {
+			dependencies = []TaskID{}
+		}
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		payload, err := json.Marshal(struct {
+			Subject      string            `json:"subject"`
+			Description  string            `json:"description"`
+			Dependencies []TaskID          `json:"blockedBy"`
+			Metadata     map[string]string `json:"metadata"`
+		}{subject, description, dependencies, metadata})
+		if err != nil {
+			return false, err
+		}
+		hash := sha256.Sum256(payload)
+		digest := hex.EncodeToString(hash[:])
+		caller := teamLeadRef(graph.Team)
+		if actor != nil {
+			caller = *actor
+		}
+		key := taskCreationKey(caller, submissionID)
+		if submissionID != "" {
+			if previous, exists := graph.Creations[key]; exists {
+				if previous.Digest != digest {
+					return false, reject("rejected", "task submission ID has different content")
+				}
+				index := graph.find(previous.ID)
+				if index < 0 {
+					return false, reject("unavailable", "task created by this submission was deleted")
+				}
+				if err := s.syncDir(s.dir); err != nil {
+					return false, err
+				}
+				result, state = graph.view(index), "already_created"
+				return false, nil
+			}
+		}
+		seen := make(map[TaskID]bool, len(dependencies))
+		for _, dependency := range dependencies {
+			if seen[dependency] || graph.find(dependency) < 0 {
+				return false, reject("rejected", "task dependency is missing, duplicated, or belongs to another team")
+			}
+			seen[dependency] = true
+		}
+		for key, value := range metadata {
+			if strings.TrimSpace(key) == "" || len(key) > 128 || len(value) > 4096 || !utf8.ValidString(key) || !utf8.ValidString(value) {
+				return false, reject("rejected", "task metadata is invalid")
+			}
+		}
+		if graph.HighWater == math.MaxUint64 {
+			return false, errors.New("task ID allocation exhausted")
+		}
+		graph.HighWater++
+		graph.Tasks = append(graph.Tasks, teamTask{ID: TaskID{Team: graph.Team, Number: graph.HighWater}, Subject: subject, Description: description, State: TaskPending, BlockedBy: dependencies, Metadata: metadata})
+		if submissionID != "" {
+			if graph.Creations == nil {
+				graph.Creations = make(map[string]teamTaskCreation)
+			}
+			graph.Creations[key] = teamTaskCreation{ID: graph.Tasks[len(graph.Tasks)-1].ID, Caller: caller, SubmissionID: submissionID, Digest: digest}
+		}
+		result = graph.view(len(graph.Tasks) - 1)
+		state = "created"
+		return true, nil
+	})
+	return result, state, err
+}
+
+func (s *teamStore) listTasks() ([]teamTaskView, error) {
+	var result []teamTaskView
+	err := s.taskTransaction(func(graph *teamTaskGraph) (bool, error) {
+		result = graph.views()
+		return false, nil
+	})
+	return result, err
+}
+
+func (s *teamStore) editTask(id TaskID, edit teamTaskEdit, actor *MemberRef) (teamTaskView, string, error) {
+	var result teamTaskView
+	var state string
+	err := s.taskTransactionForMember(actor, true, func(graph *teamTaskGraph) (bool, error) {
+		index := graph.find(id)
+		if index < 0 {
+			return false, reject("rejected", "task is unavailable in this team")
+		}
+		if edit.Subject == nil && edit.Description == nil && len(edit.AddBlockedBy) == 0 && len(edit.AddBlocks) == 0 && len(edit.Metadata) == 0 {
+			return false, reject("rejected", "task edit has no changes")
+		}
+		if len(edit.AddBlockedBy) > 128 || len(edit.AddBlocks) > 128 || len(edit.Metadata) > 64 {
+			return false, reject("rejected", "too many task dependencies or metadata entries")
+		}
+		changed := false
+		task := &graph.Tasks[index]
+		if edit.Subject != nil && task.Subject != *edit.Subject {
+			task.Subject, changed = *edit.Subject, true
+		}
+		if edit.Description != nil && task.Description != *edit.Description {
+			task.Description, changed = *edit.Description, true
+		}
+		for key, value := range edit.Metadata {
+			old, exists := task.Metadata[key]
+			if value == nil {
+				if exists {
+					delete(task.Metadata, key)
+					changed = true
+				}
+			} else if !exists || old != *value {
+				task.Metadata[key], changed = *value, true
+			}
+		}
+		for _, dependency := range edit.AddBlockedBy {
+			if graph.find(dependency) < 0 {
+				return false, reject("rejected", "task dependency is missing or belongs to another team")
+			}
+			if !slices.Contains(task.BlockedBy, dependency) {
+				task.BlockedBy = append(task.BlockedBy, dependency)
+				changed = true
+			}
+		}
+		for _, dependent := range edit.AddBlocks {
+			dependentIndex := graph.find(dependent)
+			if dependentIndex < 0 {
+				return false, reject("rejected", "dependent task is missing or belongs to another team")
+			}
+			if !slices.Contains(graph.Tasks[dependentIndex].BlockedBy, id) {
+				graph.Tasks[dependentIndex].BlockedBy = append(graph.Tasks[dependentIndex].BlockedBy, id)
+				changed = true
+			}
+		}
+		if err := validateTeamTasks(*graph, s.root); err != nil {
+			return false, reject("rejected", err.Error())
+		}
+		for _, view := range graph.views() {
+			if view.State == TaskCompleted && view.Blocked {
+				return false, reject("rejected", "a completed task cannot have an unfinished prerequisite")
+			}
+		}
+		result = graph.view(index)
+		state = "unchanged"
+		if changed {
+			state = "updated"
+		}
+		return changed, nil
+	})
+	return result, state, err
+}
+
+func (s *teamStore) getTask(id TaskID) (teamTaskView, error) {
+	var result teamTaskView
+	err := s.taskTransaction(func(graph *teamTaskGraph) (bool, error) {
+		index := graph.find(id)
+		if index < 0 {
+			return false, reject("rejected", "task is unavailable in this team")
+		}
+		result = graph.view(index)
+		return false, nil
+	})
+	return result, err
+}
+
+func (s *teamStore) claimTask(id TaskID, member MemberRef, explicit bool) (teamTaskView, string, error) {
+	var result teamTaskView
+	var state string
+	err := s.taskTransactionForMember(&member, true, func(graph *teamTaskGraph) (bool, error) {
+		index := graph.find(id)
+		if index < 0 || member.Team != graph.Team {
+			return false, reject("rejected", "task or teammate is unavailable in this team")
+		}
+		result = graph.view(index)
+		if result.Owner != nil {
+			state = "already_claimed"
+			return false, nil
+		}
+		if result.State != TaskPending {
+			return false, reject("rejected", "task is not pending")
+		}
+		if result.Blocked && !explicit {
+			state = "blocked"
+			return false, nil
+		}
+		graph.Tasks[index].Owner = &member
+		graph.Tasks[index].State = TaskInProgress
+		result = graph.view(index)
+		state = "claimed"
+		if explicit {
+			state = "assigned"
+		}
+		return true, nil
+	})
+	return result, state, err
+}
+
+func (s *teamStore) completeTask(id TaskID, actor *MemberRef) (teamTaskView, string, error) {
+	var result teamTaskView
+	var state string
+	err := s.taskTransaction(func(graph *teamTaskGraph) (bool, error) {
+		index := graph.find(id)
+		if index < 0 {
+			return false, reject("rejected", "task is unavailable in this team")
+		}
+		result = graph.view(index)
+		if actor != nil && (result.Owner == nil || *result.Owner != *actor) {
+			return false, reject("permission_denied", "only the task owner or team lead can complete it")
+		}
+		if result.State == TaskCompleted {
+			state = "already_completed"
+			return false, nil
+		}
+		if result.Blocked {
+			state = "blocked"
+			return false, nil
+		}
+		graph.Tasks[index].State = TaskCompleted
+		result = graph.view(index)
+		state = "completed"
+		return true, nil
+	})
+	return result, state, err
+}
+
+func (s *teamStore) deleteTask(id TaskID) (teamTaskView, error) {
+	var result teamTaskView
+	err := s.taskTransaction(func(graph *teamTaskGraph) (bool, error) {
+		index := graph.find(id)
+		if index < 0 {
+			return false, reject("rejected", "task is unavailable in this team")
+		}
+		for _, task := range graph.Tasks {
+			if slices.Contains(task.BlockedBy, id) {
+				return false, reject("rejected", "another task depends on this task")
+			}
+		}
+		result = graph.view(index)
+		graph.Tasks = slices.Delete(graph.Tasks, index, index+1)
+		return true, nil
+	})
+	return result, err
+}
+
+func loadTeamTasks(dir string, root ChildID) (teamTaskGraph, error) {
+	path := filepath.Join(dir, "tasks.json")
+	if err := checkMetadataFile(path); err != nil {
+		return teamTaskGraph{}, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return teamTaskGraph{}, err
+	}
+	opened, statErr := file.Stat()
+	current, pathErr := os.Lstat(path)
+	if err := errors.Join(statErr, pathErr); err != nil {
+		return teamTaskGraph{}, errors.Join(err, file.Close())
+	}
+	if !opened.Mode().IsRegular() || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
+		return teamTaskGraph{}, errors.Join(errors.New("task metadata file was replaced"), file.Close())
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, teamTaskJSONLimit+1))
+	if err := errors.Join(readErr, file.Close()); err != nil {
+		return teamTaskGraph{}, err
+	}
+	if len(data) > teamTaskJSONLimit {
+		return teamTaskGraph{}, errors.New("task metadata exceeds size limit")
+	}
+	if err := checkUniqueJSON(data); err != nil {
+		return teamTaskGraph{}, fmt.Errorf("invalid task metadata: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var graph teamTaskGraph
+	if err := decoder.Decode(&graph); err != nil {
+		return teamTaskGraph{}, fmt.Errorf("invalid task metadata: %w", err)
+	}
+	if err := validateTeamTasks(graph, root); err != nil {
+		return teamTaskGraph{}, err
+	}
+	return graph, nil
+}
+
+func validateTeamTasks(graph teamTaskGraph, root ChildID) error {
+	if graph.Version != 1 || graph.Team != (TeamID{Root: root, Epoch: 1}) || graph.Tasks == nil {
+		return errors.New("invalid task metadata header")
+	}
+	creationIDs := make(map[TaskID]bool, len(graph.Creations))
+	for key, creation := range graph.Creations {
+		digest, err := hex.DecodeString(creation.Digest)
+		if !peerMessageIDPattern.MatchString(creation.SubmissionID) || creation.Caller.Team != graph.Team || !childUUID.MatchString(string(creation.Caller.ID)) || creation.Caller.Generation == 0 || key != taskCreationKey(creation.Caller, creation.SubmissionID) || creation.ID.Team != graph.Team || creation.ID.Number == 0 || creation.ID.Number > graph.HighWater || creationIDs[creation.ID] || err != nil || len(digest) != sha256.Size || hex.EncodeToString(digest) != creation.Digest {
+			return errors.New("invalid task creation receipt")
+		}
+		creationIDs[creation.ID] = true
+	}
+	indices := make(map[TaskID]int, len(graph.Tasks))
+	for index, task := range graph.Tasks {
+		_, duplicate := indices[task.ID]
+		if task.ID.Team != graph.Team || task.ID.Number == 0 || task.ID.Number > graph.HighWater || duplicate || strings.TrimSpace(task.Subject) == "" || len(task.Subject) > 256 || !utf8.ValidString(task.Subject) || len(task.Description) > 16384 || !utf8.ValidString(task.Description) || task.BlockedBy == nil || task.Metadata == nil || len(task.BlockedBy) > 128 || len(task.Metadata) > 64 {
+			return errors.New("invalid task record")
+		}
+		if task.State != TaskPending && task.State != TaskInProgress && task.State != TaskCompleted {
+			return errors.New("invalid task state")
+		}
+		if task.Owner != nil && (task.Owner.Team != graph.Team || !childUUID.MatchString(string(task.Owner.ID)) || task.Owner.Generation == 0) {
+			return errors.New("invalid task owner")
+		}
+		for key, value := range task.Metadata {
+			if strings.TrimSpace(key) == "" || len(key) > 128 || len(value) > 4096 || !utf8.ValidString(key) || !utf8.ValidString(value) {
+				return errors.New("invalid task metadata")
+			}
+		}
+		indices[task.ID] = index
+	}
+	indegree := make([]int, len(graph.Tasks))
+	dependents := make([][]int, len(graph.Tasks))
+	for index, task := range graph.Tasks {
+		dependencies := map[TaskID]bool{}
+		for _, dependency := range task.BlockedBy {
+			dependencyIndex, exists := indices[dependency]
+			if !exists || dependencies[dependency] {
+				return errors.New("invalid task dependency")
+			}
+			dependencies[dependency] = true
+			indegree[index]++
+			dependents[dependencyIndex] = append(dependents[dependencyIndex], index)
+		}
+	}
+	queue := make([]int, 0, len(graph.Tasks))
+	for index, count := range indegree {
+		if count == 0 {
+			queue = append(queue, index)
+		}
+	}
+	for next := 0; next < len(queue); next++ {
+		for _, dependent := range dependents[queue[next]] {
+			indegree[dependent]--
+			if indegree[dependent] == 0 {
+				queue = append(queue, dependent)
+			}
+		}
+	}
+	if len(queue) != len(graph.Tasks) {
+		return errors.New("task dependency cycle")
+	}
+	return nil
+}
+
+func saveTeamTasks(dir string, graph teamTaskGraph, syncDirectory func(string) error) error {
+	data, err := json.Marshal(graph)
+	if err != nil {
+		return err
+	}
+	if len(data) > teamTaskJSONLimit {
+		return errors.New("task metadata exceeds size limit")
+	}
+	file, err := os.CreateTemp(dir, ".tasks-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := file.Name()
+	defer os.Remove(name)
+	if _, err := file.Write(data); err != nil {
+		return errors.Join(err, file.Close())
+	}
+	if err := errors.Join(file.Sync(), file.Close()); err != nil {
+		return err
+	}
+	if err := os.Rename(name, filepath.Join(dir, "tasks.json")); err != nil {
+		return err
+	}
+	return syncDirectory(dir)
+}

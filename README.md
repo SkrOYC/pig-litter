@@ -60,7 +60,7 @@ PiG owns persisted conversation history and context management. Pig Litter has n
 
 ## Use the tools
 
-The Resource registers exactly `litter_spawn`, `litter_list`, `litter_inspect`, `litter_message`, `litter_stop`, and `litter_wait`.
+The Resource registers the child controls `litter_spawn`, `litter_list`, `litter_inspect`, `litter_message`, `litter_stop`, and `litter_wait`, along with the team and shared-task tools.
 
 Call `litter_list` to discover named agent types and your active direct children. It pages agent definitions and children independently. Paused and settled children are absent from this list. Their immediate parent can still retrieve their status and latest result with `litter_inspect` and the retained UUID.
 
@@ -104,6 +104,24 @@ Run `/pig-litter` to open the retained direct-child panel. Run `/pig-litter help
 Opening the panel after root Escape leaves children paused. Resuming one child leaves its siblings and descendants paused. Accepted work continues after the panel closes. The panel shows only the root's direct children.
 
 Elapsed time covers the current execution, including startup and final cleanup. Tool starts count native tool calls in that execution. Active tools can overlap. Timing is unknown after restoring retained children.
+
+## Share tasks with a team
+
+The lead and registered teammates can create, read, and list shared tasks with `team_task_create`, `team_task_get`, and `team_task_list`. A task ID includes its root team identity and a number that is never reused. Task records include a subject, description, metadata, owner, state, and dependency IDs.
+
+To retry creation after an uncertain result, include a stable `submissionId` with the same task values. The ID is scoped to the calling teammate or lead. A retry returns the existing task. Reusing the ID for different values fails, and deleting the task does not permit the ID to create it again. Creation without a `submissionId` has no retry identity.
+
+Use `team_task_update` with `action: "edit"` to change a subject or description, merge metadata, or add dependencies with `addBlockedBy` and `addBlocks`. A null metadata value removes that key. Dependency updates reject missing tasks, other teams' IDs, and cycles without saving a partial change. A completed task cannot gain an unfinished prerequisite.
+
+A teammate can claim an available task once. A blocked self-claim leaves the task unowned. The lead can explicitly assign a blocked task, and its dependencies remain visible. The owner or lead can complete an unblocked task. Only the lead can delete a task, and deletion fails while another task depends on it. Repeating an assignment or completion reports the existing state.
+
+Task data remains in the agent directory after the root Session exits. To inspect it without reopening the Session or acquiring a team owner lease, replace `AGENT_DIR` and `ROOT_SESSION_UUID` with the effective agent directory and root UUID, then run:
+
+```sh
+jq '.tasks' 'AGENT_DIR/pig-litter/roots/ROOT_SESSION_UUID/tasks.json'
+```
+
+Pig Litter does not automatically delete retained task records. Remove a retained root directory only after its Sessions have stopped and its records are no longer needed. When a teammate is recorded as terminated, its unfinished tasks return to pending. `litter_stop` pauses a child and does not terminate the teammate.
 
 ## Authority and limits
 
