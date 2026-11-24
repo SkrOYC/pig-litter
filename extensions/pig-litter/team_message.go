@@ -202,7 +202,7 @@ func (s *teamStore) acceptPeer(sender MemberRef, request peerRequest) (peerRecei
 				return false, errors.New("peer receipt filename differs from its identity")
 			}
 			receipts[receiptKey] = true
-			if receipt.Envelope.Recipient == recipient.Ref {
+			if receipt.Envelope.Recipient == recipient.Ref && receipt.State != peerObserved {
 				count++
 			}
 		}
