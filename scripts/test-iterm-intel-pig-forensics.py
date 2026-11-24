@@ -15,6 +15,40 @@ spec.loader.exec_module(probe)
 
 
 class PigForensicsTests(unittest.TestCase):
+    def test_native_census_reads_window_numbers_and_owners(self):
+        payload = probe.plistlib.dumps([{"kCGWindowNumber": 47, "kCGWindowOwnerPID": 100, "kCGWindowIsOnscreen": True}], fmt=probe.plistlib.FMT_BINARY)
+        buffer = probe.ctypes.create_string_buffer(payload)
+        released = []
+
+        class Function:
+            def __init__(self, value):
+                self.value = value
+
+            def __call__(self, *_args):
+                return self.value() if callable(self.value) else self.value
+
+        class Framework:
+            pass
+
+        graphics = Framework()
+        graphics.CGWindowListCopyWindowInfo = Function(1)
+        foundation = Framework()
+        foundation.CFPropertyListCreateData = Function(2)
+        foundation.CFDataGetLength = Function(len(payload))
+        foundation.CFDataGetBytePtr = Function(probe.ctypes.addressof(buffer))
+        foundation.CFRelease = Function(lambda: released.append(True))
+        with mock.patch.object(probe.ctypes, "CDLL", side_effect=[graphics, foundation]):
+            self.assertEqual(probe.native_windows(), [{"number": 47, "owner_pid": 100, "onscreen": True}])
+        self.assertEqual(len(released), 2)
+
+    def test_native_mapping_requires_the_exact_window_and_owner(self):
+        records = [{"number": 47, "owner_pid": 100, "onscreen": True}, {"number": 41, "owner_pid": 100, "onscreen": True}]
+        probe.require_native_mapping(records, {"window": "47"}, 100)
+        probe.require_native_mapping(records, {"window": "41"}, 100)
+        for record_set, target, owner in ((records, "50", 100), (records, "47", 999), (records + [records[0]], "47", 100)):
+            with self.subTest(target=target, owner=owner), self.assertRaisesRegex(RuntimeError, "native owner"):
+                probe.require_native_mapping(record_set, {"window": target}, owner)
+
     def test_pig_window_title_may_differ_from_unique_session_nonce(self):
         nonce = "P03_PIG_123"
         self.assertIsNone(probe.verify_pig_title("P03_PIG_123 (pig)\npig - workspace\n1", nonce))
@@ -55,6 +89,7 @@ class PigForensicsTests(unittest.TestCase):
             scratch = root / "scratch"
             scratch.mkdir()
             diagnostic = probe.PigForensics(evidence, scratch)
+            diagnostic.iterm = {"pid": 90, "start": "iterm birth"}
             control_process = {"pid": 72, "start": "control birth", "tty": "ttys001"}
             control = {"window": "40", "session": "control", "tty": "/dev/ttys001", "processes": [control_process]}
 
@@ -114,12 +149,22 @@ class PigForensicsTests(unittest.TestCase):
                 raise RuntimeError("Unexpected action")
 
             process = {"pid": 72, "start": "control birth", "tty": "ttys001"}
-            with mock.patch.object(probe.driver, "start_provider", return_value=(Server(), Thread())), mock.patch.object(probe.driver, "Terminal", Terminal), mock.patch.object(probe.driver, "process_snapshot", return_value={72: process, os.getpid(): {"pid": os.getpid(), "start": "provider birth", "tty": "??"}}), mock.patch.object(probe.driver, "executable", return_value="/python"), mock.patch.object(probe.driver, "same_process", return_value=False), mock.patch.object(probe.driver, "idle_editor", return_value=True), mock.patch.object(diagnostic, "snapshot"), mock.patch.object(diagnostic, "state", side_effect=state), mock.patch.object(diagnostic, "action", side_effect=action):
+
+            def snapshot(stage):
+                control_window = {"number": 40, "owner_pid": 90}
+                if stage.endswith(("-after-exit", "-after-close")):
+                    return [control_window]
+                return [control_window, {"number": 41, "owner_pid": 90}]
+
+            with mock.patch.object(probe.driver, "start_provider", return_value=(Server(), Thread())), mock.patch.object(probe.driver, "Terminal", Terminal), mock.patch.object(probe.driver, "process_snapshot", return_value={72: process, os.getpid(): {"pid": os.getpid(), "start": "provider birth", "tty": "??"}}), mock.patch.object(probe.driver, "executable", return_value="/python"), mock.patch.object(probe.driver, "same_process", return_value=False), mock.patch.object(probe.driver, "idle_editor", return_value=True), mock.patch.object(diagnostic, "snapshot", side_effect=snapshot), mock.patch.object(diagnostic, "state", side_effect=state), mock.patch.object(diagnostic, "action", side_effect=action):
                 first = diagnostic.run_case("startup-only", Path("/pig"), control, prompted=False)
                 second = diagnostic.run_case("deterministic-prompt", Path("/pig"), control, prompted=True)
             self.assertEqual((first["state"], first["requests"], first["error"]), ("missing", 0, None))
             self.assertEqual((second["state"], second["requests"], second["error"]), ("missing", 1, None))
             self.assertTrue(first["provider_joined"] and second["provider_joined"])
+            self.assertEqual(first["native_before"], [{"number": 40, "owner_pid": 90}, {"number": 41, "owner_pid": 90}])
+            self.assertEqual(first["native_after_exit"], [{"number": 40, "owner_pid": 90}])
+            self.assertEqual(second["native_after_settling"], [{"number": 40, "owner_pid": 90}])
             self.assertTrue((evidence / "startup-only/result.json").is_file())
             self.assertTrue((evidence / "deterministic-prompt/result.json").is_file())
 

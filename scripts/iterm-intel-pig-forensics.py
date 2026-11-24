@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import argparse
+import ctypes
 import importlib.util
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import subprocess
 import sys
@@ -14,6 +16,51 @@ spec = importlib.util.spec_from_file_location("intel_window_forensics", Path(__f
 window_probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(window_probe)
 driver = window_probe.driver
+
+
+def native_windows():
+    graphics = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    foundation = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    graphics.CGWindowListCopyWindowInfo.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+    graphics.CGWindowListCopyWindowInfo.restype = ctypes.c_void_p
+    foundation.CFPropertyListCreateData.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long, ctypes.c_ulong, ctypes.POINTER(ctypes.c_void_p)]
+    foundation.CFPropertyListCreateData.restype = ctypes.c_void_p
+    foundation.CFDataGetLength.argtypes = [ctypes.c_void_p]
+    foundation.CFDataGetLength.restype = ctypes.c_long
+    foundation.CFDataGetBytePtr.argtypes = [ctypes.c_void_p]
+    foundation.CFDataGetBytePtr.restype = ctypes.POINTER(ctypes.c_ubyte)
+    foundation.CFRelease.argtypes = [ctypes.c_void_p]
+    windows = graphics.CGWindowListCopyWindowInfo(0, 0)
+    if not windows:
+        raise RuntimeError("Core Graphics did not return a window census")
+    data = None
+    error = ctypes.c_void_p()
+    try:
+        data = foundation.CFPropertyListCreateData(None, windows, 200, 0, ctypes.byref(error))
+        if not data:
+            raise RuntimeError("Core Graphics window census could not be serialized")
+        content = ctypes.string_at(foundation.CFDataGetBytePtr(data), foundation.CFDataGetLength(data))
+        values = plistlib.loads(content)
+        if not isinstance(values, list):
+            raise RuntimeError("Core Graphics returned an unexpected window census")
+        records = []
+        for value in values:
+            if not isinstance(value, dict) or not isinstance(value.get("kCGWindowNumber"), int) or not isinstance(value.get("kCGWindowOwnerPID"), int):
+                raise RuntimeError("Core Graphics window identity is incomplete")
+            records.append({"number": value["kCGWindowNumber"], "owner_pid": value["kCGWindowOwnerPID"], "onscreen": value.get("kCGWindowIsOnscreen")})
+        return records
+    finally:
+        if error.value:
+            foundation.CFRelease(error)
+        if data:
+            foundation.CFRelease(data)
+        foundation.CFRelease(windows)
+
+
+def require_native_mapping(records, window, owner_pid):
+    matches = [record for record in records if record["number"] == int(window["window"])]
+    if len(matches) != 1 or matches[0]["owner_pid"] != owner_pid:
+        raise RuntimeError("The iTerm window ID did not map to the expected native owner")
 
 
 def check_fixture(fixture, prompted):
@@ -38,14 +85,26 @@ class PigForensics(window_probe.Forensics):
         self.fixture = None
         self.server = None
         self.thread = None
+        self.iterm = None
 
     def snapshot(self, stage):
         super().snapshot(stage)
+        current = driver.process_snapshot().get(self.iterm["pid"])
+        if not current or current["start"] != self.iterm["start"]:
+            raise RuntimeError("The observed iTerm process identity changed")
+        records = native_windows()
+        relevant_ids = {int(item["window"]) for item in self.owned}
+        relevant_ids.add(int(self.control["window"]))
+        selected = [record for record in records if record["owner_pid"] == self.iterm["pid"] or record["number"] in relevant_ids]
+        native = {"owner": self.iterm, "total_windows": len(records), "windows": selected}
+        self.event(stage + ".native-census", **native)
+        (self.evidence / f"{stage}-native.json").write_text(json.dumps(native, indent=2) + "\n")
         self.event(stage + ".fixture-census", process=driver.process_snapshot().get(os.getpid()),
                    listening=self.server.server_address if self.server else None,
                    thread_alive=self.thread.is_alive() if self.thread else False,
                    requests=self.fixture.requests if self.fixture else None,
                    errors=self.fixture.errors if self.fixture else [])
+        return records
 
     def recorded_applescript(self, script, *arguments):
         for value in arguments:
@@ -114,7 +173,11 @@ class PigForensics(window_probe.Forensics):
                 check_fixture(self.fixture, prompted=True)
                 self.event(name + ".prompt-complete", requests=self.fixture.requests, fixture_stage=self.fixture.stage)
                 self.snapshot(name + "-prompt-complete")
-            self.snapshot(name + "-before-exit")
+            native_before = self.snapshot(name + "-before-exit")
+            require_native_mapping(native_before, target, self.iterm["pid"])
+            require_native_mapping(native_before, control, self.iterm["pid"])
+            result["native_before"] = [record for record in native_before if record["number"] in (int(target["window"]), int(control["window"]))]
+            self.event(name + ".native-mapping-confirmed", target=target["window"], control=control["window"], owner_pid=self.iterm["pid"])
             if not driver.idle_editor(terminal.session_action("text")):
                 raise RuntimeError("PiG editor was not idle before exit")
             terminal.session_action("exit")
@@ -128,7 +191,9 @@ class PigForensics(window_probe.Forensics):
             self.event(name + ".processes-exited", processes=list(terminal.owned.values()))
             state = self.state(name + ".immediate-exit", target)
             self.event(name + ".immediate-result", state=state)
-            self.snapshot(name + "-after-exit")
+            native_after = self.snapshot(name + "-after-exit")
+            require_native_mapping(native_after, control, self.iterm["pid"])
+            result["native_after_exit"] = [record for record in native_after if record["number"] in (int(target["window"]), int(control["window"]))]
             if state == "present:changed":
                 raise RuntimeError("PiG window session changed before close")
             if state != "missing":
@@ -136,7 +201,9 @@ class PigForensics(window_probe.Forensics):
                 self.event(name + ".close-result", value=closed)
                 state = self.observe_disappearance(target)
             result["state"] = state
-            self.snapshot(name + "-after-close")
+            native_settled = self.snapshot(name + "-after-close")
+            require_native_mapping(native_settled, control, self.iterm["pid"])
+            result["native_after_settling"] = [record for record in native_settled if record["number"] in (int(target["window"]), int(control["window"]))]
             if state == "present:changed":
                 raise RuntimeError("PiG window session changed after close")
             self.check_control(name + ".control-after", control)
@@ -193,7 +260,12 @@ def main():
     diagnostic = PigForensics(args.evidence, args.scratch)
     diagnostic.capability_tty = tty
     control = {"window": identity[0], "session": identity[1], "tty": tty}
-    diagnostic.event("start", runner="macos-15-intel", machine=machine, pig=str(pig), pig_sha256=actual_hash, control=control)
+    diagnostic.control = control
+    iterm_processes = [process for process in driver.process_snapshot().values() if process["command"].split(" ", 1)[0] == "/Applications/iTerm.app/Contents/MacOS/iTerm2"]
+    if len(iterm_processes) != 1:
+        raise RuntimeError("The iTerm process identity is ambiguous")
+    diagnostic.iterm = iterm_processes[0]
+    diagnostic.event("start", runner="macos-15-intel", machine=machine, pig=str(pig), pig_sha256=actual_hash, control=control, iterm=diagnostic.iterm)
     results = []
     driver.applescript = diagnostic.recorded_applescript
     try:
@@ -204,7 +276,9 @@ def main():
             raise RuntimeError("The capability control has no live TTY process")
         control["processes"] = control_processes
         diagnostic.event("control.processes", processes=control_processes)
-        diagnostic.snapshot("baseline")
+        native_baseline = diagnostic.snapshot("baseline")
+        require_native_mapping(native_baseline, control, diagnostic.iterm["pid"])
+        diagnostic.event("control.native-mapping-confirmed", window=control["window"], owner_pid=diagnostic.iterm["pid"])
         for name, prompted in (("startup-only", False), ("deterministic-prompt", True)):
             result = diagnostic.run_case(name, pig, control, prompted)
             results.append(result)
