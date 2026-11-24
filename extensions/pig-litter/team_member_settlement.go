@@ -10,6 +10,8 @@ type memberSettlement struct {
 	boundary  uint64
 	candidate idlePolicyCandidate
 	wake      uint64
+	phase     uint64
+	turns     int
 }
 
 type memberSettlementDecision struct {
@@ -60,6 +62,10 @@ func (o *owner) decideMemberSettlement(ctx context.Context, binding *memberBindi
 		return decision, reject("unavailable", "native member execution is no longer current")
 	}
 	candidate, wake, err := o.idleCandidateLocal(binding.record, binding.run, report)
+	phase := memberInputPhase(binding.control)
+	o.tree.mu.Lock()
+	turns := binding.run.progress.turns
+	o.tree.mu.Unlock()
 	o.tree.lifecycleMu.Unlock()
 	if err != nil {
 		return decision, err
@@ -80,7 +86,10 @@ func (o *owner) decideMemberSettlement(ctx context.Context, binding *memberBindi
 	if err != nil {
 		return decision, err
 	}
-	if current.Member != candidate.Member || current.Execution != candidate.Execution || current.Revision != candidate.Revision || currentWake != wake {
+	o.tree.mu.Lock()
+	currentTurns := binding.run.progress.turns
+	o.tree.mu.Unlock()
+	if current.Member != candidate.Member || current.Execution != candidate.Execution || current.Revision != candidate.Revision || currentWake != wake || memberInputPhase(binding.control) != phase || currentTurns != turns {
 		permit = false
 		feedback = "Team work changed while the idle policy ran. Review the current work before settling."
 	}
@@ -97,7 +106,7 @@ func (o *owner) decideMemberSettlement(ctx context.Context, binding *memberBindi
 		o.tree.mu.Unlock()
 		return decision, nil
 	}
-	binding.settlement = &memberSettlement{boundary: boundary, candidate: candidate, wake: wake}
+	binding.settlement = &memberSettlement{boundary: boundary, candidate: candidate, wake: wake, phase: phase, turns: turns}
 	decision.allow = true
 	return decision, nil
 }
@@ -129,7 +138,10 @@ func (o *owner) finalizeMemberSettlement(binding *memberBinding, boundary uint64
 	if err != nil {
 		return decision, err
 	}
-	if current.Member != pending.candidate.Member || current.Execution != pending.candidate.Execution || current.Revision != pending.candidate.Revision || wake != pending.wake {
+	o.tree.mu.Lock()
+	turns := binding.run.progress.turns
+	o.tree.mu.Unlock()
+	if current.Member != pending.candidate.Member || current.Execution != pending.candidate.Execution || current.Revision != pending.candidate.Revision || wake != pending.wake || memberInputPhase(binding.control) != pending.phase || turns != pending.turns {
 		decision.feedback = "Team work changed before the teammate settled. Review the current work before settling."
 		o.tree.mu.Lock()
 		binding.run.idleRefusal = decision.feedback
@@ -148,6 +160,16 @@ func (o *owner) finalizeMemberSettlement(binding *memberBinding, boundary uint64
 	o.tree.mu.Unlock()
 	decision.allow = true
 	return decision, nil
+}
+
+func memberInputPhase(control memberControl) uint64 {
+	queue, ok := control.(*memberControlQueue)
+	if !ok {
+		return 0
+	}
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	return queue.windowSeq
 }
 
 func memberSettlementFeedback(decision memberSettlementDecision) string {

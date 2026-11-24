@@ -39,10 +39,11 @@ func withMemberControlServer(t *testing.T, held bool, exercise func(*memberContr
 		if err != nil {
 			t.Fatal(err)
 		}
-		directory := t.TempDir()
-		if err := os.Chmod(directory, 0o700); err != nil {
+		directory, err := os.MkdirTemp("", "pig-member-")
+		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = os.RemoveAll(directory) })
 		server, err := startMemberControlServer(context.Background(), directory, queue)
 		if err != nil {
 			t.Fatal(err)
@@ -153,7 +154,7 @@ func TestMemberControlBindsAndValidatesNativeRequests(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := queue.Queue(context.Background(), memberTextInput{mode: "follow_up", text: "continue"}); err == nil || !strings.Contains(err.Error(), "atomic host admission") {
+		if _, err := queue.Queue(context.Background(), memberTextInput{mode: "follow_up", text: "continue"}); err == nil || !strings.Contains(err.Error(), "input window") {
 			t.Fatalf("native text admission = %v", err)
 		}
 		queue.owner.tree.mu.Lock()

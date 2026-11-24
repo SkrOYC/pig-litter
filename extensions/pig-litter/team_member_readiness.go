@@ -137,7 +137,29 @@ func (queue *memberControlQueue) installReadiness(ctx context.Context, binding *
 	if !o.memberBindingCurrentLocked(binding) || binding.ready || binding.run.ctx.Err() != nil || binding.record.paused {
 		return reject("unavailable", "native execution changed during readiness")
 	}
+	queue.mu.Lock()
+	select {
+	case <-queue.closed:
+		queue.mu.Unlock()
+		return reject("unavailable", "native control closed during readiness")
+	case <-queue.cancelled:
+		queue.mu.Unlock()
+		return reject("cancelled", "native control cancelled during readiness")
+	default:
+	}
 	binding.log, binding.startingLog, binding.ready = pin, fresh, true
+	queue.mu.Unlock()
+	go queue.deliverInputs()
+	if binding.run.nativeFrozen {
+		binding.run.nativeFrozen = false
+		close(binding.run.nativeThaw)
+		binding.run.nativeThaw = nil
+	}
+	select {
+	case <-binding.run.ready:
+	default:
+		close(binding.run.ready)
+	}
 	return nil
 }
 

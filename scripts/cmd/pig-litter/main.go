@@ -8,7 +8,13 @@ import (
 )
 
 func main() {
-	if err := piglitter.Run(); err != nil {
+	var err error
+	if len(os.Args) == 3 && os.Args[1] == "--pig-litter-member" {
+		err = piglitter.RunNativeMember(os.Args[2])
+	} else {
+		err = piglitter.Run()
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

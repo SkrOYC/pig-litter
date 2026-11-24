@@ -77,6 +77,8 @@ func (queue *memberControlQueue) serveStartingInput(w http.ResponseWriter, r *ht
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	case "/input/window", "/input/running-result", "/input/cancel-watch":
+		queue.serveRunningInput(w, r)
 	}
 }
 
@@ -118,6 +120,8 @@ func (queue *memberControlQueue) beginStarting(window string) ([]memberStartingT
 			queue.run.nativeFrozen = true
 			queue.run.nativeThaw = make(chan struct{})
 			queue.starting = handoff
+			queue.window, queue.windowSeq = window, 1
+			queue.windows[window] = 1
 			return slices.Clone(handoff.transfers), nil
 		}
 	}

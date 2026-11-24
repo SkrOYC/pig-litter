@@ -113,6 +113,7 @@ type pendingInput struct {
 type message struct {
 	mode, text string
 	result     chan error
+	ctx        context.Context
 }
 
 type runAdmission uint8
@@ -174,6 +175,7 @@ type run struct {
 	nativeFrozen    bool
 	nativeThaw      chan struct{}
 	nativeInputErr  string
+	nativeFailure   string
 	session         *coding.Session
 	member          memberControl
 	disposing       bool

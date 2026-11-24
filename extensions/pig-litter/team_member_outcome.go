@@ -79,9 +79,13 @@ func (o *owner) memberOutcome(ctx context.Context, binding *memberBinding) (memb
 	}
 	o.tree.mu.Lock()
 	current := o.memberBindingCurrentLocked(binding)
+	observedFailure := binding.run.nativeFailure
 	o.tree.mu.Unlock()
 	if !current {
 		return evidence, reject("unavailable", "native execution changed while reading its outcome")
+	}
+	if failure == "" {
+		failure = observedFailure
 	}
 	evidence = memberOutcomeEvidence{outcome: outcomeFrom(terminal, before, after, failure, false, false), first: first, report: idleAssistantReport(terminal), count: len(snapshot.entries), digest: memberEntriesDigest(snapshot.entries)}
 	return evidence, nil

@@ -106,3 +106,54 @@ func TestNativeSettlementCorrelatesBoundaryRevisionAndWake(t *testing.T) {
 		}
 	}, func(string, json.RawMessage) json.RawMessage { return json.RawMessage(`"fixture"`) })
 }
+
+func TestNativeSettlementRefusesANewerInputWindow(t *testing.T) {
+	store, _, member := planTestMember(t)
+	tree := testTree(t, defaultConfig())
+	tree.root.id = member.Ref.Team.Root
+	worker, _ := agentDefaults("worker")
+	_, selected, err := tree.admit(admission{kind: "worker", name: member.Name, model: "fixture/fixed", cwd: member.Workspace.Cwd, task: "work", agent: worker, member: &member})
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	path := filepath.Join(directory, "session_"+string(member.Ref.ID)+".jsonl")
+	header, _ := json.Marshal(map[string]any{"type": "session", "id": member.Ref.ID, "cwd": member.Workspace.Cwd})
+	if err := os.WriteFile(path, append(header, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withCompletionHost(t, tree, func(o *owner) {
+		o.teamStore = store
+		binding := bindMemberFixture(t, o, selected.owner, selected, directory, path, testMemberControl{})
+		queue, err := o.newMemberControlQueue(binding.record, selected, binding.ownership)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer queue.Close()
+		tree.mu.Lock()
+		binding.control = queue
+		if err := queue.bind(binding); err != nil {
+			tree.mu.Unlock()
+			t.Fatal(err)
+		}
+		selected.mu.Lock()
+		selected.member = queue
+		selected.mu.Unlock()
+		tree.mu.Unlock()
+		if _, err := queue.beginStarting("one"); err != nil {
+			t.Fatal(err)
+		}
+		decision, err := o.decideMemberSettlement(context.Background(), binding, memberSettlementCandidate{boundary: 1, report: "report", completed: true})
+		if err != nil || !decision.allow {
+			t.Fatalf("settlement decision = %#v, %v", decision, err)
+		}
+		if err := queue.publishRunningWindow(memberWindowPublication{Window: "two", Sequence: 2}); err != nil {
+			t.Fatal(err)
+		}
+		committed := false
+		decision, err = o.finalizeMemberSettlement(binding, 1, false, func() error { committed = true; return nil })
+		if err != nil || decision.allow || !decision.continueRun || committed {
+			t.Fatalf("newer window settlement = %#v, committed=%t, %v", decision, committed, err)
+		}
+	}, func(string, json.RawMessage) json.RawMessage { return json.RawMessage(`"fixture"`) })
+}

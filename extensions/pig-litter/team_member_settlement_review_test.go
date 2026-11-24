@@ -87,7 +87,7 @@ func TestReviewNativePlanDenialMatchesItsExactResponse(t *testing.T) {
 		binding.owned = cloneMemberOwnership(binding.ownership)
 		o.tree.mu.Unlock()
 		authority := &memberAuthority{owner: o, binding: binding, gate: &teamAdmissionGate{owner: o, record: binding.record, run: binding.run, committed: true}}
-		if err := authority.startTurn(1); err != nil {
+		if err := authority.startTurn(context.Background(), 1); err != nil {
 			t.Error(err)
 			return
 		}

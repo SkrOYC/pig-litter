@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -24,10 +25,16 @@ type memberAuthority struct {
 	turn      uint64
 	active    bool
 	approved  map[string]memberAuthorizedCall
-	responses map[string]string
+	responses map[string]memberObservedCall
+	turnStart int
 	first     *agent.AssistantMessage
 	turnCtx   context.Context
 	cancel    context.CancelFunc
+}
+
+type memberObservedCall struct {
+	entry string
+	name  string
 }
 
 type memberAuthorizedCall struct {
@@ -38,6 +45,7 @@ type memberAuthorizedCall struct {
 	consumed bool
 	finished bool
 	response string
+	observed bool
 }
 
 type memberTurnRequest struct {
@@ -171,7 +179,7 @@ func (queue *memberControlQueue) serveAuthority(w http.ResponseWriter, r *http.R
 		}
 		var err error
 		if r.URL.Path == "/member/turn/start" {
-			err = authority.startTurn(request.ID)
+			err = authority.startTurn(r.Context(), request.ID)
 		} else {
 			err = authority.endTurn(request.ID)
 		}
@@ -197,6 +205,13 @@ func (queue *memberControlQueue) serveAuthority(w http.ResponseWriter, r *http.R
 	case "/member/result":
 		var request memberToolResult
 		if decodeMemberControl(w, r, &request) != nil || authority.finishCall(request) != nil {
+			fail()
+			return
+		}
+		write(map[string]bool{"ok": true})
+	case "/member/tool/end":
+		var request memberToolResult
+		if decodeMemberControl(w, r, &request) != nil || authority.observeToolEnd(request) != nil {
 			fail()
 			return
 		}
@@ -346,6 +361,8 @@ func memberOperationRoute(path string) string {
 		return "litter_wait"
 	case "/member/team/list":
 		return "team_list"
+	case "/member/team/spawn":
+		return "team_spawn"
 	case "/member/team/send":
 		return "team_send"
 	case "/member/team/plan":
@@ -365,10 +382,23 @@ func memberOperationRoute(path string) string {
 	}
 }
 
-func (authority *memberAuthority) startTurn(id uint64) error {
+func (authority *memberAuthority) startTurn(ctx context.Context, id uint64) error {
 	authority.mu.Lock()
-	if id == 0 || id <= authority.turn || authority.active {
+	previousTurn := authority.turn
+	if id == 0 || id <= previousTurn || authority.active {
 		authority.mu.Unlock()
+		return reject("unavailable", "native turn is stale")
+	}
+	authority.mu.Unlock()
+	start, err := authority.turnHistoryStart(ctx)
+	if err != nil {
+		return err
+	}
+	authority.owner.tree.lifecycleMu.Lock()
+	authority.mu.Lock()
+	if authority.turn != previousTurn || authority.active {
+		authority.mu.Unlock()
+		authority.owner.tree.lifecycleMu.Unlock()
 		return reject("unavailable", "native turn is stale")
 	}
 	o, binding := authority.owner, authority.binding
@@ -376,6 +406,7 @@ func (authority *memberAuthority) startTurn(id uint64) error {
 	if !o.memberBindingCurrentLocked(binding) || binding.run.ctx.Err() != nil || binding.record.paused {
 		o.tree.mu.Unlock()
 		authority.mu.Unlock()
+		o.tree.lifecycleMu.Unlock()
 		return reject("unavailable", "native execution is unavailable")
 	}
 	binding.run.mu.Lock()
@@ -390,12 +421,34 @@ func (authority *memberAuthority) startTurn(id uint64) error {
 	o.tree.mu.Unlock()
 	authority.turn, authority.active = id, true
 	authority.approved = map[string]memberAuthorizedCall{}
-	authority.responses = map[string]string{}
+	authority.responses = map[string]memberObservedCall{}
+	authority.turnStart = start
 	authority.turnCtx, authority.cancel = context.WithCancel(binding.run.ctx)
 	authority.mu.Unlock()
+	o.tree.lifecycleMu.Unlock()
 	o.retireScope(previous)
 	o.widget()
 	return nil
+}
+
+func (authority *memberAuthority) turnHistoryStart(ctx context.Context) (int, error) {
+	o, binding := authority.owner, authority.binding
+	o.tree.mu.Lock()
+	if !o.memberBindingCurrentLocked(binding) || !binding.ready {
+		o.tree.mu.Unlock()
+		return 0, reject("unavailable", "native member is not ready")
+	}
+	starting := binding.startingLog
+	o.tree.mu.Unlock()
+	if starting != nil {
+		if _, err := os.Lstat(starting.path); errors.Is(err, os.ErrNotExist) {
+			return len(starting.entries), nil
+		} else if err != nil {
+			return 0, err
+		}
+	}
+	entries, err := o.memberLogEntries(ctx, binding)
+	return len(entries), err
 }
 
 func (authority *memberAuthority) endTurn(id uint64) error {
@@ -441,6 +494,7 @@ func (authority *memberAuthority) endTurn(id uint64) error {
 func (authority *memberAuthority) observeResponse(ctx context.Context, request memberResponseRequest) error {
 	authority.mu.Lock()
 	active := authority.active && request.Turn == authority.turn
+	start := authority.turnStart
 	authority.mu.Unlock()
 	if !active {
 		return reject("unavailable", "native turn is not active")
@@ -455,7 +509,7 @@ func (authority *memberAuthority) observeResponse(ctx context.Context, request m
 	var first *agent.AssistantMessage
 	var observed *agent.AssistantMessage
 	found := false
-	for _, raw := range entries[authority.binding.log.baselineCount:] {
+	for index, raw := range entries[authority.binding.log.baselineCount:] {
 		var entry struct {
 			ID      string `json:"id"`
 			Type    string `json:"type"`
@@ -488,9 +542,11 @@ func (authority *memberAuthority) observeResponse(ctx context.Context, request m
 			first = message
 		}
 		if entry.ID == request.EntryID {
+			if found || index+authority.binding.log.baselineCount < start {
+				return reject("unavailable", "native response entry is stale or ambiguous")
+			}
 			observed = message
 			found = true
-			break
 		}
 	}
 	if !found {
@@ -504,10 +560,21 @@ func (authority *memberAuthority) observeResponse(ctx context.Context, request m
 	if authority.first == nil {
 		authority.first = first
 	}
+	observations := make(map[string]memberObservedCall, len(observed.Content))
 	for _, block := range observed.Content {
 		if call, ok := block.(ai.ToolCall); ok {
-			authority.responses[call.ID] = request.EntryID
+			observation := memberObservedCall{entry: request.EntryID, name: call.Name}
+			if _, exists := observations[call.ID]; exists {
+				return reject("unavailable", "native response repeated a tool call identity")
+			}
+			if previous, exists := authority.responses[call.ID]; exists && previous != observation {
+				return reject("unavailable", "native response reused a tool call identity")
+			}
+			observations[call.ID] = observation
 		}
+	}
+	for id, observation := range observations {
+		authority.responses[id] = observation
 	}
 	return nil
 }
@@ -517,9 +584,7 @@ func (authority *memberAuthority) authorize(ctx context.Context, request memberT
 	if request.ID == "" || len(request.ID) > 256 || request.Name == "" || len(request.Name) > 256 || len(request.Parent) > 256 || request.Parent != "" && !strings.HasPrefix(request.ID, request.Parent+"/") || len(request.Arguments) > 1024*1024 || !json.Valid(request.Arguments) {
 		return denied("invalid native tool request")
 	}
-	if !slices.Contains(authority.binding.owned.Tools, request.Name) {
-		return denied("tool is outside the teammate ceiling")
-	}
+	allowed := slices.Contains(authority.binding.owned.Tools, request.Name)
 	digest, err := memberArgumentsDigest(request.Arguments)
 	if err != nil {
 		return denied("invalid native tool arguments")
@@ -532,23 +597,30 @@ func (authority *memberAuthority) authorize(ctx context.Context, request memberT
 	turn := authority.turn
 	if previous, ok := authority.approved[request.ID]; ok {
 		authority.mu.Unlock()
-		if previous.name == request.Name && previous.digest == digest && previous.ready && !previous.consumed {
+		if previous.name == request.Name && previous.digest == digest && previous.ready && previous.decision.Block {
 			return previous.decision
 		}
-		return denied("native tool call identity was reused or is still being checked")
+		return denied("native tool call identity was already issued or is still being checked")
 	}
 	if len(authority.approved) >= 1024 {
 		authority.mu.Unlock()
 		return denied("native tool call bound reached")
 	}
-	response := authority.responses[request.ID]
+	response := ""
 	if request.Parent != "" {
 		parent, ok := authority.approved[request.Parent]
-		if !ok || !parent.ready || parent.decision.Block {
+		if !ok || !parent.ready || parent.decision.Block || parent.response == "" {
 			authority.mu.Unlock()
 			return denied("native parent tool call is unavailable")
 		}
 		response = parent.response
+	} else {
+		observed, ok := authority.responses[request.ID]
+		if !ok || observed.entry == "" || observed.name != request.Name {
+			authority.mu.Unlock()
+			return denied("native tool call was not observed in this turn")
+		}
+		response = observed.entry
 	}
 	authority.approved[request.ID] = memberAuthorizedCall{name: request.Name, digest: digest, response: response}
 	first := authority.first
@@ -556,7 +628,9 @@ func (authority *memberAuthority) authorize(ctx context.Context, request memberT
 	decision := memberToolDecision{}
 	planDenied := false
 	authority.gate.observe(first)
-	if result := authority.gate.before(ctx, request.ID, request.Name, request.Arguments); result.Block {
+	if !allowed {
+		decision = denied("tool is outside the teammate ceiling")
+	} else if result := authority.gate.before(ctx, request.ID, request.Name, request.Arguments); result.Block {
 		decision = memberToolDecision{Block: true, Reason: result.Reason, Terminate: result.Terminate}
 	} else if result := authority.owner.beforePlanTool(authority.binding.record, authority.binding.run, request.ID, request.Name, request.Arguments); result.Block {
 		decision = memberToolDecision{Block: true, Reason: result.Reason, Terminate: result.Terminate}
@@ -690,5 +764,37 @@ func (authority *memberAuthority) finishCall(request memberToolResult) error {
 	authority.approved[request.CallID] = approved
 	authority.mu.Unlock()
 	authority.owner.finishCall(ticket, result, request.IsError)
+	return nil
+}
+
+func (authority *memberAuthority) observeToolEnd(request memberToolResult) error {
+	if request.CallID == "" || len(request.CallID) > 256 || request.Name == "" || len(request.Name) > 256 || len(request.Content) > 128 {
+		return reject("rejected", "invalid native tool observation")
+	}
+	result := agent.AgentToolResult{IsError: request.IsError}
+	total := 0
+	for _, block := range request.Content {
+		total += len(block.Text)
+		if block.Type != "text" || total > 1024*1024 {
+			return errors.New("native tool observation content is invalid")
+		}
+		result.Content = append(result.Content, ai.TextContent{Text: block.Text})
+	}
+	authority.mu.Lock()
+	approved, ok := authority.approved[request.CallID]
+	if !authority.active || request.Turn != authority.turn || !ok || !approved.ready || approved.name != request.Name || approved.observed {
+		authority.mu.Unlock()
+		return reject("unavailable", "native tool observation is not current")
+	}
+	approved.observed = true
+	authority.approved[request.CallID] = approved
+	if request.IsError && !consumePlanDenial(authority.binding.run, request.CallID, request.Name) {
+		authority.owner.tree.mu.Lock()
+		if authority.owner.memberBindingCurrentLocked(authority.binding) && authority.binding.run.nativeFailure == "" {
+			authority.binding.run.nativeFailure = toolFailure(request.Name, result)
+		}
+		authority.owner.tree.mu.Unlock()
+	}
+	authority.mu.Unlock()
 	return nil
 }

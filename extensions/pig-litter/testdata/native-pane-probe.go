@@ -865,7 +865,7 @@ func fixture() {
 			return
 		}
 		name := ""
-		for _, candidate := range []string{"direct-write-allow", "direct-write-deny", "codemode-write-allow", "codemode-write-deny", "direct-write-lost"} {
+		for _, candidate := range []string{"direct-write-allow", "direct-write-deny", "direct-write-fail", "codemode-write-allow", "codemode-write-deny", "direct-write-lost"} {
 			if strings.Contains(text, candidate) {
 				name = candidate
 				break
@@ -876,11 +876,22 @@ func fixture() {
 			return
 		}
 		args := map[string]any{"path": filepath.Join(os.Getenv("PROBE_ROOT"), "files", name+".txt"), "content": "PROBE_WRITTEN"}
+		if name == "direct-write-fail" {
+			args["path"] = filepath.Join(os.Getenv("PROBE_ROOT"), "files")
+		}
 		tool := "write"
 		if strings.HasPrefix(name, "codemode") {
 			rawArgs, _ := json.Marshal(args)
 			tool = "codemode"
-			args = map[string]any{"code": fmt.Sprintf("try { const value = await tools.write(%s); return {ok:true,value}; } catch (error) { return {ok:false,error:String(error.message)}; }", rawArgs)}
+			prefix := ""
+			gate := filepath.Join(os.Getenv("PROBE_ROOT"), "files", "nested-gate")
+			if name == "codemode-write-deny" {
+				if _, err := os.Stat(gate); err == nil {
+					readArgs, _ := json.Marshal(map[string]any{"path": gate})
+					prefix = fmt.Sprintf("await tools.read(%s); ", readArgs)
+				}
+			}
+			args = map[string]any{"code": prefix + fmt.Sprintf("try { const value = await tools.write(%s); return {ok:true,value}; } catch (error) { return {ok:false,error:String(error.message)}; }", rawArgs)}
 		}
 		response(w, request.Model, "", tool, args)
 	})

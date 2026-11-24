@@ -112,6 +112,17 @@ func TestMemberAuthorityUsesRootAdmissionAndPlanGate(t *testing.T) {
 			}
 			return decision
 		}
+		observe := func(turn uint64, entry string, requests ...memberToolRequest) {
+			t.Helper()
+			calls := make([]any, 0, len(requests))
+			for _, request := range requests {
+				calls = append(calls, map[string]any{"type": "toolCall", "id": request.ID, "name": request.Name})
+			}
+			appendNativeFixture(t, path, map[string]any{"type": "message", "id": entry, "message": map[string]any{"role": "assistant", "stopReason": "toolUse", "content": calls}})
+			if status, body := postAuthority(t, client, token, "/member/response", memberResponseRequest{Turn: turn, EntryID: entry}); status != http.StatusOK {
+				t.Fatalf("native response observation = %d %s", status, body)
+			}
+		}
 		beforeResponse := request
 		beforeResponse.ID = "before-response"
 		if decision := tool(beforeResponse); !decision.Block {
@@ -127,9 +138,26 @@ func TestMemberAuthorityUsesRootAdmissionAndPlanGate(t *testing.T) {
 		if decision := tool(request); !decision.Block || !strings.Contains(decision.Reason, "plan approval") {
 			t.Fatalf("unapproved write = %#v", decision)
 		}
+		deniedEnd := memberToolResult{Turn: 1, CallID: "first", Name: "write", IsError: true, Content: []memberResultBlock{{Type: "text", Text: "plan approval is required"}}}
+		if status, body := postAuthority(t, client, token, "/member/tool/end", deniedEnd); status != http.StatusOK {
+			t.Fatalf("plan denial observation = %d %s", status, body)
+		}
+		tree.mu.Lock()
+		failure := selected.nativeFailure
+		tree.mu.Unlock()
+		if failure != "" {
+			t.Fatalf("plan denial became a runtime failure: %s", failure)
+		}
 		_, roster, pending, err := store.SnapshotWithReservations()
 		if err != nil || len(roster) != 1 || len(pending) != 0 || roster[0].Ref != member.Ref {
 			t.Fatalf("native admission = %#v %#v %v", roster, pending, err)
+		}
+		if decision := tool(memberToolRequest{ID: "not-observed", Name: "read", Arguments: json.RawMessage(`{}`)}); !decision.Block {
+			t.Fatal("tool without an observed assistant call was authorized")
+		}
+		observe(1, "name-response", memberToolRequest{ID: "observed-name", Name: "read"})
+		if decision := tool(memberToolRequest{ID: "observed-name", Name: "write", Arguments: args}); !decision.Block {
+			t.Fatal("tool was authorized with a different observed name")
 		}
 		plan, err := store.submitPlan(member.Ref, selected.noticeID, "plan", "Write the marker.", 60000)
 		if err != nil {
@@ -142,8 +170,23 @@ func TestMemberAuthorityUsesRootAdmissionAndPlanGate(t *testing.T) {
 			t.Fatal("replayed denied call became authorized")
 		}
 		request.ID = "second"
+		observe(1, "response-second", request)
 		if decision := tool(request); decision.Block {
 			t.Fatalf("approved write was blocked: %#v", decision)
+		}
+		if decision := tool(request); !decision.Block {
+			t.Fatal("an issued tool authorization was replayed")
+		}
+		failedEnd := memberToolResult{Turn: 1, CallID: "second", Name: "write", IsError: true, Content: []memberResultBlock{{Type: "text", Text: "disk failed"}}}
+		if status, body := postAuthority(t, client, token, "/member/tool/end", failedEnd); status != http.StatusOK {
+			t.Fatalf("failed tool observation = %d %s", status, body)
+		}
+		status, _ := postAuthority(t, client, token, "/member/tool/end", failedEnd)
+		tree.mu.Lock()
+		failure = selected.nativeFailure
+		tree.mu.Unlock()
+		if status == http.StatusOK || !strings.Contains(failure, "disk failed") {
+			t.Fatalf("tool failure observation was replayed or lost: %s", failure)
 		}
 		if err := os.WriteFile(marker, []byte("allowed"), 0o600); err != nil {
 			t.Fatal(err)
@@ -157,6 +200,7 @@ func TestMemberAuthorityUsesRootAdmissionAndPlanGate(t *testing.T) {
 		if decision := tool(memberToolRequest{ID: "script/1", Parent: "missing", Name: "write", Arguments: args}); !decision.Block {
 			t.Fatal("nested call without its parent was allowed")
 		}
+		observe(1, "response-script", memberToolRequest{ID: "script", Name: "codemode"})
 		if decision := tool(memberToolRequest{ID: "script", Name: "codemode", Arguments: json.RawMessage(`{"code":"run"}`)}); decision.Block {
 			t.Fatalf("authorized parent tool = %#v", decision)
 		}
@@ -167,6 +211,7 @@ func TestMemberAuthorityUsesRootAdmissionAndPlanGate(t *testing.T) {
 		if status, _ := postAuthority(t, client, token, "/member/child/list", list); status == http.StatusOK {
 			t.Fatal("native operation ran without tool authorization")
 		}
+		observe(1, "response-list", memberToolRequest{ID: "list", Name: "litter_list"})
 		if decision := tool(memberToolRequest{ID: "list", Name: "litter_list", Arguments: json.RawMessage(`{}`)}); decision.Block {
 			t.Fatalf("native child list authorization = %#v", decision)
 		}
@@ -185,6 +230,15 @@ func TestMemberAuthorityUsesRootAdmissionAndPlanGate(t *testing.T) {
 		if status, _ := postAuthority(t, client, token, "/member/result", finished); status == http.StatusOK {
 			t.Fatal("native tool result was accepted twice")
 		}
+		spawnArgs := json.RawMessage(`{"type":"scout","task":"inspect","name":"another","workspace":{"kind":"shared_checkout"}}`)
+		observe(1, "response-team-spawn", memberToolRequest{ID: "team-spawn", Name: "team_spawn"})
+		if decision := tool(memberToolRequest{ID: "team-spawn", Name: "team_spawn", Arguments: spawnArgs}); decision.Block {
+			t.Fatalf("native team spawn authorization = %#v", decision)
+		}
+		status, body = postAuthority(t, client, token, "/member/team/spawn", memberOperationRequest{Turn: 1, CallID: "team-spawn", Args: spawnArgs})
+		if status != http.StatusOK || json.Unmarshal(body, &result) != nil || !result.IsError || !strings.Contains(result.Content, "lead_required") {
+			t.Fatalf("native teammate could start another teammate: %d %s", status, body)
+		}
 		if status, _ := postAuthority(t, client, token, "/member/turn/end", memberTurnRequest{ID: 1}); status != http.StatusOK {
 			t.Fatalf("end native turn status = %d", status)
 		}
@@ -200,6 +254,10 @@ func TestMemberAuthorityUsesRootAdmissionAndPlanGate(t *testing.T) {
 		if decision := tool(memberToolRequest{Turn: 1, ID: "list", Name: "litter_list", Arguments: json.RawMessage(`{}`)}); !decision.Block {
 			t.Fatal("stale turn authorized a tool in the next turn")
 		}
+		if status, _ := postAuthority(t, client, token, "/member/response", memberResponseRequest{Turn: 2, EntryID: "response-list"}); status == http.StatusOK {
+			t.Fatal("previous turn's response was accepted in the next turn")
+		}
+		observe(2, "response-list-turn-two", memberToolRequest{ID: "list", Name: "litter_list"})
 		if decision := tool(memberToolRequest{Turn: 2, ID: "list", Name: "litter_list", Arguments: json.RawMessage(`{}`)}); decision.Block {
 			t.Fatalf("next turn authorization = %#v", decision)
 		}

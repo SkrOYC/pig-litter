@@ -26,6 +26,15 @@ type memberControlCommand struct {
 	Completion *memberCompletionWire `json:"completion,omitempty"`
 	History    *memberHistoryWire    `json:"history,omitempty"`
 	Audit      *completionAudit      `json:"audit,omitempty"`
+	Input      *memberInputWire      `json:"input,omitempty"`
+}
+
+type memberInputWire struct {
+	Window   string `json:"window"`
+	Transfer string `json:"transfer"`
+	Mode     string `json:"mode"`
+	Text     string `json:"text"`
+	Cause    string `json:"cause,omitempty"`
 }
 
 type memberCompletionWire struct {
@@ -67,6 +76,13 @@ type memberControlCall struct {
 	dispatched bool
 }
 
+type memberCauseKey struct{}
+
+type memberCause struct {
+	queue *memberControlQueue
+	id    string
+}
+
 type memberControlQueue struct {
 	capability [32]byte
 	owner      *owner
@@ -77,6 +93,11 @@ type memberControlQueue struct {
 	binding    *memberBinding
 	authority  *memberAuthority
 	starting   *memberStartingHandoff
+	window     string
+	windowSeq  uint64
+	windows    map[string]uint64
+	running    map[string]*memberRunningInput
+	inputAcks  map[string]memberControlReply
 	mu         sync.Mutex
 	pending    map[string]*memberControlCall
 	commands   []*memberControlCall
@@ -106,7 +127,7 @@ func (o *owner) newMemberControlQueueWithCapability(r *record, selected *run, ow
 		o.tree.mu.Unlock()
 		return nil, reject("unavailable", "native control has no matching launch")
 	}
-	queue := &memberControlQueue{capability: capability, owner: o, record: r, run: selected, ownership: ownership, owned: cloneMemberOwnership(ownership), pending: map[string]*memberControlCall{}, wake: make(chan struct{}, 1), turn: make(chan struct{}, 1), closed: make(chan struct{}), cancelled: make(chan struct{})}
+	queue := &memberControlQueue{capability: capability, owner: o, record: r, run: selected, ownership: ownership, owned: cloneMemberOwnership(ownership), pending: map[string]*memberControlCall{}, windows: map[string]uint64{}, running: map[string]*memberRunningInput{}, inputAcks: map[string]memberControlReply{}, wake: make(chan struct{}, 1), turn: make(chan struct{}, 1), closed: make(chan struct{}), cancelled: make(chan struct{})}
 	queue.turn <- struct{}{}
 	o.tree.mu.Unlock()
 	context.AfterFunc(selected.ctx, queue.Close)
@@ -185,6 +206,13 @@ func (queue *memberControlQueue) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "member authorization failed", http.StatusForbidden)
 		return
 	}
+	if cause := r.Header.Get("X-Pig-Litter-Cause"); cause != "" {
+		if len(cause) > 128 {
+			http.Error(w, "invalid member callback identity", http.StatusBadRequest)
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), memberCauseKey{}, memberCause{queue: queue, id: cause}))
+	}
 	if (r.URL.Path == "/control/watch" || r.URL.Path == "/control/next") && r.ContentLength == 0 {
 		select {
 		case <-queue.cancelled:
@@ -221,7 +249,7 @@ func (queue *memberControlQueue) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		}
 	case "/control/result":
 		queue.result(w, r)
-	case "/input/start", "/input/installed", "/input/ready", "/input/result":
+	case "/input/start", "/input/installed", "/input/ready", "/input/result", "/input/window", "/input/running-result", "/input/cancel-watch":
 		queue.serveStartingInput(w, r)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/member/") {
@@ -352,6 +380,14 @@ func (queue *memberControlQueue) result(w http.ResponseWriter, r *http.Request) 
 		stopped = true
 	default:
 	}
+	if !stopped && call == nil && reply.Kind == "input" {
+		previous, ok := queue.inputAcks[reply.ID]
+		if ok && previous.Kind == reply.Kind && previous.Error == reply.Error && previous.Disposition == reply.Disposition && previous.Snapshot == nil && reply.Snapshot == nil {
+			queue.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
 	if stopped || call == nil || !call.dispatched || call.command.Kind != reply.Kind {
 		queue.mu.Unlock()
 		http.Error(w, "stale member control result", http.StatusConflict)
@@ -366,6 +402,8 @@ func (queue *memberControlQueue) result(w http.ResponseWriter, r *http.Request) 
 			valid = reply.Snapshot != nil && reply.Disposition == 0
 		case "audit":
 			valid = reply.Snapshot == nil && reply.Disposition == 0
+		case "input":
+			valid = reply.Snapshot == nil && reply.Disposition == 0
 		}
 	}
 	if !valid {
@@ -374,6 +412,9 @@ func (queue *memberControlQueue) result(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	delete(queue.pending, reply.ID)
+	if reply.Kind == "input" {
+		queue.inputAcks[reply.ID] = reply
+	}
 	queue.turn <- struct{}{}
 	queue.mu.Unlock()
 	call.reply <- reply
@@ -381,36 +422,41 @@ func (queue *memberControlQueue) result(w http.ResponseWriter, r *http.Request) 
 }
 
 func (queue *memberControlQueue) request(ctx context.Context, command memberControlCommand) (memberControlReply, error) {
+	reply, _, err := queue.requestCommand(ctx, command, false)
+	return reply, err
+}
+
+func (queue *memberControlQueue) requestCommand(ctx context.Context, command memberControlCommand, retain bool) (memberControlReply, bool, error) {
 	var reply memberControlReply
 	if err := queue.valid(); err != nil {
-		return reply, err
+		return reply, false, err
 	}
 	if err := ctx.Err(); err != nil {
-		return reply, err
+		return reply, false, err
 	}
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
-		return reply, err
+		return reply, false, err
 	}
 	command.ID = hex.EncodeToString(id[:])
 	data, err := json.Marshal(command)
 	if err != nil || len(data) > memberControlLimit {
-		return reply, reject("rejected", "member control request exceeds its bound")
+		return reply, false, reject("rejected", "member control request exceeds its bound")
 	}
 	call := &memberControlCall{command: command, ctx: ctx, reply: make(chan memberControlReply, 1)}
 	queue.mu.Lock()
 	select {
 	case <-queue.closed:
 		queue.mu.Unlock()
-		return reply, reject("unavailable", "member control is closed")
+		return reply, false, reject("unavailable", "member control is closed")
 	case <-queue.cancelled:
 		queue.mu.Unlock()
-		return reply, reject("cancelled", "member control is cancelled")
+		return reply, false, reject("cancelled", "member control is cancelled")
 	default:
 	}
 	if len(queue.pending) >= memberControlPendingLimit {
 		queue.mu.Unlock()
-		return reply, reject("unavailable", "member control request bound reached")
+		return reply, false, reject("unavailable", "member control request bound reached")
 	}
 	queue.pending[command.ID] = call
 	queue.commands = append(queue.commands, call)
@@ -422,43 +468,47 @@ func (queue *memberControlQueue) request(ctx context.Context, command memberCont
 	select {
 	case reply = <-call.reply:
 		if err := queue.valid(); err != nil {
-			return reply, err
+			return reply, true, err
 		}
 		if reply.Error != "" {
-			return reply, reject("unavailable", "native member rejected the control request")
+			return reply, true, reject("unavailable", "native member rejected the control request")
 		}
-		return reply, nil
+		return reply, true, nil
 	case <-ctx.Done():
 	case <-queue.closed:
 	case <-queue.cancelled:
 	}
 	queue.mu.Lock()
-	uncertain := false
+	uncertain := call.dispatched
 	if queue.pending[command.ID] == call {
-		uncertain = call.dispatched
-		delete(queue.pending, command.ID)
+		if !call.dispatched || !retain {
+			delete(queue.pending, command.ID)
+		}
 		if !call.dispatched {
 			queue.commands = slices.DeleteFunc(queue.commands, func(candidate *memberControlCall) bool { return candidate == call })
 		}
 	}
 	queue.mu.Unlock()
-	if uncertain {
+	if uncertain && !retain {
 		select {
 		case <-queue.cancelled:
 		default:
 			queue.Close()
 		}
 	}
-	return reply, reject("unavailable", "member control result is uncertain")
+	return reply, uncertain, reject("unavailable", "member control result is uncertain")
 }
 
 func (queue *memberControlQueue) Queue(ctx context.Context, input memberInput) (memberInputDisposition, error) {
 	if !queue.ready() {
 		return memberInputUncertain, reject("unavailable", "native control handle is not installed")
 	}
+	if text, ok := input.(memberTextInput); ok {
+		return queue.queueText(ctx, text)
+	}
 	completion, ok := input.(memberCompletionInput)
 	if !ok {
-		return memberInputUncertain, reject("unavailable", "native user input needs atomic host admission")
+		return memberInputUncertain, reject("unavailable", "native input is unavailable")
 	}
 	command := memberControlCommand{Kind: "completion", Completion: &memberCompletionWire{Details: completion.details, Content: completion.content, Mode: completion.mode, Trigger: completion.trigger}}
 	reply, err := queue.request(ctx, command)
@@ -508,6 +558,7 @@ func (queue *memberControlQueue) Cancel() {
 		close(queue.cancelled)
 		queue.mu.Unlock()
 		queue.failStarting()
+		queue.failQueuedInputs()
 	})
 }
 
@@ -535,5 +586,6 @@ func (queue *memberControlQueue) Close() {
 		close(queue.closed)
 		queue.mu.Unlock()
 		queue.failStarting()
+		queue.failQueuedInputs()
 	})
 }

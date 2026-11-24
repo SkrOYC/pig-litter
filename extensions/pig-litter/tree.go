@@ -831,7 +831,7 @@ retry:
 		t.mu.Unlock()
 		return Snapshot{}, nil, reject("rejected", "child message bound reached")
 	}
-	request := message{mode: mode, text: text, result: make(chan error, 1)}
+	request := message{mode: mode, text: text, result: make(chan error, 1), ctx: ctx}
 	select {
 	case run.mailbox <- request:
 		run.pendingMessages++
