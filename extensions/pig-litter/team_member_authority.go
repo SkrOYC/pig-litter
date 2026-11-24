@@ -96,6 +96,13 @@ type memberToolResult struct {
 	Content []memberResultBlock `json:"content"`
 }
 
+type memberMissingTool struct {
+	Turn    uint64 `json:"turn"`
+	CallID  string `json:"callId"`
+	Name    string `json:"name"`
+	EntryID string `json:"entryId"`
+}
+
 type memberSettleRequest struct {
 	Boundary   uint64 `json:"boundary"`
 	Report     string `json:"report"`
@@ -245,6 +252,13 @@ func (queue *memberControlQueue) serveAuthority(w http.ResponseWriter, r *http.R
 			return
 		}
 		write(map[string]bool{"ok": true})
+	case "/member/tool/missing":
+		var request memberMissingTool
+		if decodeMemberControl(w, r, &request) != nil || authority.observeMissingTool(r.Context(), request) != nil {
+			fail()
+			return
+		}
+		write(map[string]bool{"ok": true})
 	case "/member/settlement/decide":
 		var request memberSettleRequest
 		if decodeMemberControl(w, r, &request) != nil {
@@ -306,6 +320,24 @@ func (queue *memberControlQueue) serveAuthority(w http.ResponseWriter, r *http.R
 		}
 		write(reply)
 	}
+}
+
+func (authority *memberAuthority) observeMissingTool(ctx context.Context, request memberMissingTool) error {
+	if request.CallID == "" || len(request.CallID) > 256 || request.Name == "" || len(request.Name) > 256 {
+		return reject("rejected", "invalid missing tool observation")
+	}
+	if err := authority.observeResponse(ctx, memberResponseRequest{Turn: request.Turn, EntryID: request.EntryID}); err != nil {
+		return err
+	}
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	observed, found := authority.responses[request.CallID]
+	_, issued := authority.approved[request.CallID]
+	if !authority.active || authority.turn != request.Turn || !found || observed.entry != request.EntryID || observed.name != request.Name || issued || len(authority.approved) >= 1024 {
+		return reject("unavailable", "missing tool observation is not current")
+	}
+	authority.approved[request.CallID] = memberAuthorizedCall{name: request.Name, response: request.EntryID, ready: true, observed: true, decision: memberToolDecision{Block: true, Reason: "tool is unavailable"}}
+	return nil
 }
 
 func (authority *memberAuthority) offerPeer(ctx context.Context) (*memberPeerDelivery, error) {

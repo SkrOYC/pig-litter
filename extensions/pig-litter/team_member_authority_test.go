@@ -239,6 +239,32 @@ func TestMemberAuthorityUsesRootAdmissionAndPlanGate(t *testing.T) {
 		if status != http.StatusOK || json.Unmarshal(body, &result) != nil || !result.IsError || !strings.Contains(result.Content, "lead_required") {
 			t.Fatalf("native teammate could start another teammate: %d %s", status, body)
 		}
+		missing := memberMissingTool{Turn: 1, CallID: "missing", Name: "mcp__probe__write", EntryID: "response-missing"}
+		if status, _ := postAuthority(t, client, token, "/member/tool/missing", missing); status == http.StatusOK {
+			t.Fatal("unobserved missing tool was accepted")
+		}
+		observe(1, "response-missing", memberToolRequest{ID: "missing", Name: "mcp__probe__write"})
+		wrong := missing
+		wrong.Name = "write"
+		if status, _ := postAuthority(t, client, token, "/member/tool/missing", wrong); status == http.StatusOK {
+			t.Fatal("missing tool changed its observed name")
+		}
+		if status, body := postAuthority(t, client, token, "/member/tool/missing", missing); status != http.StatusOK {
+			t.Fatalf("missing tool observation = %d %s", status, body)
+		}
+		if status, _ := postAuthority(t, client, token, "/member/tool/missing", missing); status == http.StatusOK {
+			t.Fatal("missing tool observation was replayed")
+		}
+		if decision := tool(memberToolRequest{ID: "missing", Name: missing.Name, Arguments: json.RawMessage(`{}`)}); !decision.Block {
+			t.Fatal("missing tool was later authorized")
+		}
+		if status, _ := postAuthority(t, client, token, "/member/tool/end", memberToolResult{Turn: 1, CallID: "missing", Name: missing.Name, Content: []memberResultBlock{{Type: "text", Text: "executed"}}}); status == http.StatusOK {
+			t.Fatal("missing tool accepted an uncorrelated executed result")
+		}
+		nestedMissing := memberMissingTool{Turn: 1, CallID: "script/2", Name: "mcp__probe__write", EntryID: "response-script"}
+		if status, _ := postAuthority(t, client, token, "/member/tool/missing", nestedMissing); status == http.StatusOK {
+			t.Fatal("nested call was accepted as an observed top-level missing tool")
+		}
 		if status, _ := postAuthority(t, client, token, "/member/turn/end", memberTurnRequest{ID: 1}); status != http.StatusOK {
 			t.Fatalf("end native turn status = %d", status)
 		}

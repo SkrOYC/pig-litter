@@ -274,7 +274,7 @@ func (member *nativeMember) beforeTool(ctx context.Context, event extension.Tool
 	if err != nil {
 		return extension.ToolCallEventResult{Block: true, Reason: "native session is unavailable"}, nil
 	}
-	id, err := nativeAssistantEntry(manager, call)
+	id, err := nativeAssistantEntry(manager, call.ToolCallID)
 	if err != nil {
 		return extension.ToolCallEventResult{Block: true, Reason: err.Error()}, nil
 	}
@@ -299,7 +299,7 @@ func (member *nativeMember) beforeTool(ctx context.Context, event extension.Tool
 	return extension.ToolCallEventResult{Block: decision.Block, Reason: decision.Reason, Terminate: decision.Terminate}, nil
 }
 
-func nativeAssistantEntry(manager extension.ReadonlySessionManager, call extension.CustomToolCallEvent) (string, error) {
+func nativeAssistantEntry(manager extension.ReadonlySessionManager, callID string) (string, error) {
 	entries, err := rawEntries(manager.GetEntries())
 	if err != nil {
 		return "", err
@@ -325,7 +325,7 @@ func nativeAssistantEntry(manager extension.ReadonlySessionManager, call extensi
 			case *ai.ToolCall:
 				id = tool.ID
 			}
-			if id != "" && (call.ToolCallID == id || strings.HasPrefix(call.ToolCallID, id+"/")) {
+			if id != "" && (callID == id || strings.HasPrefix(callID, id+"/")) {
 				return entry.ID, nil
 			}
 		}
@@ -357,6 +357,25 @@ func (member *nativeMember) afterTool(ctx context.Context, event extension.ToolE
 	}
 	observation := memberToolResult{Turn: member.currentTurn(), CallID: event.ToolCallID, Name: event.ToolName, IsError: event.IsError || result.IsError, Content: content}
 	var reply map[string]bool
+	if !executed && nativeMissingTool(event, result.Content) {
+		ext := extension.FromContext(ctx)
+		if ext == nil {
+			member.stop(ctx)
+			return errors.New("native missing tool context is unavailable")
+		}
+		manager, err := ext.SessionManager()
+		if err == nil {
+			var entry string
+			entry, err = nativeAssistantEntry(manager, event.ToolCallID)
+			if err == nil {
+				err = member.call(ctx, "/member/tool/missing", memberMissingTool{Turn: observation.Turn, CallID: event.ToolCallID, Name: event.ToolName, EntryID: entry}, &reply)
+			}
+		}
+		if err != nil {
+			member.stop(ctx)
+		}
+		return err
+	}
 	if executed {
 		if err := member.call(ctx, "/member/result", observation, &reply); err != nil {
 			member.stop(ctx)
@@ -368,6 +387,10 @@ func (member *nativeMember) afterTool(ctx context.Context, event extension.ToolE
 		return err
 	}
 	return nil
+}
+
+func nativeMissingTool(event extension.ToolExecutionEndEvent, content []memberResultBlock) bool {
+	return event.IsError && event.DurationMs == nil && event.ParentToolCallID == "" && len(content) == 1 && content[0].Type == "text" && content[0].Text == "Tool "+event.ToolName+" not found"
 }
 
 func (member *nativeMember) beforeSettle(ctx context.Context, event *extension.AgentBeforeSettleEvent) (extension.AgentBeforeSettleEventResult, error) {

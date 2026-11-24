@@ -61,6 +61,14 @@ func TestTmuxNativeMCPPending(t *testing.T) {
 	}
 }
 
+func TestTmuxNativeMissingToolContinues(t *testing.T) {
+	for _, name := range []string{"mcp_missing", "mcp_excluded"} {
+		t.Run(name, func(t *testing.T) {
+			testTmuxCompiledProductMember(t, productMemberCase{name: name, task: "continue after an unavailable tool", tools: []string{"mcp__probe__write", "read"}, marker: "missing.txt", report: "PROBE_TOOL_DONE", failure: true})
+		})
+	}
+}
+
 func TestTmuxNativeMCPConfiguration(t *testing.T) {
 	for _, test := range []productMemberCase{
 		{name: "mcp_registered", task: "use registered server", tools: []string{"mcp__probe__write", "read"}, marker: "registered.txt", report: "PROBE_TOOL_DONE", exists: true},
@@ -163,7 +171,7 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 		var requests atomic.Int32
 		var nativeQueue atomic.Pointer[memberControlQueue]
 		releaseMCP := make(chan struct{})
-		if name == "mcp_late" {
+		if name == "mcp_late" || name == "mcp_missing" || name == "mcp_excluded" {
 			if err := os.WriteFile(filepath.Join(cwd, "mcp-seed"), []byte("READY"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -178,7 +186,7 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 				}
 				if name == "mcp_unavailable" || name == "mcp_untrusted" {
 					runtimeAnswer(w, "PROBE_DONE")
-				} else if count := requests.Add(1); count == 1 || name == "mcp_late" && count == 2 {
+				} else if count := requests.Add(1); count == 1 || name == "mcp_late" && count == 2 || (name == "mcp_missing" || name == "mcp_excluded") && count == 2 {
 					if name == "mcp_late" && count == 1 {
 						close(releaseMCP)
 						for {
@@ -198,8 +206,15 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 						runtimeToolAnswer(w, "read-seed", "read", map[string]any{"path": filepath.Join(cwd, "mcp-seed")})
 						return
 					}
+					if (name == "mcp_missing" || name == "mcp_excluded") && count == 2 {
+						runtimeToolAnswer(w, "read-seed", "read", map[string]any{"path": filepath.Join(cwd, "mcp-seed")})
+						return
+					}
 					target := filepath.Join(rootPath, "files", marker)
 					tool, args := "mcp__probe__write", any(map[string]any{"path": target, "content": "PROBE_WRITTEN"})
+					if name == "mcp_excluded" {
+						tool = "write"
+					}
 					if name == "mcp_resource" {
 						tool, args = "list_mcp_resources", map[string]any{"server": "probe"}
 					}
@@ -241,7 +256,7 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 			switch request.Method {
 			case "initialize":
 				mcpInits.Add(1)
-				if name == "mcp_unavailable" {
+				if name == "mcp_unavailable" || name == "mcp_missing" || name == "mcp_excluded" {
 					http.Error(w, "unavailable", http.StatusServiceUnavailable)
 					return
 				}
@@ -342,7 +357,7 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preapprove {
+	if preapprove || name == "mcp_missing" || name == "mcp_excluded" {
 		member, err = store.Commit(member.AdmissionID)
 		if err != nil {
 			t.Fatal(err)
@@ -691,6 +706,12 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 		}
 		if name == "mcp_resource" && !probeRequestContains(provider, "docs://allowed") {
 			t.Fatal("allowed MCP resource was not delivered to the model")
+		}
+		if name == "mcp_missing" && (!probeRequestContains(provider, "Tool mcp__probe__write not found") || !probeRequestContains(provider, "READY")) {
+			t.Fatal("the missing tool error did not reach the continuing member")
+		}
+		if name == "mcp_excluded" && (!probeRequestContains(provider, "Tool write not found") || !probeRequestContains(provider, "READY")) {
+			t.Fatal("the excluded tool error did not reach the continuing member")
 		}
 		if name == "mcp_unavailable" || name == "mcp_late" || name == "mcp_untrusted" {
 			if !probeRequestContains(provider, "Some allowed tools are still connecting") {
