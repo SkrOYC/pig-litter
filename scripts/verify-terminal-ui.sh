@@ -66,17 +66,11 @@ export CCACHE_DIR="$run_root/cache/ccache" SCCACHE_DIR="$run_root/cache/sccache"
 cd "$root"
 overlay_args=()
 if [[ "$scenario" == team-preview || "$scenario" == team-message || "$scenario" == team-controls || "$scenario" == team-tasks || "$scenario" == team-pause || "$scenario" == team-plans || "$scenario" == team-policy || "$scenario" == team-shutdown ]]; then
-  setup_env=("GOPATH=$run_root/gopath" "GOCACHE=$run_root/cache" "GOMODCACHE=$run_root/modules" "GOTMPDIR=$run_root/gotmp" "TMPDIR=$run_root/tmp" GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOTELEMETRY=off)
-  module_dir="$(devenv shell -- env "${setup_env[@]}" go -C "$root/scripts" mod download -modcacherw -json github.com/MichaelKinsy/PiG | jq -r '.Dir')"
-  cp -a "$module_dir" "$run_root/pig-module"
-  cp "$root/scripts/go.mod" "$run_root/p07.mod"
-  cp "$root/scripts/go.sum" "$run_root/p07.sum"
-  devenv shell -- env "${setup_env[@]}" go -C "$root/scripts" mod edit -modfile "$run_root/p07.mod" -replace "github.com/MichaelKinsy/PiG=$run_root/pig-module" -replace "github.com/SkrOYC/pig-litter/extensions/pig-litter=$root/extensions/pig-litter"
-  devenv shell -- env "${setup_env[@]}" bun "$root/scripts/p07-resume-overlay.mjs" "$run_root/pig-module/coding/runtime.go" "$run_root" > "$build_evidence/resume-overlay.json"
-  overlay_args=(-modfile "$run_root/p07.mod" -overlay "$run_root/p07-overlay.json")
+  devenv shell -- bash -c 'bun "$1" "$PIG_LITTER_SOURCE_DIR/coding/runtime.go" "$2"' -- "$root/scripts/p07-resume-overlay.mjs" "$run_root" > "$build_evidence/resume-overlay.json"
+  overlay_args=(-overlay "$run_root/p07-overlay.json")
 fi
 for command_name in pig-litter verify-tui tui-idle-observer; do
-  build=(devenv shell -- env "GOPATH=$run_root/gopath" "GOCACHE=$run_root/cache" "GOMODCACHE=$run_root/modules" "GOTMPDIR=$run_root/gotmp" "TMPDIR=$run_root/tmp" GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOTELEMETRY=off go -C "$root/scripts" build "${overlay_args[@]}" -mod=readonly -modcacherw -o "$run_root/bin/$command_name" "./cmd/$command_name")
+  build=(devenv shell -- env "GOPATH=$run_root/gopath" "GOCACHE=$run_root/cache" "GOMODCACHE=$run_root/modules" "GOTMPDIR=$run_root/gotmp" go -C "$root/scripts" build "${overlay_args[@]}" -mod=readonly -modcacherw -o "$run_root/bin/$command_name" "./cmd/$command_name")
   printf '%q ' "${build[@]}" >> "$build_evidence/build-commands.txt"
   printf '\n' >> "$build_evidence/build-commands.txt"
   "${build[@]}" 2> >(tee -a "$build_evidence/build.stderr" >&2)
