@@ -241,3 +241,29 @@ func TestTaskCompletionPolicyRetainsWorkAndRejectsStaleSnapshot(t *testing.T) {
 		t.Fatal(exerciseErr)
 	}
 }
+
+func TestTaskEditInvalidatesCompletionPolicySnapshot(t *testing.T) {
+	store, _, member := planTestMember(t)
+	task, err := store.createTask("Original", "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.claimTask(task.ID, member.Ref, false); err != nil {
+		t.Fatal(err)
+	}
+	_, state, revision, err := store.taskCompletionCandidate(task.ID, &member.Ref)
+	if err != nil || state != "ready" {
+		t.Fatalf("completion candidate = %q, %v", state, err)
+	}
+	subject := "Edited"
+	if _, state, err := store.editTask(task.ID, teamTaskEdit{Subject: &subject}, &member.Ref); err != nil || state != "updated" {
+		t.Fatalf("task edit = %q, %v", state, err)
+	}
+	if _, _, err := store.completeTask(task.ID, &member.Ref, &revision); err == nil {
+		t.Fatal("a completion policy snapshot survived a task edit")
+	}
+	current, err := store.getTask(task.ID)
+	if err != nil || current.Subject != subject || current.State != TaskInProgress {
+		t.Fatalf("task after stale completion = %#v, %v", current, err)
+	}
+}
