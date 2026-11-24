@@ -7,7 +7,7 @@ import (
 )
 
 func nativeTerminalVariable(name string) bool {
-	return name == "TERM" || name == "TERM_PROGRAM" || name == "TERM_PROGRAM_VERSION" || name == "COLORTERM" || name == "COLORFGBG" || name == "WINDOWID" || name == "COLUMNS" || name == "LINES" || strings.HasPrefix(name, "ITERM_") || name == "TMUX" || name == "TMUX_PANE"
+	return name == "TERM" || name == "TERM_SESSION_ID" || name == "TERM_PROGRAM" || name == "TERM_PROGRAM_VERSION" || name == "COLORTERM" || name == "COLORFGBG" || name == "WINDOWID" || name == "COLUMNS" || name == "LINES" || strings.HasPrefix(name, "ITERM_") || name == "TMUX" || name == "TMUX_PANE"
 }
 
 func nativeRuntimeVariable(name string) bool {
