@@ -50,6 +50,7 @@ type Tree struct {
 	teamFinished func(*record, *run, Outcome) error
 	teamCanceled func(*record)
 	teamPaused   func(*record, *run) error
+	teamResuming func(*record, *run) error
 	dirty        map[ChildID]*record
 }
 
@@ -353,9 +354,19 @@ func (t *Tree) activateChecked(selected *run, accept func() error) error {
 	if err == nil && accept != nil {
 		err = accept()
 	}
+	if err == nil && r.team != nil && run.resume && run.peerWake == nil {
+		if t.teamResuming == nil {
+			err = reject("unavailable", "teammate resume is unavailable")
+		} else {
+			err = t.teamResuming(r, run)
+		}
+	}
 	t.mu.Lock()
 	if err != nil {
 		r.pendingInputs = previousInputs
+		if r.team != nil && run.resume && run.peerWake == nil && run.resumePaused {
+			r.paused = true
+		}
 	} else {
 		run.admission = admissionReady
 		run.progress.activated = activated
@@ -415,7 +426,7 @@ func (t *Tree) cancelPending(selected *run) {
 		t.order = slices.DeleteFunc(t.order, func(id ChildID) bool { return id == r.id })
 	}
 	t.mu.Unlock()
-	if r.team != nil && t.teamCanceled != nil {
+	if r.team != nil && !selected.resume && t.teamCanceled != nil {
 		t.teamCanceled(r)
 	}
 	t.notify()
@@ -653,15 +664,23 @@ func (t *Tree) resumeAs(authority controlAuthority, selected *run, text string) 
 		return Snapshot{}, nil, reject("rejected", "resume needs a settled child and text")
 	}
 	if r.team != nil {
-		t.mu.Unlock()
-		return Snapshot{}, nil, reject("unavailable", "teammate resume is not available in this preview")
+		select {
+		case <-r.run.teamFinishDone:
+			if r.run.teamFinishErr != nil {
+				t.mu.Unlock()
+				return Snapshot{}, nil, reject("unavailable", "teammate settlement did not persist")
+			}
+		default:
+			t.mu.Unlock()
+			return Snapshot{}, nil, reject("unavailable", "teammate settlement is still pending")
+		}
 	}
 	prompt := text
 	if r.pendingTask != "" {
 		prompt = "Task:\n" + r.pendingTask + "\n\nResume instructions:\n" + text
 	}
 	defer t.mu.Unlock()
-	if err := t.roomLocked(r.parentID(), !r.readOnly, r.cwd, r.id, nil); err != nil {
+	if err := t.roomLocked(r.parentID(), !r.readOnly, r.cwd, r.id, r.team); err != nil {
 		return Snapshot{}, nil, err
 	}
 	r.previous = r.run
@@ -671,7 +690,9 @@ func (t *Tree) resumeAs(authority controlAuthority, selected *run, text string) 
 	r.run.resume = true
 	r.run.continuation = text
 	r.paused = false
-	t.pending[r.run] = &reservation{parent: r.parentID(), nonce: r.run.noticeID}
+	if r.team == nil {
+		t.pending[r.run] = &reservation{parent: r.parentID(), nonce: r.run.noticeID}
+	}
 	t.live++
 	return t.snapshotLocked(r), r.run, nil
 }
@@ -762,10 +783,12 @@ func (t *Tree) stop(caller, selected *run) (*Outcome, int, error) {
 }
 
 func (t *Tree) stopAs(authority controlAuthority, selected *run) (*Outcome, int, error) {
+	t.lifecycleMu.Lock()
 	t.mu.Lock()
 	target, err := t.controlAsLocked(authority, selected)
 	if err != nil {
 		t.mu.Unlock()
+		t.lifecycleMu.Unlock()
 		return nil, 0, err
 	}
 	var settled *Outcome
@@ -775,6 +798,7 @@ func (t *Tree) stopAs(authority controlAuthority, selected *run) (*Outcome, int,
 	}
 	pending, fresh := t.pauseLocked(target)
 	t.mu.Unlock()
+	t.lifecycleMu.Unlock()
 	if err := t.joinPaused(pending, fresh); err != nil {
 		return nil, len(fresh), err
 	}
@@ -844,13 +868,16 @@ func (t *Tree) joinPaused(pending, fresh []*run) error {
 }
 
 func (t *Tree) pauseRoot() {
+	t.lifecycleMu.Lock()
 	t.mu.Lock()
 	if t.closed {
 		t.mu.Unlock()
+		t.lifecycleMu.Unlock()
 		return
 	}
 	pending, fresh := t.pauseLocked(t.root)
 	t.mu.Unlock()
+	t.lifecycleMu.Unlock()
 	_ = t.joinPaused(pending, fresh)
 }
 

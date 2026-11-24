@@ -48,9 +48,6 @@ func peerWakeTestOwner(t *testing.T, finished bool) (*owner, *teamStore, teamMem
 func TestPeerWakeRequiresLiveAndStoredUnpausedState(t *testing.T) {
 	owner, store, _, recipient, r, previous, started, release := peerWakeTestOwner(t, true)
 	defer close(release)
-	if _, _, err := owner.tree.resume(nil, previous, "ordinary resume"); err == nil {
-		t.Fatal("ordinary child control resumed a teammate")
-	}
 	r.paused = true
 	if woke, err := owner.reservePeerWake(recipient.Ref, previous); err != nil || woke {
 		t.Fatalf("live paused member woke: %v, %v", woke, err)

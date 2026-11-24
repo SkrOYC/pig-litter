@@ -192,6 +192,7 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 	tree.execute, tree.completion, tree.changed = o.executeRun, o.sendCompletion, o.widget
 	tree.teamFinished, tree.teamCanceled, tree.teamPaused = o.finishTeamMember, o.cancelTeamMember, o.pauseTeamMember
+	tree.teamResuming = o.resumeTeamMember
 	if err := o.restoreTeamStore(); err != nil {
 		tree.close()
 		services.Close()
@@ -474,7 +475,7 @@ func (o *owner) settleAck(key *callTicket, failed bool) {
 		return
 	}
 	ack.once.Do(func() {
-		if !failed && ack.run.owner.team != nil {
+		if !failed && ack.run.owner.team != nil && ack.operation == "team_spawn" {
 			o.ackWG.Add(1)
 			go o.activateTeamWhenStored(key, ack.run)
 			close(ack.done)
