@@ -16,7 +16,7 @@ func TestTeamResumeRetainsIdentityAndPause(t *testing.T) {
 	for _, paused := range []bool{false, true} {
 		t.Run(map[bool]string{false: "idle", true: "paused"}[paused], func(t *testing.T) {
 			store, _, root, workspace := storeTestOpen(t)
-			member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "sender", workspace)
+			member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "sender", workspace, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -36,6 +36,7 @@ func TestTeamResumeRetainsIdentityAndPause(t *testing.T) {
 				o.teamStore = store
 				tree.teamFinished, tree.teamPaused, tree.teamResuming = o.finishTeamMember, o.pauseTeamMember, o.resumeTeamMember
 				tree.finish(previous.owner, previous, Outcome{State: Completed, Text: "before resume"})
+				tree.teamWG.Wait()
 				if paused {
 					if _, _, err := tree.stop(nil, previous); err != nil {
 						exerciseErr = err
@@ -78,9 +79,17 @@ func TestTeamResumeRetainsIdentityAndPause(t *testing.T) {
 				if err != nil || len(running) != 1 || running[0].State != "running" || running[0].Ref != member.Ref {
 					exerciseErr = fmt.Errorf("resumed roster: %#v, %v", running, err)
 				}
-			}, func(method string, _ json.RawMessage) json.RawMessage {
+			}, func(method string, raw json.RawMessage) json.RawMessage {
 				if method == "sessionRead" {
+					var query struct{ Method string }
+					_ = json.Unmarshal(raw, &query)
+					if query.Method == "getEntries" {
+						return json.RawMessage(`[]`)
+					}
 					return json.RawMessage(`"fixture"`)
+				}
+				if method == "sendMessage" {
+					return json.RawMessage(`{}`)
 				}
 				t.Errorf("unexpected host method %s", method)
 				return nil
@@ -94,7 +103,7 @@ func TestTeamResumeRetainsIdentityAndPause(t *testing.T) {
 
 func TestTeamResumeChecksIdentityAndRetainedState(t *testing.T) {
 	store, _, _, workspace := storeTestOpen(t)
-	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "sender", workspace)
+	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "sender", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +146,7 @@ func TestTeamResumeChecksIdentityAndRetainedState(t *testing.T) {
 
 func TestTeamResumeRequiresParentAndSettlement(t *testing.T) {
 	store, _, root, workspace := storeTestOpen(t)
-	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "sender", workspace)
+	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "sender", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +220,7 @@ func TestTeamResumeChecksOwnerAndIsolatedWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	member, err := store.Reserve(id, string(storeTestUUID(3)), "sender", workspace)
+	member, err := store.Reserve(id, string(storeTestUUID(3)), "sender", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +294,7 @@ func TestTeamResumeAllowsInterruptedAndUnavailableRecovery(t *testing.T) {
 	for _, state := range []string{"interrupted", "unavailable"} {
 		t.Run(state, func(t *testing.T) {
 			store, _, _, workspace := storeTestOpen(t)
-			member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "sender", workspace)
+			member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "sender", workspace, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -309,7 +318,7 @@ func TestTeamResumeAllowsInterruptedAndUnavailableRecovery(t *testing.T) {
 
 func TestTeamResumeSerializesPauseWithActivation(t *testing.T) {
 	store, _, root, workspace := storeTestOpen(t)
-	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "sender", workspace)
+	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "sender", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,6 +338,7 @@ func TestTeamResumeSerializesPauseWithActivation(t *testing.T) {
 		o.teamStore = store
 		tree.teamFinished, tree.teamPaused = o.finishTeamMember, o.pauseTeamMember
 		tree.finish(previous.owner, previous, Outcome{State: Completed})
+		tree.teamWG.Wait()
 		_, selected, err := tree.resume(nil, previous, "continue")
 		if err != nil {
 			exerciseErr = err
@@ -369,18 +379,194 @@ func TestTeamResumeSerializesPauseWithActivation(t *testing.T) {
 			exerciseErr = err
 			return
 		}
+		tree.teamWG.Wait()
 		_, roster, err := store.Snapshot()
 		if err != nil || len(roster) != 1 || roster[0].Ref != member.Ref || roster[0].State != "paused" {
 			exerciseErr = fmt.Errorf("pause after activation: %#v, %v", roster, err)
 		}
-	}, func(method string, _ json.RawMessage) json.RawMessage {
+	}, func(method string, raw json.RawMessage) json.RawMessage {
 		if method == "sessionRead" {
+			var query struct{ Method string }
+			_ = json.Unmarshal(raw, &query)
+			if query.Method == "getEntries" {
+				return json.RawMessage(`[]`)
+			}
 			return json.RawMessage(`"fixture"`)
+		}
+		if method == "sendMessage" {
+			return json.RawMessage(`{}`)
 		}
 		t.Errorf("unexpected host method %s", method)
 		return nil
 	})
 	if exerciseErr != nil {
 		t.Fatal(exerciseErr)
+	}
+}
+
+func TestTeamResumeRetainsIdentityAndChecksRoster(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		t.Run(map[bool]string{false: "idle", true: "paused"}[paused], func(t *testing.T) {
+			store, _, root, workspace := storeTestOpen(t)
+			member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "planner", workspace, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			member, err = store.Commit(member.AdmissionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tree := testTree(t, defaultConfig())
+			tree.root.id = root
+			worker := AgentDefinition{Role: "worker", Tools: []string{"read", "write"}, CanDelegate: true}
+			_, previous, err := tree.admit(admission{kind: "worker", name: member.Name, cwd: workspace.Cwd, task: "plan", agent: worker, member: &member})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var exerciseErr error
+			withCompletionHost(t, tree, func(o *owner) {
+				o.teamStore = store
+				tree.teamFinished, tree.teamPaused, tree.teamResuming = o.finishTeamMember, o.pauseTeamMember, o.resumeTeamMember
+				tree.finish(previous.owner, previous, Outcome{State: Completed, Text: "before resume"})
+				tree.teamWG.Wait()
+				if paused {
+					if _, _, err := tree.stop(nil, previous); err != nil {
+						exerciseErr = err
+						return
+					}
+				}
+				_, before, err := store.Snapshot()
+				if err != nil || len(before) != 1 {
+					exerciseErr = fmt.Errorf("initial roster: %#v, %v", before, err)
+					return
+				}
+				started, release := make(chan struct{}), make(chan struct{})
+				defer close(release)
+				tree.execute = func(_ *record, _ *run) Outcome {
+					close(started)
+					<-release
+					return Outcome{State: Completed, Text: "resumed"}
+				}
+				snapshot, selected, err := tree.resume(nil, previous, "continue")
+				if err != nil || snapshot.ID != member.Ref.ID || selected == previous || selected.owner.team.Ref != member.Ref {
+					exerciseErr = fmt.Errorf("resume reservation: %#v, %v", snapshot, err)
+					return
+				}
+				_, pending, err := store.Snapshot()
+				if err != nil || len(pending) != 1 || pending[0].State != before[0].State {
+					exerciseErr = fmt.Errorf("unacknowledged resume changed the roster: %#v, %v", pending, err)
+					return
+				}
+				if err := tree.activate(selected); err != nil {
+					exerciseErr = err
+					return
+				}
+				select {
+				case <-started:
+				case <-time.After(5 * time.Second):
+					exerciseErr = fmt.Errorf("resumed teammate did not start")
+					return
+				}
+				_, running, err := store.Snapshot()
+				if err != nil || len(running) != 1 || running[0].State != "running" || running[0].Ref != member.Ref {
+					exerciseErr = fmt.Errorf("resumed roster: %#v, %v", running, err)
+					return
+				}
+				if granted, err := store.planGranted(member.Ref); err != nil || granted {
+					exerciseErr = fmt.Errorf("resume opened the planning gate: %v, %v", granted, err)
+				}
+			}, func(method string, raw json.RawMessage) json.RawMessage {
+				if method == "sessionRead" {
+					var query struct{ Method string }
+					_ = json.Unmarshal(raw, &query)
+					if query.Method == "getEntries" {
+						return json.RawMessage(`[]`)
+					}
+					return json.RawMessage(`"fixture"`)
+				}
+				if method == "sendMessage" {
+					return json.RawMessage(`{}`)
+				}
+				t.Errorf("unexpected host method %s", method)
+				return nil
+			})
+			if exerciseErr != nil {
+				t.Fatal(exerciseErr)
+			}
+		})
+	}
+}
+
+func TestTeamResumeRejectsChangedModeAndForeignAuthority(t *testing.T) {
+	store, _, root, workspace := storeTestOpen(t)
+	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "planner", workspace, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err = store.Commit(member.AdmissionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PauseMember(member.Ref); err != nil {
+		t.Fatal(err)
+	}
+	changed := member
+	changed.PlanRequired = false
+	if err := store.ResumeMember(changed, true); err == nil {
+		t.Fatal("resume accepted a changed planning mode")
+	}
+	_, members, err := store.Snapshot()
+	if err != nil || len(members) != 1 || members[0].State != "paused" {
+		t.Fatalf("rejected resume changed the roster: %#v, %v", members, err)
+	}
+	tree := testTree(t, defaultConfig())
+	tree.root.id = root
+	worker := AgentDefinition{Role: "worker", Tools: []string{"read"}, CanDelegate: true}
+	_, teammate, err := tree.admit(admission{kind: "worker", name: member.Name, cwd: workspace.Cwd, task: "plan", agent: worker, member: &member})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, outsider, err := tree.admit(admission{kind: "worker", name: "outsider", cwd: t.TempDir(), task: "other", agent: worker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree.finish(teammate.owner, teammate, Outcome{State: Completed})
+	close(teammate.teamFinishDone)
+	if _, _, err := tree.resume(outsider, teammate, "resume someone else"); err == nil {
+		t.Fatal("another child resumed a teammate")
+	}
+	if _, err := tree.wait(context.Background(), teammate, 1000); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTeamResumeRecoveredInterruptedStatesNeedExplicitPauseIntent(t *testing.T) {
+	for _, state := range []string{"paused", "interrupted", "unavailable"} {
+		t.Run(state, func(t *testing.T) {
+			store, _, _, workspace := storeTestOpen(t)
+			member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "planner", workspace, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			member, err = store.Commit(member.AdmissionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SetState(member.Ref, state); err != nil {
+				t.Fatal(err)
+			}
+			if state == "paused" {
+				if err := store.ResumeMember(member, false); err == nil {
+					t.Fatal("resume ignored the retained pause")
+				}
+			}
+			if err := store.ResumeMember(member, true); err != nil {
+				t.Fatalf("explicit resume from %s failed: %v", state, err)
+			}
+			_, members, err := store.Snapshot()
+			if err != nil || len(members) != 1 || members[0].State != "running" || members[0].Ref != member.Ref {
+				t.Fatalf("resumed roster = %#v, %v", members, err)
+			}
+		})
 	}
 }

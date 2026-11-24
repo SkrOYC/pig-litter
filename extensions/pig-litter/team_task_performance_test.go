@@ -29,7 +29,7 @@ func BenchmarkP05TaskOperations(b *testing.B) {
 	members := make([]MemberRef, 4)
 	for index := range members {
 		admission := string(storeTestUUID(index + 20))
-		if _, err := store.Reserve(storeTestUUID(index+10), admission, fmt.Sprintf("worker-%d", index), workspace); err != nil {
+		if _, err := store.Reserve(storeTestUUID(index+10), admission, fmt.Sprintf("worker-%d", index), workspace, false); err != nil {
 			b.Fatal(err)
 		}
 		member, err := store.Commit(admission)

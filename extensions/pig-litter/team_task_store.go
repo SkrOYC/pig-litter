@@ -298,6 +298,22 @@ func (s *teamStore) editTask(id TaskID, edit teamTaskEdit, actor *MemberRef) (te
 	return result, state, err
 }
 
+func (s *teamStore) memberTasks(ref MemberRef) ([]teamTaskView, uint64, error) {
+	var tasks []teamTaskView
+	var revision uint64
+	err := s.taskTransaction(func(graph *teamTaskGraph) (bool, error) {
+		tasks = []teamTaskView{}
+		for i, task := range graph.Tasks {
+			if task.Owner != nil && *task.Owner == ref && task.State != TaskCompleted {
+				tasks = append(tasks, graph.view(i))
+			}
+		}
+		revision = graph.Revision
+		return false, nil
+	})
+	return tasks, revision, err
+}
+
 func (s *teamStore) getTask(id TaskID) (teamTaskView, error) {
 	var result teamTaskView
 	err := s.taskTransaction(func(graph *teamTaskGraph) (bool, error) {
@@ -343,29 +359,52 @@ func (s *teamStore) claimTask(id TaskID, member MemberRef, explicit bool) (teamT
 	return result, state, err
 }
 
-func (s *teamStore) completeTask(id TaskID, actor *MemberRef) (teamTaskView, string, error) {
+func completionStatus(graph *teamTaskGraph, id TaskID, actor *MemberRef) (teamTaskView, string, error) {
+	index := graph.find(id)
+	if index < 0 {
+		return teamTaskView{}, "", reject("rejected", "task is unavailable in this team")
+	}
+	result := graph.view(index)
+	if actor != nil && (result.Owner == nil || *result.Owner != *actor) {
+		return result, "", reject("permission_denied", "only the task owner or team lead can complete it")
+	}
+	if result.State == TaskCompleted {
+		return result, "already_completed", nil
+	}
+	if result.Blocked {
+		return result, "blocked", nil
+	}
+	return result, "ready", nil
+}
+
+func (s *teamStore) taskCompletionCandidate(id TaskID, actor *MemberRef) (teamTaskView, string, uint64, error) {
+	var result teamTaskView
+	var state string
+	var revision uint64
+	err := s.taskTransaction(func(graph *teamTaskGraph) (bool, error) {
+		var err error
+		result, state, err = completionStatus(graph, id, actor)
+		revision = graph.Revision
+		return false, err
+	})
+	return result, state, revision, err
+}
+
+func (s *teamStore) completeTask(id TaskID, actor *MemberRef, expected *uint64) (teamTaskView, string, error) {
 	var result teamTaskView
 	var state string
 	err := s.taskTransaction(func(graph *teamTaskGraph) (bool, error) {
+		if expected != nil && graph.Revision != *expected {
+			return false, reject("unavailable", "task state changed while the completion policy ran")
+		}
+		var err error
+		result, state, err = completionStatus(graph, id, actor)
+		if err != nil || state != "ready" {
+			return false, err
+		}
 		index := graph.find(id)
-		if index < 0 {
-			return false, reject("rejected", "task is unavailable in this team")
-		}
-		result = graph.view(index)
-		if actor != nil && (result.Owner == nil || *result.Owner != *actor) {
-			return false, reject("permission_denied", "only the task owner or team lead can complete it")
-		}
-		if result.State == TaskCompleted {
-			state = "already_completed"
-			return false, nil
-		}
-		if result.Blocked {
-			state = "blocked"
-			return false, nil
-		}
 		graph.Tasks[index].State = TaskCompleted
-		result = graph.view(index)
-		state = "completed"
+		result, state = graph.view(index), "completed"
 		return true, nil
 	})
 	return result, state, err

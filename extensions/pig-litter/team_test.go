@@ -59,7 +59,7 @@ func TestIdleTeamPauseSurvivesLateSettlementAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"})
+	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestIdleTeamPauseSurvivesLateSettlementAndRestart(t *testing.T) {
 	}
 	tree := newTree(defaultConfig())
 	tree.root.id = root
-	owner := &owner{tree: tree, teamStore: store}
+	owner := &owner{state: &extensionState{}, tree: tree, teamStore: store}
 	tree.teamPaused = owner.pauseTeamMember
 	settling := make(chan struct{})
 	release := make(chan struct{})
@@ -106,6 +106,10 @@ func TestIdleTeamPauseSurvivesLateSettlementAndRestart(t *testing.T) {
 	if err != nil || len(roster) != 1 || roster[0].State != "paused" {
 		t.Fatalf("late settlement overwrote the pause: %#v, %v", roster, err)
 	}
+	lifecycle, err := store.readLifecycle(member.Ref)
+	if err != nil || len(lifecycle.Turns) != 1 || lifecycle.Turns[0].Kind != "interrupted" {
+		t.Fatalf("late settlement reported the wrong notice: %#v, %v", lifecycle.Turns, err)
+	}
 	tree.close()
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -127,7 +131,7 @@ func TestIdleTeamPauseReportsStorageFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"})
+	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +168,7 @@ func TestTeamRetirementReportsSyncFailureAndReleasesLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"})
+	member, err := store.Reserve("018f0000-0000-7000-8000-000000000002", "018f0000-0000-7000-8000-000000000003", "Alice", WorkspacePolicy{Kind: "shared_checkout", Cwd: "/work"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +355,7 @@ func TestIsolatedWorkspaceRollbackPreservesDirtyOrAmbiguousWork(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			member, err := store.Reserve(id, "018f0000-0000-7000-8000-000000000003", "Alice", workspace)
+			member, err := store.Reserve(id, "018f0000-0000-7000-8000-000000000003", "Alice", workspace, false)
 			if err != nil {
 				t.Fatal(err)
 			}

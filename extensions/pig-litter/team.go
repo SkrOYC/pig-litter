@@ -44,11 +44,12 @@ type WorkspacePolicy struct {
 }
 
 type teamMember struct {
-	Ref         MemberRef       `json:"ref"`
-	AdmissionID string          `json:"admissionId"`
-	Name        string          `json:"name"`
-	Workspace   WorkspacePolicy `json:"workspace"`
-	State       string          `json:"state"`
+	Ref          MemberRef       `json:"ref"`
+	AdmissionID  string          `json:"admissionId"`
+	Name         string          `json:"name"`
+	Workspace    WorkspacePolicy `json:"workspace"`
+	State        string          `json:"state"`
+	PlanRequired bool            `json:"planRequired,omitempty"`
 }
 
 var teamNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
@@ -308,6 +309,7 @@ func (o *owner) finishTeamMember(r *record, selected *run, outcome Outcome) erro
 	o.tree.mu.Lock()
 	current := o.tree.records[r.id] == r && r.run == selected
 	paused := r.paused
+	closing := r.controlPhase == "closing" && selected.shutdown != nil
 	o.tree.mu.Unlock()
 	if !current {
 		return nil
@@ -317,7 +319,9 @@ func (o *owner) finishTeamMember(r *record, selected *run, outcome Outcome) erro
 		return err
 	}
 	state := "unavailable"
-	if outcome.State == Completed {
+	if closing && !paused {
+		state = "closing"
+	} else if outcome.State == Completed {
 		state = "idle"
 	}
 	if paused || outcome.State == Paused {
@@ -326,6 +330,18 @@ func (o *owner) finishTeamMember(r *record, selected *run, outcome Outcome) erro
 	if err := store.SetState(r.team.Ref, state); err != nil {
 		_ = o.rollbackTeamMember(r.team)
 		return err
+	}
+	if !closing || paused {
+		if paused {
+			outcome.State = Paused
+		}
+		notice, created, err := store.recordTurnNotice(r.team.Ref, selected.noticeID, outcome)
+		if err != nil {
+			return err
+		}
+		if created {
+			o.routeTurnNotice(notice)
+		}
 	}
 	return nil
 }
@@ -366,6 +382,13 @@ func (o *owner) resumeTeamMember(r *record, selected *run) error {
 	store, err := o.teamStoreForRoot()
 	if err != nil {
 		return err
+	}
+	lifecycle, err := store.readLifecycle(r.team.Ref)
+	if err != nil {
+		return err
+	}
+	if lifecycle.Phase != "open" {
+		return reject("unavailable", "teammate shutdown requires recovery")
 	}
 	if err := store.ResumeMember(*r.team, selected.resumePaused); err != nil {
 		return err

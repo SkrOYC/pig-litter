@@ -43,6 +43,7 @@ type owner struct {
 	sessionID, cwd, agentDir string
 	context                  sdk.Context
 	config                   Config
+	policy                   teamPolicy
 	services                 *coding.AgentSessionServices
 	tree                     *Tree
 	rootCalls                *callScope
@@ -67,6 +68,9 @@ type owner struct {
 	persistMu                sync.Mutex
 	teamMu                   sync.Mutex
 	teamStore                *teamStore
+	controlMu                sync.Mutex
+	controlAuth              map[string]controlNotice
+	turnAuth                 map[string]turnNotice
 	widgetMu                 sync.Mutex
 	widgetStopped            bool
 	widgetUnsubscribe        func()
@@ -182,6 +186,10 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 		return nil, err
 	}
 	agentDir := configuredAgentDir()
+	policy, err := loadTeamPolicy(agentDir)
+	if err != nil {
+		return nil, err
+	}
 	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: cwd, AgentDir: agentDir, ProjectTrusted: &trusted})
 	if err != nil {
 		return nil, err
@@ -189,10 +197,11 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 	tree := newTree(config)
 	tree.root.id = ChildID(id)
 	tree.root.paused = !recover
-	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, services: services, tree: tree, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
+	o := &owner{state: s, epoch: epoch, sessionID: id, cwd: cwd, agentDir: agentDir, context: ctx, config: config, policy: policy, services: services, tree: tree, acks: map[*callTicket]*acknowledgement{}, outcomeAcks: map[*callTicket]*outcomeAcknowledgement{}}
 	tree.execute, tree.completion, tree.changed = o.executeRun, o.sendCompletion, o.widget
 	tree.teamFinished, tree.teamCanceled, tree.teamPaused = o.finishTeamMember, o.cancelTeamMember, o.pauseTeamMember
 	tree.teamResuming = o.resumeTeamMember
+	tree.teamSettled = o.settleShutdown
 	if err := o.restoreTeamStore(); err != nil {
 		tree.close()
 		services.Close()
@@ -600,7 +609,20 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	scope := &extension.ToolScope{Builtin: &allowedNames, Extensions: map[string]*[]string{extension.McpAdapterEntry: &allowedNames}}
 	options := coding.SessionStartOptions{Model: model, ResourceLoader: loader, ExtraTools: tools, AllowedTools: allowed, ToolScope: scope}
 	if teamGate != nil {
-		options.BeforeToolCall = []agent.BeforeToolCallHook{teamGate.before}
+		options.BeforeToolCall = append(options.BeforeToolCall, teamGate.before)
+	}
+	o.tree.mu.Lock()
+	teamAncestor := false
+	for ancestor := r; ancestor != nil && ancestor != o.tree.root; ancestor = ancestor.parent {
+		if ancestor.team != nil {
+			teamAncestor = true
+			break
+		}
+	}
+	o.tree.mu.Unlock()
+	if teamAncestor {
+		options.BeforeToolCall = append(options.BeforeToolCall, o.planHook(r, run))
+		options.BeforeToolCall = append(options.BeforeToolCall, o.shutdownHook(r, run))
 	}
 	var session *coding.Session
 	if run.resume {
@@ -624,6 +646,30 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.State = Unavailable
 		outcome.Error = err.Error()
 		return
+	}
+	if r.team != nil {
+		previousFinish := session.Agent().FinishTurnHook()
+		session.Agent().SetFinishTurn(func(ctx context.Context, turn agent.AgentTurnContext) (*agent.AgentTurnDecision, error) {
+			var decision *agent.AgentTurnDecision
+			var err error
+			if previousFinish != nil {
+				decision, err = previousFinish(ctx, turn)
+			}
+			if err != nil {
+				return decision, err
+			}
+			o.tree.mu.Lock()
+			closing := r.run == run && !r.paused && r.controlPhase == "closing" && run.shutdown != nil
+			if closing {
+				run.shutdown.Drained = true
+			}
+			o.tree.mu.Unlock()
+			if closing {
+				session.RequestAbort()
+				return &agent.AgentTurnDecision{Action: agent.AgentTurnEnd}, nil
+			}
+			return decision, nil
+		})
 	}
 	eventDrain := make(chan struct{})
 	go func() {
@@ -658,21 +704,27 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		o.tree.observeProgress(run, event)
 		switch event := event.(type) {
 		case agent.TurnStartEvent:
+			if r.team != nil {
+				o.observeControlNotices(r.team.Ref, "member")
+			}
 			o.startRecovery(run)
 			o.confirmCompletions(r)
 			run.mu.Lock()
 			previous := run.calls
 			run.calls = newCallScope()
+			run.planDenials = nil
 			run.mu.Unlock()
 			o.retireScope(previous)
 			observedMu.Lock()
 			turns++
+			currentTurns := turns
 			warn := turns == o.config.MaxTurns
 			if warn {
 				limitHit = true
 			}
 			observedMu.Unlock()
 			o.tree.mu.Lock()
+			run.progress.turns = currentTurns
 			if run.state == Starting {
 				run.state = Running
 			}
@@ -682,11 +734,14 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 				session.QueueSteer("<system-notice>\nYou have reached your turn allowance. Return a final response with your partial progress, remaining work, and any request for more turns. Your parent can resume this session to grant a fresh allowance.\n</system-notice>", nil)
 			}
 		case agent.TurnEndEvent:
+			if r.team != nil {
+				o.observeControlNotices(r.team.Ref, "member")
+			}
 			o.retireScope(o.callScope(run))
 			o.confirmCompletions(r)
 		case agent.ToolExecutionEndEvent:
 			o.observeCall(run, event.ToolName, event.ToolCallID, event.Result, event.IsError)
-			if event.IsError || event.Result.IsError {
+			if (event.IsError || event.Result.IsError) && !consumePlanDenial(run, event.ToolCallID, event.ToolName) {
 				observedMu.Lock()
 				if failure == "" {
 					failure = toolFailure(event.ToolName, event.Result)
@@ -695,6 +750,18 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			}
 		case agent.MessageEndEvent:
 			if event.Message.Assistant != nil {
+				calls := map[string]string{}
+				for _, block := range event.Message.Assistant.Observe().Content {
+					switch call := block.(type) {
+					case ai.ToolCall:
+						calls[call.ID] = call.Name
+					case *ai.ToolCall:
+						calls[call.ID] = call.Name
+					}
+				}
+				o.tree.mu.Lock()
+				run.batchCalls = calls
+				o.tree.mu.Unlock()
 				if teamGate != nil {
 					teamGate.observe(event.Message.Assistant)
 				}
@@ -712,6 +779,13 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	close(run.ready)
 	run.mu.Unlock()
 	r.deliveryMu.Unlock()
+	if r.team != nil {
+		var skip string
+		if run.peerWake != nil && run.peerWake.Control != nil {
+			skip = run.peerWake.Control.ID
+		}
+		o.routePendingControls(r.team.Ref, skip)
+	}
 	deliveryContext, stopDelivery := context.WithCancel(run.ctx)
 	deliveryDone := make(chan struct{})
 	go func() {
@@ -774,6 +848,14 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	}
 	outcome = outcomeFrom(terminal, baseline, session.GetSessionStats(), failure, run.ctx.Err() != nil, limitHit)
 	observedMu.Unlock()
+	o.tree.mu.Lock()
+	if run.idleRefusal != "" && outcome.State != Stopped {
+		if outcome.State == Completed {
+			outcome.State = Partial
+		}
+		outcome.Error = strings.TrimSpace(outcome.Error + " teammate idle policy refused settlement: " + run.idleRefusal)
+	}
+	o.tree.mu.Unlock()
 	return outcome
 }
 
@@ -916,6 +998,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 	})
 	ext.OnEvent("turn_start", func(ctx sdk.Context, _ map[string]any) (any, error) {
 		return state.observe(ctx, func(o *owner) (any, error) {
+			o.observeLeadControls()
 			state.mu.Lock()
 			if state.owner != o || state.epoch != o.epoch {
 				state.mu.Unlock()
@@ -971,6 +1054,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 	})
 	ext.OnEvent("agent_settled", func(ctx sdk.Context, _ map[string]any) (any, error) {
 		return state.observe(ctx, func(o *owner) (any, error) {
+			o.observeLeadControls()
 			peerErr := o.observeRootPeers()
 			o.tree.root.markAgentEnded(false)
 			o.settleRoot()

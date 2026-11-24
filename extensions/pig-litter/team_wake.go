@@ -2,6 +2,7 @@ package piglitter
 
 import (
 	"errors"
+	"reflect"
 
 	"github.com/MichaelKinsy/PiG/coding"
 	"github.com/MichaelKinsy/PiG/coding/extension"
@@ -9,7 +10,17 @@ import (
 
 var errPeerWakeBlocked = errors.New("peer wake is waiting for room")
 
+type controlWakeBlocked struct {
+	err   error
+	waits []<-chan struct{}
+}
+
+func (e controlWakeBlocked) Error() string { return e.err.Error() }
+
 func (o *owner) sendPeerWake(session *coding.Session, r *record, selected *run) error {
+	if selected.peerWake != nil && selected.peerWake.Control != nil {
+		return o.sendControlWake(session, r, selected, *selected.peerWake.Control)
+	}
 	store, ok := o.peerRunStore(r, selected)
 	if !ok || selected.peerWake == nil || selected.peerWake.Recipient != r.team.Ref {
 		return reject("unavailable", "peer wake is no longer current")
@@ -78,7 +89,7 @@ func (o *owner) drivePeerWake(recipient MemberRef) {
 			return
 		}
 		version, selected, roomChanged := r.peerWakeVersion, r.run, t.roomChanged
-		if r.paused || t.root.paused || selected == nil {
+		if r.paused || r.controlPhase == "closing" || r.controlPhase == "terminated" || r.controlPhase == "recovery_pending" || t.root.paused || selected == nil {
 			r.peerWakePending = false
 			t.mu.Unlock()
 			return
@@ -119,6 +130,18 @@ func (o *owner) drivePeerWake(recipient MemberRef) {
 					return
 				}
 			}
+			if blocked, ok := err.(controlWakeBlocked); ok {
+				cases := make([]reflect.SelectCase, 1, len(blocked.waits)+1)
+				cases[0] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(t.ctx.Done())}
+				for _, wait := range blocked.waits {
+					cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(wait)})
+				}
+				if chosen, _, _ := reflect.Select(cases); chosen == 0 {
+					o.finishPeerWakeRequest(recipient, version)
+					return
+				}
+				continue
+			}
 		}
 		if o.finishPeerWakeRequest(recipient, version) {
 			return
@@ -144,7 +167,12 @@ func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error
 		return false, nil
 	}
 	eligible, err := store.peerWakeEligible(recipient)
-	if err != nil || !eligible {
+	if err != nil {
+		t.lifecycleMu.Unlock()
+		return false, err
+	}
+	control, err := o.pendingControlWake(store, recipient)
+	if err != nil || !eligible && control == nil {
 		t.lifecycleMu.Unlock()
 		return false, err
 	}
@@ -156,12 +184,32 @@ func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error
 		return false, nil
 	}
 	if err := t.roomLocked(r.parentID(), !r.readOnly, r.cwd, r.id, r.team); err != nil {
+		blocked := controlWakeBlocked{err: err}
+		if control != nil {
+			for _, id := range t.order {
+				run := t.records[id].run
+				if run == previous {
+					continue
+				}
+				select {
+				case <-run.done:
+				default:
+					blocked.waits = append(blocked.waits, run.done)
+				}
+			}
+		}
 		t.mu.Unlock()
 		t.lifecycleMu.Unlock()
+		if len(blocked.waits) != 0 {
+			return false, blocked
+		}
+		if control != nil {
+			return false, err
+		}
 		return false, errPeerWakeBlocked
 	}
 	selected := t.newRunLocked(Ref{r.id}, "")
-	selected.owner, selected.resume, selected.peerWake = r, true, &peerWakeInput{Recipient: recipient}
+	selected.owner, selected.resume, selected.peerWake = r, true, &peerWakeInput{Recipient: recipient, Control: control}
 	r.previous, r.run = previous, selected
 	t.live++
 	t.mu.Unlock()
