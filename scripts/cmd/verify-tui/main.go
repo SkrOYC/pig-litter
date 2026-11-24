@@ -322,7 +322,7 @@ func parseOptions(args []string) (options, error) {
 	var result options
 	flags := flag.NewFlagSet("go-tui-proof", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	flags.StringVar(&result.scenario, "scenario", "all", "all, receipt-control, chain, team-preview, team-message, team-controls, team-tasks, team-pause, host-idle-message, host-busy-message, or host-tool-veto")
+	flags.StringVar(&result.scenario, "scenario", "all", "all, receipt-control, chain, team-preview, team-message, team-controls, team-tasks, team-pause, team-plans, host-idle-message, host-busy-message, or host-tool-veto")
 	caseValue := flags.String("case", "", "direct, source, piglet, or unselected")
 	flags.StringVar(&result.pigPath, "pig", "", "absolute path to the released PiG executable")
 	flags.StringVar(&result.extension, "extension", "", "absolute path to the prebuilt pig-litter executable")
@@ -342,7 +342,7 @@ func parseOptions(args []string) (options, error) {
 	if flags.NArg() != 0 {
 		return options{}, errors.New("positional arguments are not supported")
 	}
-	if result.scenario != "all" && result.scenario != "receipt-control" && result.scenario != "chain" && result.scenario != "team-preview" && result.scenario != "team-message" && result.scenario != "team-controls" && result.scenario != "team-tasks" && result.scenario != "team-pause" && result.scenario != "host-idle-message" && result.scenario != "host-busy-message" && result.scenario != "host-tool-veto" {
+	if result.scenario != "all" && result.scenario != "receipt-control" && result.scenario != "chain" && result.scenario != "team-preview" && result.scenario != "team-message" && result.scenario != "team-controls" && result.scenario != "team-tasks" && result.scenario != "team-pause" && result.scenario != "team-plans" && result.scenario != "host-idle-message" && result.scenario != "host-busy-message" && result.scenario != "host-tool-veto" {
 		return options{}, errors.New("unknown terminal scenario")
 	}
 	result.caseName = runCase(*caseValue)
@@ -519,7 +519,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	}
 	childEnv := fixtureEnvironment(options.pigPath, tmuxPath, home, pigHome, agentDir, scratch)
 	resumeTrace := ""
-	if options.scenario == "team-preview" || options.scenario == "team-message" || options.scenario == "team-controls" || options.scenario == "team-tasks" || options.scenario == "team-pause" {
+	if options.scenario == "team-preview" || options.scenario == "team-message" || options.scenario == "team-controls" || options.scenario == "team-tasks" || options.scenario == "team-pause" || options.scenario == "team-plans" {
 		resumeTrace = filepath.Join(scratch, "resume-trace.log")
 		if err := os.WriteFile(resumeTrace, nil, 0o600); err != nil {
 			return evidencePath, err
@@ -1183,6 +1183,16 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	}
 	if options.scenario == "team-pause" {
 		if err := panel.teamPauseProof(media); err != nil {
+			return evidencePath, err
+		}
+		if err := exitHost(); err != nil {
+			return evidencePath, err
+		}
+		paneExited = true
+		return evidencePath, nil
+	}
+	if options.scenario == "team-plans" {
+		if err := panel.teamPlansProof(media); err != nil {
 			return evidencePath, err
 		}
 		if err := exitHost(); err != nil {
@@ -2308,7 +2318,7 @@ func latestRootPrompt(messages []openAIMessage) (marker struct{ marker, text str
 		lines := strings.Split(strings.ReplaceAll(contentText(messages[index].Content), "\r\n", "\n"), "\n")
 		for lineIndex := len(lines) - 1; lineIndex >= 0; lineIndex-- {
 			line := strings.TrimSpace(lines[lineIndex])
-			if line == "START_WIDGET" || line == "UNSELECTED_WIDGET" || line == "QUICK_WIDGET" || line == "RECEIPT_WIDGET" || line == "P02_BUSY_HOLD" || line == "P02_HOOK_ALLOW" || line == "P02_HOOK_DENY" || line == "P07_TEAM_PREVIEW" || line == "P07_TASK_CONTROL" || line == "P07_TEAM_MESSAGE_SETUP" || line == "CHAIN_WIDGET" || line == "ROOT_NOTICE_FIRST" || line == "ROOT_NOTICE_SECOND" || line == "ROOT_RESTART_FIRST" || line == "ROOT_RESTART_SECOND" || line == "ROOT_RESTART_THIRD" || line == "NEW_ROOT_HEADER" || line == "COLD_ROOT_HEADER" {
+			if line == "START_WIDGET" || line == "UNSELECTED_WIDGET" || line == "QUICK_WIDGET" || line == "RECEIPT_WIDGET" || line == "P02_BUSY_HOLD" || line == "P02_HOOK_ALLOW" || line == "P02_HOOK_DENY" || line == "P07_TEAM_PREVIEW" || line == "P07_TASK_CONTROL" || line == "P07_PLAN_CONTROL" || line == "P07_TEAM_MESSAGE_SETUP" || line == "CHAIN_WIDGET" || line == "ROOT_NOTICE_FIRST" || line == "ROOT_NOTICE_SECOND" || line == "ROOT_RESTART_FIRST" || line == "ROOT_RESTART_SECOND" || line == "ROOT_RESTART_THIRD" || line == "NEW_ROOT_HEADER" || line == "COLD_ROOT_HEADER" {
 				return struct{ marker, text string }{marker: line, text: line}
 			}
 			if strings.HasPrefix(line, "STOP_WIDGET ") {

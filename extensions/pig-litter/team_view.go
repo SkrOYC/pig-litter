@@ -63,9 +63,11 @@ type teamViewFrame struct {
 	Members          []teamMemberView
 	Reservations     []teamMember
 	Tasks            []teamTaskView
+	Plans            []planView
 	Assigned         map[MemberRef][]int
 	RosterHealth     viewHealth
 	TaskHealth       viewHealth
+	PlanHealth       viewHealth
 	PreferenceHealth viewHealth
 	Preference       *MemberRef
 	PreferenceLoaded bool
@@ -84,6 +86,9 @@ type teamView struct {
 	inspect    MemberRef
 	wake       chan struct{}
 	history    chan struct{}
+	plans      chan struct{}
+	watchPlans bool
+	planEpoch  uint64
 	joined     chan struct{}
 	callbacks  sync.WaitGroup
 	closed     bool
@@ -91,9 +96,10 @@ type teamView struct {
 
 func newTeamView(ctx context.Context, owner *owner, invalidate func()) *teamView {
 	ctx, cancel := context.WithCancel(ctx)
-	v := &teamView{owner: owner, ctx: ctx, cancel: cancel, invalidate: invalidate, frame: &teamViewFrame{RosterHealth: viewHealth{Status: "loading"}, TaskHealth: viewHealth{Status: "loading"}}, wake: make(chan struct{}, 1), history: make(chan struct{}, 1), joined: make(chan struct{})}
+	v := &teamView{owner: owner, ctx: ctx, cancel: cancel, invalidate: invalidate, frame: &teamViewFrame{RosterHealth: viewHealth{Status: "loading"}, TaskHealth: viewHealth{Status: "loading"}, PlanHealth: viewHealth{Status: "loading"}}, wake: make(chan struct{}, 1), history: make(chan struct{}, 1), plans: make(chan struct{}, 1), joined: make(chan struct{})}
 	go v.collect()
 	go v.inspectLoop()
+	go v.planLoop()
 	return v
 }
 
@@ -162,6 +168,9 @@ func (v *teamView) publish(frame *teamViewFrame) {
 		return
 	}
 	frame.Transcript = v.frame.Transcript
+	if frame.Team != nil && v.frame.Team != nil && *frame.Team == *v.frame.Team {
+		frame.Plans, frame.PlanHealth = v.frame.Plans, v.frame.PlanHealth
+	}
 	v.frame = frame
 	v.owner.state.mu.Unlock()
 	v.mu.Unlock()
@@ -183,6 +192,7 @@ func (v *teamView) collect() {
 	var lastSaved *MemberRef
 	for {
 		v.refresh(&lastSaved)
+		v.queuePlans()
 		select {
 		case <-v.ctx.Done():
 			v.saveSelection(&lastSaved)
@@ -220,7 +230,7 @@ func (v *teamView) refresh(lastSaved **MemberRef) {
 		return
 	}
 	if frame.Team == nil || *frame.Team != team {
-		frame = teamViewFrame{Team: &team, TaskHealth: viewHealth{Status: "loading"}}
+		frame = teamViewFrame{Team: &team, TaskHealth: viewHealth{Status: "loading"}, PlanHealth: viewHealth{Status: "loading"}}
 		*lastSaved = nil
 	}
 	frame.Team = &team

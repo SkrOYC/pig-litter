@@ -25,6 +25,9 @@ const (
 	panelTranscript
 	panelTasks
 	panelTaskDetail
+	panelPlans
+	panelPlanDetail
+	panelPlanReject
 )
 
 type panelChild struct {
@@ -72,6 +75,11 @@ type childPanel struct {
 	taskTop            int
 	tasksReturn        panelMode
 	tasksReturnScroll  int
+	plan               PlanRequestID
+	planSelected       bool
+	planTop            int
+	plansReturn        panelMode
+	plansReturnScroll  int
 }
 
 func (t *Tree) panelChildren() []panelChild {
@@ -211,7 +219,7 @@ func (p *childPanel) receive() {
 			p.feedback = "Action failed | " + result.err.Error()
 		} else {
 			p.feedback = result.feedback
-			if p.mode == panelMessage || p.mode == panelResume {
+			if p.mode == panelMessage || p.mode == panelResume || p.mode == panelPlanReject {
 				p.mode = p.previous
 				p.draft, p.cursor = "", 0
 				p.messageTarget = nil
@@ -521,6 +529,10 @@ func (p *childPanel) HandleInput(data string) (sdk.RemoteComponentResult, error)
 func (p *childPanel) composerInput(data string) {
 	if panelKeyMatches(data, "tui.input.submit") {
 		if strings.TrimSpace(p.draft) != "" {
+			if p.mode == panelPlanReject {
+				p.decideSelectedPlan(p.team.Snapshot(), "reject", p.draft)
+				return
+			}
 			kind := humanMessage
 			if p.mode == panelResume {
 				kind = humanResume
@@ -662,6 +674,20 @@ func (p *childPanel) taskSelection(frame *teamViewFrame) int {
 	return slices.IndexFunc(frame.Tasks, func(task teamTaskView) bool { return task.ID == p.task })
 }
 
+func (p *childPanel) planSelection(frame *teamViewFrame) int {
+	if !p.planSelected && len(frame.Plans) != 0 {
+		index := slices.IndexFunc(frame.Plans, func(plan planView) bool { return plan.Request.State == "pending" })
+		if index < 0 {
+			index = 0
+		}
+		p.plan, p.planSelected = frame.Plans[index].Request.ID, true
+	}
+	if !p.planSelected {
+		return -1
+	}
+	return slices.IndexFunc(frame.Plans, func(plan planView) bool { return plan.Request.ID == p.plan })
+}
+
 func (p *childPanel) renderTeam(width int) []string {
 	frame := p.team.Snapshot()
 	index := p.teamSelection(frame)
@@ -670,17 +696,24 @@ func (p *childPanel) renderTeam(width int) []string {
 		height = 24
 	}
 	budget := max(1, height-8)
-	legend := []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " detail  v report  t transcript", "m message  p pause subtree  k all tasks  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " close"}
-	if p.mode == panelMessage {
+	legend := []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " detail  v report  t transcript", "m message  p pause subtree  k tasks  g plans  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " close"}
+	if p.mode == panelMessage || p.mode == panelPlanReject {
 		legend = []string{panelKeyText("tui.input.submit") + " submit  " + panelKeyText("tui.select.cancel") + " cancel", panelKeyText("tui.editor.cursorLeft") + "/" + panelKeyText("tui.editor.cursorRight") + " edit  " + panelKeyText("tui.editor.deleteToLineStart") + " clear  " + panelKeyText("tui.input.tab") + " steer/follow_up"}
+		if p.mode == panelPlanReject {
+			legend[1] = panelKeyText("tui.editor.cursorLeft") + "/" + panelKeyText("tui.editor.cursorRight") + " edit  " + panelKeyText("tui.editor.deleteToLineStart") + " clear"
+		}
 	} else if p.mode == panelTasks {
 		legend = []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " detail  c complete  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " back"}
 	} else if p.mode == panelTaskDetail {
 		legend = []string{panelMoveKeys() + " scroll  c complete  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " back"}
+	} else if p.mode == panelPlans {
+		legend = []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " detail  a approve  r reject  " + panelPageKeys() + " page  " + panelKeyText("tui.select.cancel") + " back"}
+	} else if p.mode == panelPlanDetail {
+		legend = []string{panelMoveKeys() + " scroll  a approve  r reject  " + panelPageKeys() + " page  " + panelKeyText("tui.select.cancel") + " back"}
 	} else if p.mode != panelList && p.mode != panelDetail {
 		legend = []string{panelMoveKeys() + " scroll  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " back"}
 	} else if p.mode == panelDetail {
-		legend = []string{panelMoveKeys() + " scroll  v report  t transcript", "m message  p pause subtree  k all tasks  " + panelKeyText("tui.select.cancel") + " back"}
+		legend = []string{panelMoveKeys() + " scroll  v report  t transcript", "m message  p pause subtree  k tasks  g plans  " + panelKeyText("tui.select.cancel") + " back"}
 	}
 	if width >= 80 {
 		legend = widthx.WrapTextWithAnsi(paintText(strings.Join(legend, "  "), false), width)
@@ -768,6 +801,34 @@ func (p *childPanel) renderTeam(width int) []string {
 			}
 			content = append(content, prefix+teamTaskSummary(frame, frame.Tasks[i]))
 		}
+	} else if p.mode == panelPlans {
+		planIndex := p.planSelection(frame)
+		title += fmt.Sprintf(" | plans (%d/%d)", planIndex+1, len(frame.Plans))
+		if frame.PlanHealth.Error != "" {
+			content = append(content, "Plans "+frame.PlanHealth.Status+" | "+frame.PlanHealth.Error)
+		}
+		if p.planSelected && planIndex < 0 {
+			content = append(content, "Selected plan unavailable")
+		} else if frame.PlanHealth.Status == "loading" {
+			content = append(content, "Loading plans")
+		} else if len(frame.Plans) == 0 {
+			content = append(content, "No plans")
+		}
+		rows := max(0, contentBudget-len(content))
+		p.planTop = min(p.planTop, max(0, len(frame.Plans)-rows))
+		if planIndex >= 0 && planIndex < p.planTop {
+			p.planTop = planIndex
+		}
+		if rows > 0 && planIndex >= p.planTop+rows {
+			p.planTop = planIndex - rows + 1
+		}
+		for i := p.planTop; i < min(len(frame.Plans), p.planTop+rows); i++ {
+			prefix := "  "
+			if i == planIndex {
+				prefix = "> "
+			}
+			content = append(content, prefix+teamPlanSummary(frame, frame.Plans[i]))
+		}
 	} else {
 		switch p.mode {
 		case panelDetail:
@@ -787,6 +848,17 @@ func (p *childPanel) renderTeam(width int) []string {
 			} else {
 				content = toolPaintRows(teamTaskDetail(frame, frame.Tasks[taskIndex]), "", width)
 			}
+		case panelPlanDetail:
+			title += " | plan detail"
+			planIndex := p.planSelection(frame)
+			if planIndex < 0 {
+				content = []string{"Selected plan unavailable"}
+			} else {
+				content = toolPaintRows(teamPlanDetail(frame, frame.Plans[planIndex]), "", width)
+			}
+		case panelPlanReject:
+			title += " | reject plan"
+			content = []string{fmt.Sprintf("Reject plan #%d", p.plan.Sequence), "Enter feedback for the teammate", p.draftLine(width)}
 		case panelMessage:
 			title += " | message"
 			content = []string{"Message mode " + p.messageMode}
@@ -799,7 +871,7 @@ func (p *childPanel) renderTeam(width int) []string {
 		for _, section := range []struct {
 			name   string
 			health viewHealth
-		}{{"Roster", frame.RosterHealth}, {"Tasks", frame.TaskHealth}, {"Selection", frame.PreferenceHealth}} {
+		}{{"Roster", frame.RosterHealth}, {"Tasks", frame.TaskHealth}, {"Plans", frame.PlanHealth}, {"Selection", frame.PreferenceHealth}} {
 			if section.health.Error != "" {
 				issues = append(issues, section.name+" "+section.health.Status+" | "+section.health.Error)
 			}
@@ -988,7 +1060,7 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 			return sdk.RemoteComponentResult{Done: true}
 		case panelReport, panelTranscript:
 			p.mode, p.scroll = p.previous, p.previousScroll
-		case panelMessage:
+		case panelMessage, panelPlanReject:
 			if p.pendingCancel != nil {
 				p.pendingCancel()
 			}
@@ -998,6 +1070,11 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 			p.mode, p.scroll = p.tasksReturn, p.tasksReturnScroll
 		case panelTaskDetail:
 			p.mode, p.scroll = panelTasks, 0
+		case panelPlans:
+			p.team.StopWatchingPlans()
+			p.mode, p.scroll = p.plansReturn, p.plansReturnScroll
+		case panelPlanDetail:
+			p.mode, p.scroll = panelPlans, 0
 		default:
 			p.mode, p.scroll = panelList, 0
 		}
@@ -1006,7 +1083,7 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 	if p.closed || p.pending != nil {
 		return sdk.RemoteComponentResult{}
 	}
-	if p.mode == panelMessage {
+	if p.mode == panelMessage || p.mode == panelPlanReject {
 		p.composerInput(data)
 		return sdk.RemoteComponentResult{}
 	}
@@ -1050,6 +1127,17 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 				taskIndex = min(max(0, taskIndex+step), len(frame.Tasks)-1)
 			}
 			p.task, p.taskSelected = frame.Tasks[taskIndex].ID, true
+		} else if p.mode == panelPlans && len(frame.Plans) != 0 {
+			planIndex := p.planSelection(frame)
+			if planIndex < 0 {
+				planIndex = 0
+				if step < 0 {
+					planIndex = len(frame.Plans) - 1
+				}
+			} else {
+				planIndex = min(max(0, planIndex+step), len(frame.Plans)-1)
+			}
+			p.plan, p.planSelected = frame.Plans[planIndex].Request.ID, true
 		} else {
 			p.scroll = max(0, p.renderedScroll+step)
 		}
@@ -1060,6 +1148,13 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 		p.mode, p.scroll, p.renderedScroll = panelTasks, 0, 0
 		return sdk.RemoteComponentResult{}
 	}
+	if key == "g" && (p.mode == panelList || p.mode == panelDetail) {
+		p.plansReturn, p.plansReturnScroll = p.mode, p.scroll
+		p.mode, p.scroll, p.renderedScroll = panelPlans, 0, 0
+		p.feedback = ""
+		p.team.WatchPlans()
+		return sdk.RemoteComponentResult{}
+	}
 	if p.mode == panelTasks && panelKeyMatches(data, "tui.select.confirm") {
 		if p.taskSelection(frame) >= 0 {
 			p.mode, p.scroll, p.renderedScroll = panelTaskDetail, 0, 0
@@ -1068,6 +1163,27 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 	}
 	if key == "c" && (p.mode == panelTasks || p.mode == panelTaskDetail) {
 		p.completeSelectedTask(frame)
+		return sdk.RemoteComponentResult{}
+	}
+	if p.mode == panelPlans && panelKeyMatches(data, "tui.select.confirm") {
+		if p.planSelection(frame) >= 0 {
+			p.mode, p.scroll, p.renderedScroll = panelPlanDetail, 0, 0
+		}
+		return sdk.RemoteComponentResult{}
+	}
+	if (key == "a" || key == "r") && (p.mode == panelPlans || p.mode == panelPlanDetail) {
+		planIndex := p.planSelection(frame)
+		if frame.RosterHealth.Status != "fresh" || frame.PlanHealth.Status != "fresh" || planIndex < 0 || frame.Plans[planIndex].Request.State != "pending" {
+			p.feedback = "Selected plan is unavailable or no longer pending"
+			return sdk.RemoteComponentResult{}
+		}
+		if key == "a" {
+			p.decideSelectedPlan(frame, "approve", "")
+		} else {
+			p.previous, p.previousScroll = p.mode, p.scroll
+			p.mode, p.draft, p.cursor = panelPlanReject, "", 0
+			p.feedback = ""
+		}
 		return sdk.RemoteComponentResult{}
 	}
 	if index < 0 {

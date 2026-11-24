@@ -14,20 +14,23 @@ func (o *owner) humanTeamAction(ctx context.Context, apply func(controlAuthority
 	}
 	go func() {
 		defer admitted.finish()
-		authority := controlAuthority{human: func() error {
-			if err := admitted.ctx.Err(); err != nil {
-				return err
-			}
-			o.state.mu.Lock()
-			defer o.state.mu.Unlock()
-			if o.state.owner != o || o.state.epoch != o.epoch {
-				return reject("unavailable", "the root Session retired")
-			}
-			return nil
-		}}
-		result <- apply(authority)
+		result <- apply(o.humanTeamAuthority(admitted.ctx))
 	}()
 	return result
+}
+
+func (o *owner) humanTeamAuthority(ctx context.Context) controlAuthority {
+	return controlAuthority{human: func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		o.state.mu.Lock()
+		defer o.state.mu.Unlock()
+		if o.state.owner != o || o.state.epoch != o.epoch {
+			return reject("unavailable", "the root Session retired")
+		}
+		return nil
+	}}
 }
 
 func (p *childPanel) completeSelectedTask(frame *teamViewFrame) {
@@ -51,5 +54,20 @@ func (p *childPanel) completeSelectedTask(frame *teamViewFrame) {
 			feedback = fmt.Sprintf("Task #%d is blocked by dependencies", id.Number)
 		}
 		return humanResult{feedback: feedback, err: err}
+	})
+}
+
+func (p *childPanel) decideSelectedPlan(frame *teamViewFrame, decision, reason string) {
+	index := p.planSelection(frame)
+	if frame.RosterHealth.Status != "fresh" || frame.PlanHealth.Status != "fresh" || index < 0 || frame.Plans[index].Request.State != "pending" {
+		p.feedback = "Selected plan is unavailable or no longer pending"
+		return
+	}
+	id := frame.Plans[index].Request.ID
+	ctx, cancel := context.WithCancel(p.ctx)
+	p.pendingCancel = cancel
+	p.pending = p.owner.humanTeamAction(ctx, func(authority controlAuthority) humanResult {
+		result, err := p.owner.applyPlan(authority, planCommand{Action: "decide", RequestID: id, Decision: decision, Reason: reason})
+		return humanResult{feedback: fmt.Sprintf("Plan #%d %v", id.Sequence, result["state"]), err: err}
 	})
 }
