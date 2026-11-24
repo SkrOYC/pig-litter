@@ -4214,6 +4214,86 @@ index 44bfc7f4ac49e0642bf3ccb2e9158c9d469de731..5cca1bc4f6d3e259de787e302b34568f
 +
  // TerminalInputArgs carries an ordered input and the UI values visible before its listener runs. Data and EditorText preserve UTF-16 units using WTF-8 in Go and surrogate escapes in JSON. Runtimes with synchronous local UI getters refresh those values before invoking the listener; host-query SDKs read the same live UI through their existing calls.
  type TerminalInputArgs struct {
+diff --git a/coding/extension/host/subprocess/registry_state_test.go b/coding/extension/host/subprocess/registry_state_test.go
+index 3b70d49163344cdcbcfb8471b53e709ead22d369..ee8da8f6a941b91898a76610a6aab104e710c48f 100644
+--- a/coding/extension/host/subprocess/registry_state_test.go
++++ b/coding/extension/host/subprocess/registry_state_test.go
+@@ -36,2 +36,75 @@ func TestRegistryRegistrationMergeAndOrder(t *testing.T) {
+ 	}
+ }
++
++func TestProviderRegistryReadDuringBindingReplacement(t *testing.T) {
++	b := NewUIBridge(nil)
++	state := func(id string) map[string]any {
++		return map[string]any{"models": []map[string]any{{"id": id, "provider": "fixture"}}}
++	}
++	b.SetHostAction("getModelRegistryState", func() map[string]any { return state("old") })
++	b.SetHostAction("getProviderRegistryState", func(string) map[string]any { return state("old") })
++	b.SetHostAction("getModelRegistryState", func() map[string]any { return state("new") })
++	response, err := b.HandleCall("test", &CallPayload{Method: "getModelRegistryState", Args: json.RawMessage(`{"provider":"fixture"}`)})
++	if err != nil {
++		t.Fatal(err)
++	}
++	var got struct {
++		Models []struct {
++			ID string `json:"id"`
++		} `json:"models"`
++	}
++	if err := json.Unmarshal(response.Result, &got); err != nil {
++		t.Fatal(err)
++	}
++	if len(got.Models) != 1 || got.Models[0].ID != "new" {
++		t.Fatalf("provider state during replacement = %s", response.Result)
++	}
++}
++
++func TestProviderRegistryReadAfterSetActions(t *testing.T) {
++	state := func(id string, configured bool) map[string]any {
++		return map[string]any{
++			"models":    []map[string]any{{"id": id, "provider": "fixture"}},
++			"providers": map[string]any{"fixture": map[string]any{"configured": configured}},
++		}
++	}
++	tests := []struct {
++		name    string
++		actions *HostCallbacks
++		want    string
++	}{
++		{
++			name: "replacement",
++			actions: &HostCallbacks{GetModelRegistryState: func() map[string]any {
++				return state("new", false)
++			}},
++			want: `{"models":[{"id":"new","provider":"fixture"}],"providers":{"fixture":{"configured":false}},"registered":[]}`,
++		},
++		{
++			name: "nil",
++			want: `{"models":null,"registered":[]}`,
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			b := NewUIBridge(nil)
++			b.SetHostAction("getModelRegistryState", func() map[string]any { return state("old", true) })
++			b.SetHostAction("getProviderRegistryState", func(string) map[string]any { return state("old", true) })
++			read := func() string {
++				t.Helper()
++				response, err := b.HandleCall("test", &CallPayload{Method: "getModelRegistryState", Args: json.RawMessage(`{"provider":"fixture"}`)})
++				if err != nil {
++					t.Fatal(err)
++				}
++				return string(response.Result)
++			}
++			if got := read(); got != `{"models":[{"id":"old","provider":"fixture"}],"providers":{"fixture":{"configured":true}},"registered":[]}` {
++				t.Fatalf("initial scoped registry = %s", got)
++			}
++			b.SetActions(tt.actions)
++			if got := read(); got != tt.want {
++				t.Fatalf("scoped registry after SetActions = %s, want %s", got, tt.want)
++			}
++		})
++	}
++}
 diff --git a/coding/extension/host/subprocess/runtime-node.pack b/coding/extension/host/subprocess/runtime-node.pack
 index 0923f9d6a53d57d892d0fc4d60241fb7d7eb379d..2e808e2b60edb9de81a0fc6c39d1eff60f0049cd 100644
 GIT binary patch
@@ -41159,29 +41239,37 @@ index 0000000000000000000000000000000000000000..4646966c7a8ff708e380676c698b5c40
 +	}
 +}
 diff --git a/coding/extension/host/subprocess/ui_bridge.go b/coding/extension/host/subprocess/ui_bridge.go
-index 5742f1fa69d0caba9eda016fabe6311515083297..4670875d5332c6a36aa11df1e976f356c133708f 100644
+index 5742f1fa69d0caba9eda016fabe6311515083297..9870a4b1d38f234aaea7b20354cef5d7ce627b56 100644
 --- a/coding/extension/host/subprocess/ui_bridge.go
 +++ b/coding/extension/host/subprocess/ui_bridge.go
-@@ -31,4 +31,5 @@ import (
+@@ -31,7 +31,9 @@ import (
  // pig-specific: no upstream equivalent.
  type UIBridge struct {
 +	sendUserMessageContext func(context.Context, any, SendUserMessageOptions) error
  	// waitForIdleBlocks reports whether a waitForIdle call waits now (extension.CommandActions.WaitForIdleBlocks); guarded by mu.
- 	waitForIdleBlocks   func() bool
-@@ -985,4 +986,5 @@ func (b *UIBridge) SetActions(actions *HostCallbacks) {
+-	waitForIdleBlocks   func() bool
+-	modelCatalogEncoder func() (json.RawMessage, error)
++	waitForIdleBlocks     func() bool
++	modelCatalogEncoder   func() (json.RawMessage, error)
++	providerRegistryState func(string) map[string]any
+ 	// modelCatalogBatches counts open BatchModelCatalogPublication calls; modelCatalogPending records a publication one of them deferred.
+ 	modelCatalogBatches int
+@@ -985,5 +987,7 @@ func (b *UIBridge) SetActions(actions *HostCallbacks) {
  	defer b.mu.Unlock()
  	b.actions = actions
 +	b.sendUserMessageContext = nil
  	b.modelCatalogEncoder = nil
++	b.providerRegistryState = nil
  	b.modelCache.valid = false
-@@ -1119,5 +1121,5 @@ func (b *UIBridge) HostStateChanged() {
+ 	b.commandsCache.version = 0
+@@ -1119,5 +1123,5 @@ func (b *UIBridge) HostStateChanged() {
  //     OR func(string, []string, *extension.ExecOptions) (extension.ExecResult, error)
  //   - "sendMessage":     func(extension.CustomMessageRef, SendMessageOptions) error
 -//   - "sendUserMessage": func(any, SendUserMessageOptions) error
 +//   - "sendUserMessage": func(any, SendUserMessageOptions) error or func(context.Context, any, SendUserMessageOptions) error
  //   - "appendEntry":     func(string, any, *DirectEntryAppend) error
  //   - "setLabel":        func(string, string) error
-@@ -1185,5 +1187,15 @@ func (b *UIBridge) SetHostAction(key string, fn any) {
+@@ -1185,5 +1189,15 @@ func (b *UIBridge) SetHostAction(key string, fn any) {
  		b.actions.SendMessage = fn.(func(extension.CustomMessageRef, SendMessageOptions) error)
  	case "sendUserMessage":
 -		b.actions.SendUserMessage = fn.(func(any, SendUserMessageOptions) error)
@@ -41198,27 +41286,42 @@ index 5742f1fa69d0caba9eda016fabe6311515083297..4670875d5332c6a36aa11df1e976f356
 +		}
  	case "appendEntry":
  		b.actions.AppendEntry = fn.(func(string, any, *DirectEntryAppend) error)
-@@ -1358,4 +1370,5 @@ func (b *UIBridge) handleCall(ctx context.Context, extName string, owner *Conn,
+@@ -1265,4 +1279,7 @@ func (b *UIBridge) SetHostAction(key string, fn any) {
+ 	case "getModelRegistryState":
+ 		b.actions.GetModelRegistryState = fn.(func() map[string]any)
++		b.providerRegistryState = nil
++	case "getProviderRegistryState":
++		b.providerRegistryState = fn.(func(string) map[string]any)
+ 	case "getProviderAuth":
+ 		b.actions.GetProviderAuth = fn.(func(context.Context, string) (map[string]any, error))
+@@ -1358,4 +1375,5 @@ func (b *UIBridge) handleCall(ctx context.Context, extName string, owner *Conn,
  	ui := b.uiCtx
  	actions := b.actions
 +	sendUserMessage := b.sendUserMessageContext
  	b.mu.RUnlock()
  	// Upstream runner.ts:noOpUIContext ignores mutations without retaining
-@@ -1488,5 +1501,5 @@ func (b *UIBridge) handleCall(ctx context.Context, extName string, owner *Conn,
+@@ -1488,5 +1506,5 @@ func (b *UIBridge) handleCall(ctx context.Context, extName string, owner *Conn,
  		return b.handleSendMessage(actions, call.Args)
  	case "sendUserMessage":
 -		return b.handleSendUserMessage(actions, call.Args)
 +		return b.handleSendUserMessage(ctx, actions, sendUserMessage, call.Args)
  	case "appendEntry":
  		return b.handleAppendEntry(actions, call.Args)
-@@ -3670,5 +3683,5 @@ func (b *UIBridge) handleSendMessage(actions *HostCallbacks, args json.RawMessag
+@@ -1551,5 +1569,5 @@ func (b *UIBridge) handleCall(ctx context.Context, extName string, owner *Conn,
+ 		return b.handleGetModelAuth(ctx, actions, call.Args)
+ 	case "getModelRegistryState":
+-		return b.handleGetModelRegistryState()
++		return b.handleGetModelRegistryState(call.Args)
+ 	case "getProviderAuth":
+ 		return b.handleGetProviderAuth(ctx, actions, call.Args)
+@@ -3670,5 +3688,5 @@ func (b *UIBridge) handleSendMessage(actions *HostCallbacks, args json.RawMessag
  }
  
 -func (b *UIBridge) handleSendUserMessage(actions *HostCallbacks, args json.RawMessage) (*CallResultPayload, error) {
 +func (b *UIBridge) handleSendUserMessage(ctx context.Context, actions *HostCallbacks, send func(context.Context, any, SendUserMessageOptions) error, args json.RawMessage) (*CallResultPayload, error) {
  	var p struct {
  		Content any                    `json:"content"`
-@@ -3678,10 +3691,16 @@ func (b *UIBridge) handleSendUserMessage(actions *HostCallbacks, args json.RawMe
+@@ -3678,10 +3696,16 @@ func (b *UIBridge) handleSendUserMessage(actions *HostCallbacks, args json.RawMe
  		return nil, fmt.Errorf("parse sendUserMessage args: %w", err)
  	}
 -	if actions == nil || actions.SendUserMessage == nil {
@@ -41237,6 +41340,33 @@ index 5742f1fa69d0caba9eda016fabe6311515083297..4670875d5332c6a36aa11df1e976f356
 +	if err != nil {
  		return &CallResultPayload{
  			Error: &ErrorInfo{Code: "send_failed", Message: err.Error()},
+@@ -4108,6 +4132,24 @@ func (b *UIBridge) handleGetModelAuth(ctx context.Context, actions *HostCallback
+ }
+ 
+-func (b *UIBridge) handleGetModelRegistryState() (*CallResultPayload, error) {
+-	result, err := json.Marshal(b.ModelRegistryState())
++func (b *UIBridge) handleGetModelRegistryState(args json.RawMessage) (*CallResultPayload, error) {
++	var request struct {
++		Provider string `json:"provider"`
++	}
++	_ = json.Unmarshal(args, &request)
++	b.mu.RLock()
++	getProviderState := b.providerRegistryState
++	registered := len(b.registeredProviderOrder) != 0
++	b.mu.RUnlock()
++	var state map[string]any
++	if request.Provider != "" && !registered && getProviderState != nil {
++		state = getProviderState(request.Provider)
++		if state != nil {
++			state["registered"] = []map[string]any{}
++		}
++	}
++	if state == nil {
++		state = b.ModelRegistryState()
++	}
++	result, err := json.Marshal(state)
+ 	if err != nil {
+ 		return nil, err
 diff --git a/coding/internal/eventorder/order.go b/coding/internal/eventorder/order.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..63180ca20bf2c1b142eab1e52395e5f22e3d2953
@@ -41936,61 +42066,62 @@ index 92180cccb2929fb41327914dd26af21a02a619a6..a0e424bacc0aa1364112296abbc05126
  
  ## Sessions
 diff --git a/extensions/sdk/.gz/model_registry.go.gz b/extensions/sdk/.gz/model_registry.go.gz
-index 9e55a34e7f0584e306b87ff0741071329aad55a3..e1151b3495060ad1e61c8618be27d0371e3fe3a4 100644
+index 9e55a34e7f0584e306b87ff0741071329aad55a3..d2d5a327163052f95abc4fbf976fb4d7f6d13442 100644
 GIT binary patch
-literal 2549
-zcmb2|=3oE;rvFExUgzI-6Z)_7S2UQ>*Ry%*ZS7lfB0rqhy?m|b+qGk-e%r-$Cl_uN
-z-Fo_V>`hUbzwg^`vhS=p+0U|~;fO$a`MuAxZwh8l%fDgTq-XZo^8U3TNsninU3Z#x
-z|IAsaJ#TT`nae-_d=aS&{nRGDBJRzZUv~^PUp~Ms(l%YjbcU&up6ki=<y_n+L~ogf
-zHBPghs(hzt^E7MbAK|*D;@1}#hG%>!%KK*87kJ(6Z4q<%=bPoa54AP58GbzW*FBnb
-zu_)$`;rzMQeqS!S3G(kh+d1K+uKA9&XXlyiPYRDXc;Z=?m{m1@vHIde+3R|5u}6CP
-z^&F`=yREPK^T#QV`=2Y_5cBM*H|%|XZ(r4gncBBjYgviSJX!C?^P+#_vy+ed`*i;v
-zpIy?Dczw_N6S?^v|Ng3%pN-Rg%llY#_o@%#kqKWvd-JM`Pp`FY-g0+ut6ZVO{SRfU
-z+qzHduGW{i>#g>!@yRv4$qLJtf4IHx*dh4@uG|NobW<6HS)Yhro~0DkX#G{@&%Lc{
-zxa6N@r~T3L2z)#JbEHp+0&CCg6I;?fwmh)sWe{xqIODU*tAaL;n)Opc<{drhA<%oW
-zp`?v(|JIxfZby%%X5SRJ?Ec~_(=GN0;r@TGQ%Y_cub=tQoI~Alp?P?HQeIqAoZ(TP
-z>5HB^N$;Ln!_mDe@X%2oo+!Ol6-Up?i3nZF+!4Dtaxs${!+#?U6T_@dhGqr+qi$}$
-zSqqq1^&LDWGnz}ys_1>Zh(F8l`?VbtFKSMnWwFfPzRP2Nk$REGl<pJT?F@o0hzNOd
-zd8*qQZ8+!KInilzFw?c5+5b0XwTsW4JH0dNS&+n^(<vKvxLsbDzg@>jV2@Wn$4BK^
-z;-RiVUsU^9AF8fcdW-Y$c8>XT1OuyNSaPmSv#-)DnRG6_{ilz)*1=aiS1!H2vm$N3
-z{$0V{xpfw5nICQ*pR!%CN-tvV^-Fiut@Pg>R*XETy_{M0`}tiPRtS5mZq3WwW3+2I
-z_pFx!^WHr(=1*I_`QWR&iFVpco9-Kn-wb0_Tan(Olh?|>bJD^0TTbWg&rrxJ-0358
-zv&3%p$3?rl#qXA?|9o|(ICH~Cr3t%Ll$OT#dEMHa{@_X+U-r3~#$SGae;_4ol`bJ}
-zWjWJg5~F^QG{@$I#l{Jxy^B1y*<E`RKk28y?$c|{=5Z!fAI~|i?RxFa=L+k0YbS;C
-znaDj|pZi)fj&HB?HO~8U4)M-*d-@^8>*a<znd(T5#nwv$W=vbnAJYCkr04iT(YOPa
-zuQ*m;l`E54DW*Jy>+3BhS&b`OMWi^lFLl$fY~#wizFx9%KU=S<sN|Y&3*IOjWUDnu
-z?tE&wdX;Tqj>Xd;3x?xNPk6Nw<l=2SEdDMFDKvY)v}DsvC-17m*>`UTL>Wq-E|8tN
-z^m)P>yH$rLYA%`e<Y=5<<NX=_lN_(8Cf}B8>vlZF@j<C4M?3DphtJ;JAC(g%7G?QN
-z+uh85;^x7*Z_`V3JOcFh&d<@l&((A5;X%eV$(wUmpLW<7_~F08(!SghgH2NHQ#~Fk
-z{F}V$LZD#u3`fVzi`v|4Wtkt`$o0PM%QxZKN;%6j{c>|RTnbTr8~rwdIk7r7ORi?|
-z-z)PDUaoZMPWHcZ`Qe`<CDB4J`JO2;?^>$V+Oq4MdZ*n%#T^H0z29GaEy(M9oJIMr
-z!xg4G$+PE|R`>pWktQkh|F_O1ucCT;n>n&Ft2xguTkiH(u&m#+)o^X~AzP2v(_^lS
-z-WE3NUGbNZGfqCS;Q!qP=N$6-z8yH9>3n48wjWkIthNMxonawicr^H(XI1#j&PkHS
-zAHScjJ6ZEzPKMJWyOVFdXW_vmnb)JMpNWU5zblcNy?8Hc`B%x9=HzUhO%iH%=I=H$
-zzO7X3QTyFn>e?Us9seCy#ord2?s6ea)Y?}e)6+HbZO-}#BR|nOnLnmFD+cQK$0q;&
-z(r(AyykP%D_j|U|ciJ1uZs)Fx)0q*vsN7cPq43U`3Qy#1Za=uUd#n2Y5QY22Pq!VJ
-zarE^4Xifb$Kc*acJ+-rPjo|Dc)k{l`Ylc0J@blYp#$@}C4fm2aiU0pFlU4tXLE>pM
-ziO!#{Y@%ID?kg^P`MBz&(yo@zPU(T!H%}JtE{j(-H)(pU(s#vv`$NUB^S9^n@8J9@
-zvHY;#o%aPPm#^KCf3ddz-ih712mO@a?n-^H9=?3Jzzi1Kle<OTW%(24UOK?zF>$f`
-ziSs5`YF7R_&S~B_^;q0fL9c1jE58L49sDZA?U7-zdb->CeSf~q&bRyjX?}do)W%z!
-zja_nef1hrjU;np%{Uy~u*Z!<vwG8fZdF00I%epRN-^Fd#4%=*>-`;iT%-_BRn_q;p
-z%xzRD@bFBy)^TYj|AZadlcuB{KGVnU@up1WtV`m2f%pZMyXPk5EZ*6oe5J=sWLlY0
-zkm7F6{bx;$%GJ2D!+gSK?28sk;#Hjed81+dt4)sr158e-U3i~T5<GwUm-X+zUH@cO
-zDK@o0JViE2?~WT^lUrcPqqXS~s^!;TA3LD^DedeO#>l2a|KA2kpD>=lwL~HBP-wa0
-z?9f9_UGoxhTPDA6ZoX_dagvPRKJHx+lhnV|v-N*E#FjnT@#4P;mkzM#@!o!*owng+
-z^Ts!~>x3Lmtt||{Xq352;YY}N23NiA38vaVzLW{hY4BQ_%sQLrm+b0Q@=LsmmS?eb
-z?{gKC)xGqy$8Y}44P|%d?e=ot;(j!L_NVx=)8R(<Z&>o`iDoH_{%Z;CKCYO&C-B6S
-z%=t&G11ptsXYA6Ot(1G@&<4jPh4LX6bMC$R63L@8<<r8*J+a1@om))9SYr}3MTNMo
-z_<WGzI6jj>FE8R~cbmk8#{wGv?dm^E6{)qD91Iooh}bky;MT%Rx>{d^LQil+L~*yo
-zUHz1Dtf@@Be9n{uyb?Q4U!OO5YgwZEws%>7DjS#=v)`Q1r+zl%&%Nm~oRybe-P*B3
-zIHtEue`87Dt!ck5{?Odu!YW*tI5Tk9TJ_}BijGlgnJcz%6;}$g{r%@X$*zCi@#drM
-zM?ai#^SKnjwYX-vFTV~`m<^Y@oU-3+tH%XTH@}=K5mMC}UD;gq!CUt$N1^4CSk{6?
-zYg25)1gm$t?mTifB~zwL$o*dMss}7bmA~ez%f&D{Kb5vMN;^__@U$CuT*&)P7nXD^
-zkK8f)ruD}oO%jp+97EGiWc*p=uOp^?`sIbT-yc7Hu31#lwyj#kOKysp?2BF2OFplh
-zB@%0SSlcA;#b2?v{Hgg_r#AlZT`eA}njgP-=hQ4_^@o4weaQ0La-)`2xvr9RR(SQV
-z{FNo=|0o<j9mT*Lw)D;Z4W$wj@6WUo`|qW7d7r9T&GVL>yk~zKNwvLuw?}62>~K#T
-z{~f7!GNktv?$4dB!Jeg>U6!kzc+RCS)bx_GQDDfspybPyyO_6^2*3Pm@@$XDB*ED>
-mnHm?8%?(YZA6}E4TbW%_5}9%#!1m04dj_?B$$J$V3=9BKf!})o
+literal 2555
+zcmb2|=3oE;rvFExUgzI-6Z)_7S2UQ>*RwhFmi8?<ksr?MUcT1z?OL)^zwP3>lMA<s
+zZasZF_NJ)N-}mh|*>~2QoF=<~>DGZecPr25r?sz%+?RNrW7mx{&ugN+Qx#^O7khe5
+z=h^1gbrpS8hW^h#FZX{Ku9{!b`0D4mHTR{`%A_h94}F-lm~FG$iKQApzxpLI?sVFH
+zOzT3?@}idLylX}24F6XxefCJo<QZ3Q+_|&+jv2nXwIVj}!QYy1vEDztPH{2(`w{HD
+zF=~s9c>S65d|CBhnTtEx?>}=n@no9xooi|Sv*R~uuSrNLcIBSCw|(d2z=x*S-QG5@
+zQBikG+Lsi4eDBZ7Qy<S43+8mI9NRzRSb2Wjz1L?%--e3HcAt4tugv!4c*N(FkM75(
+z{d?|fb!bEOz49m9uDkqyH+gs3`l;XAK6b^1{^-`(@at!5+ve`m`{p^`dUwyM-(o?2
+z#qQ9<N1sl+D&F@_Rrt3<QTBAt3CsN-Zm;cawLc(o>%i0KQ%q`HC$yKDx^7`Ae<k^2
+zZ+4`p-I?oWeuPd~bW8vF<{2*>xFpOcW}csraj;&BL5b<H;d9R`4|xQC#A&Xy>E1k1
+zL25GNOCH&}<eLk6ySh(b+oZUx|H5n5E&LnQ<o?c|d@=R>o}{+>3UgRn<Kq8z?yPLA
+zJSt)w(>0Ad_f6U-MV(b{oZ`lY89P@z5;d<5@bFmvu&g(&mum*YpVJF299f~t#M5LW
+zA}#q=`~a`W9tK5UwmTUak4*cz?N%JU6aCoDZMjd@qZxI7HI!;k%{`$QsHb%Q#{mz=
+zU=I~dmAPL|9I!H1b>lkg#~I<B`|tEB*|?IjIJK;q-iaUdCm(zy<=ejR?xqtCAGB<h
+zj`U~D3m5ggINe69W%`0?S?WCZm1>IoTwWFmY>15h_hRV<PpkQ|&y4S`U|C%p;Jv<h
+z@vOhqFZ*ufem-pI*?it^*&g1D+ncUd>7I>U^!bvV%p}o0MOGII|F7Zhw%QmH^m^Jc
+z?Zwr*7R=;(`0{Vfvx7OMb`iDpGtPUheDM8@>$cEF&R3F3-O&%7*QI>0e!J<mzEnq4
+zjGnN&+1&GKdtSVI<XV2$bD!1s7^$2+98dH*Jzh><Jn7pLPK&M656>!o$Mg3g^NwR}
+z=OmA{`khnjOF7Veh3$~ejTbTzv5Pe(t?f7ct$(tn<L=Wi>GLcb_a<+9JXI<CTjd_v
+z?_npk*`?HfX5X&rn(q95Lg}G+zlUwUi;F6ZmX<`=_wCi0a&c~uhR^A%?5hq}YaM%h
+zf$RK3-B%o|ugaB4trSz9!u9nQldQ&-ts+vK+n2g&ShjKHU0*NRxSy@pR8(@!w*_yM
+z4YJi5BzHcwT)oP+FvsF)kOjkWrYF2w33Bl^9u|L>g%p}SU|O<irjvKo;q1G&1ELJ2
+zPZ!8eU7DV-#%|T&iJD7hJvkcZ*LZ)1|0KsNs>!$CwRbz7;`pG{lcOE?;KOHb?vKg|
+z5{t5YrhRAUpRl>v`u6!35fc`~Rhi!m+b1fq^>8zD#PPJ-VbdFv7C-o}v9vF@#9)(D
+z`&5sI3jY>x*{%}q5IFw#^S+}K!<HT1$W<QlSL{$gz^SiZey<lZq?O&iRJMv)q<Y16
+z{?Ciu)olzym;RQsyf){C-8?Db`$z1z$bT&H%b5SB(|XtP`7`oP>)w4IbH#Bx&(aA2
+z?!Of-s#~y_@7RCI`is><$(J({mR#<*)oq>gd2`<S6Y_U;oFCQCca8FV_ik%@acA<^
+zWjDWESYdzY-INfC%e&O??A=m#urzj~ZQ|vQTm2p%esMJKelJ_fR#d!Yf1R7O(z&fi
+zuOHmHq<2;Dql6<O{5zXp#-^&BDm-)Ke(dk3KMu1Os65!CYPF~7=+PN!nfY&K#z)NE
+zaXB-mZ`-=EuaY9yZb&Vk5^_Cqa+~RY{&)2gUR~c-t0uT5^r)YfM^sQ?nDy=UX+6Q^
+z2TcB)S~y|F^yBMJ)c$gw->P`|{tM;z^LXDmJM4aI7OpRLM(g74s%alO@AwFO;-8mO
+z@c!<t$@N+j-tRaUopk2W)Awtqh?kjoKl*y=h|RSQ-<3j{mmZ6(F4R$1zg0M^(`McG
+z8E-zz+w(tcl?}<c$);?$|HJ~PiC?UbnAonJuCs{SPQOHK>$JHx+q26}i=35r_&xIY
+zTP*!9`Rks$mHp9S{e@O<j{N0wH_JWy*CW67i`%_i&N8XY>$=tUqSe1dm?ke!uiXA<
+z#p8$Tf~96KY8HLr_&Kv}mVW4ei-&3(F5NI>bUIn2d{xd%Z%14*BPVa&*Gn(1PQPFG
+z`Rw!ff1kV88wFS^23$P6e*d3upV$BY7`m(F{w(pd3C2r3RPszN9C_IFR62JzbIR@Q
+zHPPWSc9x4+b>9nk!K2dX?8UU%ZOXYfjYnc9E-@)jEBoS*wEc0O8rScZA53RIylqL5
+zK5HYhFfC`%hAo$;aozN-cz^xGotaT<A`K%Gf8}|0n6~7cJ07RFL{HnVX;GkAW1afq
+z*}wKI`Tr}gUNwKRdLU=H<F$oP59K~l$PjT=zgN{3T2#I_k7tik{xu)T391@@?(=PJ
+zv|(Q9!1YKirc``Wq^i!67o6AJEPmTrSjY-%o_zRb_kwQKO1J;#AE@Z(Y%r4)dFwrk
+zO|2mF23x#Qv#)$l>iut%8G`b9cXv(myv%xVc@?WhQDn=S$b-wbcRyeW(UR4^k#gaE
+zMCf0I&`H*z#t~n1H@(Q1crLx<*PXVlufN?1wOVAWRd;*J|4q^Rru;m1uAyLMfb_}_
+z>T9BG_#_|qIxX}0t#YsPlyK(ZE2TF@GL^;Jc$IpE7Ir=R7q<L-Qo_P1{AVA%oi$TV
+zY0XBh2VCAOCj=}=YkKZragL>+@UT{#$&m)Rc88zeZ(m=pknZFm93$G;qAJa~P*&^i
+zA}9U8)}Dr?TOD46>iVbYWRw>j_vF0OFmZRyTg%97@iLh=>yFK5w=k%h!27b|lF!li
+zu_q@^P+z;Qx7+&Q)r{{<-r`GhSIYO!XYvj)5EP##x%76G(KaceC8?9zyjB}bH-D(w
+z^k3O?zU%qN3!i!#+H4k_Y%=9gHq&xnejTQ;IW5A=J1#FfXA$!=r%Ih|YTU!Hdkf_D
+zur8BR)N9|en!#_&)HTPolJvK0Oy4n6r`I{~(TQpg(K!n$mi&8rWUqF@ikijl$9it)
+zSKQ1v*!?P2Y?jDJ1MYI;YIV5?0p-*8SD)gM?2Z4@c{C~2($)C$<EPJWy1eAc{jM?P
+zj&`oqg|Gi6oLin1RPvN({_`CRze{h?e;9XtO7h3>nDeW>?(K6b*1pPi?$CDUhnweT
+zZ2Vp6{wI;gWIpfL{S7bY{d8>OKghtg#_Q&Pi8lsH`;BXL{!I;8_LnL5hb?!p^sM|s
+z6P~+we|~T?pTDwVUcu=d7tLxO*WK0&<h$Z^?ai&QLvuQ1R%b0~Pg%6$&eCJcK9{iP
+zy;QsOJM&DXri!vz<%NI+$Mcf1%nq%!w)%YS#fwcR7A&lq@xPuye(ofrD;f+80CS=c
+AQ~&?~
 
 literal 2187
 zcmb2|=3oE;rvFDGU+3R;6Z)_7Pc)d(*Ry%*Z0%ceB0rq<GH=~^8mMx%*03kVmv8Ob
@@ -42040,7 +42171,7 @@ z)M0VT;dMFcIx{pjtaDHEP&;+2_R5Wtd-jdd`&ND_l;VzKd)eXtu2jQ7VEgkcIWAHE
 cU!194oPOG*ecEfYpZ^&gR((9#tH{6r03X9%*Z=?k
 
 diff --git a/extensions/sdk/model_registry.go b/extensions/sdk/model_registry.go
-index a1d6a2764820f87cd9869a7a24c4613225bcf104..435380d496c6408939a1556c258a7ed76d4da011 100644
+index a1d6a2764820f87cd9869a7a24c4613225bcf104..c55583ed35cdcde35c541e70b0827103dbeb8688 100644
 --- a/extensions/sdk/model_registry.go
 +++ b/extensions/sdk/model_registry.go
 @@ -35,4 +35,10 @@ type registryState struct {
@@ -42096,7 +42227,7 @@ index a1d6a2764820f87cd9869a7a24c4613225bcf104..435380d496c6408939a1556c258a7ed7
 +		}
 +		return ProviderAvailability{Models: providerModels(models, provider)}, nil
 +	}
-+	state, err := r.state()
++	state, err := hostValue[registryState](r.context, "getModelRegistryState", map[string]string{"provider": provider})
 +	if err != nil {
 +		return ProviderAvailability{}, err
 +	}
@@ -42110,10 +42241,10 @@ index a1d6a2764820f87cd9869a7a24c4613225bcf104..435380d496c6408939a1556c258a7ed7
  func (r ModelRegistry) GetError() (*string, error) {
 diff --git a/extensions/sdk/model_registry_authority_test.go b/extensions/sdk/model_registry_authority_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..01ba474719879fb97d5d0cbb44d7629e7f43f72f
+index 0000000000000000000000000000000000000000..f0a12e229e66fe82b3b065c981b82df92f65e1ea
 --- /dev/null
 +++ b/extensions/sdk/model_registry_authority_test.go
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,118 @@
 +package sdk
 +
 +import (
@@ -42143,6 +42274,9 @@ index 0000000000000000000000000000000000000000..01ba474719879fb97d5d0cbb44d7629e
 +	calls, response := runSurfaceCommand(t, host, "probe", func(call *callMsg) *callResultMsg {
 +		if call.Method != "getModelRegistryState" {
 +			t.Fatalf("unexpected host call %q", call.Method)
++		}
++		if args := decodeArgs(t, call.Args); args["provider"] != "fixture" {
++			t.Fatalf("provider availability request = %v, want fixture", args)
 +		}
 +		requests++
 +		switch requests {
@@ -42227,6 +42361,292 @@ index 0000000000000000000000000000000000000000..01ba474719879fb97d5d0cbb44d7629e
 +				t.Fatalf("available models = %+v", result.value.Models)
 +			}
 +		})
++	}
++}
+diff --git a/internal/codingagent/extension_model_registry.go b/internal/codingagent/extension_model_registry.go
+index 2df2cac7f809442c50cc292f5272831cb733bf46..cd03296e2284f9f456ece1dfae8fbeb22c220e8e 100644
+--- a/internal/codingagent/extension_model_registry.go
++++ b/internal/codingagent/extension_model_registry.go
+@@ -54,4 +54,14 @@ func ExtensionModelRegistryState(registry *ModelRegistry, catalog []*ai.Model) m
+ }
+ 
++func (r *ModelRegistry) requiresFullRegistryRead() bool {
++	r.mu.RLock()
++	hasNative := len(r.native) != 0
++	r.mu.RUnlock()
++	r.nativeMu.Lock()
++	models := r.nativeModels
++	r.nativeMu.Unlock()
++	return hasNative || models != nil && len(models.GetProviders()) != 0
++}
++
+ // modelValues is each model as its extension model object.
+ func modelValues(models []ai.AnyModel) []extension.ModelValue {
+diff --git a/internal/codingagent/interactive_extensions.go b/internal/codingagent/interactive_extensions.go
+index 904bef2a0a9b93b7a5db6d69fd92ca74eeab8a48..81fb44cd6f1fc3fd2f5459262e6319886cee2859 100644
+--- a/internal/codingagent/interactive_extensions.go
++++ b/internal/codingagent/interactive_extensions.go
+@@ -1634,4 +1634,31 @@ func WireModelOperations(bridge ModelOperationBridge, bindings ModelOperationBin
+ 		return catalogEncoding.state(bindings.Registry, catalog)
+ 	})
++	bridge.SetHostAction("getProviderRegistryState", func(provider string) map[string]any {
++		if bindings.Registry != nil && bindings.Registry.requiresFullRegistryRead() {
++			return nil
++		}
++		var catalog []*ai.Model
++		if bindings.ModelCatalog != nil {
++			catalog = bindings.ModelCatalog()
++		}
++		selected := make([]*ai.Model, 0)
++		for _, model := range catalog {
++			if model != nil && model.ProviderID() == provider {
++				selected = append(selected, model)
++			}
++		}
++		if bindings.Registry != nil {
++			bindings.Registry.orderExtensionModels(selected)
++		}
++		models := make([]extension.ModelValue, len(selected))
++		for i, model := range selected {
++			models[i] = extension.ModelValue{Model: model}
++		}
++		providers := map[string]any{}
++		if bindings.Registry != nil {
++			providers[provider] = bindings.Registry.extensionProviderState(provider)
++		}
++		return map[string]any{"models": models, "providers": providers}
++	})
+ 	bridge.SetHostAction("getAvailableOfType", func(ctx context.Context, modelType, providerID string) ([]json.RawMessage, error) {
+ 		return extensionAvailableOfType(ctx, bindings.Registry, modelType, providerID)
+diff --git a/internal/codingagent/provider_registry_scope_test.go b/internal/codingagent/provider_registry_scope_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..007fd3299a82675de9dcdcfb46b293247cc78783
+--- /dev/null
++++ b/internal/codingagent/provider_registry_scope_test.go
+@@ -0,0 +1,225 @@
++package codingagent
++
++import (
++	"encoding/json"
++	"reflect"
++	"sync/atomic"
++	"testing"
++
++	"github.com/MichaelKinsy/PiG/ai"
++	"github.com/MichaelKinsy/PiG/coding/extension/host/subprocess"
++	sdk "github.com/MichaelKinsy/PiG/extensions/sdk"
++)
++
++func TestProviderRegistryStateFiltersWithoutChangingFullReads(t *testing.T) {
++	catalog := []*ai.Model{
++		{ID: "first", ProviderMeta: ai.ProviderMetadata{ProviderID: "fixture"}},
++		{ID: "other", ProviderMeta: ai.ProviderMetadata{ProviderID: "other"}},
++		{ID: "second", ProviderMeta: ai.ProviderMetadata{ProviderID: "fixture"}},
++	}
++	bridge := subprocess.NewUIBridge(nil)
++	detach := WireModelOperations(bridge, ModelOperationBindings{ModelCatalog: func(...string) []*ai.Model { return catalog }})
++	defer detach()
++	read := func(args string) []string {
++		t.Helper()
++		response, err := bridge.HandleCall("test", &subprocess.CallPayload{Method: "getModelRegistryState", Args: json.RawMessage(args)})
++		if err != nil {
++			t.Fatal(err)
++		}
++		var state struct {
++			Models []struct {
++				ID string `json:"id"`
++			} `json:"models"`
++		}
++		if err := json.Unmarshal(response.Result, &state); err != nil {
++			t.Fatal(err)
++		}
++		var ids []string
++		for _, model := range state.Models {
++			ids = append(ids, model.ID)
++		}
++		return ids
++	}
++	if got, want := read(`{"provider":"fixture"}`), []string{"first", "second"}; !reflect.DeepEqual(got, want) {
++		t.Fatalf("provider models = %v, want %v", got, want)
++	}
++	if got, want := read(`null`), []string{"first", "other", "second"}; !reflect.DeepEqual(got, want) {
++		t.Fatalf("full models = %v, want %v", got, want)
++	}
++	if got, want := read(`[]`), []string{"first", "other", "second"}; !reflect.DeepEqual(got, want) {
++		t.Fatalf("legacy arguments models = %v, want %v", got, want)
++	}
++}
++
++func TestProviderRegistryStateUsesCurrentBinding(t *testing.T) {
++	bridge := subprocess.NewUIBridge(nil)
++	bind := func(id string, target ModelOperationBridge) func() {
++		catalog := []*ai.Model{{ID: id, ProviderMeta: ai.ProviderMetadata{ProviderID: "fixture"}}}
++		return WireModelOperations(target, ModelOperationBindings{ModelCatalog: func(...string) []*ai.Model { return catalog }})
++	}
++	read := func() string {
++		t.Helper()
++		response, err := bridge.HandleCall("test", &subprocess.CallPayload{Method: "getModelRegistryState", Args: json.RawMessage(`{"provider":"fixture"}`)})
++		if err != nil {
++			t.Fatal(err)
++		}
++		var state struct {
++			Models []struct {
++				ID string `json:"id"`
++			} `json:"models"`
++		}
++		if err := json.Unmarshal(response.Result, &state); err != nil || len(state.Models) != 1 {
++			t.Fatalf("provider state = %s, error = %v", response.Result, err)
++		}
++		return state.Models[0].ID
++	}
++	detach := bind("first", bridge)
++	if got := read(); got != "first" {
++		t.Fatalf("first binding returned %q", got)
++	}
++	detach()
++	detach = bind("second", legacyModelCatalogBridge{bridge})
++	defer detach()
++	if got := read(); got != "second" {
++		t.Fatalf("replacement binding returned %q", got)
++	}
++}
++
++func TestProviderRegistryStateRefreshesAuthAndPreservesRegistrations(t *testing.T) {
++	registry := NewModelRegistry(t.TempDir())
++	t.Cleanup(registry.CloseModelTasks)
++	catalog := []*ai.Model{
++		{ID: "first", ProviderMeta: ai.ProviderMetadata{ProviderID: "fixture"}},
++		{ID: "other", ProviderMeta: ai.ProviderMetadata{ProviderID: "other"}},
++	}
++	bridge := subprocess.NewUIBridge(nil)
++	detach := WireModelOperations(bridge, ModelOperationBindings{Registry: registry, ModelCatalog: func(...string) []*ai.Model { return catalog }})
++	defer detach()
++	read := func() map[string]any {
++		t.Helper()
++		response, err := bridge.HandleCall("test", &subprocess.CallPayload{Method: "getModelRegistryState", Args: json.RawMessage(`{"provider":"fixture"}`)})
++		if err != nil {
++			t.Fatal(err)
++		}
++		var state map[string]any
++		if err := json.Unmarshal(response.Result, &state); err != nil {
++			t.Fatal(err)
++		}
++		return state
++	}
++	configured := func(state map[string]any) bool {
++		provider := state["providers"].(map[string]any)["fixture"].(map[string]any)
++		return provider["configured"].(bool)
++	}
++	registry.SetRuntimeAPIKey("fixture", "test-key")
++	if !configured(read()) {
++		t.Fatal("current provider key is missing from the scoped state")
++	}
++	registry.RemoveRuntimeAPIKey("fixture")
++	if configured(read()) {
++		t.Fatal("removed provider key remained in the scoped state")
++	}
++	bridge.RecordProviderRegistration("fixture", json.RawMessage(`{}`))
++	state := read()
++	registered := state["registered"].([]any)
++	if len(registered) != 1 || registered[0].(map[string]any)["name"] != "fixture" {
++		t.Fatalf("registered providers = %v", registered)
++	}
++	if models := state["models"].([]any); len(models) != 2 {
++		t.Fatalf("registered-provider fallback returned %d models, want the full catalog", len(models))
++	}
++}
++
++func TestProviderRegistryStateKeepsNativeProviderCallbacks(t *testing.T) {
++	registry := NewModelRegistry(t.TempDir())
++	t.Cleanup(registry.CloseModelTasks)
++	var reads atomic.Int32
++	if err := registry.RegisterNativeModelsProvider(&ai.ModelsProvider{ID: "native", GetModels: func() ([]*ai.Model, error) {
++		reads.Add(1)
++		return []*ai.Model{{ID: "native-model", ProviderMeta: ai.ProviderMetadata{ProviderID: "native"}}}, nil
++	}}); err != nil {
++		t.Fatal(err)
++	}
++	bridge := subprocess.NewUIBridge(nil)
++	detach := WireModelOperations(bridge, ModelOperationBindings{Registry: registry, ModelCatalog: func(...string) []*ai.Model { return registry.GetAllModelData() }})
++	defer detach()
++	before := reads.Load()
++	response, err := bridge.HandleCall("test", &subprocess.CallPayload{Method: "getModelRegistryState", Args: json.RawMessage(`{"provider":"fixture"}`)})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if reads.Load() <= before {
++		t.Fatal("the native provider callback was skipped")
++	}
++	var state struct {
++		Models []map[string]any `json:"models"`
++	}
++	if err := json.Unmarshal(response.Result, &state); err != nil {
++		t.Fatal(err)
++	}
++	for _, model := range state.Models {
++		if model["provider"] == "native" && model["id"] == "native-model" {
++			return
++		}
++	}
++	t.Fatal("the native provider fallback did not return the full registry")
++}
++
++func TestProviderAvailabilityUsesFreshHostState(t *testing.T) {
++	registry := NewModelRegistry(t.TempDir())
++	t.Cleanup(registry.CloseModelTasks)
++	catalog := []*ai.Model{
++		{ID: "first", ProviderMeta: ai.ProviderMetadata{ProviderID: "fixture"}},
++		{ID: "other", ProviderMeta: ai.ProviderMetadata{ProviderID: "other"}},
++	}
++	bridge := subprocess.NewUIBridge(nil)
++	detach := WireModelOperations(bridge, ModelOperationBindings{Registry: registry, ModelCatalog: func(...string) []*ai.Model { return catalog }})
++	defer detach()
++	type observation struct {
++		availability sdk.ProviderAvailability
++		all          []map[string]any
++		err          error
++	}
++	results := make(chan observation, 3)
++	ext := sdk.New("authority-probe")
++	ext.Command("probe", "", func(ctx sdk.Context, _ string) error {
++		availability, err := ctx.ModelRegistry().ProviderAvailability("fixture")
++		if err != nil {
++			results <- observation{err: err}
++			return err
++		}
++		all, err := ctx.ModelRegistry().GetAll()
++		results <- observation{availability: availability, all: all, err: err}
++		return err
++	})
++	host := subprocess.NewHost(t.TempDir())
++	host.SetUIBridge(bridge)
++	defer host.Shutdown("test done")
++	loaded, err := host.LoadInProcess(t.Context(), subprocess.ExtConfig{Name: "authority-probe", Enabled: true}, ext.RunWithConn)
++	if err != nil {
++		t.Fatal(err)
++	}
++	probe := func() observation {
++		t.Helper()
++		if err := loaded.Commands["probe"].Handler(t.Context(), ""); err != nil {
++			t.Fatal(err)
++		}
++		result := <-results
++		if result.err != nil || len(result.all) != 2 {
++			t.Fatalf("full catalog = %v, error = %v", result.all, result.err)
++		}
++		return result
++	}
++	registry.SetRuntimeAPIKey("fixture", "test-key")
++	if result := probe(); result.availability.Registered || len(result.availability.Models) != 1 || result.availability.Models[0]["id"] != "first" {
++		t.Fatalf("available provider = %+v", result.availability)
++	}
++	registry.RemoveRuntimeAPIKey("fixture")
++	if result := probe(); result.availability.Registered || len(result.availability.Models) != 0 {
++		t.Fatalf("provider after removing auth = %+v", result.availability)
++	}
++	bridge.RecordProviderRegistration("fixture", json.RawMessage(`{}`))
++	if result := probe(); !result.availability.Registered || result.availability.Models != nil {
++		t.Fatalf("registered provider = %+v", result.availability)
 +	}
 +}
 diff --git a/internal/gcpolicy/gcpolicy.go b/internal/gcpolicy/gcpolicy.go
