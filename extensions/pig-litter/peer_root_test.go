@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/MichaelKinsy/PiG/ai"
 )
 
 func TestLocalSessionUserOptIn(t *testing.T) {
@@ -50,6 +52,21 @@ func TestLocalSessionUserOptIn(t *testing.T) {
 	}
 	if _, _, err := localOptIn(); err == nil {
 		t.Fatal("accepted duplicate policy keys")
+	}
+}
+
+func TestOversizedLocalMessageReachesExplicitRefusal(t *testing.T) {
+	raw, err := json.Marshal(peerRequest{Recipient: "local:target", MessageID: "oversize", Text: strings.Repeat("x", 16385), Summary: "Size check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validated, err := ai.ValidateToolArgumentsSchema("team_send", schemas["team_send"], raw)
+	if err != nil {
+		t.Fatalf("host rejected the request before the local route: %v", err)
+	}
+	value, err := (&owner{}).addressedSend(context.Background(), validated)
+	if err != nil || value["state"] != "too_large" {
+		t.Fatalf("oversized local send = %#v, %v", value, err)
 	}
 }
 
