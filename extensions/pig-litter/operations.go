@@ -97,7 +97,7 @@ var schemas = map[string]map[string]any{
 	"team_task_get":    object([]string{"taskId"}, map[string]any{"taskId": taskIDSchema}),
 	"team_task_list":   object([]string{}, map[string]any{}),
 	"team_task_update": object([]string{"taskId", "action"}, map[string]any{"taskId": taskIDSchema, "action": map[string]any{"type": "string", "enum": []string{"edit", "claim", "assign", "complete", "delete"}}, "assignee": text(64), "subject": text(256), "description": map[string]any{"type": "string", "maxLength": 16384}, "addBlockedBy": map[string]any{"type": "array", "maxItems": 128, "items": taskIDSchema}, "addBlocks": map[string]any{"type": "array", "maxItems": 128, "items": taskIDSchema}, "metadata": map[string]any{"type": "object", "maxProperties": 64, "additionalProperties": map[string]any{"anyOf": []any{map[string]any{"type": "string", "maxLength": 4096}, map[string]any{"type": "null"}}}}}),
-	"team_spawn":       object([]string{"type", "task", "name", "workspace"}, map[string]any{"type": text(64), "task": text(16384), "name": text(64), "model": text(256), "planRequired": map[string]any{"type": "boolean"}, "workspace": object([]string{"kind"}, map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"shared_checkout", "isolated_worktree"}}})}),
+	"team_spawn":       object([]string{"type", "task", "name", "workspace"}, map[string]any{"type": text(64), "task": text(16384), "name": text(64), "model": text(256), "backend": map[string]any{"type": "string", "enum": []string{"embedded", "tmux", "iterm2", "auto"}}, "planRequired": map[string]any{"type": "boolean"}, "workspace": object([]string{"kind"}, map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"shared_checkout", "isolated_worktree"}}})}),
 	"team_list":        object([]string{}, map[string]any{}),
 	"team_send":        object([]string{"recipient", "messageId", "text", "summary"}, map[string]any{"recipient": text(64), "messageId": text(128), "text": text(16384), "summary": text(256)}),
 	"litter_spawn":     object([]string{"type", "task"}, map[string]any{"type": text(64), "task": text(16384), "name": text(128), "model": text(256), "cwd": text(4096)}),
@@ -113,6 +113,7 @@ type operationArgs struct {
 	Type, Task, Text, Mode string
 	Name                   *string
 	Model                  string
+	Backend                backendRequest
 	Cwd                    string
 	Offset                 int
 	Limit                  *int
@@ -170,6 +171,9 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		}
 		if mode, ok := fields["planRequired"]; ok && string(mode) != "true" && string(mode) != "false" {
 			return nil, reject("rejected", "invalid teammate planning mode")
+		}
+		if value, ok := fields["backend"]; ok && string(value) == "null" {
+			return nil, reject("rejected", "invalid teammate backend")
 		}
 	}
 	var args operationArgs
@@ -349,6 +353,14 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if isTeam && caller != nil {
 			return nil, reject("lead_required", "only the team lead can start a teammate")
 		}
+		choice := backendChoice{kind: backendEmbedded}
+		if isTeam {
+			var err error
+			choice, err = chooseTeamBackend(args.Backend)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if isTeam && (args.Name == nil || args.Workspace == nil || *args.Workspace != (WorkspacePolicy{Kind: args.Workspace.Kind}) || args.Workspace.Kind != "shared_checkout" && args.Workspace.Kind != "isolated_worktree") {
 			return nil, reject("rejected", "a teammate needs a name and explicit workspace policy")
 		}
@@ -471,7 +483,10 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		}
 		value := map[string]any{"state": snapshot.State, "child": snapshot}
 		if member != nil {
-			value = map[string]any{"state": "starting", "admission": member.AdmissionID, "member": member.Ref, "name": member.Name, "cwd": member.Workspace.Cwd, "workspace": member.Workspace, "planRequired": member.PlanRequired}
+			value = map[string]any{"state": "starting", "admission": member.AdmissionID, "member": member.Ref, "name": member.Name, "cwd": member.Workspace.Cwd, "workspace": member.Workspace, "planRequired": member.PlanRequired, "backend": choice.kind}
+			if choice.fallback != "" {
+				value["backendFallback"] = choice.fallback
+			}
 			content, _ := resultContent(name, value, nil)
 			execution.teamResult = sha256.Sum256([]byte(content))
 			execution.teamSessionFile = teamSessionFile
