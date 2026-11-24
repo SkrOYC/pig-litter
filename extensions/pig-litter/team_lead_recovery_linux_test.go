@@ -97,6 +97,10 @@ func TestLeadReceiptRecoversOnlyAfterPriorHostExit(t *testing.T) {
 				if found {
 					t.Fatal("reoffered a native message already in the transcript")
 				}
+				observed, _, err := reopened.acceptPeer(sender.Ref, request)
+				if err != nil || observed.State != peerObserved || observed.NativeEntryID != nativeID || observed.SessionID != root {
+					t.Fatalf("recovered receipt = %#v, %v", observed, err)
+				}
 			} else {
 				if !found || retry.State != peerAttempted || retry.Attempt == nil || retry.Attempt.Host != current || retryContent != content {
 					t.Fatalf("dead host retry = %#v, found=%v", retry, found)
@@ -117,6 +121,50 @@ func TestLeadReceiptRecoversOnlyAfterPriorHostExit(t *testing.T) {
 				t.Fatalf("observed receipt = %#v, %v", final, err)
 			}
 			if id, err := nativePeerEntry(file, receipt.Envelope, content); err != nil || id != nativeID {
+				t.Fatalf("native transcript = %q, %v", id, err)
+			}
+		})
+	}
+}
+
+func TestLeadAttemptObservesEntryWithoutDeathProof(t *testing.T) {
+	for _, kind := range []string{"same-host", "unknown-scope"} {
+		t.Run(kind, func(t *testing.T) {
+			store, _, root, workspace := storeTestOpen(t)
+			sender, _ := peerTestMembers(t, store, workspace)
+			manager := nativeTestManager(t, t.TempDir(), string(root))
+			file := *manager.GetSessionFile()
+			lead := MemberRef{Team: sender.Ref.Team, ID: root, Generation: 1}
+			request := peerRequest{Recipient: "team-lead", MessageID: "observed-without-death", Text: "hello lead", Summary: "greeting"}
+			if _, _, err := store.acceptPeer(sender.Ref, request); err != nil {
+				t.Fatal(err)
+			}
+			current, err := peerObservedHost(os.Getpid())
+			if err != nil {
+				t.Fatal(err)
+			}
+			prior := current
+			if kind == "unknown-scope" {
+				prior.Scope += ":unknown"
+			}
+			old := peerDeliveryAttempt{Host: prior, SessionFile: file}
+			receipt, content, found, err := store.offerPeerAttempt(lead, &old)
+			if err != nil || !found || receipt.State != peerAttempted {
+				t.Fatalf("initial offer = %#v, found=%v, %v", receipt, found, err)
+			}
+			entryID, err := manager.AppendCustomMessageEntry("pig_litter_peer", content, true, map[string]any{"envelope": receipt.Envelope})
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempt := peerDeliveryAttempt{Host: current, SessionFile: file}
+			if _, _, found, err := store.offerPeerAttempt(lead, &attempt); err != nil || found {
+				t.Fatalf("matching entry was reoffered: found=%v, %v", found, err)
+			}
+			observed, _, err := store.acceptPeer(sender.Ref, request)
+			if err != nil || observed.State != peerObserved || observed.NativeEntryID != entryID || observed.SessionID != root {
+				t.Fatalf("observed receipt = %#v, %v", observed, err)
+			}
+			if id, err := nativePeerEntry(file, receipt.Envelope, content); err != nil || id != entryID {
 				t.Fatalf("native transcript = %q, %v", id, err)
 			}
 		})

@@ -466,6 +466,8 @@ func (s *teamStore) offerPeerAttempt(recipient MemberRef, attempt *peerDeliveryA
 				if receipt.Attempt.SessionFile != attempt.SessionFile {
 					continue
 				}
+				// Establish whether the prior writer is finished before checking for an absent entry.
+				hostGone := peerHostGone(receipt.Attempt.Host, attempt.Host)
 				id, err := nativePeerEntry(attempt.SessionFile, receipt.Envelope, content)
 				if err != nil {
 					return false, err
@@ -481,7 +483,7 @@ func (s *teamStore) offerPeerAttempt(recipient MemberRef, attempt *peerDeliveryA
 					}
 					continue
 				}
-				if !peerHostGone(receipt.Attempt.Host, attempt.Host) {
+				if !hostGone {
 					continue
 				}
 			}
