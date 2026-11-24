@@ -254,7 +254,7 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 		var dropper *productReplyDropper
 		var proxyServer *http.Server
 		if dropReplies || causal || staleWake || rootLoss || terminalControls {
-			dropper = &productReplyDropper{queue: queue, drop: dropReplies, input: running, causal: causal, staleWake: staleWake, holdTool: rootLoss, holdFinalize: terminalControls, reentrant: make(chan error, 1), toolEntered: make(chan struct{}), toolRelease: make(chan struct{}), finalizeEntered: make(chan struct{}), finalizeRelease: make(chan struct{})}
+			dropper = &productReplyDropper{queue: queue, drop: dropReplies, input: running, causal: causal, staleWake: staleWake, holdTool: rootLoss, holdFinalize: terminalControls, reentrant: make(chan error, 1), toolEntered: make(chan struct{}), toolRelease: make(chan struct{}), finalizeEntered: make(chan struct{}), finalizeRelease: make(chan struct{}), innerEntered: make(chan struct{}), innerRelease: make(chan struct{}), outerClosed: make(chan struct{})}
 			proxy, err := net.Listen("unix", controlPath)
 			if err != nil {
 				t.Fatal(err)
@@ -264,6 +264,9 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 			defer func() { _ = proxyServer.Close(); _ = os.Remove(controlPath) }()
 			if terminalControls {
 				defer dropper.releaseFinalization()
+			}
+			if causal {
+				defer dropper.releaseInner()
 			}
 		}
 		if startupFailure || rootLoss {
@@ -392,16 +395,36 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 				if err := <-dropper.reentrant; err == nil || !strings.Contains(err.Error(), "remains pending") {
 					t.Fatalf("dependent callback result = %v", err)
 				}
+				select {
+				case <-dropper.innerEntered:
+				case <-ctx.Done():
+					t.Fatal("dependent preflight did not reach its hold")
+				}
+				select {
+				case <-dropper.outerClosed:
+				case <-ctx.Done():
+					t.Fatal("outer receipt was not released while the dependent preflight was held")
+				}
+				dropper.releaseInner()
+				var disposition string
 				probeWait(t, ctx, "dependent native input outcome", func() bool {
 					queue.mu.Lock()
 					defer queue.mu.Unlock()
 					for _, input := range queue.running {
-						if input.input.Text == "CAUSE_INNER" && input.interim != nil && input.interim.Disposition == "would_block" && input.result != nil && input.result.Disposition == "queued" {
+						if input.input.Text == "CAUSE_INNER" && input.interim != nil && input.interim.Disposition == "would_block" && input.result != nil {
+							disposition = input.result.Disposition
 							return true
 						}
 					}
 					return false
 				})
+				evidence, _ := json.Marshal(map[string]any{"innerHeld": true, "outerReceiptClosed": true, "dependentDisposition": disposition})
+				if err := os.WriteFile(filepath.Join(rootPath, "causal-order.json"), evidence, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if disposition != "queued" {
+					t.Errorf("dependent input after outer receipt release = %q, want queued", disposition)
+				}
 			}
 			root.mu.Lock()
 			root.queueProvider = true
@@ -455,7 +478,7 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 			wantState, wantRoster = Partial, "unavailable"
 		}
 		if err != nil || outcome.State != wantState || outcome.Text != report || outcome.Usage.TotalTokens == 0 || len(roster) != 1 || roster[0].State != wantRoster || len(pending) != 0 || failure && !strings.Contains(outcome.Error, "write") || starting && (!probeRequestContains(provider, "START_ONE") || !probeRequestContains(provider, "START_TWO")) || running && !causal && (!probeRequestContains(provider, "RUN_ONE") || !probeRequestContains(provider, "RUN_TWO") || probeRequestContains(provider, "RUN_OVERFLOW")) || causal && (!probeRequestContains(provider, "CAUSE_OUTER") || !probeRequestContains(provider, "CAUSE_INNER")) || (policyRefuse || staleWake) && probeCount(provider, "event", "request") < 2 {
-			t.Fatalf("product member outcome = %#v, roster=%#v, pending=%#v, %v", outcome, roster, pending, err)
+			t.Errorf("product member outcome = %#v, roster=%#v, pending=%#v, %v", outcome, roster, pending, err)
 		}
 		if marker != "" {
 			data, err := os.ReadFile(filepath.Join(rootPath, "files", marker))
@@ -529,32 +552,58 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 }
 
 type productReplyDropper struct {
-	queue           *memberControlQueue
-	drop            bool
-	input           bool
-	causal          bool
-	staleWake       bool
-	holdTool        bool
-	holdFinalize    bool
-	reentrant       chan error
-	toolEntered     chan struct{}
-	toolRelease     chan struct{}
-	toolOnce        atomic.Bool
-	finalizeEntered chan struct{}
-	finalizeRelease chan struct{}
-	finalizeOnce    atomic.Bool
-	finalizeDone    sync.Once
-	startOnce       atomic.Bool
-	installOnce     atomic.Bool
-	inputOnce       atomic.Bool
-	startDropped    atomic.Uint64
-	installDropped  atomic.Uint64
-	inputDropped    atomic.Uint64
-	staleOnce       atomic.Bool
-	staleCount      atomic.Uint64
+	queue            *memberControlQueue
+	drop             bool
+	input            bool
+	causal           bool
+	staleWake        bool
+	holdTool         bool
+	holdFinalize     bool
+	reentrant        chan error
+	toolEntered      chan struct{}
+	toolRelease      chan struct{}
+	toolOnce         atomic.Bool
+	finalizeEntered  chan struct{}
+	finalizeRelease  chan struct{}
+	finalizeOnce     atomic.Bool
+	finalizeDone     sync.Once
+	startOnce        atomic.Bool
+	installOnce      atomic.Bool
+	inputOnce        atomic.Bool
+	startDropped     atomic.Uint64
+	installDropped   atomic.Uint64
+	inputDropped     atomic.Uint64
+	staleOnce        atomic.Bool
+	staleCount       atomic.Uint64
+	innerEntered     chan struct{}
+	innerRelease     chan struct{}
+	outerClosed      chan struct{}
+	innerEnteredOnce sync.Once
+	innerReleaseOnce sync.Once
+	outerClosedOnce  sync.Once
 }
 
 func (dropper *productReplyDropper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if dropper.causal && strings.HasPrefix(r.URL.Path, "/fixture/") && r.URL.Path != "/fixture/reentrant" {
+		if !dropper.queue.authorize(r) {
+			http.Error(w, "callback authority is unavailable", http.StatusForbidden)
+			return
+		}
+		switch r.URL.Path {
+		case "/fixture/hold-inner":
+			dropper.innerEnteredOnce.Do(func() { close(dropper.innerEntered) })
+			<-dropper.innerRelease
+		case "/fixture/outer-closing":
+			<-dropper.innerEntered
+		case "/fixture/outer-closed":
+			dropper.outerClosedOnce.Do(func() { close(dropper.outerClosed) })
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		return
+	}
 	if dropper.holdFinalize && r.URL.Path == "/member/settlement/finalize" && dropper.finalizeOnce.CompareAndSwap(false, true) {
 		close(dropper.finalizeEntered)
 		<-dropper.finalizeRelease
@@ -641,6 +690,10 @@ func (dropper *productReplyDropper) ServeHTTP(w http.ResponseWriter, r *http.Req
 
 func (dropper *productReplyDropper) releaseFinalization() {
 	dropper.finalizeDone.Do(func() { close(dropper.finalizeRelease) })
+}
+
+func (dropper *productReplyDropper) releaseInner() {
+	dropper.innerReleaseOnce.Do(func() { close(dropper.innerRelease) })
 }
 
 type productDroppedReply struct {

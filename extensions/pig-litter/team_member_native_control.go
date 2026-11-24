@@ -146,10 +146,7 @@ func (member *nativeMember) applyControl(ctx context.Context, api extension.API,
 		inputCtx := windowCtx
 		release := func() {}
 		if value.Cause != "" {
-			var cancel context.CancelFunc
-			inputCtx, cancel = context.WithCancel(causeCtx)
-			stop := context.AfterFunc(windowCtx, cancel)
-			release = func() { stop(); cancel() }
+			inputCtx, release = dependentMemberInputContext(windowCtx, causeCtx)
 		}
 		receipt, err := member.bridge.Admit(inputCtx, window, memberinput.TransferID(value.Transfer), memberinput.Input{Mode: memberinput.Mode(value.Mode), Text: value.Text})
 		if err != nil {
@@ -172,9 +169,17 @@ func (member *nativeMember) applyControl(ctx context.Context, api extension.API,
 	return reply
 }
 
+func dependentMemberInputContext(window, cause context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.WithoutCancel(cause))
+	stop := context.AfterFunc(window, cancel)
+	return ctx, func() { stop(); cancel() }
+}
+
 func (member *nativeMember) completeRunning(ctx context.Context, input memberInputWire, receipt *memberinput.Receipt, release func()) {
 	defer release()
+	defer member.fixtureReceiptBoundary(input, "/fixture/outer-closed")
 	defer receipt.Close()
+	defer member.fixtureReceiptBoundary(input, "/fixture/outer-closing")
 	result, err := receipt.Await(ctx)
 	if errors.Is(err, coding.ErrInputWouldBlock) {
 		request := memberStartingResult{Window: input.Window, Transfer: input.Transfer, Disposition: "would_block"}
