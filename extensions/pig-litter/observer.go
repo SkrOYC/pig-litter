@@ -845,7 +845,7 @@ func (o *owner) captureObserverActivity(pair *observerPair) observerDigest {
 	o.tree.mu.Lock()
 	progress := pair.observed.progress
 	state := pair.observed.state
-	native := pair.observed.owner.backend != "" && pair.observed.owner.backend != backendEmbedded
+	native := isPaneBackend(pair.observed.owner.backend)
 	active := map[string]int{"read": 0, "search": 0, "write": 0, "shell": 0, "delegation": 0, "other": 0}
 	for _, name := range progress.activeTools {
 		active[observerCategory(name)]++
@@ -1395,7 +1395,7 @@ func (o *owner) deliverObserverReport(ctx context.Context, pair *observerPair, i
 		}
 		o.tree.mu.Lock()
 		selected = target.run
-		nativeTarget = target.backend != "" && target.backend != backendEmbedded
+		nativeTarget = isPaneBackend(target.backend)
 		binding := target.native
 		if binding != nil && (!binding.ready || !o.memberBindingCurrentLocked(binding)) {
 			binding = nil
