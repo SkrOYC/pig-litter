@@ -391,11 +391,28 @@ jobs:
           PIG_PLATFORM_ROOT_DIR="$CANDIDATE_ROOT" PIG_PLATFORM_SCRATCH_PARENT="$scratch" PIG_PLATFORM_CACHE_DIR='' PIG_PLATFORM_RECORD_CACHE_IDENTITY=1 \
             bash "$DRIVER_ROOT/scripts/verify-pig-platforms.sh" "$CANDIDATE_SHA" darwin amd64 "$evidence/native-platform" -- \
             python3 -B "$DRIVER_ROOT/scripts/iterm-intel-pig-forensics.py" --scratch "$scratch" --evidence "$evidence" 2>&1 | tee "$evidence/runner.log"
-      - name: Upload diagnostic and capability evidence
+      - name: Record native observations in the job log
         if: always()
+        shell: bash
+        run: python3 -B driver/scripts/report-intel-native.py --evidence "$RUNNER_TEMP/intel-pig-window-forensics"
+      - name: Upload diagnostic and capability evidence
+        id: upload_native_evidence
+        if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: intel-pig-window-forensics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/intel-pig-window-forensics/
+            ${{ runner.temp }}/collaboration-platform-probe/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retry diagnostic evidence upload
+        if: always() && steps.upload_native_evidence.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: intel-pig-window-forensics-${{ github.run_id }}-${{ github.run_attempt }}-retry
           path: |
             ${{ runner.temp }}/intel-pig-window-forensics/
             ${{ runner.temp }}/collaboration-platform-probe/

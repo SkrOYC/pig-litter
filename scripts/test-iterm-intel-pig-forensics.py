@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+import contextlib
 import importlib.util
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -15,6 +17,22 @@ spec.loader.exec_module(probe)
 
 
 class PigForensicsTests(unittest.TestCase):
+    def test_native_log_report_preserves_census_and_missing_files(self):
+        report_path = Path(__file__).with_name("report-intel-native.py")
+        report_spec = importlib.util.spec_from_file_location("report_intel_native", report_path)
+        reporter = importlib.util.module_from_spec(report_spec)
+        report_spec.loader.exec_module(reporter)
+        with tempfile.TemporaryDirectory(prefix="itp-report.") as directory:
+            evidence = Path(directory)
+            (evidence / "summary.json").write_text('{"result": "observed"}\n')
+            (evidence / "startup-only-after-exit-native.json").write_text('{"windows": []}\n')
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                reporter.report(evidence)
+            self.assertIn('--- summary.json ---\n{"result": "observed"}', output.getvalue())
+            self.assertIn('--- startup-only-after-exit-native.json ---\n{"windows": []}', output.getvalue())
+            self.assertIn('--- deterministic-prompt-after-exit-native.json ---\nunavailable', output.getvalue())
+
     def test_native_census_reads_window_numbers_and_owners(self):
         payload = probe.plistlib.dumps([{"kCGWindowNumber": 47, "kCGWindowOwnerPID": 100, "kCGWindowIsOnscreen": True}], fmt=probe.plistlib.FMT_BINARY)
         buffer = probe.ctypes.create_string_buffer(payload)
@@ -239,6 +257,8 @@ class PigForensicsTests(unittest.TestCase):
         self.assertIn("runs-on: macos-15-intel", diagnostic)
         self.assertIn('test "$SELECTED_ARCHITECTURE" = intel', diagnostic)
         self.assertIn('bash "$DRIVER_ROOT/scripts/verify-pig-platforms.sh"', diagnostic)
+        self.assertIn("report-intel-native.py", diagnostic)
+        self.assertIn("steps.upload_native_evidence.outcome == 'failure'", diagnostic)
         self.assertNotIn("verify-p03-macos.sh", diagnostic)
 
 

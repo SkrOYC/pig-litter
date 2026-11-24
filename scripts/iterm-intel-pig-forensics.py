@@ -159,6 +159,7 @@ class PigForensics(window_probe.Forensics):
             terminal.launch()
             target = {"window": terminal.window["id"], "session": terminal.window["session"], "tty": terminal.window["tty"], "process": terminal.window["wrapper_identity"]}
             self.owned.append(target)
+            result["target"] = target
             self.event(name + ".identity", target=target, host=terminal.window["host"], processes=list(terminal.owned.values()))
             nonce = "P03_PIG_" + os.urandom(12).hex()
             title = self.action(name + ".set-title", window_probe.SET_TITLE, target["window"], target["session"], nonce)
@@ -267,6 +268,7 @@ def main():
     diagnostic.iterm = iterm_processes[0]
     diagnostic.event("start", runner="macos-15-intel", machine=machine, pig=str(pig), pig_sha256=actual_hash, control=control, iterm=diagnostic.iterm)
     results = []
+    control_state = "not-observed"
     driver.applescript = diagnostic.recorded_applescript
     try:
         if diagnostic.state("control.initial", control) != "present:owned":
@@ -306,7 +308,7 @@ def main():
         except Exception as error:
             diagnostic.event("pig.hash-exception", error=repr(error))
             diagnostic.failures.append(repr(error))
-        summary = {"result": "observed" if len(results) == 2 and not diagnostic.failures and all(not result["error"] and result["provider_joined"] for result in results) else "incomplete", "cases": results, "failures": diagnostic.failures}
+        summary = {"result": "observed" if len(results) == 2 and not diagnostic.failures and all(not result["error"] and result["provider_joined"] for result in results) else "incomplete", "pig_sha256": actual_hash, "iterm": diagnostic.iterm, "control": control, "control_cleanup_state": control_state, "cases": results, "failures": diagnostic.failures}
         (args.evidence / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     if summary["result"] != "observed":
         raise RuntimeError("PiG diagnostic incomplete; inspect the event ledger")
