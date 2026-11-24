@@ -541,14 +541,17 @@ func (p *childPanel) composerInput(data string) {
 func (p *childPanel) submit(action humanAction) {
 	selected := p.selected
 	if p.team != nil {
-		if p.messageTarget == nil {
+		member := action.member
+		if member == nil {
+			member = p.messageTarget
+		}
+		if member == nil {
 			p.feedback = "Selected teammate is unavailable"
 			return
 		}
-		member := *p.messageTarget
-		action.member = &member
+		action.member = member
 		var err error
-		selected, err = p.owner.teamMessageExecution(member)
+		selected, err = p.owner.teamMessageExecution(*member)
 		if err != nil {
 			p.feedback = "Action failed | " + err.Error()
 			return
@@ -667,7 +670,7 @@ func (p *childPanel) renderTeam(width int) []string {
 		height = 24
 	}
 	budget := max(1, height-8)
-	legend := []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " detail  v report  t transcript", "m message active teammate  k all tasks  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " close"}
+	legend := []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " detail  v report  t transcript", "m message  p pause subtree  k all tasks  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " close"}
 	if p.mode == panelMessage {
 		legend = []string{panelKeyText("tui.input.submit") + " submit  " + panelKeyText("tui.select.cancel") + " cancel", panelKeyText("tui.editor.cursorLeft") + "/" + panelKeyText("tui.editor.cursorRight") + " edit  " + panelKeyText("tui.editor.deleteToLineStart") + " clear  " + panelKeyText("tui.input.tab") + " steer/follow_up"}
 	} else if p.mode == panelTasks {
@@ -677,7 +680,7 @@ func (p *childPanel) renderTeam(width int) []string {
 	} else if p.mode != panelList && p.mode != panelDetail {
 		legend = []string{panelMoveKeys() + " scroll  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " back"}
 	} else if p.mode == panelDetail {
-		legend = []string{panelMoveKeys() + " scroll  v report  t transcript", "m message active teammate  k all tasks  " + panelKeyText("tui.select.cancel") + " back"}
+		legend = []string{panelMoveKeys() + " scroll  v report  t transcript", "m message  p pause subtree  k all tasks  " + panelKeyText("tui.select.cancel") + " back"}
 	}
 	if width >= 80 {
 		legend = widthx.WrapTextWithAnsi(paintText(strings.Join(legend, "  "), false), width)
@@ -1080,13 +1083,18 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 		p.previous, p.previousScroll = p.mode, p.scroll
 		p.mode, p.scroll, p.renderedScroll = panelTranscript, 0, 0
 		p.teamRequest = p.team.Inspect(p.member)
-	case key == "m" && (p.mode == panelList || p.mode == panelDetail):
+	case (key == "m" || key == "p") && (p.mode == panelList || p.mode == panelDetail):
 		member := frame.Members[index]
 		if frame.RosterHealth.Status != "fresh" || member.Member.State != "running" || member.Execution == nil || member.Execution.Child.State != Running || member.Execution.Admission != "ready" {
 			p.feedback = "Selected teammate is not active"
 			return sdk.RemoteComponentResult{}
 		}
-		p.messageTarget = &humanMember{Ref: member.Member.Ref, AdmissionID: member.Member.AdmissionID, Name: member.Member.Name}
+		target := humanMember{Ref: member.Member.Ref, AdmissionID: member.Member.AdmissionID, Name: member.Member.Name}
+		if key == "p" {
+			p.submit(humanAction{kind: humanPause, member: &target})
+			break
+		}
+		p.messageTarget = &target
 		p.previous, p.previousScroll = p.mode, p.scroll
 		p.mode, p.draft, p.cursor = panelMessage, "", 0
 		p.feedback = ""

@@ -322,7 +322,7 @@ func parseOptions(args []string) (options, error) {
 	var result options
 	flags := flag.NewFlagSet("go-tui-proof", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	flags.StringVar(&result.scenario, "scenario", "all", "all, receipt-control, chain, team-preview, team-message, team-controls, team-tasks, host-idle-message, host-busy-message, or host-tool-veto")
+	flags.StringVar(&result.scenario, "scenario", "all", "all, receipt-control, chain, team-preview, team-message, team-controls, team-tasks, team-pause, host-idle-message, host-busy-message, or host-tool-veto")
 	caseValue := flags.String("case", "", "direct, source, piglet, or unselected")
 	flags.StringVar(&result.pigPath, "pig", "", "absolute path to the released PiG executable")
 	flags.StringVar(&result.extension, "extension", "", "absolute path to the prebuilt pig-litter executable")
@@ -342,7 +342,7 @@ func parseOptions(args []string) (options, error) {
 	if flags.NArg() != 0 {
 		return options{}, errors.New("positional arguments are not supported")
 	}
-	if result.scenario != "all" && result.scenario != "receipt-control" && result.scenario != "chain" && result.scenario != "team-preview" && result.scenario != "team-message" && result.scenario != "team-controls" && result.scenario != "team-tasks" && result.scenario != "host-idle-message" && result.scenario != "host-busy-message" && result.scenario != "host-tool-veto" {
+	if result.scenario != "all" && result.scenario != "receipt-control" && result.scenario != "chain" && result.scenario != "team-preview" && result.scenario != "team-message" && result.scenario != "team-controls" && result.scenario != "team-tasks" && result.scenario != "team-pause" && result.scenario != "host-idle-message" && result.scenario != "host-busy-message" && result.scenario != "host-tool-veto" {
 		return options{}, errors.New("unknown terminal scenario")
 	}
 	result.caseName = runCase(*caseValue)
@@ -519,7 +519,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	}
 	childEnv := fixtureEnvironment(options.pigPath, tmuxPath, home, pigHome, agentDir, scratch)
 	resumeTrace := ""
-	if options.scenario == "team-preview" || options.scenario == "team-message" || options.scenario == "team-controls" || options.scenario == "team-tasks" {
+	if options.scenario == "team-preview" || options.scenario == "team-message" || options.scenario == "team-controls" || options.scenario == "team-tasks" || options.scenario == "team-pause" {
 		resumeTrace = filepath.Join(scratch, "resume-trace.log")
 		if err := os.WriteFile(resumeTrace, nil, 0o600); err != nil {
 			return evidencePath, err
@@ -1173,6 +1173,16 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	}
 	if options.scenario == "team-tasks" {
 		if err := panel.teamTaskActionsProof(media); err != nil {
+			return evidencePath, err
+		}
+		if err := exitHost(); err != nil {
+			return evidencePath, err
+		}
+		paneExited = true
+		return evidencePath, nil
+	}
+	if options.scenario == "team-pause" {
+		if err := panel.teamPauseProof(media); err != nil {
 			return evidencePath, err
 		}
 		if err := exitHost(); err != nil {

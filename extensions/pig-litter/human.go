@@ -106,7 +106,7 @@ func (o *owner) performHuman(ctx context.Context, selected *run, action humanAct
 		return failed(err)
 	}
 	if action.member != nil {
-		if action.kind != humanMessage {
+		if action.kind != humanMessage && action.kind != humanPause {
 			return failed(reject("rejected", "unsupported teammate action"))
 		}
 		current, err := o.humanMemberRun(*action.member)

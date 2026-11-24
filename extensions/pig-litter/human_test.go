@@ -593,9 +593,11 @@ func TestHumanTeamMessageRejectsExecutionReplacement(t *testing.T) {
 		selected.owner.run = replacement
 		o.tree.mu.Unlock()
 		target := humanMember{Ref: member.Ref, AdmissionID: member.AdmissionID, Name: member.Name}
-		result := o.performHuman(context.Background(), selected, humanAction{kind: humanMessage, mode: "follow_up", text: "message for previous execution", member: &target})
-		if result.err == nil || !strings.Contains(result.err.Error(), "execution changed") || len(replacement.mailbox) != 0 {
-			t.Fatalf("replacement execution accepted stale input: %+v, queued=%d", result, len(replacement.mailbox))
+		for _, kind := range []humanActionKind{humanMessage, humanPause} {
+			result := o.performHuman(context.Background(), selected, humanAction{kind: kind, mode: "follow_up", text: "message for previous execution", member: &target})
+			if result.err == nil || !strings.Contains(result.err.Error(), "execution changed") || len(replacement.mailbox) != 0 || replacement.owner.paused {
+				t.Fatalf("replacement execution accepted stale action %d: %+v, queued=%d", kind, result, len(replacement.mailbox))
+			}
 		}
 		o.tree.mu.Lock()
 		selected.owner.run = selected
