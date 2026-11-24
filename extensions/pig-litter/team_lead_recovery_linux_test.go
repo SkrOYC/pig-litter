@@ -53,12 +53,12 @@ func TestLeadReceiptRecoversOnlyAfterPriorHostExit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			oldAttempt := peerLeadAttempt{Host: prior, SessionFile: file}
+			oldAttempt := peerDeliveryAttempt{Host: prior, SessionFile: file}
 			receipt, content, found, err := store.offerPeerAttempt(lead, &oldAttempt)
 			if err != nil || !found || receipt.State != peerAttempted {
 				t.Fatalf("old host offer = %#v, found=%v, %v", receipt, found, err)
 			}
-			newAttempt := peerLeadAttempt{Host: current, SessionFile: file}
+			newAttempt := peerDeliveryAttempt{Host: current, SessionFile: file}
 			if _, _, found, err := store.offerPeerAttempt(lead, &newAttempt); err != nil || found {
 				t.Fatalf("live prior host was retried: found=%v, %v", found, err)
 			}
@@ -85,7 +85,7 @@ func TestLeadReceiptRecoversOnlyAfterPriorHostExit(t *testing.T) {
 				t.Fatal(err)
 			}
 			otherManager := nativeTestManager(t, t.TempDir(), string(root))
-			wrongFile := peerLeadAttempt{Host: current, SessionFile: *otherManager.GetSessionFile()}
+			wrongFile := peerDeliveryAttempt{Host: current, SessionFile: *otherManager.GetSessionFile()}
 			if _, _, found, err := reopened.offerPeerAttempt(lead, &wrongFile); err != nil || found {
 				t.Fatalf("retried with a different session file: found=%v, %v", found, err)
 			}
@@ -182,7 +182,7 @@ func TestLeadAcceptedReceiptSurvivesOwnerRestartBeforeHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempt := peerLeadAttempt{Host: host, SessionFile: *manager.GetSessionFile()}
+	attempt := peerDeliveryAttempt{Host: host, SessionFile: *manager.GetSessionFile()}
 	if _, _, found, err := reopened.offerPeerAttempt(lead, &attempt); err != nil || found {
 		t.Fatalf("accepted receipt offered before authenticated retry: found=%v, %v", found, err)
 	}
@@ -217,7 +217,7 @@ func TestLeadUnknownAttemptRemainsPending(t *testing.T) {
 			} else {
 				prior, stop := peerTestHost(t)
 				prior.Scope += ":different"
-				old := peerLeadAttempt{Host: prior, SessionFile: file}
+				old := peerDeliveryAttempt{Host: prior, SessionFile: file}
 				if _, _, found, err := store.offerPeerAttempt(lead, &old); err != nil || !found {
 					t.Fatalf("old offer found=%v, %v", found, err)
 				}
@@ -227,7 +227,7 @@ func TestLeadUnknownAttemptRemainsPending(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			attempt := peerLeadAttempt{Host: current, SessionFile: file}
+			attempt := peerDeliveryAttempt{Host: current, SessionFile: file}
 			if _, _, found, err := store.offerPeerAttempt(lead, &attempt); err != nil || found {
 				t.Fatalf("unknown attempt was reoffered: found=%v, %v", found, err)
 			}

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/MichaelKinsy/PiG/coding"
 	"github.com/MichaelKinsy/PiG/coding/extension"
 )
 
@@ -22,7 +23,7 @@ func teamLeadRef(team TeamID) MemberRef {
 	return MemberRef{Team: team, ID: team.Root, Generation: 1}
 }
 
-func validPeerLeadAttempt(attempt peerLeadAttempt) bool {
+func validPeerDeliveryAttempt(attempt peerDeliveryAttempt) bool {
 	return attempt.Host.PID > 0 && attempt.Host.Birth != "" && len(attempt.Host.Birth) <= 128 && attempt.Host.Scope != "" && len(attempt.Host.Scope) <= 256 && filepath.IsAbs(attempt.SessionFile) && filepath.Clean(attempt.SessionFile) == attempt.SessionFile
 }
 
@@ -98,8 +99,8 @@ func readPeerReceipt(path string) (peerReceipt, error) {
 	if hash, err := hex.DecodeString(envelope.BodySHA256); err != nil || len(hash) != sha256.Size || hex.EncodeToString(hash) != envelope.BodySHA256 {
 		return receipt, errors.New("invalid peer body digest")
 	}
-	if attempt := receipt.Attempt; attempt != nil && (envelope.Recipient != teamLeadRef(envelope.Team) || receipt.State == peerAccepted || !validPeerLeadAttempt(*attempt)) {
-		return receipt, errors.New("invalid lead delivery attempt")
+	if attempt := receipt.Attempt; attempt != nil && (receipt.State == peerAccepted || !validPeerDeliveryAttempt(*attempt)) {
+		return receipt, errors.New("invalid peer delivery attempt")
 	}
 	if receipt.State == peerObserved {
 		if receipt.SessionID != envelope.Recipient.ID || receipt.NativeEntryID == "" {
@@ -410,7 +411,7 @@ func (s *teamStore) offerPeer(recipient MemberRef) (peerReceipt, string, bool, e
 	return s.offerPeerAttempt(recipient, nil)
 }
 
-func (s *teamStore) offerPeerAttempt(recipient MemberRef, attempt *peerLeadAttempt) (peerReceipt, string, bool, error) {
+func (s *teamStore) offerPeerAttempt(recipient MemberRef, attempt *peerDeliveryAttempt) (peerReceipt, string, bool, error) {
 	var offered peerReceipt
 	var content string
 	found := false
@@ -418,8 +419,8 @@ func (s *teamStore) offerPeerAttempt(recipient MemberRef, attempt *peerLeadAttem
 		if roster.Team != recipient.Team {
 			return false, reject("unavailable", "team identity changed")
 		}
-		if attempt != nil && (recipient != teamLeadRef(roster.Team) || !validPeerLeadAttempt(*attempt)) {
-			return false, reject("unavailable", "lead delivery identity is invalid")
+		if attempt != nil && !validPeerDeliveryAttempt(*attempt) {
+			return false, reject("unavailable", "peer delivery identity is invalid")
 		}
 		members := make(map[MemberRef]string, len(roster.Members))
 		for _, member := range roster.Members {
@@ -685,6 +686,25 @@ func (o *owner) peerRunStore(r *record, selected *run) (*teamStore, bool) {
 	return nil, false
 }
 
+func embeddedPeerAttempt(session *coding.Session, recipient MemberRef) (*peerDeliveryAttempt, error) {
+	if session == nil || session.SessionManager().GetSessionId() != string(recipient.ID) {
+		return nil, reject("unavailable", "peer Session identity changed")
+	}
+	file := session.SessionManager().GetSessionFile()
+	if file == nil || *file == "" {
+		return nil, reject("unavailable", "peer Session file is unavailable")
+	}
+	host, err := embeddedPeerHost()
+	if err != nil {
+		return nil, err
+	}
+	attempt := &peerDeliveryAttempt{Host: host, SessionFile: filepath.Clean(*file)}
+	if !validPeerDeliveryAttempt(*attempt) {
+		return nil, reject("unavailable", "peer delivery identity is invalid")
+	}
+	return attempt, nil
+}
+
 func (o *owner) observePeerRun(r *record, selected *run) error {
 	store, ok := o.peerRunStore(r, selected)
 	if !ok {
@@ -718,7 +738,14 @@ func (o *owner) peerHooks(r *record, selected *run) extension.Extension {
 			if !ok {
 				return nil, nil
 			}
-			receipt, content, found, err := store.offerPeer(r.team.Ref)
+			selected.mu.Lock()
+			session := selected.session
+			selected.mu.Unlock()
+			attempt, err := embeddedPeerAttempt(session, r.team.Ref)
+			if err != nil {
+				return nil, nil
+			}
+			receipt, content, found, err := store.offerPeerAttempt(r.team.Ref, attempt)
 			if err != nil || !found {
 				return nil, err
 			}

@@ -38,11 +38,11 @@ const (
 )
 
 type peerReceipt struct {
-	Envelope      peerEnvelope      `json:"envelope"`
-	State         peerDeliveryState `json:"state"`
-	Attempt       *peerLeadAttempt  `json:"attempt,omitempty"`
-	NativeEntryID string            `json:"nativeEntryId,omitempty"`
-	SessionID     ChildID           `json:"sessionId,omitempty"`
+	Envelope      peerEnvelope         `json:"envelope"`
+	State         peerDeliveryState    `json:"state"`
+	Attempt       *peerDeliveryAttempt `json:"attempt,omitempty"`
+	NativeEntryID string               `json:"nativeEntryId,omitempty"`
+	SessionID     ChildID              `json:"sessionId,omitempty"`
 }
 
 type peerHostIdentity struct {
@@ -51,7 +51,7 @@ type peerHostIdentity struct {
 	Scope string `json:"scope"`
 }
 
-type peerLeadAttempt struct {
+type peerDeliveryAttempt struct {
 	Host        peerHostIdentity `json:"host"`
 	SessionFile string           `json:"sessionFile"`
 }

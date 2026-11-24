@@ -28,8 +28,8 @@ func (o *owner) sendRootPeers(ctx context.Context, store *teamStore, team TeamID
 	if err != nil {
 		return
 	}
-	attempt := peerLeadAttempt{Host: peerHostIdentity{PID: host.PID, Birth: host.Birth, Scope: host.Scope}, SessionFile: filepath.Clean(*file)}
-	if !validPeerLeadAttempt(attempt) {
+	attempt := peerDeliveryAttempt{Host: peerHostIdentity{PID: host.PID, Birth: host.Birth, Scope: host.Scope}, SessionFile: filepath.Clean(*file)}
+	if !validPeerDeliveryAttempt(attempt) {
 		return
 	}
 	for action.ctx.Err() == nil && o.current() == nil {

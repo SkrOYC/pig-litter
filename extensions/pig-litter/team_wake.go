@@ -14,7 +14,11 @@ func (o *owner) sendPeerWake(session *coding.Session, r *record, selected *run) 
 	if !ok || selected.peerWake == nil || selected.peerWake.Recipient != r.team.Ref {
 		return reject("unavailable", "peer wake is no longer current")
 	}
-	receipt, content, found, err := store.offerPeer(selected.peerWake.Recipient)
+	attempt, err := embeddedPeerAttempt(session, selected.peerWake.Recipient)
+	if err != nil {
+		return err
+	}
+	receipt, content, found, err := store.offerPeerAttempt(selected.peerWake.Recipient, attempt)
 	if err != nil {
 		return err
 	}

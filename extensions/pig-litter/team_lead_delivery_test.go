@@ -134,7 +134,7 @@ func TestLeadNativeObservationRequiresCurrentRootEpoch(t *testing.T) {
 	if _, _, err := store.acceptPeer(sender.Ref, request); err != nil {
 		t.Fatal(err)
 	}
-	attempt := peerLeadAttempt{Host: peerHostIdentity{PID: 12345, Birth: "linux:1", Scope: "linux:fixture"}, SessionFile: file}
+	attempt := peerDeliveryAttempt{Host: peerHostIdentity{PID: 12345, Birth: "linux:1", Scope: "linux:fixture"}, SessionFile: file}
 	receipt, content, found, err := store.offerPeerAttempt(lead, &attempt)
 	if err != nil || !found {
 		t.Fatalf("lead offer = %#v, found=%v, %v", receipt, found, err)

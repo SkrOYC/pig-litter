@@ -12,6 +12,25 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func embeddedPeerHost() (peerHostIdentity, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	for _, path := range []string{"/proc/self/stat", "/proc/self/ns", "/proc/thread-self/ns", "/proc/sys/kernel/random/boot_id"} {
+		var fs unix.Statfs_t
+		if err := unix.Statfs(path, &fs); err != nil || fs.Type != unix.PROC_SUPER_MAGIC {
+			return peerHostIdentity{}, errors.New("peer process identity is unavailable")
+		}
+	}
+	for _, name := range []string{"pid", "time"} {
+		leader, leaderErr := os.Readlink("/proc/self/ns/" + name)
+		thread, threadErr := os.Readlink("/proc/thread-self/ns/" + name)
+		if leaderErr != nil || threadErr != nil || leader != thread {
+			return peerHostIdentity{}, errors.New("peer process namespace differs")
+		}
+	}
+	return peerObservedHost(os.Getpid())
+}
+
 func peerObservedHost(pid int) (peerHostIdentity, error) {
 	var identity peerHostIdentity
 	if pid <= 0 {
