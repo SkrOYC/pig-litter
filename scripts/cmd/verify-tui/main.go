@@ -1153,6 +1153,14 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		if strings.Contains(captured.visible, "Litter") || strings.Contains(captured.visible, "litter_spawn") {
 			return evidencePath, errors.New("unselected TUI exposed the Resource widget or tools")
 		}
+		if media != nil {
+			if err := media.markObservation(); err != nil {
+				return evidencePath, err
+			}
+			if err := media.awaitEncodedObservation(ctx); err != nil {
+				return evidencePath, err
+			}
+		}
 	} else if options.scenario == "chain" {
 		if err := panel.chainProof(); err != nil {
 			return evidencePath, err

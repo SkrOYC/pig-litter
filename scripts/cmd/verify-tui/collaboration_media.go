@@ -122,6 +122,8 @@ type collaborationMediaReceipt struct {
 	RecordingNS     int64                                 `json:"recording_started_monotonic_ns,omitempty"`
 	RecorderReadyNS int64                                 `json:"recorder_ready_monotonic_ns,omitempty"`
 	StartupReadyNS  int64                                 `json:"startup_ready_monotonic_ns,omitempty"`
+	EncodedMS       int64                                 `json:"observation_encoded_ms,omitempty"`
+	ConfirmedNS     int64                                 `json:"observation_confirmed_monotonic_ns,omitempty"`
 	Socket          string                                `json:"tmux_socket"`
 	Session         string                                `json:"tmux_session"`
 	Display         string                                `json:"display,omitempty"`
@@ -353,6 +355,70 @@ func (media *collaborationMedia) markObservation() error {
 	stamp := (now-media.receipt.RecordingNS)/int64(time.Millisecond) + 50
 	media.receipt.Screenshot.SourceTimestampMS = &stamp
 	return nil
+}
+
+func collaborationMediaEncodedMillis(data []byte) int64 {
+	latest := int64(-1)
+	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r", "\n"), "\n") {
+		fields := strings.Fields(line)
+		frame := 0
+		stamp := ""
+		for index, field := range fields {
+			if field == "frame=" && index+1 < len(fields) {
+				frame, _ = strconv.Atoi(fields[index+1])
+			} else if strings.HasPrefix(field, "frame=") {
+				frame, _ = strconv.Atoi(strings.TrimPrefix(field, "frame="))
+			}
+			if strings.HasPrefix(field, "time=") {
+				stamp = strings.TrimPrefix(field, "time=")
+			}
+		}
+		if frame <= 0 {
+			continue
+		}
+		parts := strings.Split(stamp, ":")
+		if len(parts) != 3 {
+			continue
+		}
+		hours, hourErr := strconv.ParseInt(parts[0], 10, 32)
+		minutes, minuteErr := strconv.ParseInt(parts[1], 10, 32)
+		seconds, secondErr := strconv.ParseFloat(parts[2], 64)
+		if hourErr != nil || minuteErr != nil || secondErr != nil || hours < 0 || hours > 24 || minutes < 0 || minutes >= 60 || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 || seconds >= 60 {
+			continue
+		}
+		millis := (hours*3600+minutes*60)*1000 + int64(seconds*1000)
+		if millis > latest {
+			latest = millis
+		}
+	}
+	return latest
+}
+
+func (media *collaborationMedia) awaitEncodedObservation(ctx context.Context) error {
+	if media.receipt.Screenshot.SourceTimestampMS == nil || media.children["ffmpeg"] == nil {
+		return errors.New("media observation has no timestamp or recorder")
+	}
+	target := *media.receipt.Screenshot.SourceTimestampMS + 300
+	return waitFor(ctx, "encoded observation frame", stageTimeout, func() (bool, error) {
+		if !observedAlive(media.children["ffmpeg"].record.Identity) {
+			return false, errors.New("media recorder exited before encoding the observation")
+		}
+		data, err := os.ReadFile(filepath.Join(media.directory, "ffmpeg.log"))
+		if err != nil {
+			return false, err
+		}
+		encoded := collaborationMediaEncodedMillis(data)
+		if encoded < target {
+			return false, nil
+		}
+		confirmed, err := collaborationMonotonicNow()
+		if err != nil {
+			return false, err
+		}
+		media.receipt.EncodedMS = encoded
+		media.receipt.ConfirmedNS = confirmed
+		return true, nil
+	})
 }
 
 func withoutEnvironment(env []string, key string) []string {
@@ -661,6 +727,9 @@ func (media *collaborationMedia) validate() error {
 	stamp := *media.receipt.Screenshot.SourceTimestampMS
 	lastSafeMS := int64(duration*1000) - 200
 	if stamp > lastSafeMS {
+		if media.receipt.ConfirmedNS > 0 {
+			return errors.New("recorded video ended before the confirmed observation")
+		}
 		stamp = lastSafeMS
 		media.receipt.Screenshot.SourceTimestampMS = &stamp
 	}

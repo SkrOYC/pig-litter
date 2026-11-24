@@ -203,3 +203,54 @@ func TestCollaborationScreenshotFollowsStartupReadiness(t *testing.T) {
 		t.Fatalf("screenshot time before recording = %d ms, want 1000 ms", got)
 	}
 }
+
+func TestCollaborationEncodedObservationWaitsForRecorderProgress(t *testing.T) {
+	directory := t.TempDir()
+	log := filepath.Join(directory, "ffmpeg.log")
+	if err := os.WriteFile(log, []byte("frame= 0 time=N/A\rframe= 14 time=00:00:01.10\r"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	process, err := readObservedProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := int64(1000)
+	media := &collaborationMedia{
+		directory: directory,
+		receipt:   collaborationMediaReceipt{Screenshot: collaborationMediaArtifact{SourceTimestampMS: &stamp}},
+		children:  map[string]*collaborationMediaChild{"ffmpeg": {record: &collaborationMediaProcess{Identity: process}}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- media.awaitEncodedObservation(ctx) }()
+	select {
+	case err := <-done:
+		t.Fatalf("returned before the observation was encoded: %v", err)
+	case <-time.After(120 * time.Millisecond):
+	}
+	if err := os.WriteFile(log, []byte("frame= 20 time=00:00:01.50\r"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+		if media.receipt.EncodedMS < 1300 || media.receipt.ConfirmedNS <= 0 {
+			t.Fatalf("encoded observation was not recorded: %+v", media.receipt)
+		}
+	case <-ctx.Done():
+		t.Fatal("did not observe encoded frame progress")
+	}
+}
+
+func TestCollaborationEncodedProgressIgnoresIncompleteTimes(t *testing.T) {
+	log := []byte("time=00:00:59.00\rframe= 0 time=00:00:50.00\rframe= 3 time=00:00:\rframe= 4 time=00:65:01.00\rframe= 8 time=00:00:01.46\r")
+	if got := collaborationMediaEncodedMillis(log); got != 1460 {
+		t.Fatalf("encoded progress = %d ms, want 1460 ms", got)
+	}
+	if got := collaborationMediaEncodedMillis([]byte("frame= 0 time=N/A\r")); got != -1 {
+		t.Fatalf("unavailable progress = %d ms, want -1", got)
+	}
+}
