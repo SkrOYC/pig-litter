@@ -19,6 +19,7 @@ on:
           - preflight
           - iterm-lifecycle
           - intel-window-forensics
+          - intel-pig-window-forensics
           - p03-all
           - p03-team
           - p03-policy
@@ -309,6 +310,89 @@ jobs:
           name: intel-window-forensics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/intel-window-forensics/
+            ${{ runner.temp }}/collaboration-platform-probe/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  intel-pig-window-forensics:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario == 'intel-pig-window-forensics' }}
+    name: Intel PiG window forensics
+    runs-on: macos-15-intel
+    timeout-minutes: 105
+    env:
+      PROBE_RUNNER_LABEL: macos-15-intel
+      SELECTED_ARCHITECTURE: ${{ inputs.architecture }}
+      SELECTED_SCENARIO: ${{ inputs.scenario }}
+      CANDIDATE_SHA: ${{ inputs.candidate_ref }}
+      CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+      DRIVER_ROOT: ${{ github.workspace }}/driver
+    steps:
+      - name: Check out the verification driver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: driver
+          persist-credentials: false
+      - name: Record and check diagnostic inputs
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/intel-pig-window-forensics"
+          git -C driver rev-parse HEAD > "$RUNNER_TEMP/intel-pig-window-forensics/driver-commit.txt"
+          git -C driver rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/intel-pig-window-forensics/driver-tree.txt"
+          git -C driver status --porcelain=v1 --untracked-files=all > "$RUNNER_TEMP/intel-pig-window-forensics/driver-status.txt"
+          printf 'scenario=%s\narchitecture=%s\ncandidate=%s\nworkflow_sha=%s\nrunner=%s\n' "$SELECTED_SCENARIO" "$SELECTED_ARCHITECTURE" "$CANDIDATE_SHA" "$GITHUB_WORKFLOW_SHA" "$PROBE_RUNNER_LABEL" > "$RUNNER_TEMP/intel-pig-window-forensics/inputs.txt"
+          test ! -s "$RUNNER_TEMP/intel-pig-window-forensics/driver-status.txt"
+          test "$SELECTED_ARCHITECTURE" = intel
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - name: Check out the exact product candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: candidate
+          persist-credentials: false
+      - name: Check diagnostic controls
+        shell: bash
+        run: |
+          python3 -B driver/scripts/test-iterm-intel-window-forensics.py
+          python3 -B driver/scripts/test-iterm-intel-pig-forensics.py
+      - name: Verify iTerm2 and scoped consent
+        working-directory: driver
+        shell: bash
+        timeout-minutes: 16
+        run: |
+          bash scripts/probe-macos-collaboration.sh --test-first-launch-matcher
+          bash scripts/probe-macos-collaboration.sh
+      - name: Set up Go 1.27.4
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - name: Prepare the pinned native host and observe unselected PiG
+        shell: bash
+        timeout-minutes: 75
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/intel-pig-window-forensics"
+          test "$(git -C "$CANDIDATE_ROOT" rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git -C "$CANDIDATE_ROOT" status --porcelain=v1 --untracked-files=all)"
+          git -C "$CANDIDATE_ROOT" rev-parse 'HEAD^{tree}' > "$evidence/candidate-tree.txt"
+          df -P /private/tmp > "$evidence/scratch-filesystem.txt"
+          device=$(df -P /private/tmp | tail -1 | awk '{print $1}')
+          [[ "$device" == /dev/disk* ]]
+          [[ "$(cd /private/tmp && pwd -P)" == /private/tmp ]]
+          scratch=$(mktemp -d /private/tmp/itp.XXXXXXXX)
+          printf 'path=%s\nidentity=%s\n' "$scratch" "$(stat -f '%d:%i' "$scratch")" > "$evidence/scratch.txt"
+          export GOTELEMETRY=off
+          PIG_PLATFORM_ROOT_DIR="$CANDIDATE_ROOT" PIG_PLATFORM_SCRATCH_PARENT="$scratch" PIG_PLATFORM_CACHE_DIR='' PIG_PLATFORM_RECORD_CACHE_IDENTITY=1 \
+            bash "$DRIVER_ROOT/scripts/verify-pig-platforms.sh" "$CANDIDATE_SHA" darwin amd64 "$evidence/native-platform" -- \
+            python3 -B "$DRIVER_ROOT/scripts/iterm-intel-pig-forensics.py" --scratch "$scratch" --evidence "$evidence" 2>&1 | tee "$evidence/runner.log"
+      - name: Upload diagnostic and capability evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: intel-pig-window-forensics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/intel-pig-window-forensics/
             ${{ runner.temp }}/collaboration-platform-probe/
           include-hidden-files: true
           if-no-files-found: error
