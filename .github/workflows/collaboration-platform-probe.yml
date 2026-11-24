@@ -11,12 +11,13 @@ on:
         required: false
         type: string
       scenario:
-        description: Platform capability probe or P03 product cases
+        description: Platform capability probe, iTerm lifecycle diagnostic, or P03 product cases
         type: choice
         default: capability
         options:
           - capability
           - preflight
+          - iterm-lifecycle
           - p03-all
           - p03-team
           - p03-policy
@@ -118,7 +119,7 @@ jobs:
           retention-days: 14
 
   p03-macos:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario != 'capability' && inputs.scenario != 'preflight' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario != 'capability' && inputs.scenario != 'preflight' && inputs.scenario != 'iterm-lifecycle' }}
     name: P03 iTerm2 on ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 105
@@ -204,6 +205,58 @@ jobs:
           name: p03-iterm-${{ matrix.runner }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/p03-macos-evidence/
+            ${{ runner.temp }}/collaboration-platform-probe/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  iterm-lifecycle:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario == 'iterm-lifecycle' }}
+    name: iTerm lifecycle on ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(inputs.architecture == 'intel' && '["macos-15-intel"]' || inputs.architecture == 'arm' && '["macos-15"]' || '["macos-15-intel","macos-15"]') }}
+    env:
+      PROBE_RUNNER_LABEL: ${{ matrix.runner }}
+    steps:
+      - name: Check out the verification driver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: driver
+          persist-credentials: false
+      - name: Record diagnostic identity
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/iterm-lifecycle"
+          git -C driver rev-parse HEAD > "$RUNNER_TEMP/iterm-lifecycle/driver-commit.txt"
+          git -C driver rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/iterm-lifecycle/driver-tree.txt"
+          git -C driver status --porcelain=v1 --untracked-files=all > "$RUNNER_TEMP/iterm-lifecycle/driver-status.txt"
+          test ! -s "$RUNNER_TEMP/iterm-lifecycle/driver-status.txt"
+          printf 'scenario=%s\narchitecture=%s\nworkflow_sha=%s\nrunner=%s\n' '${{ inputs.scenario }}' '${{ inputs.architecture }}' "$GITHUB_WORKFLOW_SHA" "$PROBE_RUNNER_LABEL" > "$RUNNER_TEMP/iterm-lifecycle/inputs.txt"
+      - name: Check diagnostic controls
+        shell: bash
+        run: python3 -B driver/scripts/test-iterm-lifecycle.py
+      - name: Verify iTerm2 and scoped consent
+        working-directory: driver
+        shell: bash
+        timeout-minutes: 16
+        run: |
+          bash scripts/probe-macos-collaboration.sh --test-first-launch-matcher
+          bash scripts/probe-macos-collaboration.sh
+      - name: Observe sequential owned windows
+        shell: bash
+        timeout-minutes: 10
+        run: python3 -B driver/scripts/iterm-lifecycle.py --evidence "$RUNNER_TEMP/iterm-lifecycle"
+      - name: Upload lifecycle and capability evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: iterm-lifecycle-${{ matrix.runner }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/iterm-lifecycle/
             ${{ runner.temp }}/collaboration-platform-probe/
           include-hidden-files: true
           if-no-files-found: error
