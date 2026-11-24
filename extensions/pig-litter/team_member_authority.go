@@ -271,18 +271,21 @@ func (queue *memberControlQueue) serveAuthority(w http.ResponseWriter, r *http.R
 			return
 		}
 		_, terminal, err := memberAssistantMessages(snapshot, authority.binding.log.baselineCount)
-		if err != nil || request.Report != idleAssistantReport(terminal) {
+		observer := authority.binding.record.role == "observer"
+		if err != nil || observer && request.Report != "" || !observer && request.Report != idleAssistantReport(terminal) {
 			http.Error(w, "native settlement report does not match its history", http.StatusConflict)
 			return
 		}
-		peer, err := authority.offerPeer(r.Context())
-		if err != nil {
-			fail()
-			return
-		}
-		if peer != nil {
-			write(memberSettleReply{Boundary: request.Boundary, Continue: true, Peer: peer})
-			return
+		if !observer {
+			peer, err := authority.offerPeer(r.Context())
+			if err != nil {
+				fail()
+				return
+			}
+			if peer != nil {
+				write(memberSettleReply{Boundary: request.Boundary, Continue: true, Peer: peer})
+				return
+			}
 		}
 		decision, err := authority.owner.decideMemberSettlement(r.Context(), authority.binding, memberSettlementCandidate{boundary: request.Boundary, report: request.Report, completed: request.Completed, continuing: request.Continuing})
 		if err != nil {
@@ -378,7 +381,7 @@ func (authority *memberAuthority) finalizeSettlement(ctx context.Context, reques
 	}
 	binding.settleMu.Lock()
 	pending := binding.settlement
-	matches := pending != nil && pending.boundary == request.Boundary && pending.candidate.Report == evidence.report
+	matches := pending != nil && pending.boundary == request.Boundary && (binding.record.role == "observer" && pending.candidate.Report == "" || binding.record.role != "observer" && pending.candidate.Report == evidence.report)
 	binding.settleMu.Unlock()
 	if !matches {
 		return memberSettlementDecision{}, reject("unavailable", "native outcome does not match its approved settlement")
@@ -441,6 +444,12 @@ func (authority *memberAuthority) finalizeSettlement(ctx context.Context, reques
 
 func memberOperationRoute(path string) string {
 	switch path {
+	case "/member/observer/read":
+		return "observer_read"
+	case "/member/observer/ls":
+		return "observer_ls"
+	case "/member/observer/report":
+		return "observer_report"
 	case "/member/child/spawn":
 		return "litter_spawn"
 	case "/member/child/list":
@@ -722,7 +731,9 @@ func (authority *memberAuthority) authorize(ctx context.Context, request memberT
 	decision := memberToolDecision{}
 	planDenied := false
 	authority.gate.observe(first)
-	if !allowed {
+	if authority.binding.record.role == "observer" && request.Parent != "" {
+		decision = denied("observer tools cannot be nested")
+	} else if !allowed {
 		decision = denied("tool is outside the teammate ceiling")
 	} else if result := authority.gate.before(ctx, request.ID, request.Name, request.Arguments); result.Block {
 		decision = memberToolDecision{Block: true, Reason: result.Reason, Terminate: result.Terminate}
@@ -809,7 +820,16 @@ func (authority *memberAuthority) operation(ctx context.Context, operation strin
 		defer func() { stop(); cancel() }()
 		ctx = merged
 	}
-	value, operationErr := authority.owner.operation(ctx, args, ticket, nil)
+	var value map[string]any
+	var operationErr error
+	switch operation {
+	case "observer_report":
+		value, operationErr = authority.owner.acceptObserverReport(ticket, request.Args)
+	case "observer_read", "observer_ls":
+		value, operationErr = authority.owner.observerVirtual(authority.binding.run, operation, request.Args)
+	default:
+		value, operationErr = authority.owner.operation(ctx, args, ticket, nil)
+	}
 	reply.Content, reply.IsError = resultContent(operation, value, operationErr)
 	return reply, nil
 }

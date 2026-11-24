@@ -636,15 +636,6 @@ func (g *teamAdmissionGate) commitPrepared(store *teamStore) error {
 		return reject("unavailable", "committed teammate identity changed")
 	}
 	g.committed = true
-	if g.record.observer != nil {
-		g.owner.tree.lifecycleMu.Lock()
-		err := g.owner.armObserver(g.record.observer)
-		g.owner.tree.lifecycleMu.Unlock()
-		if err != nil {
-			return err
-		}
-		g.owner.observerProgress(g.record.observer.observed)
-	}
 	return nil
 }
 
@@ -684,6 +675,15 @@ func (g *teamAdmissionGate) before(ctx context.Context, id, name string, _ json.
 	}
 	if err := g.commit(ctx); err != nil {
 		return agent.ToolCallHookResult{Block: true, Reason: err.Error()}
+	}
+	if g.record.observer != nil {
+		g.owner.tree.lifecycleMu.Lock()
+		err := g.owner.armObserver(g.record.observer)
+		g.owner.tree.lifecycleMu.Unlock()
+		if err != nil {
+			return agent.ToolCallHookResult{Block: true, Reason: err.Error()}
+		}
+		g.owner.observerProgress(g.record.observer.observed)
 	}
 	return agent.ToolCallHookResult{}
 }

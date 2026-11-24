@@ -192,9 +192,12 @@ func (o *owner) executeTmuxMember(r *record, selected *run, env tmuxMemberEnviro
 	launchID := hex.EncodeToString(nonce[:])
 	scope.manifest = filepath.Join(directory, "member-"+launchID+".json")
 	launch := tmuxLaunch{executable: env.executable, manifest: scope.manifest, cwd: r.cwd, nonce: launchID}
-	manifest := nativeMemberManifest{Backend: env.server.backend(), Version: 1, Launch: launchID, Session: r.id, Cwd: r.cwd, Model: r.model, Tools: []string{}, SessionDirectory: sessionDir, AgentDirectory: agentDir, PigHome: env.pigHome, UsePiDirs: env.usePiDirs, Socket: filepath.Join(directory, "member-control.sock"), Capability: hex.EncodeToString(capability[:]), Prompt: selected.prompt, Instructions: r.instructions, MailboxLimit: o.config.MaxMailbox, ProjectTrusted: trusted}
+	manifest := nativeMemberManifest{Backend: env.server.backend(), Version: 1, Launch: launchID, Session: r.id, Cwd: r.cwd, Model: r.model, Tools: []string{}, SessionDirectory: sessionDir, AgentDirectory: agentDir, PigHome: env.pigHome, UsePiDirs: env.usePiDirs, Socket: filepath.Join(directory, "member-control.sock"), Capability: hex.EncodeToString(capability[:]), Prompt: selected.prompt, Instructions: r.instructions, MailboxLimit: o.config.MaxMailbox, ProjectTrusted: trusted, Observer: r.role == "observer"}
 	if manifest.Backend == backendITerm {
 		manifest.Environment = nativeMemberEnvironment(os.Environ())
+	}
+	if manifest.Observer {
+		manifest.Tools = []string{"observer_report"}
 	}
 	if resumeSession != nil {
 		manifest.ResumeFile = resumeSession.File

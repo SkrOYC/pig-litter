@@ -27,28 +27,30 @@ import (
 )
 
 type nativeMember struct {
-	manifest     nativeMemberManifest
-	client       *http.Client
-	transport    *http.Transport
-	admission    *coding.InputAdmission
-	bridge       *memberinput.Bridge
-	mu           sync.Mutex
-	window       memberinput.WindowID
-	windowSeq    uint64
-	expectWindow uint64
-	windowState  *nativeWindowState
-	windowChange chan struct{}
-	windows      map[memberinput.WindowID]context.Context
-	started      bool
-	ready        bool
-	turn         uint64
-	boundary     uint64
-	approved     uint64
-	continuation chan struct{}
-	pendingTools []string
-	control      context.CancelFunc
-	calls        map[string]struct{}
-	causes       map[string]context.Context
+	manifest      nativeMemberManifest
+	client        *http.Client
+	transport     *http.Transport
+	admission     *coding.InputAdmission
+	bridge        *memberinput.Bridge
+	mu            sync.Mutex
+	window        memberinput.WindowID
+	windowSeq     uint64
+	expectWindow  uint64
+	windowState   *nativeWindowState
+	windowChange  chan struct{}
+	windows       map[memberinput.WindowID]context.Context
+	started       bool
+	ready         bool
+	turn          uint64
+	boundary      uint64
+	approved      uint64
+	continuation  chan struct{}
+	pendingTools  []string
+	control       context.CancelFunc
+	calls         map[string]struct{}
+	causes        map[string]context.Context
+	observerTrace *observerCallTrace
+	observerInput bool
 }
 
 type nativeWindowState struct {
@@ -117,6 +119,9 @@ func RunNativeMember(path string) error {
 		args = []string{"--session", manifest.ResumeFile}
 	}
 	args = append(args, "--session-dir", manifest.SessionDirectory, "--model", manifest.Model, "--tools", strings.Join(manifest.Tools, ","), "--no-extensions")
+	if manifest.Observer {
+		args = append(args, "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--system-prompt", "Observer instructions:\n"+manifest.Instructions, "--append-system-prompt", "")
+	}
 	if slices.ContainsFunc(manifest.Tools, isMCPTool) && !slices.ContainsFunc(manifest.Tools, func(name string) bool { return strings.HasPrefix(name, "mcp__") }) {
 		excluded := []string{"mcp__*"}
 		for _, name := range []string{"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"} {
@@ -131,7 +136,7 @@ func RunNativeMember(path string) error {
 			args = append(args, "-e", builtin.extension)
 		}
 	}
-	if manifest.Instructions != "" {
+	if manifest.Instructions != "" && !manifest.Observer {
 		args = append(args, "--append-system-prompt", manifest.Instructions)
 	}
 	if manifest.ProjectTrusted {

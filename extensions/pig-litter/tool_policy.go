@@ -61,6 +61,15 @@ func withinParent(parent, root *record, name string) bool {
 }
 
 func childAllowedTools(r, root *record, available []string) map[string]struct{} {
+	if r.role == "observer" {
+		allowed := map[string]struct{}{"observer_report": {}}
+		for _, item := range []struct{ parent, virtual string }{{"read", "observer_read"}, {"ls", "observer_ls"}} {
+			if slices.Contains(available, item.parent) && matchesTool(r.tools, item.parent) && withinParent(r.parent, root, item.parent) {
+				allowed[item.virtual] = struct{}{}
+			}
+		}
+		return allowed
+	}
 	allowed := map[string]struct{}{}
 	for _, name := range expandTools(r.tools, available) {
 		if !slices.Contains(teamToolNames, name) && (r.canDelegate || !slices.Contains(controlNames, name)) && withinParent(r.parent, root, name) {

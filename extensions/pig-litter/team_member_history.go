@@ -326,7 +326,8 @@ func (o *owner) memberCallTicket(binding *memberBinding, scope *callScope, callI
 	if !o.memberBindingCurrentLocked(binding) || binding.run.ctx.Err() != nil || binding.record.paused {
 		return nil, reject("unavailable", "native member execution is no longer current")
 	}
-	if !slices.Contains(binding.owned.Tools, operation) || !slices.Contains(teamToolNames, operation) && (!binding.record.canDelegate || !slices.Contains(controlNames, operation)) {
+	observerOperation := binding.record.role == "observer" && slices.Contains([]string{"observer_read", "observer_ls", "observer_report"}, operation)
+	if !slices.Contains(binding.owned.Tools, operation) || !observerOperation && !slices.Contains(teamToolNames, operation) && (!binding.record.canDelegate || !slices.Contains(controlNames, operation)) {
 		return nil, reject("permission_denied", "native member cannot invoke this operation")
 	}
 	if scope == nil || scope != o.callScope(binding.run) {

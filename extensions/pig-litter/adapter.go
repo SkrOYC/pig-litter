@@ -545,6 +545,13 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		return
 	}
 	if isPaneBackend(r.backend) {
+		if r.role == "observer" {
+			initial, err := o.initialObserverActivity(r.observer)
+			if err != nil {
+				return Outcome{State: Unavailable, Error: err.Error()}
+			}
+			run.prompt += "\n\nPaired worker structural activity:\n" + initial
+		}
 		source, _ := o.context.ExtensionSourceInfo()
 		env, err := o.currentPaneMemberEnvironment(run.ctx, source.Path, r.backend)
 		if err != nil {

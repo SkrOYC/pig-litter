@@ -829,6 +829,7 @@ func (o *owner) captureObserverActivity(pair *observerPair) observerDigest {
 	o.tree.mu.Lock()
 	progress := pair.observed.progress
 	state := pair.observed.state
+	native := pair.observed.owner.backend != "" && pair.observed.owner.backend != backendEmbedded
 	active := map[string]int{"read": 0, "search": 0, "write": 0, "shell": 0, "delegation": 0, "other": 0}
 	for _, name := range progress.activeTools {
 		active[observerCategory(name)]++
@@ -839,7 +840,7 @@ func (o *owner) captureObserverActivity(pair *observerPair) observerDigest {
 		sourceAt = progress.activated
 	}
 	availability := "available"
-	if sourceAt.IsZero() {
+	if native || sourceAt.IsZero() {
 		availability = "unavailable"
 	} else if now.Sub(sourceAt) > 30*time.Second {
 		availability = "stale"
@@ -1013,32 +1014,37 @@ func (o *owner) observerTools(r *record, run *run, trace *observerCallTrace, ava
 				value, err := o.acceptObserverReport(ticket, raw)
 				return nativeResult(name, value, err), nil
 			}
-			var args struct {
-				Path string `json:"path"`
-			}
-			if !utf8.Valid(raw) || checkUniqueJSON(raw) != nil {
-				return nativeResult(name, nil, reject("rejected", "invalid observer path")), nil
-			}
-			if _, err := exactJSONObject(raw, "path"); err != nil || json.Unmarshal(raw, &args) != nil {
-				return nativeResult(name, nil, reject("rejected", "invalid observer path")), nil
-			}
-			activity, err := o.observerActivity(r.observer, run)
-			if err != nil {
-				return nativeResult(name, nil, err), nil
-			}
-			if name == "observer_read" && args.Path == "/observer/activity.json" {
-				return nativeResult(name, map[string]any{"activity": activity}, nil), nil
-			}
-			if name == "observer_ls" && args.Path == "/observer" {
-				return nativeResult(name, map[string]any{"entries": []string{"activity.json"}}, nil), nil
-			}
-			if name == "observer_ls" && args.Path == "/" {
-				return nativeResult(name, map[string]any{"entries": []string{"observer/"}}, nil), nil
-			}
-			return nativeResult(name, nil, reject("permission_denied", "path is outside the observer activity directory")), nil
+			value, err := o.observerVirtual(run, name, raw)
+			return nativeResult(name, value, err), nil
 		}})
 	}
 	return tools, allowed
+}
+
+func (o *owner) observerVirtual(run *run, name string, raw json.RawMessage) (map[string]any, error) {
+	var args struct {
+		Path string `json:"path"`
+	}
+	if !utf8.Valid(raw) || checkUniqueJSON(raw) != nil {
+		return nil, reject("rejected", "invalid observer path")
+	}
+	if _, err := exactJSONObject(raw, "path"); err != nil || json.Unmarshal(raw, &args) != nil {
+		return nil, reject("rejected", "invalid observer path")
+	}
+	activity, err := o.observerActivity(run.owner.observer, run)
+	if err != nil {
+		return nil, err
+	}
+	if name == "observer_read" && args.Path == "/observer/activity.json" {
+		return map[string]any{"activity": activity}, nil
+	}
+	if name == "observer_ls" && args.Path == "/observer" {
+		return map[string]any{"entries": []string{"activity.json"}}, nil
+	}
+	if name == "observer_ls" && args.Path == "/" {
+		return map[string]any{"entries": []string{"observer/"}}, nil
+	}
+	return nil, reject("permission_denied", "path is outside the observer activity directory")
 }
 
 type observerMarker struct {
