@@ -18,6 +18,7 @@ on:
           - capability
           - preflight
           - iterm-lifecycle
+          - intel-window-forensics
           - p03-all
           - p03-team
           - p03-policy
@@ -119,7 +120,7 @@ jobs:
           retention-days: 14
 
   p03-macos:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario != 'capability' && inputs.scenario != 'preflight' && inputs.scenario != 'iterm-lifecycle' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["p03-all","p03-team","p03-policy","p03-unselected"]'), inputs.scenario) }}
     name: P03 iTerm2 on ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 105
@@ -257,6 +258,57 @@ jobs:
           name: iterm-lifecycle-${{ matrix.runner }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/iterm-lifecycle/
+            ${{ runner.temp }}/collaboration-platform-probe/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  intel-window-forensics:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario == 'intel-window-forensics' }}
+    name: Intel iTerm window forensics
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    env:
+      PROBE_RUNNER_LABEL: macos-15-intel
+      SELECTED_ARCHITECTURE: ${{ inputs.architecture }}
+      SELECTED_SCENARIO: ${{ inputs.scenario }}
+    steps:
+      - name: Check out the verification driver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: driver
+          persist-credentials: false
+      - name: Record and check diagnostic identity
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/intel-window-forensics"
+          git -C driver rev-parse HEAD > "$RUNNER_TEMP/intel-window-forensics/driver-commit.txt"
+          git -C driver rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/intel-window-forensics/driver-tree.txt"
+          git -C driver status --porcelain=v1 --untracked-files=all > "$RUNNER_TEMP/intel-window-forensics/driver-status.txt"
+          printf 'scenario=%s\narchitecture=%s\nworkflow_sha=%s\nrunner=%s\n' "$SELECTED_SCENARIO" "$SELECTED_ARCHITECTURE" "$GITHUB_WORKFLOW_SHA" "$PROBE_RUNNER_LABEL" > "$RUNNER_TEMP/intel-window-forensics/inputs.txt"
+          test ! -s "$RUNNER_TEMP/intel-window-forensics/driver-status.txt"
+          test "$SELECTED_ARCHITECTURE" = intel
+      - name: Check diagnostic controls
+        shell: bash
+        run: python3 -B driver/scripts/test-iterm-intel-window-forensics.py
+      - name: Verify iTerm2 and scoped consent
+        working-directory: driver
+        shell: bash
+        timeout-minutes: 16
+        run: |
+          bash scripts/probe-macos-collaboration.sh --test-first-launch-matcher
+          bash scripts/probe-macos-collaboration.sh
+      - name: Observe the owned window and live control
+        shell: bash
+        timeout-minutes: 10
+        run: python3 -B driver/scripts/iterm-intel-window-forensics.py --evidence "$RUNNER_TEMP/intel-window-forensics"
+      - name: Upload diagnostic and capability evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: intel-window-forensics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/intel-window-forensics/
             ${{ runner.temp }}/collaboration-platform-probe/
           include-hidden-files: true
           if-no-files-found: error
