@@ -126,56 +126,12 @@ jobs:
         run: |
           bash scripts/probe-macos-collaboration.sh --test-first-launch-matcher
           bash scripts/probe-macos-collaboration.sh
-      - name: Install Bun
-        id: bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+      - name: Set up Go 1.27.4
+        id: go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
-          bun-version: '1.4.4'
-      - name: Install Nix
-        id: nix
-        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086
-      - name: Install pinned Cachix
-        id: cachix_cli
-        shell: bash
-        run: |
-          nix profile add --profile "$RUNNER_TEMP/p03-cachix-profile" github:NixOS/nixpkgs/f0b41a99f28c34ffeaff61d4b419afff0516a923#cachix
-          "$RUNNER_TEMP/p03-cachix-profile/bin/cachix" --version > "$EVIDENCE_DIR/cachix-version.txt"
-      - name: Configure read-only devenv cache
-        id: cache
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866
-        with:
-          name: devenv
-          skipPush: true
-          useDaemon: false
-          cachixBin: ${{ runner.temp }}/p03-cachix-profile/bin/cachix
-      - name: Preflight Intel product inputs
-        if: ${{ matrix.runner == 'macos-15-intel' }}
-        id: preflight
-        shell: bash
-        run: |
-          set +e
-          nix eval --accept-flake-config --raw 'github:cachix/devenv/b904dcb51fe48c30db250038241507f60752f222#packages.x86_64-darwin.devenv.drvPath' > "$EVIDENCE_DIR/intel-devenv-cli-evaluation.txt" 2>&1
-          cli_status=$?
-          nixpkgs_rev=$(python3 -c 'import json; print(json.load(open("candidate/devenv.lock"))["nodes"]["nixpkgs-src"]["locked"]["rev"])')
-          if [[ ! "$nixpkgs_rev" =~ ^[0-9a-f]{40}$ ]]; then
-            printf 'The locked Nixpkgs revision is invalid.\n' > "$EVIDENCE_DIR/intel-product-evaluation.txt"
-            product_status=2
-          else
-            nix eval --raw "github:NixOS/nixpkgs/$nixpkgs_rev#legacyPackages.x86_64-darwin.go_1_27.drvPath" > "$EVIDENCE_DIR/intel-product-evaluation.txt" 2>&1
-            product_status=$?
-          fi
-          printf 'devenv_cli=%s\nproduct_nixpkgs=%s\nproduct_nixpkgs_rev=%s\n' "$cli_status" "$product_status" "$nixpkgs_rev" > "$EVIDENCE_DIR/intel-preflight.txt"
-          cat "$EVIDENCE_DIR/intel-devenv-cli-evaluation.txt" "$EVIDENCE_DIR/intel-product-evaluation.txt"
-          [[ "$cli_status" == 0 && "$product_status" == 0 ]]
-      - name: Install pinned devenv CLI
-        id: devenv
-        shell: bash
-        run: |
-          nix profile add --profile "$RUNNER_TEMP/devenv-profile" --accept-flake-config github:cachix/devenv/b904dcb51fe48c30db250038241507f60752f222#devenv
-          printf '%s\n' "$RUNNER_TEMP/devenv-profile/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/devenv-profile/bin/devenv" version > "$EVIDENCE_DIR/devenv-version.txt"
-          nix --version > "$EVIDENCE_DIR/nix-version.txt"
-          bun --version > "$EVIDENCE_DIR/bun-version.txt"
+          go-version: '1.27.4'
+          cache: false
       - name: Verify P03 in iTerm2
         id: product
         shell: bash
@@ -196,17 +152,12 @@ jobs:
           CANDIDATE_OUTCOME: ${{ steps.checkout_candidate.outcome }}
           CAPABILITY_OUTCOME: ${{ steps.capability.outcome }}
           POLICY_OUTCOME: ${{ steps.policy.outcome }}
-          BUN_OUTCOME: ${{ steps.bun.outcome }}
-          NIX_OUTCOME: ${{ steps.nix.outcome }}
-          CACHIX_CLI_OUTCOME: ${{ steps.cachix_cli.outcome }}
-          CACHE_OUTCOME: ${{ steps.cache.outcome }}
-          PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
-          DEVENV_OUTCOME: ${{ steps.devenv.outcome }}
+          GO_OUTCOME: ${{ steps.go.outcome }}
           PRODUCT_OUTCOME: ${{ steps.product.outcome }}
         run: |
           EVIDENCE_DIR="${EVIDENCE_DIR:-$RUNNER_TEMP/p03-macos-evidence}"
           mkdir -p "$EVIDENCE_DIR"
-          printf 'driver=%s\ncandidate=%s\npolicy=%s\ncapability=%s\nbun=%s\nnix=%s\ncachix_cli=%s\ncache=%s\npreflight=%s\ndevenv=%s\nproduct=%s\n' "$DRIVER_OUTCOME" "$CANDIDATE_OUTCOME" "$POLICY_OUTCOME" "$CAPABILITY_OUTCOME" "$BUN_OUTCOME" "$NIX_OUTCOME" "$CACHIX_CLI_OUTCOME" "$CACHE_OUTCOME" "$PREFLIGHT_OUTCOME" "$DEVENV_OUTCOME" "$PRODUCT_OUTCOME" > "$EVIDENCE_DIR/workflow-outcomes.txt"
+          printf 'driver=%s\ncandidate=%s\npolicy=%s\ncapability=%s\nsetup_go=%s\nproduct=%s\n' "$DRIVER_OUTCOME" "$CANDIDATE_OUTCOME" "$POLICY_OUTCOME" "$CAPABILITY_OUTCOME" "$GO_OUTCOME" "$PRODUCT_OUTCOME" > "$EVIDENCE_DIR/workflow-outcomes.txt"
       - name: Upload P03 and capability evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

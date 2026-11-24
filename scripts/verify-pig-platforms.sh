@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-if [[ $# -ne 4 ]]; then
-  printf 'usage: %s CANDIDATE_SHA GOOS GOARCH EVIDENCE_DIR\n' "$0" >&2
+if [[ $# -lt 4 || ( $# -gt 4 && ( "$5" != -- || $# -eq 5 ) ) ]]; then
+  printf 'usage: %s CANDIDATE_SHA GOOS GOARCH EVIDENCE_DIR [-- COMMAND [ARG...]]\n' "$0" >&2
   exit 2
 fi
 
@@ -10,7 +10,9 @@ candidate_sha="$1"
 expected_os="$2"
 expected_arch="$3"
 evidence_dir="$4"
-root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root_dir="$(cd "${PIG_PLATFORM_ROOT_DIR:-$(dirname "${BASH_SOURCE[0]}")/..}" && pwd -P)"
+shift 4
+if [[ $# -gt 0 ]]; then shift; fi
 mkdir -p "$evidence_dir"
 
 finish() {
@@ -70,7 +72,7 @@ else
   sw_vers >> "$evidence_dir/runner.txt"
 fi
 
-scratch_dir="$(mktemp -d /tmp/pig-platform.XXXXXXXX)"
+scratch_dir="$(mktemp -d "${PIG_PLATFORM_SCRATCH_PARENT:-/tmp}/pig-platform.XXXXXXXX")"
 scratch_dir="$(cd "$scratch_dir" && pwd -P)"
 printf 'scratch_dir=%s\n' "$scratch_dir" >> "$evidence_dir/runner.txt"
 if [[ -n "${PIG_PLATFORM_CACHE_DIR:-}" ]]; then
@@ -163,14 +165,16 @@ if [[ -f "$root_dir/pig-source.json" ]]; then
   grep -Fqx "$(printf '\tbuild\tGOARCH=%s' "$expected_arch")" "$evidence_dir/pig-build-info.txt"
   export PATH="$build_dir/bin:$PATH"
   export PIG_LITTER_EXPECTED_PIG="$build_dir/bin/pig"
-  export PIG_LITTER_EXPECTED_PIG_SHA256="$(shasum -a 256 "$PIG_LITTER_EXPECTED_PIG" | awk '{ print $1 }')"
+  PIG_LITTER_EXPECTED_PIG_SHA256="$(shasum -a 256 "$PIG_LITTER_EXPECTED_PIG" | awk '{ print $1 }')"
+  export PIG_LITTER_EXPECTED_PIG_SHA256
   export PIG_LITTER_EXPECTED_PIG_BUILD="$pig_build"
   unset PIG_LITTER_EXPECTED_PIG_SHA256_FILE
   sdk_dir="$(cd "$source_dir/extensions/sdk" && pwd -P)"
   bridge_path="$root_dir/extensions/go.work"
   previous_bridge_target=""
   if [[ -L "$bridge_path" ]]; then previous_bridge_target="$(readlink "$bridge_path")"; fi
-  export GOWORK="$(PIG_LITTER_WORKSPACE_BRIDGE="$bridge_path" bash "$root_dir/scripts/prepare-pig-workspace.sh" "$source_dir" "$build_dir/workspace" "$root_dir/scripts" "$root_dir/extensions/pig-litter")"
+  GOWORK="$(PIG_LITTER_WORKSPACE_BRIDGE="$bridge_path" bash "$root_dir/scripts/prepare-pig-workspace.sh" "$source_dir" "$build_dir/workspace" "$root_dir/scripts" "$root_dir/extensions/pig-litter")"
+  export GOWORK
   native_bridge_target="$GOWORK"
   export PIG_LITTER_SOURCE_DIR="$source_dir" PIG_LITTER_SDK_DIR="$sdk_dir"
   printf 'source_dir=%s\nsource_tree=%s\nsdk_dir=%s\nsdk_tree=%s\nsource_sha256=%s\npatch_sha256=%s\n' "$source_dir" "$source_tree_before" "$sdk_dir" "$sdk_tree_before" "$source_sha" "$patch_sha" > "$evidence_dir/sdk-source-identity.txt"
@@ -281,6 +285,10 @@ printf '%s\n' '{"id":"commands","type":"get_commands"}' '{"id":"extensions","typ
 pig --piglet "$root_dir/piglet.yaml" -e "$scratch_dir/pig-platform-observer" --mode rpc --no-session < "$evidence_dir/piglet-rpc-input.jsonl" > "$evidence_dir/piglet-rpc.jsonl" 2> "$evidence_dir/piglet-rpc.stderr"
 jq --exit-status '[.[] | .name | select(startswith("litter_"))] | sort == ["litter_inspect", "litter_list", "litter_message", "litter_spawn", "litter_stop", "litter_wait"]' "$evidence_dir/piglet-tools.json" >/dev/null
 jq --slurp --exit-status 'any(.[]; .id == "commands" and .success == true and any(.data.commands[]?; .name == "pig-litter" and .source == "extension")) and any(.[]; .id == "extensions" and .success == true and any(.data.paths[]?; endswith("/extensions/pig-litter")))' "$evidence_dir/piglet-rpc.jsonl" >/dev/null
+
+if [[ $# -gt 0 ]]; then
+  "$@"
+fi
 
 if [[ -n "$sdk_dir" ]]; then
   source_tree_after="$(source_tree)"

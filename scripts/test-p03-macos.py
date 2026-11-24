@@ -1,6 +1,8 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from urllib.error import HTTPError
@@ -13,6 +15,20 @@ spec.loader.exec_module(driver)
 
 
 class InputAndProviderTests(unittest.TestCase):
+    def test_wrong_candidate_never_runs_the_prepared_command(self):
+        with tempfile.TemporaryDirectory() as temp:
+            evidence = Path(temp) / "evidence"
+            marker = Path(temp) / "ran"
+            repo = Path(__file__).resolve().parent.parent
+            environment = os.environ | {"PIG_PLATFORM_ROOT_DIR": str(repo)}
+            result = subprocess.run(
+                ["bash", str(repo / "scripts/verify-pig-platforms.sh"), "0" * 40, "linux", "amd64", str(evidence), "--", "bash", "-c", 'printf ran > "$1"', "callback", str(marker)],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertFalse(marker.exists())
+            self.assertEqual((evidence / "result.txt").read_text(), "exit_code=1\n")
+
     def test_terminal_text_accepts_quotes_and_rejects_control_characters(self):
         self.assertEqual(driver.safe_text("a path with 'quotes' and $(literal)"), "a path with 'quotes' and $(literal)")
         for value in ("one\ntwo", "one\x1btwo", "one\x7ftwo", "one\x85two"):
