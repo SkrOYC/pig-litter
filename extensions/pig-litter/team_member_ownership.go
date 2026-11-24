@@ -140,7 +140,6 @@ func (o *owner) reserveMemberLaunch(ctx context.Context, r *record, selected *ru
 		return nil, err
 	}
 	o.tree.lifecycleMu.Lock()
-	defer o.tree.lifecycleMu.Unlock()
 	o.tree.mu.Lock()
 	current, err := o.tree.currentLocked(selected)
 	o.state.mu.Lock()
@@ -149,8 +148,9 @@ func (o *owner) reserveMemberLaunch(ctx context.Context, r *record, selected *ru
 	selected.mu.Lock()
 	hasRuntime := selected.session != nil || selected.member != nil
 	selected.mu.Unlock()
-	if !active || err != nil || current != r || r.team == nil || r.paused || selected.ctx.Err() != nil || r.activeLog != nil || hasRuntime || r.nativeOwnership != nil || launch.cwd != r.cwd || !exactModel.MatchString(r.model) {
+	if !active || err != nil || current != r || r.team == nil || r.paused || selected.ctx.Err() != nil || r.activeLog != nil || hasRuntime || r.nativeOwnership != nil || r.nativeReleasing || launch.cwd != r.cwd || !exactModel.MatchString(r.model) {
 		o.tree.mu.Unlock()
+		o.tree.lifecycleMu.Unlock()
 		return nil, reject("unavailable", "native member launch is no longer current")
 	}
 	tools := slices.Sorted(maps.Keys(childAllowedTools(r, o.tree.root, available)))
@@ -164,8 +164,9 @@ func (o *owner) reserveMemberLaunch(ctx context.Context, r *record, selected *ru
 	}
 	r.nativeOwnership = ownership
 	o.tree.mu.Unlock()
+	o.tree.lifecycleMu.Unlock()
 	if err := o.saveChild(r); err != nil {
-		return nil, fmt.Errorf("persist native launch intent: %w", err)
+		return ownership, fmt.Errorf("persist native launch intent: %w", err)
 	}
 	return ownership, nil
 }
@@ -176,7 +177,6 @@ func (o *owner) recordMemberPane(ctx context.Context, r *record, selected *run, 
 		return err
 	}
 	o.tree.lifecycleMu.Lock()
-	defer o.tree.lifecycleMu.Unlock()
 	o.tree.mu.Lock()
 	current, err := o.tree.currentLocked(selected)
 	o.state.mu.Lock()
@@ -186,10 +186,12 @@ func (o *owner) recordMemberPane(ctx context.Context, r *record, selected *run, 
 	command := ownership.Executable + " --pig-litter-member " + ownership.Manifest
 	if !active || err != nil || current != r || selected.ctx.Err() != nil || r.nativeOwnership != ownership || ownership.Pane != nil || pane.server.socket != server.Socket || pane.server.pid != server.PID || pane.server.birth != server.Birth || pane.server.target != server.Target || pane.command != command || pane.pid <= 0 || pane.birth == "" {
 		o.tree.mu.Unlock()
+		o.tree.lifecycleMu.Unlock()
 		return reject("unavailable", "native pane does not match its launch intent")
 	}
 	ownership.Pane = &identity
 	o.tree.mu.Unlock()
+	o.tree.lifecycleMu.Unlock()
 	if err := o.saveChild(r); err != nil {
 		return fmt.Errorf("persist native pane identity: %w", err)
 	}
@@ -197,8 +199,6 @@ func (o *owner) recordMemberPane(ctx context.Context, r *record, selected *run, 
 }
 
 func (o *owner) releaseMemberLaunch(ctx context.Context, r *record, selected *run, ownership *memberOwnership, pane tmuxPane) error {
-	r.deliveryMu.Lock()
-	defer r.deliveryMu.Unlock()
 	o.tree.mu.Lock()
 	current, err := o.tree.currentLocked(selected)
 	snapshot := cloneMemberOwnership(ownership)
@@ -224,32 +224,60 @@ func (o *owner) releaseMemberLaunch(ctx context.Context, r *record, selected *ru
 	if err := pane.close(ctx); err != nil {
 		return err
 	}
-	o.tree.lifecycleMu.Lock()
-	defer o.tree.lifecycleMu.Unlock()
+	return o.clearMemberOwnership(ctx, r, selected, ownership, snapshot)
+}
+
+func (o *owner) clearMemberOwnership(ctx context.Context, r *record, selected *run, ownership, snapshot *memberOwnership) error {
+	// Other persistence paths take lifecycleMu before persistMu, so never wait for the former while holding the latter.
+	for {
+		o.persistMu.Lock()
+		if o.tree.lifecycleMu.TryLock() {
+			break
+		}
+		o.persistMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Millisecond):
+		}
+	}
+	defer o.persistMu.Unlock()
 	o.tree.mu.Lock()
-	current, err = o.tree.currentLocked(selected)
-	if err != nil || current != r || r.nativeOwnership != ownership || !sameMemberOwnership(ownership, snapshot) {
+	current, err := o.tree.currentLocked(selected)
+	if err != nil || current != r || r.nativeOwnership != ownership || r.nativeReleasing || !sameMemberOwnership(ownership, snapshot) {
 		o.tree.mu.Unlock()
+		o.tree.lifecycleMu.Unlock()
 		return reject("unavailable", "native pane ownership changed during release")
 	}
 	binding := r.native
+	cleanupError := r.nativeCleanupError
 	selected.mu.Lock()
 	member := selected.member
 	selected.member = nil
 	selected.mu.Unlock()
+	r.nativeReleasing = true
 	r.native, r.nativeOwnership = nil, nil
+	r.nativeCleanupError = ""
 	o.tree.mu.Unlock()
-	if err := o.saveChild(r); err != nil {
-		o.tree.mu.Lock()
-		if o.tree.records[r.id] == r && r.run == selected && r.nativeOwnership == nil {
+	o.tree.lifecycleMu.Unlock()
+	err = o.saveChildStateLocked(r, nil)
+	o.tree.mu.Lock()
+	if o.tree.records[r.id] == r && r.run == selected && r.nativeReleasing && r.nativeOwnership == nil {
+		if err != nil {
 			r.native, r.nativeOwnership = binding, ownership
+			r.nativeCleanupError = cleanupError
 			selected.mu.Lock()
 			if selected.member == nil {
 				selected.member = member
 			}
 			selected.mu.Unlock()
 		}
-		o.tree.mu.Unlock()
+		r.nativeReleasing = false
+	} else {
+		err = errors.Join(err, reject("unavailable", "native ownership changed during persistence"))
+	}
+	o.tree.mu.Unlock()
+	if err != nil {
 		return fmt.Errorf("persist native ownership release: %w", err)
 	}
 	return nil

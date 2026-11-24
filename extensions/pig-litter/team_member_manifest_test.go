@@ -20,7 +20,7 @@ func TestNativeMemberManifestBindsPrivateLaunch(t *testing.T) {
 	}
 	launch := "0123456789abcdef0123456789abcdef"
 	path := filepath.Join(directory, "member-"+launch+".json")
-	manifest := nativeMemberManifest{Version: 1, Launch: launch, Session: storeTestUUID(2), Cwd: filepath.Join(directory, "work"), Model: "fixture/fixed", Tools: []string{"read", "write"}, SessionDirectory: filepath.Join(directory, "sessions"), AgentDirectory: filepath.Join(directory, "agent"), Socket: filepath.Join(directory, "control.sock"), Capability: strings.Repeat("a", 64), Prompt: "Task:\ninspect", MailboxLimit: 2}
+	manifest := nativeMemberManifest{Version: 1, Launch: launch, Session: storeTestUUID(2), Cwd: filepath.Join(directory, "work"), Model: "fixture/fixed", Tools: []string{"read", "write"}, SessionDirectory: filepath.Join(directory, "sessions"), AgentDirectory: filepath.Join(directory, "agent"), PigHome: filepath.Join(directory, "pig"), UsePiDirs: true, Socket: filepath.Join(directory, "control.sock"), Capability: strings.Repeat("a", 64), Prompt: "Task:\ninspect", MailboxLimit: 2}
 	write := func(t *testing.T, value any) {
 		t.Helper()
 		data, err := json.Marshal(value)
@@ -30,7 +30,7 @@ func TestNativeMemberManifestBindsPrivateLaunch(t *testing.T) {
 	}
 	write(t, manifest)
 	loaded, err := readNativeMemberManifest(path)
-	if err != nil || loaded.Session != manifest.Session || loaded.Model != manifest.Model || loaded.Cwd != manifest.Cwd {
+	if err != nil || loaded.Session != manifest.Session || loaded.Model != manifest.Model || loaded.Cwd != manifest.Cwd || loaded.PigHome != manifest.PigHome || !loaded.UsePiDirs {
 		t.Fatalf("valid manifest = %#v, %v", loaded, err)
 	}
 	for name, change := range map[string]func(*nativeMemberManifest){

@@ -47,6 +47,10 @@ func TestRestoredNativeOwnershipFencesResumeAndSessionWriter(t *testing.T) {
 				if restored == nil || restored.nativeOwnership == nil || restored.native != nil || !restored.paused || restored.latest == nil || restored.latest.State != Unavailable {
 					t.Fatalf("restored native member = %#v", restored)
 				}
+				inspection, err := tree.inspect(member.Ref.ID)
+				if err != nil || inspection.Backend == nil || inspection.Backend.Kind != "tmux" || inspection.Backend.Ownership != "cleanup_failed" || !strings.Contains(inspection.Backend.Error, "requires reconciliation") {
+					t.Fatalf("restored native cleanup status = %#v, %v", inspection.Backend, err)
+				}
 				if _, _, err := tree.resume(nil, restored.run, "continue"); err == nil || !strings.Contains(err.Error(), "requires reconciliation") {
 					t.Fatalf("native member resumed before reconciliation: %v", err)
 				}

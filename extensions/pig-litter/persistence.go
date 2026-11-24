@@ -25,27 +25,29 @@ type savedNotice struct {
 }
 
 type savedChild struct {
-	RootID        ChildID          `json:"rootId"`
-	ID            ChildID          `json:"id"`
-	ParentID      ChildID          `json:"parentId"`
-	Name          string           `json:"name"`
-	Kind          string           `json:"kind"`
-	Model         string           `json:"model"`
-	Cwd           string           `json:"cwd"`
-	Instructions  string           `json:"instructions"`
-	Tools         []string         `json:"tools"`
-	CanDelegate   bool             `json:"canDelegate"`
-	ReadOnly      bool             `json:"readOnly"`
-	PendingTask   string           `json:"pendingTask"`
-	PendingInputs []pendingInput   `json:"pendingInputs,omitempty"`
-	Admitted      bool             `json:"admitted"`
-	State         State            `json:"state"`
-	Paused        bool             `json:"paused"`
-	NoticeID      string           `json:"noticeId"`
-	Latest        *Outcome         `json:"latest,omitempty"`
-	Notices       []savedNotice    `json:"notices,omitempty"`
-	Team          *teamMember      `json:"team,omitempty"`
-	Native        *memberOwnership `json:"native,omitempty"`
+	RootID             ChildID          `json:"rootId"`
+	ID                 ChildID          `json:"id"`
+	ParentID           ChildID          `json:"parentId"`
+	Name               string           `json:"name"`
+	Kind               string           `json:"kind"`
+	Model              string           `json:"model"`
+	Cwd                string           `json:"cwd"`
+	Instructions       string           `json:"instructions"`
+	Tools              []string         `json:"tools"`
+	CanDelegate        bool             `json:"canDelegate"`
+	ReadOnly           bool             `json:"readOnly"`
+	PendingTask        string           `json:"pendingTask"`
+	PendingInputs      []pendingInput   `json:"pendingInputs,omitempty"`
+	Admitted           bool             `json:"admitted"`
+	State              State            `json:"state"`
+	Paused             bool             `json:"paused"`
+	NoticeID           string           `json:"noticeId"`
+	Latest             *Outcome         `json:"latest,omitempty"`
+	Notices            []savedNotice    `json:"notices,omitempty"`
+	Team               *teamMember      `json:"team,omitempty"`
+	Backend            backendRequest   `json:"backend,omitempty"`
+	Native             *memberOwnership `json:"native,omitempty"`
+	NativeCleanupError string           `json:"nativeCleanupError,omitempty"`
 }
 
 func (o *owner) saveChild(r *record) error {
@@ -55,6 +57,10 @@ func (o *owner) saveChild(r *record) error {
 func (o *owner) saveChildState(r *record, terminated *run) error {
 	o.persistMu.Lock()
 	defer o.persistMu.Unlock()
+	return o.saveChildStateLocked(r, terminated)
+}
+
+func (o *owner) saveChildStateLocked(r *record, terminated *run) error {
 	o.tree.mu.Lock()
 	if o.tree.records[r.id] != r {
 		o.tree.mu.Unlock()
@@ -68,7 +74,7 @@ func (o *owner) saveChildState(r *record, terminated *run) error {
 		o.tree.mu.Unlock()
 		return reject("unavailable", "teammate execution changed before termination")
 	}
-	saved := savedChild{RootID: o.tree.root.id, ID: r.id, ParentID: r.parentID(), Name: r.name, Kind: r.kind, Model: r.model, Cwd: r.cwd, Instructions: r.instructions, Tools: slices.Clone(r.tools), CanDelegate: r.canDelegate, ReadOnly: r.readOnly, PendingTask: r.pendingTask, Admitted: r.admitted, State: selected.state, Paused: paused, NoticeID: selected.noticeID}
+	saved := savedChild{RootID: o.tree.root.id, ID: r.id, ParentID: r.parentID(), Name: r.name, Kind: r.kind, Model: r.model, Cwd: r.cwd, Instructions: r.instructions, Tools: slices.Clone(r.tools), CanDelegate: r.canDelegate, ReadOnly: r.readOnly, PendingTask: r.pendingTask, Admitted: r.admitted, State: selected.state, Paused: paused, NoticeID: selected.noticeID, Backend: r.backend}
 	if terminated != nil {
 		saved.State = Terminated
 	}
@@ -77,6 +83,7 @@ func (o *owner) saveChildState(r *record, terminated *run) error {
 		saved.Team = &copy
 	}
 	saved.Native = cloneMemberOwnership(r.nativeOwnership)
+	saved.NativeCleanupError = r.nativeCleanupError
 	saved.PendingInputs = slices.Clone(r.pendingInputs)
 	if r.latest != nil {
 		copy := *r.latest
@@ -304,6 +311,12 @@ func (o *owner) restoreChildren() error {
 		if !childUUID.MatchString(string(saved.ID)) || saved.ID == saved.ParentID || saved.Cwd == "" || saved.Name == "" {
 			return reject("unavailable", "stored child metadata is invalid")
 		}
+		if saved.Backend != "" && (saved.Team == nil || saved.Backend != backendTmux && saved.Backend != backendITerm) {
+			return reject("unavailable", "stored child backend is invalid")
+		}
+		if len(saved.NativeCleanupError) > 1024 || saved.NativeCleanupError != "" && saved.Team == nil {
+			return reject("unavailable", "stored native cleanup status is invalid")
+		}
 		if saved.Team != nil {
 			member, exists := members[saved.ID]
 			proof, cached := proofs[saved.ID]
@@ -323,6 +336,9 @@ func (o *owner) restoreChildren() error {
 		}
 		if saved.Native != nil && !validMemberOwnership(saved.Native, saved.Team, saved.Cwd, saved.Model, saved.NoticeID) {
 			return reject("unavailable", "stored native member ownership is invalid")
+		}
+		if saved.Native != nil && saved.Backend != "" && saved.Backend != saved.Native.Backend {
+			return reject("unavailable", "stored native member backend does not match its ownership")
 		}
 		if _, exists := latest[saved.ID]; !exists {
 			order = append(order, saved.ID)
@@ -369,6 +385,9 @@ func (o *owner) restoreChildren() error {
 		}
 		saved.Paused = true
 		saved.Team = &member
+		if saved.NativeCleanupError == "" {
+			saved.NativeCleanupError = "native pane ownership requires reconciliation"
+		}
 		saved.Latest = &Outcome{Run: Ref{id}, Model: saved.Model, State: saved.State, Error: "native pane ownership requires reconciliation"}
 		latest[id] = saved
 	}
@@ -409,7 +428,7 @@ func (o *owner) restoreChildren() error {
 			if _, exists := o.tree.names[key]; exists && saved.Team == nil {
 				return reject("unavailable", "stored child names conflict")
 			}
-			r := &record{id: id, team: saved.Team, nativeOwnership: cloneMemberOwnership(saved.Native), parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest, controlPhase: controlPhases[id]}
+			r := &record{id: id, team: saved.Team, backend: saved.Backend, nativeOwnership: cloneMemberOwnership(saved.Native), nativeCleanupError: saved.NativeCleanupError, parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest, controlPhase: controlPhases[id]}
 			r.pendingInputs = saved.PendingInputs
 			r.run = o.tree.newRunLocked(Ref{id}, "")
 			r.run.owner, r.run.noticeID, r.run.state = r, saved.NoticeID, saved.State
@@ -464,9 +483,9 @@ func (o *owner) withChildLogLocked(r *record, apply func(*coding.SessionManager)
 	o.tree.mu.Lock()
 	log := r.activeLog
 	native := r.native
-	ownership := r.nativeOwnership
+	ownership, releasing := r.nativeOwnership, r.nativeReleasing
 	o.tree.mu.Unlock()
-	if native != nil || ownership != nil {
+	if native != nil || ownership != nil || releasing {
 		return reject("unavailable", "the native member still owns its session log")
 	}
 	if log != nil {

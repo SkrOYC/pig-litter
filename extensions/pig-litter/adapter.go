@@ -523,6 +523,23 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = err.Error()
 		return
 	}
+	if r.backend == backendTmux {
+		env, err := currentTmuxMemberEnvironment(run.ctx)
+		if err != nil {
+			return Outcome{State: Unavailable, Error: err.Error()}
+		}
+		home, err := o.context.ConfigHome()
+		if err == nil {
+			env.pigHome, err = filepath.Abs(home)
+		}
+		if err != nil {
+			return Outcome{State: Unavailable, Error: err.Error()}
+		}
+		return o.executeTmuxMember(r, run, env)
+	}
+	if r.backend != "" {
+		return Outcome{State: Unavailable, Error: "the selected native teammate backend is unavailable"}
+	}
 	var teamGate *teamAdmissionGate
 	if r.team != nil {
 		teamGate = &teamAdmissionGate{owner: o, record: r, run: run}

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 func pinMemberLog(ctx context.Context, directory, path, cwd string, session ChildID) (memberLogPin, error) {
@@ -138,11 +139,34 @@ func (o *owner) memberLaunchForInstall(ctx context.Context, r *record, selected 
 	if err := verifyMemberPane(ctx, server, *snapshot.Pane); err != nil {
 		return install, err
 	}
-	digest, err := memberProcessDigest(ctx, snapshot.Pane.PID, snapshot.Pane.Birth)
-	if err != nil || digest != snapshot.ExecutableSHA256 {
-		return install, reject("unavailable", "native member executable identity does not match its launch")
+	if err := verifyMemberExecutable(ctx, *snapshot.Pane, snapshot.Executable, snapshot.ExecutableSHA256); err != nil {
+		return install, err
+	}
+	if err := verifyMemberPane(ctx, server, *snapshot.Pane); err != nil {
+		return install, err
 	}
 	return memberInstall{ownership: ownership, owned: snapshot, server: server, cwd: cwd, model: model}, nil
+}
+
+func verifyMemberExecutable(ctx context.Context, pane memberPaneIdentity, executable, expected string) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		matches, err := memberProcessMatchesExecutable(pane.PID, pane.Birth, executable)
+		if err == nil && matches {
+			digest, err := memberProcessDigest(ctx, pane.PID, pane.Birth)
+			if err == nil && digest == expected {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return reject("unavailable", "native member executable identity did not match its launch")
+		case <-ticker.C:
+		}
+	}
 }
 
 func (o *owner) installProvisionalMemberHandle(ctx context.Context, r *record, selected *run, directory, launch string, control memberControl) (*memberBinding, error) {

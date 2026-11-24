@@ -23,6 +23,7 @@ type nativeMemberManifest struct {
 	SessionDirectory string   `json:"sessionDirectory"`
 	AgentDirectory   string   `json:"agentDirectory"`
 	PigHome          string   `json:"pigHome,omitempty"`
+	UsePiDirs        bool     `json:"usePiDirs,omitempty"`
 	Socket           string   `json:"socket"`
 	Capability       string   `json:"capability"`
 	Prompt           string   `json:"prompt"`

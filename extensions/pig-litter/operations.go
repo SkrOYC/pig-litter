@@ -457,7 +457,11 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 				cwd = workspace.Cwd
 			}
 		}
-		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, available: available, member: member})
+		var backend backendRequest
+		if choice.kind != backendEmbedded {
+			backend = choice.kind
+		}
+		snapshot, execution, err := o.tree.admit(admission{parentRun: caller, kind: args.Type, name: label, model: model, cwd: cwd, task: args.Task, agent: agent, available: available, member: member, backend: backend})
 		if err != nil {
 			if member != nil {
 				if cleanupErr := o.rollbackTeamMember(member); cleanupErr != nil {
@@ -551,7 +555,11 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"state": inspection.Child.State, "child": inspection.Child, "outcome": inspection.Outcome}, nil
+		result := map[string]any{"state": inspection.Child.State, "child": inspection.Child, "outcome": inspection.Outcome}
+		if inspection.Backend != nil {
+			result["backend"] = inspection.Backend
+		}
+		return result, nil
 	}
 	if name == "litter_wait" {
 		o.beginOutcomeAck(key, selected, name, toolContext)

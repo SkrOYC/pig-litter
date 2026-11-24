@@ -87,6 +87,13 @@ func RunNativeMember(path string) error {
 			return err
 		}
 	}
+	if manifest.UsePiDirs {
+		if err := os.Setenv("PIG_USE_PI_DIRS", "1"); err != nil {
+			return err
+		}
+	} else if err := os.Unsetenv("PIG_USE_PI_DIRS"); err != nil {
+		return err
+	}
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", manifest.Socket)
 	}}

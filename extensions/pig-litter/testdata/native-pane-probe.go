@@ -821,6 +821,37 @@ func fixture() {
 			return
 		}
 		if last.Role == "tool" {
+			spawnAndWait, toolResults := false, 0
+			for _, message := range request.Messages {
+				spawnAndWait = spawnAndWait || message.Role == "user" && strings.Contains(string(message.Content), "case spawn-and-wait")
+				if message.Role == "tool" {
+					toolResults++
+				}
+			}
+			if spawnAndWait && toolResults == 1 {
+				for {
+					child := rootDecision("child-id", nil).Result
+					if child != "" {
+						response(w, request.Model, "", "litter_wait", map[string]any{"id": child, "timeoutMs": 10000})
+						return
+					}
+					select {
+					case <-r.Context().Done():
+						return
+					case <-time.After(10 * time.Millisecond):
+					}
+				}
+			}
+			if spawnAndWait && toolResults == 2 {
+				record("provider", map[string]any{"event": "wait_report_gate"})
+				for rootDecision("queue-provider", nil).Kind != "allow" {
+					select {
+					case <-r.Context().Done():
+						return
+					case <-time.After(10 * time.Millisecond):
+					}
+				}
+			}
 			response(w, request.Model, "PROBE_TOOL_DONE", "", nil)
 			return
 		}
@@ -852,6 +883,10 @@ func fixture() {
 			return
 		}
 		if strings.Contains(text, "case spawn-child") {
+			response(w, request.Model, "", "litter_spawn", map[string]any{"type": "scout", "task": "CHILD_WAIT_GATE"})
+			return
+		}
+		if strings.Contains(text, "case spawn-and-wait") {
 			response(w, request.Model, "", "litter_spawn", map[string]any{"type": "scout", "task": "CHILD_WAIT_GATE"})
 			return
 		}

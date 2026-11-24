@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MichaelKinsy/PiG/coding"
 	"github.com/MichaelKinsy/PiG/coding/extension/host/subprocess"
 )
 
@@ -74,6 +75,9 @@ func TestNativeOwnershipPersistsAndReleasesAfterProcessExit(t *testing.T) {
 	launch := tmuxLaunch{executable: executable, manifest: filepath.Join(root, "member-"+nonce+".json"), cwd: root, nonce: nonce}
 	host := &runtimeHost{}
 	var failAppend atomic.Bool
+	var heldDuringAppend atomic.Bool
+	var holdRelease atomic.Bool
+	releaseEntered, releaseContinue := make(chan struct{}), make(chan struct{})
 	withCompletionReplies(t, tree, "print", func(o *owner) {
 		ownership, err := o.reserveMemberLaunch(ctx, selected.owner, selected, server, launch, sessionDir)
 		if err != nil {
@@ -154,7 +158,22 @@ func TestNativeOwnershipPersistsAndReleasesAfterProcessExit(t *testing.T) {
 		if err != nil || process.Signal(syscall.SIGTERM) != nil {
 			t.Fatal("stop owned test process", err)
 		}
-		if err := o.releaseMemberLaunch(ctx, selected.owner, selected, ownership, pane); err != nil {
+		holdRelease.Store(true)
+		released := make(chan error, 1)
+		go func() { released <- o.releaseMemberLaunch(ctx, selected.owner, selected, ownership, pane) }()
+		select {
+		case <-releaseEntered:
+		case <-ctx.Done():
+			t.Fatal("native ownership release did not reach persistence")
+		}
+		if _, _, err := tree.resume(nil, selected, "continue"); err == nil || !strings.Contains(err.Error(), "ownership requires reconciliation") {
+			t.Errorf("resume passed an uncommitted ownership release: %v", err)
+		}
+		if err := o.withChildLogLocked(selected.owner, func(*coding.SessionManager) error { return nil }); err == nil {
+			t.Error("child log was reopened before ownership release persisted")
+		}
+		close(releaseContinue)
+		if err := <-released; err != nil {
 			t.Fatal(err)
 		}
 		tree.mu.Lock()
@@ -166,9 +185,29 @@ func TestNativeOwnershipPersistsAndReleasesAfterProcessExit(t *testing.T) {
 		if panes := tmux("list-panes", "-a", "-F", "#{pane_id}"); !strings.Contains(panes, unrelated) || strings.Contains(panes, pane.id) {
 			t.Fatalf("release changed unrelated panes: %q", panes)
 		}
-		failAppend.Store(true)
 		failedNonce := "fedcba9876543210fedcba9876543210"
 		failedLaunch := tmuxLaunch{executable: executable, manifest: filepath.Join(root, "member-"+failedNonce+".json"), cwd: root, nonce: failedNonce}
+		intent, err := o.reserveMemberLaunch(ctx, selected.owner, selected, server, failedLaunch, sessionDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot := cloneMemberOwnership(intent)
+		failAppend.Store(true)
+		if err := o.clearMemberOwnership(ctx, selected.owner, selected, intent, snapshot); err == nil {
+			t.Fatal("ownership release ignored a persistence failure")
+		}
+		tree.mu.Lock()
+		retained = selected.owner.nativeOwnership
+		releasing := selected.owner.nativeReleasing
+		tree.mu.Unlock()
+		if retained != intent || releasing {
+			t.Fatal("failed ownership release did not restore the fence")
+		}
+		failAppend.Store(false)
+		if err := o.clearMemberOwnership(ctx, selected.owner, selected, intent, snapshot); err != nil {
+			t.Fatal(err)
+		}
+		failAppend.Store(true)
 		if _, err := o.reserveMemberLaunch(ctx, selected.owner, selected, server, failedLaunch, sessionDir); err == nil {
 			t.Fatal("allocated after launch intent persistence failed")
 		}
@@ -182,11 +221,25 @@ func TestNativeOwnershipPersistsAndReleasesAfterProcessExit(t *testing.T) {
 			t.Fatalf("failed intent allocated a pane: %q", panes)
 		}
 	}, func(method string, raw json.RawMessage) *subprocess.CallResultPayload {
+		if method == "appendEntry" {
+			if tree.lifecycleMu.TryLock() {
+				tree.lifecycleMu.Unlock()
+			} else {
+				heldDuringAppend.Store(true)
+			}
+			if holdRelease.CompareAndSwap(true, false) {
+				close(releaseEntered)
+				<-releaseContinue
+			}
+		}
 		if method == "appendEntry" && failAppend.Load() {
 			return &subprocess.CallResultPayload{Error: &subprocess.ErrorInfo{Message: "synthetic storage failure"}}
 		}
 		return &subprocess.CallResultPayload{Result: host.call(t, method, raw)}
 	})
+	if heldDuringAppend.Load() {
+		t.Fatal("native ownership persistence held the lifecycle lock across the host call")
+	}
 }
 
 func hasSavedMemberOwnership(host *runtimeHost, pane bool) bool {

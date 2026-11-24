@@ -79,6 +79,7 @@ type Snapshot struct {
 type record struct {
 	id                                   ChildID
 	team                                 *teamMember
+	backend                              backendRequest
 	parent                               *record
 	depth                                int
 	name, kind, model, instructions, cwd string
@@ -90,6 +91,8 @@ type record struct {
 	activeLog                            *coding.SessionManager
 	native                               *memberBinding
 	nativeOwnership                      *memberOwnership
+	nativeReleasing                      bool
+	nativeCleanupError                   string
 	run                                  *run
 	previous                             *run
 	paused                               bool
@@ -157,6 +160,7 @@ type run struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	done            chan struct{}
+	executorDone    chan struct{}
 	started         bool
 	admission       runAdmission
 	progress        runProgress
@@ -193,8 +197,15 @@ type run struct {
 }
 
 type Inspection struct {
-	Child   Snapshot `json:"child"`
-	Outcome *Outcome `json:"outcome,omitempty"`
+	Child   Snapshot       `json:"child"`
+	Outcome *Outcome       `json:"outcome,omitempty"`
+	Backend *BackendStatus `json:"backend,omitempty"`
+}
+
+type BackendStatus struct {
+	Kind      string `json:"kind"`
+	Ownership string `json:"ownership"`
+	Error     string `json:"error,omitempty"`
 }
 
 func bounded(text string, maximum int) (string, bool) {

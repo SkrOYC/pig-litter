@@ -43,6 +43,7 @@ type Tree struct {
 	closed       bool
 	closedDone   chan struct{}
 	completionWG sync.WaitGroup
+	executeWG    sync.WaitGroup
 	teamWG       sync.WaitGroup
 	peerWakeWG   sync.WaitGroup
 	roomChanged  chan struct{}
@@ -64,6 +65,7 @@ type admission struct {
 	agent                        AgentDefinition
 	available                    []string
 	member                       *teamMember
+	backend                      backendRequest
 }
 
 type controlAuthority struct {
@@ -319,7 +321,7 @@ func (t *Tree) admit(request admission) (Snapshot, *run, error) {
 	if _, exists := t.names[nameKey]; exists && request.member == nil {
 		return Snapshot{}, nil, reject("rejected", "child name already belongs to this owner")
 	}
-	r := &record{id: id, team: request.member, parent: parent, depth: depth, name: name, kind: request.kind, model: request.model, instructions: request.agent.Instructions, pendingTask: request.task, cwd: request.cwd, tools: slices.Clone(request.agent.Tools), canDelegate: request.agent.CanDelegate && request.agent.Role != "scout", readOnly: readOnly}
+	r := &record{id: id, team: request.member, backend: request.backend, parent: parent, depth: depth, name: name, kind: request.kind, model: request.model, instructions: request.agent.Instructions, pendingTask: request.task, cwd: request.cwd, tools: slices.Clone(request.agent.Tools), canDelegate: request.agent.CanDelegate && request.agent.Role != "scout", readOnly: readOnly}
 	r.run = t.newRunLocked(Ref{id}, "Task:\n"+request.task)
 	r.run.owner = r
 	t.records[id] = r
@@ -384,6 +386,8 @@ func (t *Tree) activateChecked(selected *run, accept func() error) error {
 	} else {
 		run.admission = admissionReady
 		run.progress.activated = activated
+		run.executorDone = make(chan struct{})
+		t.executeWG.Add(1)
 	}
 	t.mu.Unlock()
 	t.lifecycleMu.Unlock()
@@ -393,6 +397,8 @@ func (t *Tree) activateChecked(selected *run, accept func() error) error {
 		return err
 	}
 	go func() {
+		defer t.executeWG.Done()
+		defer close(run.executorDone)
 		outcome := t.execute(r, run)
 		t.finish(r, run, outcome)
 	}()
@@ -655,7 +661,28 @@ func (t *Tree) inspect(id ChildID) (Inspection, error) {
 		copy := *r.latest
 		outcome = &copy
 	}
-	return Inspection{Child: t.snapshotLocked(r), Outcome: outcome}, nil
+	var backend *BackendStatus
+	if r.backend != "" || r.nativeOwnership != nil || r.nativeCleanupError != "" {
+		state := "unallocated"
+		if r.run.state.terminal() {
+			state = "released"
+		}
+		if r.nativeOwnership != nil {
+			state = "owned"
+		}
+		if r.nativeReleasing {
+			state = "releasing"
+		}
+		if r.nativeCleanupError != "" {
+			state = "cleanup_failed"
+		}
+		kind := r.backend
+		if kind == "" && r.nativeOwnership != nil {
+			kind = r.nativeOwnership.Backend
+		}
+		backend = &BackendStatus{Kind: string(kind), Ownership: state, Error: r.nativeCleanupError}
+	}
+	return Inspection{Child: t.snapshotLocked(r), Outcome: outcome, Backend: backend}, nil
 }
 
 func (t *Tree) wait(ctx context.Context, selected *run, timeout int) (Outcome, error) {
@@ -710,7 +737,7 @@ func (t *Tree) resumeAs(authority controlAuthority, selected *run, text string) 
 		t.mu.Unlock()
 		return Snapshot{}, nil, err
 	}
-	if r.nativeOwnership != nil {
+	if r.nativeOwnership != nil || r.nativeReleasing {
 		t.mu.Unlock()
 		return Snapshot{}, nil, reject("unavailable", "native pane ownership requires reconciliation before resume")
 	}
@@ -952,6 +979,12 @@ func (t *Tree) joinPaused(pending, fresh []*run) error {
 	}
 	for _, run := range pending {
 		<-run.done
+		t.mu.Lock()
+		executorDone := run.executorDone
+		t.mu.Unlock()
+		if executorDone != nil {
+			<-executorDone
+		}
 	}
 	if err := t.notify(); err != nil && hasTeam && failure == nil {
 		failure = err
@@ -1012,6 +1045,7 @@ func (t *Tree) close() {
 	for _, run := range runs {
 		<-run.done
 	}
+	t.executeWG.Wait()
 	t.completionWG.Wait()
 	t.teamWG.Wait()
 	t.peerWakeWG.Wait()
