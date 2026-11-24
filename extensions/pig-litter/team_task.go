@@ -30,6 +30,7 @@ type teamTaskView struct {
 
 type teamTaskGraph struct {
 	Version   uint64     `json:"version"`
+	Revision  uint64     `json:"revision,omitempty"`
 	Team      TeamID     `json:"team"`
 	HighWater uint64     `json:"highWater"`
 	Tasks     []teamTask `json:"tasks"`

@@ -17,6 +17,14 @@ import (
 const teamTaskJSONLimit = 8 * 1024 * 1024
 
 func (s *teamStore) taskTransaction(change func(*teamTaskGraph) (bool, error)) error {
+	return s.taskTransactionForMember(nil, true, change)
+}
+
+func (s *teamStore) reconcileTerminatedTasks() error {
+	return s.taskTransactionForMember(nil, false, func(*teamTaskGraph) (bool, error) { return false, nil })
+}
+
+func (s *teamStore) taskTransactionForMember(member *MemberRef, initialize bool, change func(*teamTaskGraph) (bool, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -25,7 +33,7 @@ func (s *teamStore) taskTransaction(change func(*teamTaskGraph) (bool, error)) e
 	if err := checkLockedFile(s.lead); err != nil {
 		return fmt.Errorf("team owner lease: %w", err)
 	}
-	rosterLock, err := lockTeamFile(filepath.Join(s.dir, "team.lock"), false)
+	rosterLock, err := s.lockRosterLocked()
 	if err != nil {
 		return err
 	}
@@ -35,6 +43,18 @@ func (s *teamStore) taskTransaction(change func(*teamTaskGraph) (bool, error)) e
 	}
 	if roster.OwnerEpoch != s.ownerEpoch || roster.OwnerToken != s.ownerToken {
 		return errors.New("team owner lease is stale")
+	}
+	terminated := make(map[MemberRef]bool)
+	memberValid := member == nil
+	for _, candidate := range roster.Members {
+		if candidate.State == "terminated" {
+			terminated[candidate.Ref] = true
+		} else if member != nil && candidate.Ref == *member {
+			memberValid = true
+		}
+	}
+	if !memberValid {
+		return reject("unavailable", "teammate is terminated or not a committed member")
 	}
 	lockPath := filepath.Join(s.dir, "tasks.lock")
 	_, statErr := os.Lstat(lockPath)
@@ -49,6 +69,9 @@ func (s *teamStore) taskTransaction(change func(*teamTaskGraph) (bool, error)) e
 			}
 			return err
 		}
+		if !initialize {
+			return nil
+		}
 	}
 	lock, err := lockTeamFile(lockPath, true)
 	if err != nil {
@@ -57,7 +80,7 @@ func (s *teamStore) taskTransaction(change func(*teamTaskGraph) (bool, error)) e
 	err = func() error {
 		if initial {
 			graph := teamTaskGraph{Version: 1, Team: roster.Team, Tasks: []teamTask{}}
-			if err := saveTeamTasks(s.dir, graph); err != nil {
+			if err := saveTeamTasks(s.dir, graph, s.syncDir); err != nil {
 				return err
 			}
 		}
@@ -65,16 +88,43 @@ func (s *teamStore) taskTransaction(change func(*teamTaskGraph) (bool, error)) e
 		if err != nil {
 			return err
 		}
+		released := false
+		for i := range graph.Tasks {
+			task := &graph.Tasks[i]
+			if task.Owner != nil && task.State != TaskCompleted && terminated[*task.Owner] {
+				task.Owner = nil
+				task.State = TaskPending
+				released = true
+			}
+		}
+		if released {
+			if err := s.saveTaskMutation(&graph); err != nil {
+				return err
+			}
+		} else if len(terminated) != 0 {
+			// A prior release may have renamed tasks.json before its directory sync failed.
+			if err := s.syncDir(s.dir); err != nil {
+				return err
+			}
+		}
 		changed, err := change(&graph)
 		if err != nil || !changed {
 			return err
 		}
-		if err := validateTeamTasks(graph, s.root); err != nil {
-			return err
-		}
-		return saveTeamTasks(s.dir, graph)
+		return s.saveTaskMutation(&graph)
 	}()
 	return errors.Join(err, lock.Close())
+}
+
+func (s *teamStore) saveTaskMutation(graph *teamTaskGraph) error {
+	if graph.Revision == math.MaxUint64 {
+		return errors.New("task revision exhausted")
+	}
+	graph.Revision++
+	if err := validateTeamTasks(*graph, s.root); err != nil {
+		return err
+	}
+	return saveTeamTasks(s.dir, *graph, s.syncDir)
 }
 
 func (s *teamStore) createTask(subject, description string, dependencies []TaskID, metadata map[string]string) (teamTaskView, error) {
@@ -143,7 +193,7 @@ func (s *teamStore) getTask(id TaskID) (teamTaskView, error) {
 func (s *teamStore) claimTask(id TaskID, member MemberRef, explicit bool) (teamTaskView, string, error) {
 	var result teamTaskView
 	var state string
-	err := s.taskTransaction(func(graph *teamTaskGraph) (bool, error) {
+	err := s.taskTransactionForMember(&member, true, func(graph *teamTaskGraph) (bool, error) {
 		index := graph.find(id)
 		if index < 0 || member.Team != graph.Team {
 			return false, reject("rejected", "task or teammate is unavailable in this team")
@@ -292,7 +342,7 @@ func validateTeamTasks(graph teamTaskGraph, root ChildID) error {
 	return nil
 }
 
-func saveTeamTasks(dir string, graph teamTaskGraph) error {
+func saveTeamTasks(dir string, graph teamTaskGraph, syncDirectory func(string) error) error {
 	data, err := json.Marshal(graph)
 	if err != nil {
 		return err
@@ -315,5 +365,5 @@ func saveTeamTasks(dir string, graph teamTaskGraph) error {
 	if err := os.Rename(name, filepath.Join(dir, "tasks.json")); err != nil {
 		return err
 	}
-	return syncDir(dir)
+	return syncDirectory(dir)
 }

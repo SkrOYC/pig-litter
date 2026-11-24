@@ -1,6 +1,7 @@
 package piglitter
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -8,7 +9,7 @@ import (
 )
 
 func TestTeamTasksCompetingClaimsAndBlockedAssignment(t *testing.T) {
-	store, _, root, _ := storeTestOpen(t)
+	store, _, _, workspace := storeTestOpen(t)
 	prerequisite, err := store.createTask("prerequisite", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -30,10 +31,17 @@ func TestTeamTasksCompetingClaimsAndBlockedAssignment(t *testing.T) {
 	if _, err := store.getTask(foreign); err == nil {
 		t.Fatal("looked up a task from a different team")
 	}
-	team := TeamID{Root: root, Epoch: 1}
 	members := make([]MemberRef, 4)
 	for i := range members {
-		members[i] = MemberRef{Team: team, ID: storeTestUUID(i + 10), Generation: uint64(i + 1)}
+		admission := string(storeTestUUID(i + 20))
+		if _, err := store.Reserve(storeTestUUID(i+10), admission, fmt.Sprintf("worker-%d", i), workspace); err != nil {
+			t.Fatal(err)
+		}
+		member, err := store.Commit(admission)
+		if err != nil {
+			t.Fatal(err)
+		}
+		members[i] = member.Ref
 	}
 	result, state, err := store.claimTask(blocked.ID, members[0], false)
 	if err != nil || state != "blocked" || !result.Blocked || result.Owner != nil {
