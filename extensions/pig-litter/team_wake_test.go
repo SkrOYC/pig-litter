@@ -279,7 +279,7 @@ func TestPeerWakeWaitsForSettlementAlreadyInProgress(t *testing.T) {
 
 func TestCancelledTeamAdmissionReleasesItsReservation(t *testing.T) {
 	store, _, root, workspace := storeTestOpen(t)
-	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "alice", workspace)
+	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "alice", workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestCancelledTeamAdmissionReleasesItsReservation(t *testing.T) {
 	if _, err := tree.selectRun(member.Ref.ID); err == nil {
 		t.Fatal("cancelled admission remained selectable")
 	}
-	replacement, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "alice", workspace)
+	replacement, err := store.Reserve(storeTestUUID(4), string(storeTestUUID(5)), "alice", workspace, false)
 	if err != nil || replacement.Name != "alice" {
 		t.Fatalf("cancelled admission did not release its name: %#v, %v", replacement, err)
 	}
