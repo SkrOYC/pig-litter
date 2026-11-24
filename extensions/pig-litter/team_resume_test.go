@@ -36,6 +36,7 @@ func TestTeamResumeRetainsIdentityAndPause(t *testing.T) {
 				o.teamStore = store
 				tree.teamFinished, tree.teamPaused, tree.teamResuming = o.finishTeamMember, o.pauseTeamMember, o.resumeTeamMember
 				tree.finish(previous.owner, previous, Outcome{State: Completed, Text: "before resume"})
+				tree.teamWG.Wait()
 				if paused {
 					if _, _, err := tree.stop(nil, previous); err != nil {
 						exerciseErr = err
@@ -78,9 +79,17 @@ func TestTeamResumeRetainsIdentityAndPause(t *testing.T) {
 				if err != nil || len(running) != 1 || running[0].State != "running" || running[0].Ref != member.Ref {
 					exerciseErr = fmt.Errorf("resumed roster: %#v, %v", running, err)
 				}
-			}, func(method string, _ json.RawMessage) json.RawMessage {
+			}, func(method string, raw json.RawMessage) json.RawMessage {
 				if method == "sessionRead" {
+					var query struct{ Method string }
+					_ = json.Unmarshal(raw, &query)
+					if query.Method == "getEntries" {
+						return json.RawMessage(`[]`)
+					}
 					return json.RawMessage(`"fixture"`)
+				}
+				if method == "sendMessage" {
+					return json.RawMessage(`{}`)
 				}
 				t.Errorf("unexpected host method %s", method)
 				return nil
@@ -329,6 +338,7 @@ func TestTeamResumeSerializesPauseWithActivation(t *testing.T) {
 		o.teamStore = store
 		tree.teamFinished, tree.teamPaused = o.finishTeamMember, o.pauseTeamMember
 		tree.finish(previous.owner, previous, Outcome{State: Completed})
+		tree.teamWG.Wait()
 		_, selected, err := tree.resume(nil, previous, "continue")
 		if err != nil {
 			exerciseErr = err
@@ -369,13 +379,22 @@ func TestTeamResumeSerializesPauseWithActivation(t *testing.T) {
 			exerciseErr = err
 			return
 		}
+		tree.teamWG.Wait()
 		_, roster, err := store.Snapshot()
 		if err != nil || len(roster) != 1 || roster[0].Ref != member.Ref || roster[0].State != "paused" {
 			exerciseErr = fmt.Errorf("pause after activation: %#v, %v", roster, err)
 		}
-	}, func(method string, _ json.RawMessage) json.RawMessage {
+	}, func(method string, raw json.RawMessage) json.RawMessage {
 		if method == "sessionRead" {
+			var query struct{ Method string }
+			_ = json.Unmarshal(raw, &query)
+			if query.Method == "getEntries" {
+				return json.RawMessage(`[]`)
+			}
 			return json.RawMessage(`"fixture"`)
+		}
+		if method == "sendMessage" {
+			return json.RawMessage(`{}`)
 		}
 		t.Errorf("unexpected host method %s", method)
 		return nil

@@ -34,7 +34,7 @@ func TestTeamTasksCompetingClaimsAndBlockedAssignment(t *testing.T) {
 	members := make([]MemberRef, 4)
 	for i := range members {
 		admission := string(storeTestUUID(i + 20))
-		if _, err := store.Reserve(storeTestUUID(i+10), admission, fmt.Sprintf("worker-%d", i), workspace); err != nil {
+		if _, err := store.Reserve(storeTestUUID(i+10), admission, fmt.Sprintf("worker-%d", i), workspace, false); err != nil {
 			t.Fatal(err)
 		}
 		member, err := store.Commit(admission)
