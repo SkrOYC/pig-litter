@@ -106,11 +106,12 @@ jobs:
       BASELINE_SHA: 939b4c3f5f2ba8c7f5becef66dbb0ca6eeb14ea7
       CANDIDATE_CHECKOUT: ${{ github.workspace }}/candidate
       BASELINE_CHECKOUT: ${{ github.workspace }}/baseline
-      EVIDENCE_DIR: ${{ runner.temp }}/p02-evidence
     steps:
       - name: Initialize evidence
         shell: bash
         run: |
+          EVIDENCE_DIR="$RUNNER_TEMP/p02-evidence"
+          printf 'EVIDENCE_DIR=%s\n' "$EVIDENCE_DIR" >> "$GITHUB_ENV"
           mkdir -p "$EVIDENCE_DIR"
           printf 'candidate=%s\nbaseline=%s\nworkflow_sha=%s\n' "$CANDIDATE_SHA" "$BASELINE_SHA" "$GITHUB_SHA" > "$EVIDENCE_DIR/bootstrap.txt"
           test "$CANDIDATE_SHA" = "$GITHUB_SHA"
