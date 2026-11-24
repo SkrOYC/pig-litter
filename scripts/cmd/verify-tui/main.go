@@ -705,6 +705,9 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			_, err := tmuxCall("resize-window", "-t", session, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
 			return err
 		}}
+		if options.caseName == caseSource {
+			panel.sourceCellDir = filepath.Join(pigHome, "cache", "cells", "go")
+		}
 	}
 	captureFailure := func() (map[string]any, error) {
 		result := map[string]any{}

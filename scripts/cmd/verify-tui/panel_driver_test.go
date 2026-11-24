@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,6 +10,26 @@ import (
 
 	"github.com/MichaelKinsy/PiG/tui"
 )
+
+func TestPanelFindsOnlyTheSelectedSourceCellProcess(t *testing.T) {
+	cellDir := filepath.Join(t.TempDir(), "pig-home", "cache", "cells", "go")
+	selected := observedProcess{PID: 1, StartTicks: "100", Executable: filepath.Join(cellDir, strings.Repeat("a", 64), "runner")}
+	unrelated := []observedProcess{
+		{PID: 2, Executable: filepath.Join(cellDir, "not-a-cell-key", "runner")},
+		{PID: 3, Executable: filepath.Join(cellDir+"-other", strings.Repeat("a", 64), "runner")},
+		{PID: 4, Executable: filepath.Join(cellDir, strings.Repeat("b", 64), "other")},
+	}
+	processes := append(unrelated, selected)
+	panel := panelProof{sourceCellDir: cellDir, processes: func() ([]observedProcess, error) { return processes, nil }}
+	got, err := panel.extensionProcess()
+	if err != nil || got != selected {
+		t.Fatalf("source-selected process = %+v, %v", got, err)
+	}
+	processes = append(processes, observedProcess{PID: 5, Executable: filepath.Join(cellDir, strings.Repeat("c", 64), "runner")})
+	if _, err := panel.extensionProcess(); err == nil {
+		t.Fatal("accepted multiple matching source-selected processes")
+	}
+}
 
 func TestPanelNavigationParserUsesViewAndActualPaintedRows(t *testing.T) {
 	const frame = " Litter 2 active\nPig Litter | list (3/3)\n  running held-b #bbbbbbbb\n  running held-a #aaaaaaaa\n> completed quick-newer #cccccccc\n\nWorking\ncontrols\n"

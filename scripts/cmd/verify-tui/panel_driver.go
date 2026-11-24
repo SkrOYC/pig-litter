@@ -55,6 +55,7 @@ type panelProof struct {
 	resumeTrace                                                   string
 	configPath                                                    string
 	workspace                                                     string
+	sourceCellDir                                                 string
 	idleCommand, idleDirectory, idleObserver                      string
 	idleReadiness                                                 []idleBarrierEvidence
 	paneTitle                                                     func() (string, error)
@@ -1266,7 +1267,7 @@ func (p *panelProof) extensionProcess() (observedProcess, error) {
 	}
 	var extension []observedProcess
 	for _, process := range processes {
-		if filepath.Base(strings.TrimSuffix(process.Executable, " (deleted)")) == selectedExtensionName {
+		if p.selectedExtensionProcess(process.Executable) {
 			extension = append(extension, process)
 		}
 	}
@@ -1274,6 +1275,21 @@ func (p *panelProof) extensionProcess() (observedProcess, error) {
 		return observedProcess{}, fmt.Errorf("expected one selected Resource process, found %d", len(extension))
 	}
 	return extension[0], nil
+}
+
+var sourceCellKey = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+func (p *panelProof) selectedExtensionProcess(executable string) bool {
+	executable = strings.TrimSuffix(executable, " (deleted)")
+	if p.sourceCellDir == "" {
+		return filepath.Base(executable) == selectedExtensionName
+	}
+	relative, err := filepath.Rel(p.sourceCellDir, executable)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(relative, string(filepath.Separator))
+	return len(parts) == 2 && sourceCellKey.MatchString(parts[0]) && parts[1] == "runner"
 }
 
 func (p *panelProof) waitReplacement(action string, before observedProcess) error {
