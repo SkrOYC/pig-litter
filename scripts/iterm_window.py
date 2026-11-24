@@ -101,3 +101,36 @@ on run argv
   return "no attributable short-session warning"
 end run
 '''
+
+
+VERIFY_RESIDUE = r'''
+on run argv
+  set wantedWindow to item 1 of argv
+  set wantedSession to item 2 of argv
+  set wantedAlternate to item 3 of argv
+  set numericMatches to 0
+  set alternateMatches to 0
+  tell application "iTerm"
+    repeat with candidateWindow in windows
+      if (id of candidateWindow as text) is wantedWindow then set numericMatches to numericMatches + 1
+      if (alternate identifier of candidateWindow as text) is wantedAlternate then set alternateMatches to alternateMatches + 1
+      repeat with candidateTab in tabs of candidateWindow
+        repeat with candidateSession in sessions of candidateTab
+          if (unique id of candidateSession) is wantedSession then error "Original session is still present."
+        end repeat
+      end repeat
+    end repeat
+    if numericMatches is not 1 or alternateMatches is not 1 then error "Window identity is ambiguous."
+    repeat with candidateWindow in windows
+      if (id of candidateWindow as text) is wantedWindow then
+        if (alternate identifier of candidateWindow as text) is not wantedAlternate then error "Alternate window identity changed."
+        if (count of tabs of candidateWindow) is not 0 then error "Owned window still has tabs."
+        if (current session of candidateWindow) is not missing value then error "Owned window has a current session."
+        if (visible of candidateWindow) is not false then error "Owned window is visible."
+        return "verified" & linefeed & (name of candidateWindow as text)
+      end if
+    end repeat
+    error "Owned window is missing."
+  end tell
+end run
+'''

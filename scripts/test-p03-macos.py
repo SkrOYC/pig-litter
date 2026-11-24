@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest import mock
 from urllib.error import HTTPError
@@ -16,7 +17,7 @@ spec.loader.exec_module(driver)
 
 
 class InputAndProviderTests(unittest.TestCase):
-    def test_probe_window_stays_open_across_failed_cases(self):
+    def test_unexpected_case_failure_stops_further_cases(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             probe_dir = root / "collaboration-platform-probe"
@@ -42,9 +43,111 @@ class InputAndProviderTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(root)}), mock.patch.object(driver.sys, "platform", "darwin"), mock.patch.object(driver.sys, "argv", arguments), mock.patch.object(driver, "applescript", applescript), mock.patch.object(driver, "run_case", run_case):
                 with self.assertRaisesRegex(RuntimeError, "policy failed"):
                     driver.main()
-            self.assertEqual(events, ["exists", "team", "policy", "unselected", "close", "window missing"])
+            self.assertEqual(events, ["exists", "team", "policy", "close", "window missing"])
             self.assertEqual(json.loads((root / "evidence/summary.json").read_text())["result"], "failed")
             self.assertFalse((root / "evidence/cleanup-ok").exists())
+
+    def test_product_results_survive_verified_teardown_residue(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            probe_dir = root / "collaboration-platform-probe"
+            probe_dir.mkdir()
+            (probe_dir / "result.json").write_text(json.dumps({"status": "pass", "signature_status": "verified", "automation_status": "approved", "window_id": "123", "session_id": "probe-session"}))
+            seen = []
+
+            def run_case(name, *_args):
+                seen.append(name)
+                residue = name == "team"
+                return {"product_status": "pass", "product_problems": [], "teardown_status": "failed" if residue else "pass", "teardown_problems": ["UNRELEASED FIXTURE RESIDUE: window 42"] if residue else [], "safe_to_continue": True}
+
+            arguments = ["p03-macos.py", "--scenario", "p03-all", "--pig", "/pig", "--extension", "/extension", "--scratch", str(root), "--evidence", str(root / "evidence")]
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(root)}), mock.patch.object(driver.sys, "platform", "darwin"), mock.patch.object(driver.sys, "argv", arguments), mock.patch.object(driver, "applescript", return_value="present"), mock.patch.object(driver, "close_probe", return_value=True), mock.patch.object(driver, "run_case", side_effect=run_case):
+                with self.assertRaisesRegex(RuntimeError, "UNRELEASED FIXTURE RESIDUE"):
+                    driver.main()
+            summary = json.loads((root / "evidence/summary.json").read_text())
+            self.assertEqual(seen, ["team", "policy", "unselected"])
+            self.assertEqual(summary["product"]["status"], "pass")
+            self.assertEqual(summary["teardown"]["status"], "failed")
+            self.assertEqual(summary["result"], "failed")
+            self.assertEqual((root / "evidence/product-exit.txt").read_text(), "0\n")
+            self.assertFalse((root / "evidence/cleanup-ok").exists())
+
+    def test_team_reopens_after_a_verified_unreleased_generation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            seen = []
+
+            class Fixture:
+                def __init__(self, *_args):
+                    self.changed = threading.Condition()
+                    self.stage = 0
+                    self.requests = 0
+                    self.request_models = {}
+                    self.errors = []
+                    self.refs = {"alpha": {"id": "member", "team": {"root": "root"}}}
+                    self.rosters = {}
+                    self.observations = {}
+                    self.ordinary_release = False
+
+            class Server:
+                server_address = ("127.0.0.1", 12345)
+                def shutdown(self):
+                    pass
+                def server_close(self):
+                    pass
+
+            class Thread:
+                def join(self, timeout):
+                    pass
+                def is_alive(self):
+                    return False
+
+            class Terminal:
+                def __init__(self, case_root, *_args):
+                    self.root = case_root
+                    self.window = None
+                    self.residues = []
+                    self.unsafe = False
+                def launch(self, session_path=None):
+                    seen.append(("launch", bool(session_path)))
+                    self.window = {"id": "42" if session_path is None else "43"}
+                    if session_path is None:
+                        (self.root / "sessions/root.jsonl").write_text("{}\n")
+                def send(self, message):
+                    seen.append(("send", message))
+                    fixture.stage = 6 if message == "P03_TEAM_FIRST" else 9
+                def await_marker(self, marker, _fixture):
+                    seen.append(("marker", marker))
+                def exit_host(self):
+                    self.residues.append(self.window)
+                    self.window = None
+                def cleanup(self):
+                    self.window = None
+
+            fixture = Fixture()
+            with mock.patch.object(driver, "Fixture", return_value=fixture), mock.patch.object(driver, "start_provider", return_value=(Server(), Thread())), mock.patch.object(driver, "Terminal", Terminal), mock.patch.object(driver, "save_native", return_value=["evidence"]), mock.patch.object(driver, "native_ids", return_value={"member", "root"}):
+                receipt = driver.run_case("team", root, root / "evidence", root / "pig", root / "extension")
+            self.assertEqual([item for item in seen if item[0] == "launch"], [("launch", False), ("launch", True)])
+            self.assertEqual([item for item in seen if item[0] == "send"], [("send", "P03_TEAM_FIRST"), ("send", "P03_TEAM_RESTART")])
+            self.assertEqual((receipt["product_status"], receipt["teardown_status"], receipt["safe_to_continue"]), ("pass", "failed", True))
+            self.assertEqual(receipt["stage"], 9)
+            self.assertEqual(len(receipt["teardown_problems"]), 2)
+
+    def test_unsafe_fixture_stops_later_cases(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            probe_dir = root / "collaboration-platform-probe"
+            probe_dir.mkdir()
+            (probe_dir / "result.json").write_text(json.dumps({"status": "pass", "signature_status": "verified", "automation_status": "approved", "window_id": "123", "session_id": "probe-session"}))
+            receipt = {"product_status": "failed", "product_problems": ["session changed"], "teardown_status": "failed", "teardown_problems": ["session changed"], "safe_to_continue": False}
+            arguments = ["p03-macos.py", "--scenario", "p03-all", "--pig", "/pig", "--extension", "/extension", "--scratch", str(root), "--evidence", str(root / "evidence")]
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(root)}), mock.patch.object(driver.sys, "platform", "darwin"), mock.patch.object(driver.sys, "argv", arguments), mock.patch.object(driver, "applescript", return_value="present"), mock.patch.object(driver, "close_probe", return_value=True), mock.patch.object(driver, "run_case", return_value=receipt) as run:
+                with self.assertRaisesRegex(RuntimeError, "unsafe or ambiguous"):
+                    driver.main()
+            self.assertEqual([call.args[0] for call in run.call_args_list], ["team"])
+            summary = json.loads((root / "evidence/summary.json").read_text())
+            self.assertEqual(summary["product"]["status"], "failed")
+            self.assertEqual(summary["teardown"]["status"], "failed")
 
     def test_exit_waits_for_owned_process_before_closing_window(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -89,6 +192,50 @@ class InputAndProviderTests(unittest.TestCase):
                     process.terminate()
                 process.wait(timeout=5)
                 process.stdin.close()
+
+    def test_hosted_finish_retains_scratch_and_preserves_product_result(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            evidence = root / "evidence"
+            scratch = root / "scratch"
+            evidence.mkdir()
+            scratch.mkdir()
+            (scratch / "sentinel").write_text("retained\n")
+            (evidence / "product-exit.txt").write_text("0\n")
+            repo = Path(__file__).resolve().parent.parent
+            script = '''set -euo pipefail
+driver=$TEST_DRIVER
+scratch=$TEST_SCRATCH
+evidence=$TEST_EVIDENCE
+eval "$(sed -n '/^finish() {$/,/^}$/p' "$driver/scripts/verify-p03-macos.sh")"
+trap finish EXIT
+exit 1
+'''
+            env = os.environ | {"TEST_DRIVER": str(repo), "TEST_SCRATCH": str(scratch), "TEST_EVIDENCE": str(evidence)}
+            result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual((evidence / "product-exit.txt").read_text(), "0\n")
+            self.assertEqual((evidence / "runner-exit.txt").read_text(), "1\n")
+            self.assertEqual(json.loads((evidence / "scratch-cleanup.json").read_text())["status"], "retained")
+            self.assertEqual((scratch / "sentinel").read_text(), "retained\n")
+
+    def test_p04_recovery_selector_is_fixed_and_separate(self):
+        workflow = Path(__file__).resolve().parents[1] / ".github/workflows/collaboration-platform-probe.yml"
+        text = workflow.read_text()
+        product = text.split("  p03-macos:\n", 1)[1].split("\n  iterm-lifecycle:\n", 1)[0]
+        job = text.split("  p04-host-recovery:\n", 1)[1]
+        self.assertNotIn("p04-host-recovery", product)
+        self.assertIn("inputs.scenario == 'p04-host-recovery'", job)
+        self.assertIn('macos-15-intel', job)
+        self.assertIn('macos-15', job)
+        self.assertIn("go -C extensions/pig-litter test -run '^TestDarwinPeer(HostGone|Recovery|UnknownAttemptRemainsPending)$' -count=1 -v -timeout=90s", job)
+        self.assertIn('scripts/verify-pig-platforms.sh', job)
+        self.assertNotIn('probe-macos-collaboration.sh', job)
+        self.assertNotIn('verify-p03-macos.sh', job)
+        for line in job.splitlines():
+            condition = line.strip()
+            if condition.startswith(("test ", "[[ ")):
+                self.assertTrue(condition.endswith("|| exit 1"), condition)
 
     def test_wrong_candidate_never_runs_the_prepared_command(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -178,6 +325,65 @@ class WindowClosureTests(unittest.TestCase):
         terminal.owned = {"root": {"pid": 100, "start": "birth", "executable": "/bin/sh"}}
         window["wrapper_identity"] = terminal.owned["root"]
         return terminal, window
+
+    def test_residue_checks_original_session_and_native_owner(self):
+        script = driver.VERIFY_RESIDUE
+        for guard in ("Original session is still present", "Window identity is ambiguous", "Alternate window identity changed", "Owned window still has tabs", "Owned window has a current session", "Owned window is visible"):
+            self.assertIn(guard, script)
+        self.assertNotIn(" to close", script)
+        owner = {"pid": 9, "start": "birth", "executable": "/iTerm"}
+        with mock.patch.object(driver, "same_process", return_value=True), mock.patch.object(driver, "native_windows", return_value=[{"number": 42, "owner_pid": 10}]):
+            with self.assertRaisesRegex(RuntimeError, "Native window identity or owner changed"):
+                driver.native_window(owner, "42")
+        with mock.patch.object(driver, "same_process", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "iTerm process identity changed"):
+                driver.native_window(owner, "42")
+
+    def test_owned_hidden_zero_tab_residue_is_retained_for_teardown(self):
+        with tempfile.TemporaryDirectory() as temp:
+            terminal, window = self.terminal(Path(temp))
+            host = {"pid": 101, "start": "host birth", "executable": "/pig"}
+            terminal.owned["host"] = host
+            window["host"] = host
+            window["ownership"] = {"iterm": {"pid": 9, "start": "iterm birth", "executable": "/iTerm"}, "native_before": {"number": 42, "owner_pid": 9}, "alternate_id": "window-2"}
+
+            def applescript(script, *arguments):
+                if script == driver.SESSION:
+                    return "session missing"
+                if script == driver.WINDOW_EXISTS:
+                    return "present"
+                self.assertEqual(script, driver.VERIFY_RESIDUE)
+                self.assertEqual(arguments, ("42", "owned-session", "window-2"))
+                return "verified\npig"
+
+            with mock.patch.object(driver, "applescript", side_effect=applescript), mock.patch.object(driver, "same_process", return_value=False), mock.patch.object(driver, "native_window", return_value={"number": 42, "owner_pid": 9}), mock.patch.object(terminal, "capture_closure"):
+                terminal.close_window()
+            self.assertIsNone(terminal.window)
+            self.assertEqual(window["fixture_teardown"]["status"], "UNRELEASED FIXTURE RESIDUE")
+            self.assertEqual(terminal.residues, [window])
+            self.assertEqual(window["presence_results"][-1]["result"], "present")
+
+    def test_ambiguous_residue_never_allows_the_next_generation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            terminal, window = self.terminal(Path(temp))
+            host = {"pid": 101, "start": "host birth", "executable": "/pig"}
+            terminal.owned["host"] = host
+            window["host"] = host
+            window["ownership"] = {"iterm": {"pid": 9, "start": "iterm birth", "executable": "/iTerm"}, "native_before": {"number": 42, "owner_pid": 9}, "alternate_id": "window-2"}
+
+            def applescript(script, *_arguments):
+                if script == driver.SESSION:
+                    return "session missing"
+                if script == driver.WINDOW_EXISTS:
+                    return "present"
+                raise RuntimeError("Original session is still present")
+
+            with mock.patch.object(driver, "applescript", side_effect=applescript), mock.patch.object(driver, "same_process", return_value=False), mock.patch.object(driver, "native_window", return_value={"number": 42, "owner_pid": 9}), mock.patch.object(terminal, "capture_closure"):
+                with self.assertRaisesRegex(RuntimeError, "Original session is still present"):
+                    terminal.close_window()
+            self.assertIs(terminal.window, window)
+            self.assertTrue(terminal.unsafe)
+            self.assertEqual(terminal.residues, [])
 
     def test_warning_is_acknowledged_after_exit_and_window_disappears(self):
         with tempfile.TemporaryDirectory() as temp:

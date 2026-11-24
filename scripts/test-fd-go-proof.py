@@ -105,7 +105,7 @@ class ProofTests(unittest.TestCase):
         text = workflow.read_text()
         product = text.split("  p03-macos:\n", 1)[1].split("\n  iterm-lifecycle:\n", 1)[0]
         self.assertNotIn("fd-go-cache", product)
-        job = text.split("  fd-go-cache:\n", 1)[1]
+        job = text.split("  fd-go-cache:\n", 1)[1].split("\n  p04-host-recovery:\n", 1)[0]
         self.assertIn("inputs.scenario == 'fd-go-cache'", job)
         self.assertIn("go-version: '1.27.4'", job)
         self.assertIn("verify-fd-go-proof.py", job)

@@ -16,7 +16,9 @@ import time
 import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from iterm_window import ACKNOWLEDGE_WARNING, UI_CENSUS, WINDOW_EXISTS
+from iterm_native import native_windows
+from iterm_window import ACKNOWLEDGE_WARNING, UI_CENSUS, VERIFY_RESIDUE, WINDOW_EXISTS
+from iterm_zero_close import OWNED_ALTERNATE
 
 
 NAMES = ("alpha", "beta", "gamma")
@@ -456,6 +458,21 @@ def same_process(identity):
     return True
 
 
+def iterm_owner():
+    matches = [process for process in process_snapshot().values() if process["command"].split(" ", 1)[0] == "/Applications/iTerm.app/Contents/MacOS/iTerm2"]
+    require(len(matches) == 1, "iTerm process identity is ambiguous")
+    owner = matches[0]
+    owner["executable"] = executable(owner["pid"])
+    return owner
+
+
+def native_window(owner, window):
+    require(same_process(owner), "iTerm process identity changed")
+    matches = [record for record in native_windows() if record["number"] == int(window)]
+    require(len(matches) == 1 and matches[0]["owner_pid"] == owner["pid"], "Native window identity or owner changed")
+    return matches[0]
+
+
 def idle_editor(frame):
     lines = frame.splitlines()
     borders = [index for index, line in enumerate(lines) if len(line.strip()) >= 29 and set(line.strip()) == {"─"}]
@@ -478,6 +495,8 @@ class Terminal:
         self.window = None
         self.owned = {}
         self.generations = []
+        self.residues = []
+        self.unsafe = False
         self.inputs = []
 
     def session_action(self, action, value=None):
@@ -565,6 +584,11 @@ class Terminal:
         else:
             require(not extensions, "Unselected session started the extension")
         self.window["host"] = hosts[-1]
+        owner = iterm_owner()
+        native = native_window(owner, self.window["id"])
+        alternate = applescript(OWNED_ALTERNATE, self.window["id"], self.window["session"])
+        require(alternate and alternate != "missing value" and "\n" not in alternate, "Alternate window identity is unavailable")
+        self.window["ownership"] = {"iterm": owner, "native_before": native, "alternate_id": alternate}
         self.window["extension_seen"] = bool(extensions)
         self.window["generation_dir"] = str(generation)
         self.frame(f"startup-{self.generation}")
@@ -621,6 +645,21 @@ class Terminal:
             self.window["close_result"] = self.session_action("close")
             self.window.setdefault("close_results", []).append({"time": time.time(), "result": self.window["close_result"]})
             require(self.window["close_result"] in ("closed", "already closed", "session missing"), "Unexpected iTerm close result")
+            if self.window["close_result"] == "session missing" and self.window.get("ownership"):
+                presence = window_presence(self.window["id"])
+                self.window.setdefault("presence_results", []).append({"time": time.time(), "result": presence})
+                if presence == "present":
+                    host = self.window.get("host")
+                    require(host is not None and host in self.owned.values(), "Owned PiG process identity was not observed")
+                    ownership = self.window["ownership"]
+                    native = native_window(ownership["iterm"], self.window["id"])
+                    observation = applescript(VERIFY_RESIDUE, self.window["id"], self.window["session"], ownership["alternate_id"])
+                    require(observation.splitlines() and observation.splitlines()[0] == "verified", "Retained window state is ambiguous")
+                    self.window["fixture_teardown"] = {"status": "UNRELEASED FIXTURE RESIDUE", "time": time.time(), "native": native, "observation": observation}
+                    self.capture_closure("unreleased-residue", include_ui=True)
+                    self.residues.append(self.window)
+                    self.window = None
+                    return
             captured = False
 
             def closed():
@@ -642,6 +681,7 @@ class Terminal:
 
             self.wait(closed, "owned iTerm window to close", 30)
         except Exception as error:
+            self.unsafe = True
             self.window["closure_error"] = str(error)
             self.capture_closure("failure", include_ui=True)
             raise
@@ -676,7 +716,7 @@ class Terminal:
                 self.close_window()
             except Exception as error:
                 problems.append(str(error))
-        (self.evidence / "terminal.json").write_text(json.dumps({"generations": self.generations, "inputs": self.inputs, "observed_processes": list(self.owned.values()), "survivors": remaining, "cleanup_errors": problems}, indent=2) + "\n")
+        (self.evidence / "terminal.json").write_text(json.dumps({"generations": self.generations, "inputs": self.inputs, "observed_processes": list(self.owned.values()), "survivors": remaining, "cleanup_errors": problems, "unreleased_fixture_residues": self.residues}, indent=2) + "\n")
         require(not problems, "; ".join(problems))
 
 
@@ -790,7 +830,8 @@ def run_case(name, scratch, evidence, pig, extension):
     server, thread = start_provider(fixture)
     fixture_files(root, server.server_address[1])
     terminal = Terminal(root, evidence, root / "workspace", root / "agent", root / "pig-home", root / "sessions", pig, extension, name != "unselected", server.server_address[1])
-    problems = []
+    product_problems = []
+    teardown_problems = []
     try:
         terminal.launch()
         if name == "team":
@@ -826,18 +867,18 @@ def run_case(name, scratch, evidence, pig, extension):
             require(expected_ids <= observed_ids, "Native root or member sessions are missing")
         require(not fixture.errors, f"Provider failed: {fixture.errors}")
     except Exception as error:
-        problems.append(str(error))
+        product_problems.append(str(error))
         try:
             target = evidence / "failure.png"
             subprocess.run(["/usr/sbin/screencapture", "-x", str(target)], timeout=30, check=True, capture_output=True)
             require(target.is_file() and target.stat().st_size > 0, "Failure screenshot was empty")
         except Exception as capture_error:
-            problems.append(f"Failure screenshot: {capture_error}")
+            product_problems.append(f"Failure screenshot: {capture_error}")
         if terminal.window:
             try:
                 terminal.frame("failure")
             except Exception as capture_error:
-                problems.append(f"Failure capture: {capture_error}")
+                product_problems.append(f"Failure capture: {capture_error}")
     finally:
         with fixture.changed:
             fixture.ordinary_release = True
@@ -845,21 +886,28 @@ def run_case(name, scratch, evidence, pig, extension):
         try:
             terminal.cleanup()
         except Exception as error:
-            problems.append(str(error))
+            terminal.unsafe = True
+            teardown_problems.append(str(error))
+            product_problems.append(f"Fixture state could not be verified: {error}")
+        for window in terminal.residues:
+            teardown_problems.append(f"UNRELEASED FIXTURE RESIDUE: window {window['id']}")
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
         if thread.is_alive():
-            problems.append("Provider did not stop")
+            product_problems.append("Provider did not stop")
+            teardown_problems.append("Provider did not stop")
+        if fixture.errors and not any("Provider failed:" in problem for problem in product_problems):
+            product_problems.append(f"Provider failed: {fixture.errors}")
         try:
             manifest = save_native(root, evidence)
             if not manifest:
-                problems.append("No native sessions were retained")
+                product_problems.append("No native sessions were retained")
         except Exception as error:
-            problems.append(f"Native evidence: {error}")
-        receipt = {"scenario": name, "status": "failed" if problems else "pass", "problems": problems, "stage": fixture.stage, "refs": fixture.refs, "member_rosters": fixture.rosters, "observations": fixture.observations, "provider_errors": fixture.errors, "requests": fixture.requests, "request_models": fixture.request_models, "provider_joined": not thread.is_alive()}
+            product_problems.append(f"Native evidence: {error}")
+        receipt = {"scenario": name, "status": "failed" if product_problems or teardown_problems else "pass", "product_status": "failed" if product_problems else "pass", "product_problems": product_problems, "teardown_status": "failed" if teardown_problems else "pass", "teardown_problems": teardown_problems, "safe_to_continue": not terminal.unsafe and terminal.window is None and not thread.is_alive(), "problems": product_problems + teardown_problems, "stage": fixture.stage, "refs": fixture.refs, "member_rosters": fixture.rosters, "observations": fixture.observations, "provider_errors": fixture.errors, "requests": fixture.requests, "request_models": fixture.request_models, "provider_joined": not thread.is_alive()}
         (evidence / "result.json").write_text(json.dumps(receipt, indent=2) + "\n")
-    require(not problems, f"{name}: {'; '.join(problems)}")
+    return receipt
 
 
 def main():
@@ -883,19 +931,37 @@ def main():
     identity = probe_identity(probe)
     require(identity is not None and applescript(SESSION, *identity, "exists") == "present", "The capability probe window is unavailable")
     cases = ("team", "policy", "unselected") if args.scenario == "p03-all" else (args.scenario.removeprefix("p03-"),)
-    failures = []
+    product_failures = []
+    teardown_failures = []
+    attempted = []
     for name in cases:
+        attempted.append(name)
         try:
-            run_case(name, args.scratch, args.evidence / name, args.pig, args.extension)
+            receipt = run_case(name, args.scratch, args.evidence / name, args.pig, args.extension)
+            if receipt and receipt["product_status"] != "pass":
+                product_failures.append(f"{name}: {'; '.join(receipt['product_problems'])}")
+            if receipt and receipt["teardown_status"] != "pass":
+                teardown_failures.append(f"{name}: {'; '.join(receipt['teardown_problems'])}")
+            if receipt and not receipt["safe_to_continue"]:
+                product_failures.append(f"Stopped after {name}: fixture state is unsafe or ambiguous")
+                if receipt["teardown_status"] == "pass":
+                    teardown_failures.append(f"{name}: fixture state is unsafe or ambiguous")
+                break
         except Exception as error:
-            failures.append(str(error))
+            product_failures.append(str(error))
+            teardown_failures.append(f"{name}: fixture outcome unavailable")
+            break
     try:
         require(close_probe(probe, args.evidence, identity), "The capability probe window could not be released")
     except Exception as error:
-        failures.append(f"Capability probe cleanup: {error}")
-    (args.evidence / "summary.json").write_text(json.dumps({"cases": list(cases), "failures": failures, "result": "failed" if failures else "pass"}, indent=2) + "\n")
+        teardown_failures.append(f"Capability probe cleanup: {error}")
+    failures = product_failures + teardown_failures
+    summary = {"cases": list(cases), "attempted_cases": attempted, "not_run": [name for name in cases if name not in attempted], "product": {"status": "failed" if product_failures else "pass", "failures": product_failures}, "teardown": {"status": "failed" if teardown_failures else "pass", "failures": teardown_failures}, "failures": failures, "result": "failed" if failures else "pass"}
+    (args.evidence / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    (args.evidence / "product-exit.txt").write_text("1\n" if product_failures else "0\n")
+    if not teardown_failures:
+        (args.evidence / "cleanup-ok").write_text("All owned windows, processes, and providers were released.\n")
     require(not failures, "; ".join(failures))
-    (args.evidence / "cleanup-ok").write_text("All owned windows, processes, and providers were released.\n")
 
 
 if __name__ == "__main__":

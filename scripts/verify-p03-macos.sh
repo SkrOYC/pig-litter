@@ -37,7 +37,7 @@ if [[ "${1:-}" == --run-prepared ]]; then
     file "$P03_SCRATCH/bin/pig-litter"
     go version -m "$P03_SCRATCH/bin/pig-litter"
   } >> "$evidence/build-identity.txt"
-  python3 "$driver/scripts/p03-macos.py" --scenario "$scenario" --pig "$PIG_LITTER_EXPECTED_PIG" --extension "$P03_SCRATCH/bin/pig-litter" --scratch "$P03_SCRATCH" --evidence "$evidence"
+  python3 "$driver/scripts/p03-macos.py" --scenario "$scenario" --pig "$PIG_LITTER_EXPECTED_PIG" --extension "$P03_SCRATCH/bin/pig-litter" --scratch "$P03_SCRATCH" --evidence "$evidence" || exit $?
   [[ "$(shasum -a 256 "$PIG_LITTER_EXPECTED_PIG" | awk '{print $1}')" == "$PIG_LITTER_EXPECTED_PIG_SHA256" ]] || fail_check "$LINENO"
   exit
 fi
@@ -75,17 +75,11 @@ printf 'path=%s\nidentity=%s\n' "$scratch" "$scratch_id" > "$evidence/scratch.tx
 finish() {
   result=$?
   trap - EXIT
-  printf '%s\n' "$result" > "$evidence/product-exit.txt"
-  if [[ "$result" != 0 || ! -f "$evidence/cleanup-ok" ]]; then
-    printf '{"status":"retained","reason":"product or terminal cleanup failed"}\n' > "$evidence/scratch-cleanup.json"
-    printf 'retained for failure analysis\n' >> "$evidence/scratch.txt"
-    if [[ "$result" == 0 ]]; then result=1; fi
-  elif python3 "$driver/scripts/p03-cache-cleanup.py" "$scratch" "$scratch_id" "$evidence"; then
-    printf 'removed verified private scratch\n' >> "$evidence/scratch.txt"
-  else
-    printf 'retained for failure analysis\n' >> "$evidence/scratch.txt"
-    result=1
+  if [[ ! -f "$evidence/product-exit.txt" ]]; then
+    printf 'not-recorded\n' > "$evidence/product-exit.txt"
   fi
+  printf '{"status":"retained","reason":"ephemeral hosted runner disposal"}\n' > "$evidence/scratch-cleanup.json"
+  printf 'retained for hosted runner disposal\n' >> "$evidence/scratch.txt"
   printf '%s\n' "$result" > "$evidence/runner-exit.txt"
   exit "$result"
 }
