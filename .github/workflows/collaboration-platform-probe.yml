@@ -28,6 +28,7 @@ on:
           - p03-policy
           - p03-unselected
           - p08-iterm
+          - p08-iterm-preflight
       architecture:
         description: Architectures for P03 product verification
         type: choice
@@ -125,7 +126,7 @@ jobs:
           retention-days: 14
 
   p03-macos:
-    if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["p03-all","p03-team","p03-policy","p03-unselected","p08-iterm"]'), inputs.scenario) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["p03-all","p03-team","p03-policy","p03-unselected","p08-iterm","p08-iterm-preflight"]'), inputs.scenario) }}
     name: P03 iTerm2 on ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 105
@@ -172,14 +173,21 @@ jobs:
         run: |
           bash scripts/probe-macos-collaboration.sh --test-first-launch-matcher
           bash scripts/probe-macos-collaboration.sh
+      - name: Check product iTerm control scripts
+        id: iterm_controls
+        if: ${{ inputs.scenario == 'p08-iterm' || inputs.scenario == 'p08-iterm-preflight' }}
+        shell: bash
+        run: python3 -B driver/scripts/p03-macos.py --preflight-iterm-source "$GITHUB_WORKSPACE/candidate/extensions/pig-litter/team_iterm.go" --evidence "$EVIDENCE_DIR/control-preflight"
       - name: Set up Go 1.27.4
         id: go
+        if: ${{ inputs.scenario != 'p08-iterm-preflight' }}
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.27.4'
           cache: false
       - name: Verify P03 in iTerm2
         id: product
+        if: ${{ inputs.scenario != 'p08-iterm-preflight' }}
         shell: bash
         timeout-minutes: 75
         env:
@@ -189,7 +197,18 @@ jobs:
       - name: Release capability probe window
         if: ${{ always() && steps.checkout_driver.outcome == 'success' }}
         shell: bash
-        run: python3 driver/scripts/p03-macos.py --cleanup-probe --evidence "${EVIDENCE_DIR:-$RUNNER_TEMP/p03-macos-evidence}"
+        env:
+          ITERM_CONTROLS_OUTCOME: ${{ steps.iterm_controls.outcome }}
+        run: |
+          evidence="${EVIDENCE_DIR:-$RUNNER_TEMP/p03-macos-evidence}"
+          if [[ "$ITERM_CONTROLS_OUTCOME" == failure ]]; then
+            result="$evidence/control-preflight/iterm-control-preflight.json"
+            if [[ ! -f "$result" ]] || ! python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])).get("cleanup_error", "unverified") is not None)' "$result"; then
+              printf 'Capability window retained because preflight cleanup was not verified.\n' >&2
+              exit 1
+            fi
+          fi
+          python3 driver/scripts/p03-macos.py --cleanup-probe --evidence "$evidence"
       - name: Record workflow outcomes
         if: always()
         shell: bash
@@ -198,12 +217,13 @@ jobs:
           CANDIDATE_OUTCOME: ${{ steps.checkout_candidate.outcome }}
           CAPABILITY_OUTCOME: ${{ steps.capability.outcome }}
           POLICY_OUTCOME: ${{ steps.policy.outcome }}
+          ITERM_CONTROLS_OUTCOME: ${{ steps.iterm_controls.outcome }}
           GO_OUTCOME: ${{ steps.go.outcome }}
           PRODUCT_OUTCOME: ${{ steps.product.outcome }}
         run: |
           EVIDENCE_DIR="${EVIDENCE_DIR:-$RUNNER_TEMP/p03-macos-evidence}"
           mkdir -p "$EVIDENCE_DIR"
-          printf 'driver=%s\ncandidate=%s\npolicy=%s\ncapability=%s\nsetup_go=%s\nproduct=%s\n' "$DRIVER_OUTCOME" "$CANDIDATE_OUTCOME" "$POLICY_OUTCOME" "$CAPABILITY_OUTCOME" "$GO_OUTCOME" "$PRODUCT_OUTCOME" > "$EVIDENCE_DIR/workflow-outcomes.txt"
+          printf 'driver=%s\ncandidate=%s\npolicy=%s\ncapability=%s\niterm_controls=%s\nsetup_go=%s\nproduct=%s\n' "$DRIVER_OUTCOME" "$CANDIDATE_OUTCOME" "$POLICY_OUTCOME" "$CAPABILITY_OUTCOME" "$ITERM_CONTROLS_OUTCOME" "$GO_OUTCOME" "$PRODUCT_OUTCOME" > "$EVIDENCE_DIR/workflow-outcomes.txt"
       - name: Upload P03 and capability evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

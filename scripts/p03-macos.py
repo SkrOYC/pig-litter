@@ -364,7 +364,12 @@ def start_provider(fixture):
                     fixture.errors.append(str(error))
                     fixture.changed.notify_all()
                 try:
-                    self.send_error(500, str(error))
+                    body = json.dumps({"error": str(error)}, ensure_ascii=False).encode("utf-8")
+                    self.send_response(500, "Fixture error")
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
                 except OSError:
                     pass
 
@@ -1140,6 +1145,112 @@ def run_case(name, scratch, evidence, pig, extension):
     return receipt
 
 
+def product_iterm_scripts(source):
+    names = {"itermFind", "itermSplit", "itermClose", "itermSelect"}
+    entries = re.findall(r"^const (itermFind|itermSplit|itermClose|itermSelect) = \x60([^\x60]*)\x60", source.read_text(), re.MULTILINE)
+    require(len(entries) == len(names) and {name for name, _ in entries} == names, "Product iTerm control scripts are incomplete or duplicated")
+    return dict(entries)
+
+
+def preflight_iterm(source, evidence, probe):
+    capability = json.loads(probe.read_text())
+    require(capability.get("status") == "pass" and capability.get("signature_status") == "verified" and capability.get("automation_status") == "approved", "Signed iTerm capability probe did not pass")
+    identity = probe_identity(probe)
+    tty = capability.get("session_tty", "")
+    require(identity is not None and re.fullmatch(r"/dev/ttys\d+", tty), "Capability session identity is incomplete")
+    window, lead = identity
+    scripts = product_iterm_scripts(source)
+    observations = []
+    product_error = None
+    cleanup_error = "Fixture cleanup was not verified"
+    owner = None
+    before = None
+    child_ref = None
+    child = None
+    attempted = False
+    try:
+        owner = iterm_owner()
+        native_window(owner, window)
+        before = window_sessions(window)
+        require(before == {(lead, tty)}, "Capability window has unrelated or missing sessions")
+        require(applescript(SESSION, window, lead, "exists") == "present", "Capability session changed")
+        for field, value in (("id", lead), ("tty", tty)):
+            found = applescript(scripts["itermFind"], value, field).splitlines()
+            require(found == [window, lead, tty], f"Product session lookup failed for {field}")
+        observations.append("find by id and tty")
+        attempted = True
+        try:
+            reply = applescript(scripts["itermSplit"], window, lead, tty, "/bin/sleep 600").splitlines()
+        finally:
+            added = window_sessions(window) - before
+            if len(added) == 1:
+                child_ref = next(iter(added))
+            require(len(added) <= 1, "Product split created ambiguous sessions")
+        require(child_ref is not None and reply == [window, *child_ref], "Product split did not return its owned session")
+        child_id, child_tty = child_ref
+        deadline = time.monotonic() + 10
+        matches = []
+        while time.monotonic() < deadline and not matches:
+            matches = [p for p in process_snapshot().values() if p["tty"] == child_tty.removeprefix("/dev/") and p["command"] == "/bin/sleep 600"]
+            if not matches:
+                time.sleep(0.1)
+        require(len(matches) == 1, "Product split process is missing or ambiguous")
+        child = matches[0]
+        child["executable"] = executable(child["pid"])
+        require(same_process(child), "Product split process changed")
+        native_window(owner, window)
+        observations.append("split owned session")
+        for field, value in (("id", child_id), ("tty", child_tty)):
+            require(applescript(scripts["itermFind"], value, field).splitlines() == [window, child_id, child_tty], f"Product child lookup failed for {field}")
+        require(applescript(scripts["itermSelect"], window, child_id, child_tty) == "selected", "Product session selection failed")
+        try:
+            applescript(scripts["itermClose"], window, child_id, tty)
+        except RuntimeError as error:
+            require("iTerm owned session changed" in str(error), "Product close rejected the wrong identity unexpectedly")
+        else:
+            raise RuntimeError("Product close accepted the wrong terminal identity")
+        require(child_ref in window_sessions(window) and same_process(child), "Wrong-identity close changed the owned session")
+        require(applescript(scripts["itermClose"], window, child_id, child_tty) == "closed", "Product close failed")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and (same_process(child) or child_ref in window_sessions(window)):
+            time.sleep(0.1)
+        require(not same_process(child) and child_ref not in window_sessions(window), "Product session or process remained after close")
+        require(applescript(scripts["itermClose"], window, child_id, child_tty) == "missing", "Product close was not idempotent")
+        require(applescript(scripts["itermSelect"], window, lead, tty) == "selected", "Capability session could not be reselected")
+        observations.append("select, reject changed identity, close, and close again")
+    except Exception as error:
+        product_error = str(error)
+    finally:
+        if owner is not None and before is not None:
+            try:
+                require(before == {(lead, tty)}, "Capability window has unrelated or missing sessions")
+                native_window(owner, window)
+                added = window_sessions(window) - before
+                if added:
+                    require(attempted and child_ref is not None and added == {child_ref}, "Unknown session remains in the capability window")
+                    child_id, child_tty = child_ref
+                    if child is None:
+                        matches = [p for p in process_snapshot().values() if p["tty"] == child_tty.removeprefix("/dev/") and p["command"] == "/bin/sleep 600"]
+                        require(len(matches) == 1, "Fixture process identity is uncertain")
+                        child = matches[0]
+                        child["executable"] = executable(child["pid"])
+                    require(same_process(child), "Fixture process identity changed before cleanup")
+                    require(applescript(SIBLING, window, child_id, "close", child_tty) == "closed", "Owned fixture session cleanup failed")
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline and (same_process(child) or child_ref in window_sessions(window)):
+                        time.sleep(0.1)
+                    require(not same_process(child) and child_ref not in window_sessions(window), "Owned fixture session or process survived cleanup")
+                require(window_sessions(window) == before, "Capability window sessions changed")
+                require(applescript(SESSION, window, lead, "exists") == "present", "Capability session was not preserved")
+                native_window(owner, window)
+                cleanup_error = None
+            except Exception as error:
+                cleanup_error = str(error)
+    result = {"status": "pass" if not product_error and not cleanup_error else "failed", "product_error": product_error, "cleanup_error": cleanup_error, "window": window, "session": lead, "tty": tty, "child": child_ref, "process": child, "observations": observations}
+    (evidence / "iterm-control-preflight.json").write_text(json.dumps(result, indent=2) + "\n")
+    require(result["status"] == "pass", f"iTerm control preflight failed: {product_error}; cleanup: {cleanup_error}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", choices=("p03-all", "p03-team", "p03-policy", "p03-unselected", "p08-iterm"))
@@ -1148,9 +1259,14 @@ def main():
     parser.add_argument("--scratch", type=Path)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--cleanup-probe", action="store_true")
+    parser.add_argument("--preflight-iterm-source", type=Path)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
     probe = Path(os.environ["RUNNER_TEMP"]) / "collaboration-platform-probe" / "result.json"
+    if args.preflight_iterm_source:
+        require(sys.platform == "darwin", "iTerm control preflight requires macOS")
+        preflight_iterm(args.preflight_iterm_source, args.evidence, probe)
+        return
     if args.cleanup_probe:
         require(close_probe(probe, args.evidence), "The capability probe window could not be released")
         return

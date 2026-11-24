@@ -24,23 +24,23 @@ var itermTTY = regexp.MustCompile(`^/dev/ttys[0-9]+$`)
 var itermWindowID = regexp.MustCompile(`^[0-9]+$`)
 
 const itermFind = `on run argv
-set wanted to item 1 of argv
-set kind to item 2 of argv
-set matches to {}
+set lookupValue to item 1 of argv
+set lookupField to item 2 of argv
+set foundSessions to {}
 tell application id "com.googlecode.iterm2"
-  repeat with w in windows
-    repeat with t in tabs of w
-      repeat with s in sessions of t
-        if (kind is "tty" and (tty of s as text) is wanted) or (kind is "id" and (unique id of s as text) is wanted) then
-          set end of matches to ((id of w as text) & linefeed & (unique id of s as text) & linefeed & (tty of s as text))
+  repeat with candidateWindow in windows
+    repeat with candidateTab in tabs of candidateWindow
+      repeat with candidateSession in sessions of candidateTab
+        if (lookupField is "tty" and (tty of candidateSession as text) is lookupValue) or (lookupField is "id" and (unique id of candidateSession as text) is lookupValue) then
+          set end of foundSessions to ((id of candidateWindow as text) & linefeed & (unique id of candidateSession as text) & linefeed & (tty of candidateSession as text))
         end if
       end repeat
     end repeat
   end repeat
 end tell
-if (count of matches) is 0 then return "missing"
-if (count of matches) is not 1 then error "iTerm session identity is ambiguous"
-return item 1 of matches
+if (count of foundSessions) is 0 then return "missing"
+if (count of foundSessions) is not 1 then error "iTerm session identity is ambiguous"
+return item 1 of foundSessions
 end run`
 
 const itermSplit = `on run argv
@@ -49,13 +49,13 @@ set wantedSession to item 2 of argv
 set wantedTTY to item 3 of argv
 set launchCommand to item 4 of argv
 tell application id "com.googlecode.iterm2"
-  repeat with w in windows
-    if (id of w as text) is wantedWindow then
-      repeat with t in tabs of w
-        repeat with s in sessions of t
-          if (unique id of s as text) is wantedSession and (tty of s as text) is wantedTTY then
-            tell s to set created to (split vertically with same profile command launchCommand)
-            return (id of w as text) & linefeed & (unique id of created as text) & linefeed & (tty of created as text)
+  repeat with candidateWindow in windows
+    if (id of candidateWindow as text) is wantedWindow then
+      repeat with candidateTab in tabs of candidateWindow
+        repeat with candidateSession in sessions of candidateTab
+          if (unique id of candidateSession as text) is wantedSession and (tty of candidateSession as text) is wantedTTY then
+            tell candidateSession to set createdSession to (split vertically with same profile command launchCommand)
+            return (id of candidateWindow as text) & linefeed & (unique id of createdSession as text) & linefeed & (tty of createdSession as text)
           end if
         end repeat
       end repeat
@@ -70,12 +70,12 @@ set wantedWindow to item 1 of argv
 set wantedSession to item 2 of argv
 set wantedTTY to item 3 of argv
 tell application id "com.googlecode.iterm2"
-  repeat with w in windows
-    repeat with t in tabs of w
-      repeat with s in sessions of t
-        if (unique id of s as text) is wantedSession then
-          if (id of w as text) is not wantedWindow or (tty of s as text) is not wantedTTY then error "iTerm owned session changed"
-          tell s to close
+  repeat with candidateWindow in windows
+    repeat with candidateTab in tabs of candidateWindow
+      repeat with candidateSession in sessions of candidateTab
+        if (unique id of candidateSession as text) is wantedSession then
+          if (id of candidateWindow as text) is not wantedWindow or (tty of candidateSession as text) is not wantedTTY then error "iTerm owned session changed"
+          tell candidateSession to close
           return "closed"
         end if
       end repeat
@@ -90,14 +90,14 @@ set wantedWindow to item 1 of argv
 set wantedSession to item 2 of argv
 set wantedTTY to item 3 of argv
 tell application id "com.googlecode.iterm2"
-  repeat with w in windows
-    if (id of w as text) is wantedWindow then
-      repeat with t in tabs of w
-        repeat with s in sessions of t
-          if (unique id of s as text) is wantedSession and (tty of s as text) is wantedTTY then
-            tell t to select
-            tell s to select
-            tell w to select
+  repeat with candidateWindow in windows
+    if (id of candidateWindow as text) is wantedWindow then
+      repeat with candidateTab in tabs of candidateWindow
+        repeat with candidateSession in sessions of candidateTab
+          if (unique id of candidateSession as text) is wantedSession and (tty of candidateSession as text) is wantedTTY then
+            tell candidateTab to select
+            tell candidateSession to select
+            tell candidateWindow to select
             return "selected"
           end if
         end repeat
