@@ -2,6 +2,7 @@ package piglitter
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,7 +101,7 @@ func TestTeamTaskSelectionUsesIdentityAcrossRefresh(t *testing.T) {
 	for _, width := range []int{80, 120, 150} {
 		rows := panel.Render(width)
 		text := strings.Join(rows, "\n")
-		if !strings.Contains(text, "Publish | pending | unassigned | blocked") || !strings.Contains(text, "Second step") || !strings.Contains(text, "Depends on #1") {
+		if !strings.Contains(text, "Task #2 | state pending | blocked") || !strings.Contains(text, "Owner unassigned") || !strings.Contains(text, "Subject Publish") || !strings.Contains(text, "Second step") || !strings.Contains(text, "Depends on #1") {
 			t.Fatalf("task detail omitted its state or dependency at %d columns: %s", width, text)
 		}
 		for _, row := range rows {
@@ -114,7 +115,7 @@ func TestTeamTaskSelectionUsesIdentityAcrossRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitTeamFrame(t, panel.team, func(frame *teamViewFrame) bool { return len(frame.Tasks) == 3 })
-	if text := strings.Join(panel.Render(120), "\n"); panel.task != dependent.ID || !strings.Contains(text, "> #2 Publish") {
+	if text := strings.Join(panel.Render(120), "\n"); panel.task != dependent.ID || !strings.Contains(text, "> #2 pending | blocked | unassigned | Publish") {
 		t.Fatalf("refresh did not retain task identity: %s", text)
 	}
 	if _, err := store.deleteTask(dependent.ID); err != nil {
@@ -132,6 +133,92 @@ func TestTeamTaskSelectionUsesIdentityAcrossRefresh(t *testing.T) {
 	if panel.mode != panelList || panel.member != members[1].Ref {
 		t.Fatal("leaving tasks changed the retained teammate selection")
 	}
+}
+
+func TestTeamTaskLongSubjectsKeepStateAndOwnerVisible(t *testing.T) {
+	o, store, members, _ := teamViewFixture(t)
+	subject := strings.Repeat("S", 200)
+	assigned, err := store.createTask(subject, "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.claimTask(assigned.ID, members[1].Ref, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.createTask(subject, "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	panel := newChildPanel(o, nil, func() int { return 32 })
+	panel.mu.Lock()
+	panel.team = newTeamView(panel.ctx, o, panel.requestRender)
+	panel.mu.Unlock()
+	defer panel.Dispose()
+	waitTeamFrame(t, panel.team, func(frame *teamViewFrame) bool { return len(frame.Tasks) == 2 && len(frame.Members) == 2 })
+	panelKey(t, panel, "k")
+	for _, width := range []int{80, 120, 150} {
+		text := strings.Join(panel.Render(width), "\n")
+		if !strings.Contains(text, "#1 in_progress | Bob |") || !strings.Contains(text, "#2 pending | unassigned |") {
+			t.Fatalf("task rows hid state or owner at %d columns: %s", width, text)
+		}
+		panelKey(t, panel, "\r")
+		text = strings.Join(panel.Render(width), "\n")
+		if !strings.Contains(text, "Task #1 | state in_progress") || !strings.Contains(text, "Owner Bob") || !strings.Contains(text, string(members[1].Ref.ID)) || !strings.Contains(strings.ReplaceAll(text, "\n", ""), subject) {
+			t.Fatalf("task detail hid the long subject or owner at %d columns: %s", width, text)
+		}
+		panelKey(t, panel, "\x1b")
+	}
+}
+
+func TestTeamPanelCompletesSelectedTaskThroughLeadAuthority(t *testing.T) {
+	fixture, store, _, _ := teamViewFixture(t)
+	first, err := store.createTask("Prepare", "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.createTask("Publish", "", []TaskID{first.ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withCompletionHost(t, fixture.tree, func(o *owner) {
+		o.teamStore, o.agentDir = store, fixture.agentDir
+		panel := newChildPanel(o, nil, func() int { return 32 })
+		panel.mu.Lock()
+		panel.team = newTeamView(panel.ctx, o, panel.requestRender)
+		panel.mu.Unlock()
+		defer panel.Dispose()
+		waitTeamFrame(t, panel.team, func(frame *teamViewFrame) bool { return len(frame.Tasks) == 2 })
+		panel.Render(120)
+		panelKey(t, panel, "k")
+		panel.Render(120)
+		panelKey(t, panel, "\x1b[B")
+		panelKey(t, panel, "c")
+		waitForFeedback := func(expected string) {
+			t.Helper()
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				if strings.Contains(strings.Join(panel.Render(120), "\n"), expected) {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			t.Fatalf("panel did not display %q: %s", expected, strings.Join(panel.Render(120), "\n"))
+		}
+		waitForFeedback("Task #2 is blocked by dependencies")
+		blocked, err := store.getTask(second.ID)
+		if err != nil || blocked.State != TaskPending || !blocked.Blocked {
+			t.Fatalf("blocked task changed: %+v, %v", blocked, err)
+		}
+		panelKey(t, panel, "\x1b[A")
+		panelKey(t, panel, "c")
+		waitForFeedback("Task #1 completed")
+		waitTeamFrame(t, panel.team, func(frame *teamViewFrame) bool {
+			return len(frame.Tasks) == 2 && frame.Tasks[0].State == TaskCompleted && !frame.Tasks[1].Blocked
+		})
+		completed, err := store.getTask(first.ID)
+		if err != nil || completed.State != TaskCompleted {
+			t.Fatalf("selected prerequisite did not complete: %+v, %v", completed, err)
+		}
+	}, func(string, json.RawMessage) json.RawMessage { return json.RawMessage(`"fixture"`) })
 }
 
 func TestTeamPanelRetainsMemberAndDisplaysOwnedTasksAndPrivateHistory(t *testing.T) {

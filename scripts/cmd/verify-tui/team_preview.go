@@ -31,9 +31,11 @@ type previewMember struct {
 }
 
 type previewTask struct {
-	ID      json.RawMessage   `json:"id"`
-	Subject string            `json:"subject"`
-	Owner   *previewMemberRef `json:"owner"`
+	ID        json.RawMessage   `json:"id"`
+	Subject   string            `json:"subject"`
+	Owner     *previewMemberRef `json:"owner"`
+	State     string            `json:"state"`
+	BlockedBy []json.RawMessage `json:"blockedBy"`
 }
 
 type previewToolResult struct {
@@ -74,7 +76,8 @@ func teamPreviewTurn(request openAIRequest) (providerTurn, bool, error) {
 			return providerTurn{kind: "text", text: "P07_REPORT_BOB"}, true, nil
 		}
 	}
-	if request.Model != "parent" || latestRootPrompt(request.Messages).marker != "P07_TEAM_PREVIEW" {
+	marker := latestRootPrompt(request.Messages).marker
+	if request.Model != "parent" || marker != "P07_TEAM_PREVIEW" && marker != "P07_TASK_CONTROL" {
 		return providerTurn{}, false, nil
 	}
 	var results []previewToolResult
@@ -121,7 +124,11 @@ func teamPreviewTurn(request openAIRequest) (providerTurn, bool, error) {
 		return providerTurn{kind: "tools", calls: []toolCall{{name: "team_task_create", args: map[string]any{"subject": "P07_ASSIGNED_TASK", "description": "Alice owns this task"}}}}, true, nil
 	}
 	if len(tasks) == 1 {
-		return providerTurn{kind: "tools", calls: []toolCall{{name: "team_task_create", args: map[string]any{"subject": "P07_UNASSIGNED_TASK"}}}}, true, nil
+		args := map[string]any{"subject": "P07_UNASSIGNED_TASK"}
+		if marker == "P07_TASK_CONTROL" {
+			args["blockedBy"] = []json.RawMessage{tasks[0].ID}
+		}
+		return providerTurn{kind: "tools", calls: []toolCall{{name: "team_task_create", args: args}}}, true, nil
 	}
 	if !assigned {
 		return providerTurn{kind: "tools", calls: []toolCall{{name: "team_task_update", args: map[string]any{"taskId": tasks[0].ID, "action": "assign", "assignee": "Alice"}}}}, true, nil

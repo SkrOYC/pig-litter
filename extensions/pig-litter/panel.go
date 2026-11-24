@@ -671,7 +671,9 @@ func (p *childPanel) renderTeam(width int) []string {
 	if p.mode == panelMessage {
 		legend = []string{panelKeyText("tui.input.submit") + " submit  " + panelKeyText("tui.select.cancel") + " cancel", panelKeyText("tui.editor.cursorLeft") + "/" + panelKeyText("tui.editor.cursorRight") + " edit  " + panelKeyText("tui.editor.deleteToLineStart") + " clear  " + panelKeyText("tui.input.tab") + " steer/follow_up"}
 	} else if p.mode == panelTasks {
-		legend = []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " detail  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " back"}
+		legend = []string{panelMoveKeys() + " move  " + panelKeyText("tui.select.confirm") + " detail  c complete  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " back"}
+	} else if p.mode == panelTaskDetail {
+		legend = []string{panelMoveKeys() + " scroll  c complete  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " back"}
 	} else if p.mode != panelList && p.mode != panelDetail {
 		legend = []string{panelMoveKeys() + " scroll  " + panelPageKeys() + " page  Home/End  " + panelKeyText("tui.select.cancel") + " back"}
 	} else if p.mode == panelDetail {
@@ -780,7 +782,7 @@ func (p *childPanel) renderTeam(width int) []string {
 			if taskIndex < 0 {
 				content = []string{"Selected task unavailable"}
 			} else {
-				content = teamTaskDetail(frame, frame.Tasks[taskIndex])
+				content = toolPaintRows(teamTaskDetail(frame, frame.Tasks[taskIndex]), "", width)
 			}
 		case panelMessage:
 			title += " | message"
@@ -902,18 +904,31 @@ func teamTaskSummary(frame *teamViewFrame, task teamTaskView) string {
 	if task.Owner != nil {
 		assigned = string(task.Owner.ID) + fmt.Sprintf(" generation %d", task.Owner.Generation)
 		if i := slices.IndexFunc(frame.Members, func(member teamMemberView) bool { return member.Member.Ref == *task.Owner }); i >= 0 {
-			assigned = frame.Members[i].Member.Name + " | " + assigned
+			assigned = frame.Members[i].Member.Name
 		}
 	}
-	line := fmt.Sprintf("#%d %s | %s | %s", task.ID.Number, task.Subject, task.State, assigned)
+	line := fmt.Sprintf("#%d %s", task.ID.Number, task.State)
 	if task.Blocked {
 		line += " | blocked"
 	}
-	return line
+	return line + " | " + assigned + " | " + task.Subject
 }
 
 func teamTaskDetail(frame *teamViewFrame, task teamTaskView) []string {
-	lines := []string{teamTaskSummary(frame, task)}
+	state := fmt.Sprintf("Task #%d | state %s", task.ID.Number, task.State)
+	if task.Blocked {
+		state += " | blocked"
+	}
+	lines := []string{state}
+	if task.Owner == nil {
+		lines = append(lines, "Owner unassigned")
+	} else {
+		if i := slices.IndexFunc(frame.Members, func(member teamMemberView) bool { return member.Member.Ref == *task.Owner }); i >= 0 {
+			lines = append(lines, "Owner "+frame.Members[i].Member.Name)
+		}
+		lines = append(lines, fmt.Sprintf("Owner UUID %s | generation %d", task.Owner.ID, task.Owner.Generation))
+	}
+	lines = append(lines, "Subject "+task.Subject)
 	if task.Description != "" {
 		lines = append(lines, "  "+task.Description)
 	}
@@ -1046,6 +1061,10 @@ func (p *childPanel) handleTeamInput(data, key string) sdk.RemoteComponentResult
 		if p.taskSelection(frame) >= 0 {
 			p.mode, p.scroll, p.renderedScroll = panelTaskDetail, 0, 0
 		}
+		return sdk.RemoteComponentResult{}
+	}
+	if key == "c" && (p.mode == panelTasks || p.mode == panelTaskDetail) {
+		p.completeSelectedTask(frame)
 		return sdk.RemoteComponentResult{}
 	}
 	if index < 0 {

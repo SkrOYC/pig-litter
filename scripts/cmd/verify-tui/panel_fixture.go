@@ -151,8 +151,8 @@ func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string
 	}
 	if marker == "NEW_ROOT_HEADER" || marker == "COLD_ROOT_HEADER" {
 		required := append(append([]string(nil), fileTools...), controlTools...)
-		if state.scenario == "team-preview" || state.scenario == "team-message" || state.scenario == "team-controls" {
-			required = append(required, "team_spawn", "team_list", "team_send", "team_plan", "team_task_create", "team_task_get", "team_task_list", "team_task_update")
+		if state.scenario == "team-preview" || state.scenario == "team-message" || state.scenario == "team-controls" || state.scenario == "team-tasks" {
+			required = append(required, "team_spawn", "team_list", "team_send", "team_plan", "team_shutdown", "team_task_create", "team_task_get", "team_task_list", "team_task_update")
 		}
 		if err := requireToolInventory(tools, required, []string{"ls"}, "context-only root"); err != nil {
 			return providerTurn{}, true, err
