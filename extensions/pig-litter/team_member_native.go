@@ -62,6 +62,8 @@ type nativeResponseError struct {
 	status string
 }
 
+func NativeMemberAvailable() bool { return true }
+
 func (err *nativeResponseError) Error() string {
 	return fmt.Sprintf("native member %s: %s", err.path, err.status)
 }

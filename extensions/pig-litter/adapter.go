@@ -524,7 +524,8 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		return
 	}
 	if r.backend == backendTmux {
-		env, err := currentTmuxMemberEnvironment(run.ctx)
+		source, _ := o.context.ExtensionSourceInfo()
+		env, err := currentTmuxMemberEnvironment(run.ctx, source.Path)
 		if err != nil {
 			return Outcome{State: Unavailable, Error: err.Error()}
 		}

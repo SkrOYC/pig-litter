@@ -16,7 +16,7 @@ pig -e ./extensions/pig-litter
 
 The source directory exports a conventional `Extension() *sdk.Extension` factory. [piglet.yaml](piglet.yaml) selects that directory. Its first load may fetch the exact dependencies in `go.mod` and `go.sum`. Standalone and verification commands live in a separate `scripts` Go module, outside the selected factory root.
 
-Build the prebuilt standalone with the same script, then select it with `pig -e ./extensions/pig-litter/dist/pig-litter`. The prebuilt artifact needs no Go compiler, Node, or Bun at runtime. Product builds and tests use Go.
+Build the standalone without running the full test suite with `scripts/build-pig-litter.sh`, then select it with `pig -e ./extensions/pig-litter/dist/pig-litter`. The source Resource and Piglet use the same executable as their native teammate helper. Rebuild it after changing the Resource. Native pane selection remains disabled until its platform checks are complete. The standalone needs no Go compiler, Node, or Bun at runtime. Product builds and tests use Go.
 
 ## Configure children
 

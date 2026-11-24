@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -40,16 +41,48 @@ type tmuxMemberScope struct {
 	marked    bool
 }
 
-func currentTmuxMemberEnvironment(ctx context.Context) (tmuxMemberEnvironment, error) {
+func currentTmuxMemberEnvironment(ctx context.Context, sourcePath string) (tmuxMemberEnvironment, error) {
 	server, err := tmuxFromEnvironment(ctx, os.Getenv("TMUX"), os.Getenv("TMUX_PANE"))
 	if err != nil {
 		return tmuxMemberEnvironment{}, err
 	}
-	executable, err := os.Executable()
+	executable, err := nativeMemberExecutable(ctx, sourcePath)
 	if err != nil {
 		return tmuxMemberEnvironment{}, err
 	}
 	return tmuxMemberEnvironment{server: server, executable: executable, usePiDirs: os.Getenv("PIG_USE_PI_DIRS") == "1"}, nil
+}
+
+func nativeMemberExecutable(ctx context.Context, sourcePath string) (string, error) {
+	if sourcePath == "" {
+		return "", errors.New("native teammate extension source is unavailable")
+	}
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("native teammate extension source is unavailable: %w", err)
+	}
+	var executable string
+	switch {
+	case info.IsDir():
+		executable = filepath.Join(sourcePath, "dist", "pig-litter")
+	case info.Mode().IsRegular() && filepath.Ext(sourcePath) == ".go":
+		executable = filepath.Join(filepath.Dir(sourcePath), "dist", "pig-litter")
+	case info.Mode().IsRegular():
+		executable = sourcePath
+	default:
+		return "", errors.New("native teammate extension source is not a regular file or directory")
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil || !safeLaunchPath(executable) {
+		return "", errors.New("native teammate helper needs an absolute path without shell metacharacters")
+	}
+	check, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(check, executable, "--pig-litter-member-check").Output()
+	if err != nil || string(output) != "pig-litter-native-member-v1\n" {
+		return "", errors.New("native teammate helper is unavailable; run scripts/build-pig-litter.sh in the extension checkout")
+	}
+	return executable, nil
 }
 
 func (o *owner) executeTmuxMember(r *record, selected *run, env tmuxMemberEnvironment) (outcome Outcome) {

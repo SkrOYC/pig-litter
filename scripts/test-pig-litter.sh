@@ -8,6 +8,7 @@ for module in "$factory" "$tools"; do
   go -C "$module" test -mod=readonly -race ./...
   go -C "$module" vet ./...
 done
-for command in pig-litter verify-lifecycle verify-tui litter-fixture-guard tui-idle-observer; do
+bash "$root/scripts/build-pig-litter.sh"
+for command in verify-lifecycle verify-tui litter-fixture-guard tui-idle-observer; do
   go -C "$tools" build -mod=readonly -o "$factory/dist/$command" "./cmd/$command"
 done
