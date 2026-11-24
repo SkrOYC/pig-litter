@@ -567,3 +567,37 @@ func TestTeamComposerRetainsTargetAndCancelsDraft(t *testing.T) {
 		t.Fatalf("composer did not preserve the selected identity and message mode: %+v", panel.messageTarget)
 	}
 }
+
+func TestTeamTranscriptUsesBoundNativeSnapshot(t *testing.T) {
+	o, _, members, runs := teamViewFixture(t)
+	member, selected := members[0], runs[0]
+	entry := json.RawMessage(`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"native pane report"}]}}`)
+	directory := t.TempDir()
+	path := filepath.Join(directory, "session_"+string(member.Ref.ID)+".jsonl")
+	header, _ := json.Marshal(map[string]any{"type": "session", "id": member.Ref.ID, "cwd": member.Workspace.Cwd})
+	if err := os.WriteFile(path, append(header, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binding := bindMemberFixture(t, o, selected.owner, selected, directory, path, testMemberControl{snapshot: memberSnapshot{session: member.Ref.ID, entries: []json.RawMessage{entry}}})
+	view := newTeamView(context.Background(), o, func() {})
+	defer view.Close()
+	waitTeamFrame(t, view, func(frame *teamViewFrame) bool { return len(frame.Members) == 2 })
+	request := view.Inspect(member.Ref)
+	frame := waitTeamFrame(t, view, func(frame *teamViewFrame) bool {
+		return frame.Transcript.Request == request && frame.Transcript.Health.Status != "loading"
+	})
+	if frame.Transcript.Health.Status != "fresh" || len(frame.Transcript.Entries) != 1 || frame.Transcript.Entries[0].Text != "native pane report" {
+		t.Fatalf("native transcript = %+v", frame.Transcript)
+	}
+	replacement := &memberBinding{record: selected.owner, run: selected, member: member.Ref, admission: member.AdmissionID, execution: selected.noticeID, ownerEpoch: o.epoch, ownership: binding.ownership, owned: cloneMemberOwnership(binding.ownership), control: testMemberControl{snapshot: memberSnapshot{session: members[1].Ref.ID, entries: []json.RawMessage{entry}}}}
+	o.tree.mu.Lock()
+	selected.owner.native = replacement
+	o.tree.mu.Unlock()
+	request = view.Inspect(member.Ref)
+	frame = waitTeamFrame(t, view, func(frame *teamViewFrame) bool {
+		return frame.Transcript.Request == request && frame.Transcript.Health.Status != "loading"
+	})
+	if frame.Transcript.Health.Status != "unavailable" || len(frame.Transcript.Entries) != 0 {
+		t.Fatalf("foreign native transcript = %+v", frame.Transcript)
+	}
+}

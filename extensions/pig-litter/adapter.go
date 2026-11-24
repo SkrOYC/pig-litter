@@ -523,6 +523,24 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = err.Error()
 		return
 	}
+	if isPaneBackend(r.backend) {
+		source, _ := o.context.ExtensionSourceInfo()
+		env, err := o.currentPaneMemberEnvironment(run.ctx, source.Path, r.backend)
+		if err != nil {
+			return Outcome{State: Unavailable, Error: err.Error()}
+		}
+		home, err := o.context.ConfigHome()
+		if err == nil {
+			env.pigHome, err = filepath.Abs(home)
+		}
+		if err != nil {
+			return Outcome{State: Unavailable, Error: err.Error()}
+		}
+		return o.executeTmuxMember(r, run, env)
+	}
+	if r.backend != "" {
+		return Outcome{State: Unavailable, Error: "the selected native teammate backend is unavailable"}
+	}
 	var teamGate *teamAdmissionGate
 	if r.team != nil {
 		teamGate = &teamAdmissionGate{owner: o, record: r, run: run}
@@ -552,12 +570,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		return
 	}
 	tools := []agent.AgentTool{}
-	allowed := map[string]struct{}{}
-	for _, name := range expandTools(r.tools, available) {
-		if !slices.Contains(teamToolNames, name) && withinParent(r.parent, o.tree.root, name) {
-			allowed[name] = struct{}{}
-		}
-	}
+	allowed := childAllowedTools(r, o.tree.root, available)
 	if r.canDelegate || r.team != nil {
 		names := []string{}
 		if r.canDelegate {
@@ -578,7 +591,6 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 				value, err := o.operation(ctx, raw, ticket, nil)
 				return nativeResult(name, value, err), nil
 			}})
-			allowed[name] = struct{}{}
 		}
 	}
 	extensions, registrations, err := o.childExtensions(r, run, allowed)

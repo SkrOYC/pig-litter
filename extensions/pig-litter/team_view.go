@@ -56,6 +56,7 @@ type historyIdentity struct {
 	record *record
 	run    *run
 	log    *coding.SessionManager
+	native *memberBinding
 }
 
 type teamViewFrame struct {
@@ -416,7 +417,7 @@ func (v *teamView) inspectLoop() {
 		present := slices.ContainsFunc(v.frame.Members, func(member teamMemberView) bool {
 			return member.Member.Ref == ref && (result.Admission == "" || member.Member.AdmissionID == result.Admission)
 		})
-		if identity.record != nil && (v.owner.tree.records[ref.ID] != identity.record || identity.record.team == nil || identity.record.team.Ref != ref || identity.record.team.AdmissionID != result.Admission || identity.record.run != identity.run || identity.record.activeLog != identity.log) {
+		if identity.record != nil && (v.owner.tree.records[ref.ID] != identity.record || identity.record.team == nil || identity.record.team.Ref != ref || identity.record.team.AdmissionID != result.Admission || identity.record.run != identity.run || identity.record.activeLog != identity.log || identity.record.native != identity.native || identity.native != nil && (identity.record.nativeOwnership != identity.native.ownership || !sameMemberOwnership(identity.native.ownership, identity.native.owned))) {
 			result.Entries = nil
 			result.Clipped = false
 			result.Health = viewHealth{Status: "unavailable", Error: "member execution changed during inspection"}
@@ -465,11 +466,29 @@ func (v *teamView) readTranscript(ref MemberRef, request uint64) (teamTranscript
 		result.Health.Error = "matching retained execution is unavailable"
 		return result, identity
 	}
-	identity = historyIdentity{record: r, run: r.run, log: r.activeLog}
+	identity = historyIdentity{record: r, run: r.run, log: r.activeLog, native: r.native}
 	tree.mu.Unlock()
 	var entries []transcriptEntry
 	var clipped bool
-	if identity.log == nil {
+	if identity.native != nil {
+		var snapshot memberSnapshot
+		snapshot, err = identity.native.control.Snapshot(action.ctx, memberHistoryBound{entries: 200, bytes: 64 * 1024})
+		if err == nil && (snapshot.session != ref.ID || len(snapshot.entries) > 200) {
+			err = errors.New("native transcript identity or entry bound is invalid")
+		}
+		if err == nil {
+			bytes := 0
+			for _, entry := range snapshot.entries {
+				bytes += len(entry)
+			}
+			if bytes > 128*1024 {
+				err = errors.New("native transcript exceeds its response bound")
+			} else {
+				entries, clipped = transcriptEntries(snapshot.entries)
+				clipped = clipped || snapshot.clipped
+			}
+		}
+	} else if identity.log == nil {
 		entries, clipped, err = v.privateHistory(action.ctx, r, member)
 	} else {
 		entries, clipped = transcriptEntries(identity.log.GetBranch())
@@ -541,18 +560,6 @@ func (v *teamView) privateHistory(ctx context.Context, r *record, member teamMem
 	}
 	entries, clipped := transcriptEntries(log.GetBranch())
 	return entries, clipped, nil
-}
-
-type contextReader struct {
-	ctx context.Context
-	r   io.Reader
-}
-
-func (reader contextReader) Read(data []byte) (int, error) {
-	if err := reader.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return reader.r.Read(data)
 }
 
 func copyHistory(ctx context.Context, source, destination string, member teamMember) error {

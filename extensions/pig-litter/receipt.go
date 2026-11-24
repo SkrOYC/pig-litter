@@ -157,12 +157,22 @@ func (o *owner) persistedCompletionEntries(parentID ChildID) ([]json.RawMessage,
 		o.tree.mu.Lock()
 		parent := o.tree.records[parentID]
 		var active *coding.SessionManager
+		var native *memberBinding
+		var ownership *memberOwnership
 		if parent != nil {
 			cwd, active = parent.cwd, parent.activeLog
+			native = parent.native
+			ownership = parent.nativeOwnership
 		}
 		o.tree.mu.Unlock()
 		if parent == nil {
 			return nil, reject("unavailable", "parent UUID is unavailable")
+		}
+		if native != nil {
+			return o.memberLogEntries(o.tree.ctx, native)
+		}
+		if ownership != nil {
+			return nil, reject("unavailable", "native member ownership requires reconciliation")
 		}
 		if active != nil {
 			cwd, directory = active.GetCwd(), active.GetSessionDir()

@@ -82,6 +82,9 @@ func (o *owner) beginOutcomeAck(key *callTicket, selected *run, operation string
 			}
 			handback.After = leaf
 		}
+	} else if key.nativeLeaf != nil {
+		leaf := *key.nativeLeaf
+		handback.After = &leaf
 	} else if key.caller != nil {
 		o.tree.mu.Lock()
 		active := key.caller.owner.activeLog
@@ -355,12 +358,22 @@ func (o *owner) completionEntries(parent ChildID) ([]json.RawMessage, error) {
 	o.tree.mu.Lock()
 	r := o.tree.records[parent]
 	var active *coding.SessionManager
+	var native *memberBinding
+	var ownership *memberOwnership
 	if r != nil {
 		active = r.activeLog
+		native = r.native
+		ownership = r.nativeOwnership
 	}
 	o.tree.mu.Unlock()
 	if r == nil {
 		return nil, reject("unavailable", "parent UUID is unavailable")
+	}
+	if native != nil {
+		return o.memberLogEntries(o.tree.ctx, native)
+	}
+	if ownership != nil {
+		return nil, reject("unavailable", "native member ownership requires reconciliation")
 	}
 	if active != nil {
 		return rawEntries(active.GetEntries())
@@ -403,9 +416,19 @@ func (o *owner) storeRetained(parentID ChildID, details completionDetails, conte
 	}
 	o.tree.mu.Lock()
 	parent := o.tree.records[parentID]
+	var native *memberBinding
+	if parent != nil {
+		native = parent.native
+	}
 	o.tree.mu.Unlock()
 	if parent == nil {
 		return reject("unavailable", "parent UUID is unavailable")
+	}
+	if native != nil {
+		if audit != nil {
+			return reject("unavailable", "native completion audit needs its retained reservation")
+		}
+		return o.deliverMemberCompletion(parent, native, details, content, "", false)
 	}
 	return o.withChildLogLocked(parent, func(log *coding.SessionManager) error {
 		var err error
@@ -444,7 +467,18 @@ func (o *owner) auditCompletion(selected *run) error {
 			parent.deliveryMu.Lock()
 		}
 		details := completionDetails{ChildID: selected.ref.ID, Receipt: notice.nonce}
-		notice.auditErr = o.storeRetained(notice.parent, details, notice.content, &completionAudit{Content: notice.content, Details: details, Handback: handback})
+		audit := completionAudit{Content: notice.content, Details: details, Handback: handback}
+		o.tree.mu.Lock()
+		var native *memberBinding
+		if parent != nil {
+			native = parent.native
+		}
+		o.tree.mu.Unlock()
+		if native != nil {
+			notice.auditErr = o.auditMemberCompletion(native, selected, notice, audit)
+		} else {
+			notice.auditErr = o.storeRetained(notice.parent, details, notice.content, &audit)
+		}
 		notice.auditStored = notice.auditErr == nil
 		if serialized {
 			parent.deliveryMu.Unlock()
@@ -626,7 +660,19 @@ func (o *owner) deliverRetained(parent *record, details completionDetails, conte
 	}
 	o.tree.mu.Lock()
 	current := parent.run
+	native := parent.native
 	o.tree.mu.Unlock()
+	if native != nil {
+		ctx, cancel := context.WithTimeout(o.tree.ctx, 5*time.Second)
+		defer cancel()
+		snapshot, err := native.control.Snapshot(ctx, memberHistoryBound{})
+		if err != nil || snapshot.session != parent.id {
+			return reject("unavailable", "native member state is unavailable")
+		}
+		options := o.completionOptions(parent, details, snapshot.phase == memberStreaming)
+		trigger := options.TriggerTurn != nil && *options.TriggerTurn
+		return o.deliverMemberCompletion(parent, native, details, content, string(options.DeliverAs), trigger)
+	}
 	current.mu.Lock()
 	session := current.session
 	current.mu.Unlock()

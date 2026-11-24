@@ -2,6 +2,7 @@ package piglitter
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -568,15 +569,23 @@ func nativePeerEntry(path string, envelope peerEnvelope, content string) (string
 		return "", errors.New("native peer transcript is incomplete")
 	}
 	lines := bytes.Split(bytes.TrimSuffix(data, []byte{'\n'}), []byte{'\n'})
+	snapshot := memberLogSnapshot{header: lines[0]}
+	for _, line := range lines[1:] {
+		snapshot.entries = append(snapshot.entries, line)
+	}
+	return nativePeerEntrySnapshot(snapshot, envelope, content)
+}
+
+func nativePeerEntrySnapshot(snapshot memberLogSnapshot, envelope peerEnvelope, content string) (string, error) {
 	var header struct {
 		Type string `json:"type"`
 		ID   string `json:"id"`
 	}
-	if err := json.Unmarshal(lines[0], &header); err != nil || header.Type != "session" || header.ID != string(envelope.Recipient.ID) {
+	if err := json.Unmarshal(snapshot.header, &header); err != nil || header.Type != "session" || header.ID != string(envelope.Recipient.ID) {
 		return "", errors.New("native peer session identity differs")
 	}
 	var id string
-	for _, line := range lines[1:] {
+	for _, line := range snapshot.entries {
 		var entry struct {
 			Type       string          `json:"type"`
 			ID         string          `json:"id"`
@@ -613,6 +622,12 @@ func nativePeerEntry(path string, envelope peerEnvelope, content string) (string
 }
 
 func (s *teamStore) observePeers(recipient MemberRef, sessionFile string) error {
+	return s.observePeerEntries(recipient, func(envelope peerEnvelope, content string) (string, error) {
+		return nativePeerEntry(sessionFile, envelope, content)
+	})
+}
+
+func (s *teamStore) observePeerEntries(recipient MemberRef, find func(peerEnvelope, string) (string, error)) error {
 	return s.transact(func(roster *teamRoster) (bool, error) {
 		if roster.Team != recipient.Team {
 			return false, reject("unavailable", "team identity changed")
@@ -645,7 +660,7 @@ func (s *teamStore) observePeers(recipient MemberRef, sessionFile string) error 
 			if err != nil {
 				return false, err
 			}
-			id, err := nativePeerEntry(sessionFile, receipt.Envelope, content)
+			id, err := find(receipt.Envelope, content)
 			if err != nil {
 				return false, err
 			}
@@ -662,6 +677,29 @@ func (s *teamStore) observePeers(recipient MemberRef, sessionFile string) error 
 			}
 		}
 		return false, nil
+	})
+}
+
+func (o *owner) observeNativePeers(ctx context.Context, binding *memberBinding) error {
+	store, ok := o.peerRunStore(binding.record, binding.run)
+	if !ok {
+		return nil
+	}
+	o.tree.mu.Lock()
+	starting := binding.startingLog
+	pinned := binding.log.file != nil
+	o.tree.mu.Unlock()
+	if !pinned && starting != nil {
+		if _, err := os.Lstat(starting.path); errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+	}
+	snapshot, err := o.memberLogSnapshot(ctx, binding)
+	if err != nil {
+		return err
+	}
+	return store.observePeerEntries(binding.member, func(envelope peerEnvelope, content string) (string, error) {
+		return nativePeerEntrySnapshot(snapshot, envelope, content)
 	})
 }
 

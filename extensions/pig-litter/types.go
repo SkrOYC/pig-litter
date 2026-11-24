@@ -79,6 +79,7 @@ type Snapshot struct {
 type record struct {
 	id                                   ChildID
 	team                                 *teamMember
+	backend                              backendRequest
 	parent                               *record
 	depth                                int
 	name, kind, model, instructions, cwd string
@@ -88,6 +89,12 @@ type record struct {
 	canDelegate, readOnly                bool
 	admitted                             bool
 	activeLog                            *coding.SessionManager
+	native                               *memberBinding
+	nativeOwnership                      *memberOwnership
+	nativeReleasing                      bool
+	nativeCleanupError                   string
+	nativeReservationConflict            bool
+	nativeSession                        *memberSession
 	run                                  *run
 	previous                             *run
 	paused                               bool
@@ -111,6 +118,7 @@ type pendingInput struct {
 type message struct {
 	mode, text string
 	result     chan error
+	ctx        context.Context
 }
 
 type runAdmission uint8
@@ -154,6 +162,7 @@ type run struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	done            chan struct{}
+	executorDone    chan struct{}
 	started         bool
 	admission       runAdmission
 	progress        runProgress
@@ -163,13 +172,19 @@ type run struct {
 	continuation    string
 	resumePaused    bool
 	resume          bool
+	nativeResume    *memberResumePin
 	peerWake        *peerWakeInput
 	mailbox         chan message
 	mu              sync.Mutex
 	calls           *callScope
 	messageMu       sync.Mutex
 	pendingMessages int
+	nativeFrozen    bool
+	nativeThaw      chan struct{}
+	nativeInputErr  string
+	nativeFailure   string
 	session         *coding.Session
+	member          memberControl
 	disposing       bool
 	ready           chan struct{}
 	deliveryError   string
@@ -185,8 +200,15 @@ type run struct {
 }
 
 type Inspection struct {
-	Child   Snapshot `json:"child"`
-	Outcome *Outcome `json:"outcome,omitempty"`
+	Child   Snapshot       `json:"child"`
+	Outcome *Outcome       `json:"outcome,omitempty"`
+	Backend *BackendStatus `json:"backend,omitempty"`
+}
+
+type BackendStatus struct {
+	Kind      string `json:"kind"`
+	Ownership string `json:"ownership"`
+	Error     string `json:"error,omitempty"`
 }
 
 func bounded(text string, maximum int) (string, bool) {

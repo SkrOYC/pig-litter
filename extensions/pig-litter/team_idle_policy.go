@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding/extension"
 )
@@ -23,19 +24,23 @@ func idleReport(event *extension.AgentBeforeSettleEvent) string {
 		if message == nil {
 			continue
 		}
-		var text strings.Builder
-		for _, block := range message.Content {
-			if value, ok := block.(ai.TextContent); ok {
-				part, clipped := bounded(value.Text, 4096-text.Len())
-				text.WriteString(part)
-				if clipped || text.Len() == 4096 {
-					break
-				}
-			}
-		}
-		return text.String()
+		return idleAssistantReport(message)
 	}
 	return ""
+}
+
+func idleAssistantReport(message *agent.AssistantMessage) string {
+	var text strings.Builder
+	for _, block := range message.Content {
+		if value, ok := block.(ai.TextContent); ok {
+			part, clipped := bounded(value.Text, 4096-text.Len())
+			text.WriteString(part)
+			if clipped || text.Len() == 4096 {
+				break
+			}
+		}
+	}
+	return text.String()
 }
 
 func (o *owner) idleCandidate(r *record, selected *run, report string) (idlePolicyCandidate, uint64, error) {
@@ -43,6 +48,11 @@ func (o *owner) idleCandidate(r *record, selected *run, report string) (idlePoli
 	if err := o.current(); err != nil {
 		return candidate, 0, err
 	}
+	return o.idleCandidateLocal(r, selected, report)
+}
+
+func (o *owner) idleCandidateLocal(r *record, selected *run, report string) (idlePolicyCandidate, uint64, error) {
+	var candidate idlePolicyCandidate
 	o.tree.mu.Lock()
 	if o.tree.closed || o.tree.records[r.id] != r || r.run != selected || r.team == nil || r.paused || selected.ctx.Err() != nil || r.controlPhase == "closing" || r.controlPhase == "terminated" || r.controlPhase == "recovery_pending" {
 		o.tree.mu.Unlock()
