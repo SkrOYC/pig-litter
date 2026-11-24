@@ -15,8 +15,8 @@ import (
 )
 
 type itermServer struct {
-	pid                                    int
-	birth, executable, window, target, tty string
+	pid                                            int
+	birth, executable, window, target, tty, helper string
 }
 
 var itermSessionID = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -32,7 +32,7 @@ tell application id "com.googlecode.iterm2"
     repeat with t in tabs of w
       repeat with s in sessions of t
         if (kind is "tty" and (tty of s as text) is wanted) or (kind is "id" and (unique id of s as text) is wanted) then
-          set end of matches to ((id of w as text) & tab & (unique id of s as text) & tab & (tty of s as text))
+          set end of matches to ((id of w as text) & linefeed & (unique id of s as text) & linefeed & (tty of s as text))
         end if
       end repeat
     end repeat
@@ -55,7 +55,7 @@ tell application id "com.googlecode.iterm2"
         repeat with s in sessions of t
           if (unique id of s as text) is wantedSession and (tty of s as text) is wantedTTY then
             tell s to set created to (split vertically with same profile command launchCommand)
-            return (id of w as text) & tab & (unique id of created as text) & tab & (tty of created as text)
+            return (id of w as text) & linefeed & (unique id of created as text) & linefeed & (tty of created as text)
           end if
         end repeat
       end repeat
@@ -120,7 +120,7 @@ func itermCall(ctx context.Context, script string, args ...string) (string, erro
 }
 
 func parseITermSession(value string) (window, session, tty string, err error) {
-	parts := strings.Split(value, "\t")
+	parts := strings.Fields(value)
 	if len(parts) != 3 || !itermWindowID.MatchString(parts[0]) || !itermSessionID.MatchString(parts[1]) || !itermTTY.MatchString(parts[2]) {
 		return "", "", "", errors.New("iTerm returned an invalid session identity")
 	}
@@ -148,6 +148,10 @@ func currentITermMemberEnvironment(ctx context.Context, sourcePath string, hostP
 	if runtime.GOOS != "darwin" {
 		return tmuxMemberEnvironment{}, errors.New("iTerm2 requires macOS")
 	}
+	helper, err := nativeMemberExecutable(ctx, sourcePath)
+	if err != nil {
+		return tmuxMemberEnvironment{}, err
+	}
 	scope, err := memberProcessScope(os.Getpid())
 	if err != nil || scope != hostScope {
 		return tmuxMemberEnvironment{}, errors.New("host process scope is unavailable or changed")
@@ -173,7 +177,7 @@ func currentITermMemberEnvironment(ctx context.Context, sourcePath string, hostP
 	if err != nil || appScope != scope {
 		return tmuxMemberEnvironment{}, errors.New("iTerm2 process scope is unavailable or changed")
 	}
-	executable, err := memberProcessPath(pid, birth)
+	executable, err := memberProcessPath(pid, birth, helper)
 	if err != nil {
 		return tmuxMemberEnvironment{}, err
 	}
@@ -185,12 +189,8 @@ func currentITermMemberEnvironment(ctx context.Context, sourcePath string, hostP
 	if err != nil || foundTTY != tty {
 		return tmuxMemberEnvironment{}, errors.New("lead process is not in an identifiable iTerm2 session")
 	}
-	server := &itermServer{pid: pid, birth: birth, executable: executable, window: window, target: target, tty: tty}
+	server := &itermServer{pid: pid, birth: birth, executable: executable, window: window, target: target, tty: tty, helper: helper}
 	if err := server.verify(ctx); err != nil {
-		return tmuxMemberEnvironment{}, err
-	}
-	helper, err := nativeMemberExecutable(ctx, sourcePath)
-	if err != nil {
 		return tmuxMemberEnvironment{}, err
 	}
 	return tmuxMemberEnvironment{server: tmuxServer{socket: executable, pid: pid, birth: birth, target: target, iterm: server}, executable: helper, usePiDirs: os.Getenv("PIG_USE_PI_DIRS") == "1"}, nil
@@ -201,7 +201,7 @@ func (server *itermServer) verifyApp() error {
 	if err != nil || birth != server.birth {
 		return errors.New("iTerm2 application identity changed")
 	}
-	matches, err := memberProcessMatchesExecutable(server.pid, server.birth, server.executable)
+	matches, err := memberProcessMatchesExecutable(server.pid, server.birth, server.executable, server.helper)
 	if err != nil || !matches {
 		return errors.New("iTerm2 application executable changed")
 	}
@@ -295,7 +295,7 @@ func (server *itermServer) verifyPane(ctx context.Context, pane memberPaneIdenti
 		return errors.New("iTerm member process terminal changed")
 	}
 	executable, _, ok := strings.Cut(pane.Command, " ")
-	matches, err := memberProcessMatchesExecutable(pane.PID, pane.Birth, executable)
+	matches, err := memberProcessMatchesExecutable(pane.PID, pane.Birth, executable, server.helper)
 	if !ok || err != nil || !matches {
 		return errors.New("iTerm member executable changed")
 	}
@@ -327,7 +327,7 @@ func (server *itermServer) close(ctx context.Context, pane tmuxPane) error {
 			return errors.New("iTerm member process terminal changed; refusing cleanup")
 		}
 		executable, _, ok := strings.Cut(pane.command, " ")
-		matches, err := memberProcessMatchesExecutable(pane.pid, pane.birth, executable)
+		matches, err := memberProcessMatchesExecutable(pane.pid, pane.birth, executable, server.helper)
 		if !ok || err != nil || !matches {
 			return errors.New("iTerm member executable changed; refusing cleanup")
 		}
@@ -339,13 +339,13 @@ func (server *itermServer) close(ctx context.Context, pane tmuxPane) error {
 	return err
 }
 
-func itermServerFromIdentity(identity memberServerIdentity) tmuxServer {
-	server := &itermServer{pid: identity.PID, birth: identity.Birth, executable: identity.Socket, window: identity.Window, target: identity.Target, tty: identity.TTY}
+func itermServerFromIdentity(identity memberServerIdentity, helper string) tmuxServer {
+	server := &itermServer{pid: identity.PID, birth: identity.Birth, executable: identity.Socket, window: identity.Window, target: identity.Target, tty: identity.TTY, helper: helper}
 	return tmuxServer{socket: identity.Socket, pid: identity.PID, birth: identity.Birth, target: identity.Target, iterm: server}
 }
 
 func confirmOldITermMemberGone(ctx context.Context, ownership *memberOwnership) error {
-	server := itermServerFromIdentity(ownership.Server).iterm
+	server := itermServerFromIdentity(ownership.Server, ownership.Executable).iterm
 	if err := server.verifyApp(); err != nil {
 		return reject("unavailable", "previous iTerm application is unavailable or changed")
 	}
@@ -360,7 +360,7 @@ func confirmOldITermMemberGone(ctx context.Context, ownership *memberOwnership) 
 }
 
 func confirmReservedITermUnstarted(ctx context.Context, ownership *memberOwnership, scope string) error {
-	server := itermServerFromIdentity(ownership.Server).iterm
+	server := itermServerFromIdentity(ownership.Server, ownership.Executable).iterm
 	serverScope, err := memberProcessScope(server.pid)
 	if err != nil || serverScope != scope || server.verify(ctx) != nil {
 		return reject("unavailable", "native iTerm application or lead session is unavailable or changed")

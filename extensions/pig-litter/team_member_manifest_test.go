@@ -53,6 +53,20 @@ func TestNativeMemberManifestBindsPrivateLaunch(t *testing.T) {
 			}
 		})
 	}
+	iterm := manifest
+	iterm.Backend = backendITerm
+	iterm.Environment = map[string]string{"OPENAI_API_KEY": "fixture-only"}
+	write(t, iterm)
+	if _, err := readNativeMemberManifest(path); err != nil {
+		t.Fatalf("private iTerm manifest was rejected: %v", err)
+	}
+	for _, environment := range []map[string]string{nil, {"PIG_EXT_SOCKET": "other"}, {"ITERM_SESSION_ID": "other"}} {
+		iterm.Environment = environment
+		write(t, iterm)
+		if _, err := readNativeMemberManifest(path); err == nil {
+			t.Fatal("invalid iTerm environment was accepted")
+		}
+	}
 	write(t, manifest)
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)

@@ -19,7 +19,7 @@ import (
 
 type memberProcessHandle struct{ fd int }
 
-func openMemberProcess(pid int, birth string) (*memberProcessHandle, error) {
+func openMemberProcess(pid int, birth, _ string) (*memberProcessHandle, error) {
 	before, err := processBirth(pid)
 	if err != nil || before != birth {
 		return nil, errors.New("native member process identity changed")
@@ -98,7 +98,7 @@ func memberProcessScope(pid int) (string, error) {
 	return "linux:" + bootID.String() + ":" + strings.Join(namespaces, ":"), nil
 }
 
-func memberProcessMatchesExecutable(pid int, birth, executable string) (bool, error) {
+func memberProcessMatchesExecutable(pid int, birth, executable, _ string) (bool, error) {
 	before, err := processBirth(pid)
 	if err != nil || before != birth {
 		return false, errors.New("native member process identity changed")
@@ -118,7 +118,7 @@ func memberProcessMatchesExecutable(pid int, birth, executable string) (bool, er
 	return os.SameFile(wanted, actual), nil
 }
 
-func memberProcessPath(pid int, birth string) (string, error) {
+func memberProcessPath(pid int, birth, _ string) (string, error) {
 	before, err := processBirth(pid)
 	if err != nil || before != birth {
 		return "", errors.New("native member process identity changed")
@@ -134,7 +134,7 @@ func memberProcessPath(pid int, birth string) (string, error) {
 	return path, nil
 }
 
-func memberProcessDigest(ctx context.Context, pid int, birth string) (string, error) {
+func memberProcessDigest(ctx context.Context, pid int, birth, _ string) (string, error) {
 	current, err := processBirth(pid)
 	if err != nil || current != birth {
 		return "", fmt.Errorf("native member process identity changed")

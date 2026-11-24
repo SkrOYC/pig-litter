@@ -14,25 +14,26 @@ import (
 )
 
 type nativeMemberManifest struct {
-	Version          int            `json:"version"`
-	Backend          backendRequest `json:"backend,omitempty"`
-	Launch           string         `json:"launch"`
-	Session          ChildID        `json:"session"`
-	Cwd              string         `json:"cwd"`
-	Model            string         `json:"model"`
-	Tools            []string       `json:"tools"`
-	SessionDirectory string         `json:"sessionDirectory"`
-	ResumeFile       string         `json:"resumeFile,omitempty"`
-	AgentDirectory   string         `json:"agentDirectory"`
-	PigHome          string         `json:"pigHome,omitempty"`
-	UsePiDirs        bool           `json:"usePiDirs,omitempty"`
-	Socket           string         `json:"socket"`
-	Capability       string         `json:"capability"`
-	Prompt           string         `json:"prompt"`
-	PeerWake         bool           `json:"peerWake,omitempty"`
-	Instructions     string         `json:"instructions"`
-	MailboxLimit     int            `json:"mailboxLimit"`
-	ProjectTrusted   bool           `json:"projectTrusted"`
+	Version          int               `json:"version"`
+	Backend          backendRequest    `json:"backend,omitempty"`
+	Environment      map[string]string `json:"environment,omitempty"`
+	Launch           string            `json:"launch"`
+	Session          ChildID           `json:"session"`
+	Cwd              string            `json:"cwd"`
+	Model            string            `json:"model"`
+	Tools            []string          `json:"tools"`
+	SessionDirectory string            `json:"sessionDirectory"`
+	ResumeFile       string            `json:"resumeFile,omitempty"`
+	AgentDirectory   string            `json:"agentDirectory"`
+	PigHome          string            `json:"pigHome,omitempty"`
+	UsePiDirs        bool              `json:"usePiDirs,omitempty"`
+	Socket           string            `json:"socket"`
+	Capability       string            `json:"capability"`
+	Prompt           string            `json:"prompt"`
+	PeerWake         bool              `json:"peerWake,omitempty"`
+	Instructions     string            `json:"instructions"`
+	MailboxLimit     int               `json:"mailboxLimit"`
+	ProjectTrusted   bool              `json:"projectTrusted"`
 }
 
 func readNativeMemberManifest(path string) (nativeMemberManifest, error) {
@@ -80,6 +81,16 @@ func readNativeMemberManifest(path string) (nativeMemberManifest, error) {
 func (manifest nativeMemberManifest) validate(directory, name string) error {
 	if manifest.Backend != "" && !isPaneBackend(manifest.Backend) || manifest.Version != 1 || !tmuxLaunchNonce.MatchString(manifest.Launch) || name != "member-"+manifest.Launch+".json" || !childUUID.MatchString(string(manifest.Session)) || !exactModel.MatchString(manifest.Model) || manifest.MailboxLimit < 1 || manifest.MailboxLimit > 1024 || len(manifest.Prompt) > 32768 || len(manifest.Instructions) > 32768 {
 		return errors.New("native member manifest has an invalid identity or input")
+	}
+	if manifest.Backend == backendITerm && manifest.Environment == nil || manifest.Backend != backendITerm && manifest.Environment != nil {
+		return errors.New("native member environment is invalid")
+	}
+	size := 0
+	for name, value := range manifest.Environment {
+		size += len(name) + len(value)
+		if size > 512*1024 || !nativeRuntimeVariable(name) || strings.ContainsRune(value, 0) {
+			return errors.New("native member environment is invalid")
+		}
 	}
 	if manifest.PeerWake && (manifest.ResumeFile == "" || manifest.Prompt != "") || !manifest.PeerWake && strings.TrimSpace(manifest.Prompt) == "" {
 		return errors.New("native member manifest has an invalid startup input")

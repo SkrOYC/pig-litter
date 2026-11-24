@@ -1,12 +1,6 @@
-//go:build darwin && cgo
+//go:build darwin
 
 package piglitter
-
-/*
-#cgo LDFLAGS: -lproc
-#include <libproc.h>
-*/
-import "C"
 
 import (
 	"context"
@@ -15,7 +9,6 @@ import (
 	"os"
 	"strings"
 	"time"
-	"unsafe"
 
 	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
@@ -26,8 +19,8 @@ type memberProcessHandle struct {
 	birth string
 }
 
-func openMemberProcess(pid int, birth string) (*memberProcessHandle, error) {
-	if _, err := memberProcessPath(pid, birth); err != nil {
+func openMemberProcess(pid int, birth, helper string) (*memberProcessHandle, error) {
+	if _, err := memberProcessPath(pid, birth, helper); err != nil {
 		return nil, err
 	}
 	return &memberProcessHandle{pid: pid, birth: birth}, nil
@@ -91,26 +84,8 @@ func memberProcessScope(pid int) (string, error) {
 	return "darwin:" + bootID.String(), nil
 }
 
-func memberProcessPath(pid int, birth string) (string, error) {
-	before, err := processBirth(pid)
-	if err != nil || before != birth {
-		return "", errors.New("native process identity changed")
-	}
-	buffer := make([]byte, 4096)
-	n := int(C.proc_pidpath(C.int(pid), unsafe.Pointer(&buffer[0]), C.uint32_t(len(buffer))))
-	if n <= 0 || n > len(buffer) {
-		return "", errors.New("native process executable is unavailable")
-	}
-	path := strings.TrimRight(string(buffer[:n]), "\x00")
-	after, err := processBirth(pid)
-	if err != nil || after != birth || path == "" {
-		return "", errors.New("native process identity changed")
-	}
-	return path, nil
-}
-
-func memberProcessMatchesExecutable(pid int, birth, executable string) (bool, error) {
-	path, err := memberProcessPath(pid, birth)
+func memberProcessMatchesExecutable(pid int, birth, executable, helper string) (bool, error) {
+	path, err := memberProcessPath(pid, birth, helper)
 	if err != nil {
 		return false, err
 	}
@@ -129,8 +104,8 @@ func memberProcessMatchesExecutable(pid int, birth, executable string) (bool, er
 	return os.SameFile(wanted, actual), nil
 }
 
-func memberProcessDigest(ctx context.Context, pid int, birth string) (string, error) {
-	path, err := memberProcessPath(pid, birth)
+func memberProcessDigest(ctx context.Context, pid int, birth, helper string) (string, error) {
+	path, err := memberProcessPath(pid, birth, helper)
 	if err != nil {
 		return "", err
 	}

@@ -275,13 +275,13 @@ class Fixture:
                 member["executable"] = executable(member["pid"])
                 require(member["executable"] == os.path.realpath(self.extension), "Native helper executable changed")
                 tty = "/dev/" + member["tty"]
-                window, session = applescript(PANE_BY_TTY, tty).split("\t")
+                window, session = applescript(PANE_BY_TTY, tty).splitlines()
                 require(window == self.lead["id"] and session != self.lead["session"] and tty != self.lead["tty"], "Native member is not in a distinct pane of the lead window")
                 member.update({"window": window, "session": session, "terminal": tty})
                 self.observations["native_member"] = member
                 probe = probe_identity(Path(os.environ["RUNNER_TEMP"]) / "collaboration-platform-probe" / "result.json")
                 require(probe and applescript(SESSION, *probe, "exists") == "present", "Unrelated probe window changed")
-                return call("write", path="p08-iterm.txt", content="P08_ITERM_SIDE_EFFECT")
+                return call("bash", command='test "$OPENAI_API_KEY" = "fixture-only-key" && test "$P08_ALLOWED_CHECK" = "fixture-allowed-value" && printf P08_ITERM_SIDE_EFFECT > p08-iterm.txt')
             require((self.workspace / "p08-iterm.txt").read_text() == "P08_ITERM_SIDE_EFFECT", "Native member side effect is missing")
             return "P08_ITERM_MEMBER_DONE"
         require(model == "parent", "Unexpected iTerm lead model")
@@ -446,7 +446,7 @@ on run argv
             if (unique id of candidateSession as text) is wantedSession then
               if actionName is "create" then
                 tell candidateSession to set other to (split vertically with same profile command "/bin/sleep 600")
-                return (unique id of other as text) & tab & (tty of other as text)
+                return (unique id of other as text) & linefeed & (tty of other as text)
               end if
               if actionName is "close" and (tty of candidateSession as text) is (item 4 of argv) then
                 tell candidateSession to close
@@ -463,6 +463,36 @@ end run
 '''
 
 
+WINDOW_SESSIONS = r'''
+on run argv
+  set wantedWindow to item 1 of argv
+  set output to ""
+  tell application "iTerm"
+    repeat with w in windows
+      if (id of w as text) is wantedWindow then
+        repeat with t in tabs of w
+          repeat with s in sessions of t
+            set output to output & (unique id of s as text) & "|" & (tty of s as text) & linefeed
+          end repeat
+        end repeat
+        return output
+      end if
+    end repeat
+  end tell
+  error "Fixture window is missing"
+end run
+'''
+
+
+def window_sessions(window):
+    sessions = set()
+    for line in applescript(WINDOW_SESSIONS, window).splitlines():
+        parts = line.split("|")
+        require(len(parts) == 2 and re.fullmatch(r"[0-9A-Fa-f-]{36}", parts[0]) and re.fullmatch(r"/dev/ttys\d+", parts[1]), "Fixture window returned an invalid session")
+        sessions.add(tuple(parts))
+    return sessions
+
+
 PANE_BY_TTY = r'''
 on run argv
   set wantedTTY to item 1 of argv
@@ -470,7 +500,7 @@ on run argv
     repeat with candidateWindow in windows
       repeat with candidateTab in tabs of candidateWindow
         repeat with candidateSession in sessions of candidateTab
-          if (tty of candidateSession as text) is wantedTTY then return (id of candidateWindow as text) & tab & (unique id of candidateSession as text)
+          if (tty of candidateSession as text) is wantedTTY then return (id of candidateWindow as text) & linefeed & (unique id of candidateSession as text)
         end repeat
       end repeat
     end repeat
@@ -647,13 +677,27 @@ class Terminal:
             "TMPDIR": str(self.root / "tmp"), "GOTMPDIR": str(self.root / "tmp"), "XDG_CACHE_HOME": str(self.root / "cache"), "XDG_RUNTIME_DIR": str(self.root / "tmp"),
             "PIG_HOME": str(self.pig_home), "PIG_CODING_AGENT_DIR": str(self.agent), "PIG_USE_PI_DIRS": "0", "PIG_OFFLINE": "1", "PI_OFFLINE": "1", "PI_TELEMETRY": "0", "PI_SKIP_VERSION_CHECK": "1",
         }
+        if self.extension.is_dir():
+            go = shutil.which("go")
+            require(go is not None, "Go is required to load the source Resource")
+            environment["PATH"] = str(Path(go).parent) + ":" + environment["PATH"]
+            for name in ("GOCACHE", "GOMODCACHE", "GOTMPDIR", "GOTOOLCHAIN", "GOENV"):
+                if name in os.environ:
+                    environment[name] = os.environ[name]
+            environment["PIG_SDK_GO_ROOT"] = os.environ["PIG_LITTER_SDK_DIR"]
         args = [str(self.pig), "--no-extensions"]
         if self.selected:
             args += ["-e", str(self.extension)]
         args += ["--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--session-dir", str(self.sessions), "--approve", "--model", "fixture/parent"]
         if session_path:
             args += ["--session", str(session_path)]
-        command = ["/usr/bin/env", "-i", *[f"{k}={v}" for k, v in environment.items()], *args]
+        command = ["/usr/bin/env", "-i", *[f"{k}={v}" for k, v in environment.items()]]
+        if self.extension.is_dir():
+            fixture_env = generation / "fixture-env.sh"
+            fixture_env.write_text("#!/bin/sh\nexport OPENAI_API_KEY=fixture-only-key\nexport P08_ALLOWED_CHECK=fixture-allowed-value\nexec \"$@\"\n")
+            fixture_env.chmod(0o600)
+            command += ["/bin/sh", str(fixture_env)]
+        command += args
         for argument in command:
             safe_text(argument)
         wrapper = generation / "launch.sh"
@@ -668,6 +712,8 @@ class Terminal:
         wrappers = [p for p in self.owned.values() if p["pid"] == self.window["wrapper_pid"] and p["tty"] == tty]
         hosts = [p for p in self.owned.values() if p["ppid"] == self.window["wrapper_pid"] and p["executable"] == os.path.realpath(self.pig) and p["tty"] == tty]
         extensions = [p for p in self.owned.values() if p["executable"] == os.path.realpath(self.extension)]
+        if self.selected and self.extension.is_dir() and hosts:
+            extensions = [p for p in self.owned.values() if p["ppid"] == hosts[-1]["pid"] and same_process(p)]
         require(wrappers and hosts, "PiG process is not attributed to the iTerm TTY and wrapper")
         self.window["wrapper_identity"] = wrappers[-1]
         if self.selected:
@@ -675,6 +721,12 @@ class Terminal:
         else:
             require(not extensions, "Unselected session started the extension")
         self.window["host"] = hosts[-1]
+        if self.selected and self.extension.is_dir():
+            require(len(extensions) == 1, "Source Resource process is missing or ambiguous")
+            build = subprocess.run(["go", "version", "-m", extensions[0]["executable"]], text=True, capture_output=True, check=True, timeout=10).stdout
+            require("CGO_ENABLED=0" in build, "Source Resource did not use the CGO-disabled host compiler")
+            self.window["source_extension"] = extensions[0]
+            (self.evidence / "source-extension-build.txt").write_text(build)
         owner = iterm_owner()
         native = native_window(owner, self.window["id"])
         alternate = applescript(OWNED_ALTERNATE, self.window["id"], self.window["session"])
@@ -802,7 +854,7 @@ class Terminal:
         remaining = [p for p in self.owned.values() if same_process(p)]
         if remaining:
             problems.append("Owned processes survived cleanup")
-        if self.window and not remaining:
+        if self.window and not remaining and not self.unsafe:
             try:
                 self.close_window()
             except Exception as error:
@@ -923,12 +975,29 @@ def run_case(name, scratch, evidence, pig, extension):
     terminal = Terminal(root, evidence, root / "workspace", root / "agent", root / "pig-home", root / "sessions", pig, extension, name != "unselected", server.server_address[1])
     product_problems = []
     teardown_problems = []
+    sibling_ref = None
+    sibling = None
     try:
         terminal.launch()
         if name == "iterm":
-            fixture.extension = str(extension)
+            fixture.extension = str(extension / "dist" / "pig-litter" if extension.is_dir() else extension)
             fixture.lead = terminal.window.copy()
-            sibling_id, sibling_tty = applescript(SIBLING, fixture.lead["id"], fixture.lead["session"], "create").split("\t")
+            before = window_sessions(fixture.lead["id"])
+            try:
+                sibling_result = applescript(SIBLING, fixture.lead["id"], fixture.lead["session"], "create")
+            finally:
+                try:
+                    added = window_sessions(fixture.lead["id"]) - before
+                except Exception:
+                    terminal.unsafe = True
+                    raise
+                if len(added) == 1:
+                    sibling_ref = next(iter(added))
+                else:
+                    terminal.unsafe = True
+            parts = sibling_result.splitlines()
+            require(len(parts) == 2 and sibling_ref == tuple(parts), "Fixture sibling identity was not confirmed")
+            sibling_id, sibling_tty = sibling_ref
             deadline = time.monotonic() + 10
             sibling_matches = []
             while time.monotonic() < deadline and not sibling_matches:
@@ -947,9 +1016,10 @@ def run_case(name, scratch, evidence, pig, extension):
             terminal.wait(lambda: not same_process(member) and applescript(PANE_BY_TTY, member["terminal"]) == "missing", "native member process and pane cleanup", 30)
             probe = probe_identity(Path(os.environ["RUNNER_TEMP"]) / "collaboration-platform-probe" / "result.json")
             require(probe and applescript(SESSION, *probe, "exists") == "present", "Unrelated probe window was closed")
-            require(same_process(sibling) and applescript(PANE_BY_TTY, sibling_tty) == fixture.lead["id"] + "\t" + sibling_id, "Unrelated sibling pane changed")
+            require(same_process(sibling) and applescript(PANE_BY_TTY, sibling_tty) == fixture.lead["id"] + "\n" + sibling_id, "Unrelated sibling pane changed")
             require(applescript(SIBLING, fixture.lead["id"], sibling_id, "close", sibling_tty) == "closed", "Fixture sibling pane did not close")
             terminal.wait(lambda: not same_process(sibling), "fixture sibling process cleanup", 30)
+            sibling_ref = None
             fixture.observations["cleanup"] = "native process and pane exited; unrelated sibling and probe remained until fixture cleanup"
         elif name == "team":
             terminal.send("P03_TEAM_FIRST")
@@ -997,6 +1067,27 @@ def run_case(name, scratch, evidence, pig, extension):
             except Exception as capture_error:
                 product_problems.append(f"Failure capture: {capture_error}")
     finally:
+        if sibling_ref is not None and terminal.window:
+            try:
+                sibling_id, sibling_tty = sibling_ref
+                matches = [p for p in process_snapshot().values() if p["tty"] == sibling_tty.removeprefix("/dev/") and p["command"] == "/bin/sleep 600"]
+                if sibling is None and len(matches) == 1:
+                    sibling = matches[0]
+                    sibling["executable"] = executable(sibling["pid"])
+                native_window(terminal.window["ownership"]["iterm"], terminal.window["id"])
+                present = applescript(PANE_BY_TTY, sibling_tty)
+                if present != "missing":
+                    require(sibling is not None and same_process(sibling) and present == terminal.window["id"] + "\n" + sibling_id, "Fixture sibling identity is uncertain")
+                    require(applescript(SIBLING, terminal.window["id"], sibling_id, "close", sibling_tty) == "closed", "Fixture sibling cleanup failed")
+            except Exception as error:
+                terminal.unsafe = True
+                teardown_problems.append(f"Fixture sibling cleanup: {error}")
+        if name == "iterm" and terminal.window and not terminal.unsafe:
+            try:
+                if idle_editor(terminal.session_action("text")):
+                    terminal.session_action("exit")
+            except Exception as error:
+                product_problems.append(f"Graceful lead exit: {error}")
         with fixture.changed:
             fixture.ordinary_release = True
             fixture.changed.notify_all()

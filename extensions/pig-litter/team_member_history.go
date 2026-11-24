@@ -135,7 +135,7 @@ func (o *owner) memberLaunchForInstall(ctx context.Context, r *record, selected 
 	var server tmuxServer
 	var err error
 	if snapshot.Backend == backendITerm {
-		server = itermServerFromIdentity(snapshot.Server)
+		server = itermServerFromIdentity(snapshot.Server, snapshot.Executable)
 		err = server.verify(ctx)
 	} else {
 		server, err = tmuxFromEnvironment(ctx, fmt.Sprintf("%s,%d,0", snapshot.Server.Socket, snapshot.Server.PID), snapshot.Server.Target)
@@ -161,9 +161,9 @@ func verifyMemberExecutable(ctx context.Context, pane memberPaneIdentity, execut
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		matches, err := memberProcessMatchesExecutable(pane.PID, pane.Birth, executable)
+		matches, err := memberProcessMatchesExecutable(pane.PID, pane.Birth, executable, executable)
 		if err == nil && matches {
-			digest, err := memberProcessDigest(ctx, pane.PID, pane.Birth)
+			digest, err := memberProcessDigest(ctx, pane.PID, pane.Birth, executable)
 			if err == nil && digest == expected {
 				return nil
 			}

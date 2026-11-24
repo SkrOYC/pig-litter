@@ -209,3 +209,7 @@ func chooseTeamBackend(request backendRequest, probe func() error) (backendChoic
 		return backendChoice{}, reject("rejected", "backend must be embedded, tmux, iterm2, or auto")
 	}
 }
+
+func InspectNativeProcessPath(pid int, birth string) (string, error) {
+	return memberProcessPath(pid, birth, "")
+}

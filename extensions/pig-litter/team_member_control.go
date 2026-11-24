@@ -575,7 +575,7 @@ func (queue *memberControlQueue) Focus(ctx context.Context) error {
 		return reject("unavailable", "native control handle is not installed")
 	}
 	if queue.owned.Backend == backendITerm {
-		server := itermServerFromIdentity(queue.owned.Server).iterm
+		server := itermServerFromIdentity(queue.owned.Server, queue.owned.Executable).iterm
 		if err := server.verifyPane(ctx, *queue.owned.Pane); err != nil {
 			return err
 		}

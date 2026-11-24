@@ -74,6 +74,9 @@ func RunNativeMember(path string) error {
 		return err
 	}
 	if manifest.Backend == backendITerm {
+		if err := applyNativeMemberEnvironment(manifest.Environment); err != nil {
+			return err
+		}
 		if err := os.Chdir(manifest.Cwd); err != nil {
 			return fmt.Errorf("enter native member working directory: %w", err)
 		}

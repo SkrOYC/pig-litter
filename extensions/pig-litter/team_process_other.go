@@ -9,7 +9,7 @@ import (
 
 type memberProcessHandle struct{}
 
-func openMemberProcess(int, string) (*memberProcessHandle, error) {
+func openMemberProcess(int, string, string) (*memberProcessHandle, error) {
 	return nil, errors.New("native process handles are unavailable on this platform")
 }
 
@@ -26,14 +26,14 @@ func memberProcessScope(int) (string, error) {
 	return "", errors.New("native process scope is unavailable on this platform")
 }
 
-func memberProcessMatchesExecutable(int, string, string) (bool, error) {
+func memberProcessMatchesExecutable(int, string, string, string) (bool, error) {
 	return false, errors.New("native process identity is unavailable on this platform")
 }
 
-func memberProcessDigest(context.Context, int, string) (string, error) {
+func memberProcessDigest(context.Context, int, string, string) (string, error) {
 	return "", errors.New("native process identity is unavailable on this platform")
 }
 
-func memberProcessPath(int, string) (string, error) {
+func memberProcessPath(int, string, string) (string, error) {
 	return "", errors.New("native process identity is unavailable on this platform")
 }

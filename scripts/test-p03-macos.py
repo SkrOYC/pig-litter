@@ -17,6 +17,68 @@ spec.loader.exec_module(driver)
 
 
 class InputAndProviderTests(unittest.TestCase):
+    def test_malformed_sibling_reply_releases_identified_fixture_pane(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            lead = ("11111111-1111-4111-8111-111111111111", "/dev/ttys001")
+            added = ("22222222-2222-4222-8222-222222222222", "/dev/ttys002")
+            actions = []
+
+            class Fixture:
+                def __init__(self, *_args):
+                    self.changed = threading.Condition()
+                    self.stage = self.requests = 0
+                    self.errors = []
+                    self.refs = {}
+                    self.rosters = {}
+                    self.observations = {}
+                    self.request_models = {}
+                    self.ordinary_release = False
+
+            class Terminal:
+                def __init__(self, *_args):
+                    self.window = None
+                    self.residues = []
+                    self.unsafe = False
+                def launch(self):
+                    self.window = {"id": "41", "session": lead[0], "tty": lead[1], "ownership": {"iterm": {"pid": 1}}}
+                def frame(self, _name):
+                    return ""
+                def cleanup(self):
+                    actions.append("terminal-cleanup")
+                    self.window = None
+
+            class Server:
+                server_address = ("127.0.0.1", 12345)
+                def shutdown(self):
+                    pass
+                def server_close(self):
+                    pass
+
+            class Thread:
+                def join(self, timeout):
+                    pass
+                def is_alive(self):
+                    return False
+
+            def script(kind, *args):
+                if kind == driver.SIBLING and args[2] == "create":
+                    return "malformed"
+                if kind == driver.PANE_BY_TTY:
+                    return "41\n" + added[0]
+                if kind == driver.SIBLING and args[2] == "close":
+                    actions.append((args[1], args[3]))
+                    return "closed"
+                raise AssertionError(args)
+
+            fixture = Fixture()
+            processes = {7: {"pid": 7, "tty": "ttys002", "command": "/bin/sleep 600", "start": "fixture"}}
+            with mock.patch.object(driver, "Fixture", return_value=fixture), mock.patch.object(driver, "Terminal", Terminal), mock.patch.object(driver, "start_provider", return_value=(Server(), Thread())), mock.patch.object(driver, "window_sessions", side_effect=[{lead}, {lead, added}]), mock.patch.object(driver, "applescript", side_effect=script), mock.patch.object(driver, "process_snapshot", return_value=processes), mock.patch.object(driver, "executable", return_value="/bin/sleep"), mock.patch.object(driver, "same_process", return_value=True), mock.patch.object(driver, "native_window"), mock.patch.object(driver, "save_native", return_value=["fixture"]), mock.patch.object(driver.subprocess, "run", side_effect=OSError("not macOS")):
+                receipt = driver.run_case("iterm", root, root / "evidence", root / "pig", root / "extension")
+            self.assertEqual(actions, [(added[0], added[1]), "terminal-cleanup"])
+            self.assertEqual(receipt["product_status"], "failed")
+            self.assertEqual(receipt["teardown_status"], "pass")
+
     def test_unexpected_case_failure_stops_further_cases(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

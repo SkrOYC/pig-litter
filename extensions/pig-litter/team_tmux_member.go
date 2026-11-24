@@ -73,16 +73,16 @@ func currentTmuxMemberEnvironment(ctx context.Context, sourcePath string) (tmuxM
 	if err != nil {
 		return tmuxMemberEnvironment{}, fmt.Errorf("native process identity is unavailable: %w", err)
 	}
-	handle, err := openMemberProcess(os.Getpid(), birth)
+	executable, err := nativeMemberExecutable(ctx, sourcePath)
+	if err != nil {
+		return tmuxMemberEnvironment{}, err
+	}
+	handle, err := openMemberProcess(os.Getpid(), birth, executable)
 	if err != nil {
 		return tmuxMemberEnvironment{}, fmt.Errorf("native process supervision is unavailable: %w", err)
 	}
 	if err := handle.close(); err != nil {
 		return tmuxMemberEnvironment{}, fmt.Errorf("native process supervision is unavailable: %w", err)
-	}
-	executable, err := nativeMemberExecutable(ctx, sourcePath)
-	if err != nil {
-		return tmuxMemberEnvironment{}, err
 	}
 	return tmuxMemberEnvironment{server: server, executable: executable, usePiDirs: os.Getenv("PIG_USE_PI_DIRS") == "1"}, nil
 }
@@ -193,6 +193,9 @@ func (o *owner) executeTmuxMember(r *record, selected *run, env tmuxMemberEnviro
 	scope.manifest = filepath.Join(directory, "member-"+launchID+".json")
 	launch := tmuxLaunch{executable: env.executable, manifest: scope.manifest, cwd: r.cwd, nonce: launchID}
 	manifest := nativeMemberManifest{Backend: env.server.backend(), Version: 1, Launch: launchID, Session: r.id, Cwd: r.cwd, Model: r.model, Tools: []string{}, SessionDirectory: sessionDir, AgentDirectory: agentDir, PigHome: env.pigHome, UsePiDirs: env.usePiDirs, Socket: filepath.Join(directory, "member-control.sock"), Capability: hex.EncodeToString(capability[:]), Prompt: selected.prompt, Instructions: r.instructions, MailboxLimit: o.config.MaxMailbox, ProjectTrusted: trusted}
+	if manifest.Backend == backendITerm {
+		manifest.Environment = nativeMemberEnvironment(os.Environ())
+	}
 	if resumeSession != nil {
 		manifest.ResumeFile = resumeSession.File
 	}
@@ -275,7 +278,7 @@ func (o *owner) executeTmuxMember(r *record, selected *run, env tmuxMemberEnviro
 		return
 	}
 	scope.pane = &pane
-	scope.process, err = openMemberProcess(pane.pid, pane.birth)
+	scope.process, err = openMemberProcess(pane.pid, pane.birth, env.executable)
 	if err != nil {
 		outcome.Error = err.Error()
 		return

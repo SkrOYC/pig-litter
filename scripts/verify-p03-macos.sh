@@ -31,13 +31,20 @@ if [[ "${1:-}" == --run-prepared ]]; then
     shasum -a 256 pig-source.json patches/pig-0.7.0-integrated.patch "$PIG_LITTER_EXPECTED_PIG"
     file "$PIG_LITTER_EXPECTED_PIG"
   } > "$evidence/build-identity.txt"
-  go -C scripts build -p 2 -tags p08native -mod=readonly -trimpath -buildvcs=false -o "$P03_SCRATCH/bin/pig-litter" ./cmd/pig-litter
+  extension="$P03_SCRATCH/bin/pig-litter"
+  helper="$extension"
+  if [[ "$scenario" == p08-iterm ]]; then
+    extension="$repo/extensions/pig-litter"
+    mkdir -p "$extension/dist"
+    helper="$extension/dist/pig-litter"
+  fi
+  go -C scripts build -p 2 -tags p08native -mod=readonly -trimpath -buildvcs=false -o "$helper" ./cmd/pig-litter
   {
-    shasum -a 256 "$P03_SCRATCH/bin/pig-litter"
-    file "$P03_SCRATCH/bin/pig-litter"
-    go version -m "$P03_SCRATCH/bin/pig-litter"
+    shasum -a 256 "$helper"
+    file "$helper"
+    go version -m "$helper"
   } >> "$evidence/build-identity.txt"
-  python3 "$driver/scripts/p03-macos.py" --scenario "$scenario" --pig "$PIG_LITTER_EXPECTED_PIG" --extension "$P03_SCRATCH/bin/pig-litter" --scratch "$P03_SCRATCH" --evidence "$evidence" || exit $?
+  python3 "$driver/scripts/p03-macos.py" --scenario "$scenario" --pig "$PIG_LITTER_EXPECTED_PIG" --extension "$extension" --scratch "$P03_SCRATCH" --evidence "$evidence" || exit $?
   [[ "$(shasum -a 256 "$PIG_LITTER_EXPECTED_PIG" | awk '{print $1}')" == "$PIG_LITTER_EXPECTED_PIG_SHA256" ]] || fail_check "$LINENO"
   exit
 fi
