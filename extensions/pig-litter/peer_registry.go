@@ -67,6 +67,13 @@ type localPeerOptions struct {
 	CWD           string
 	Name          string
 	AcceptInbound bool
+	// NativeHostPID must identify the native session host, not the extension process.
+	NativeHostPID int
+}
+
+type localProcessIdentity struct {
+	PID   int    `json:"pid"`
+	Birth string `json:"birth"`
 }
 
 type localIdentity struct {
@@ -78,15 +85,16 @@ type localIdentity struct {
 }
 
 type localPresence struct {
-	Version       int             `json:"version"`
-	Ref           localSessionRef `json:"ref"`
-	Name          string          `json:"name"`
-	Incarnation   string          `json:"incarnation"`
-	Socket        string          `json:"socket"`
-	PID           int             `json:"pid"`
-	AcceptInbound bool            `json:"acceptInbound"`
-	Expires       time.Time       `json:"expires"`
-	Signature     string          `json:"signature"`
+	Version       int                   `json:"version"`
+	Ref           localSessionRef       `json:"ref"`
+	Name          string                `json:"name"`
+	Incarnation   string                `json:"incarnation"`
+	Socket        string                `json:"socket"`
+	PID           int                   `json:"pid"`
+	NativeHost    *localProcessIdentity `json:"nativeHost,omitempty"`
+	AcceptInbound bool                  `json:"acceptInbound"`
+	Expires       time.Time             `json:"expires"`
+	Signature     string                `json:"signature"`
 }
 
 type localDiscoveryRow struct {
@@ -124,15 +132,21 @@ type localPeer struct {
 	privateKey    ed25519.PrivateKey
 	incarnation   string
 	accept        bool
+	nativeHost    *localProcessIdentity
+	activity      localActivity
 	lease         *flock.Flock
 	registryLease *flock.Flock
 	transport     *localTransport
 	outgoing      sync.WaitGroup
+	watches       sync.WaitGroup
+	watching      map[string]bool
 	closed        bool
 	snapshots     map[string]localSnapshot
 	lastSenders   map[string]time.Time
 	stop          chan struct{}
 	stopped       chan struct{}
+	noticeWake    chan struct{}
+	noticeStopped chan struct{}
 }
 
 func startLocalPeer(options localPeerOptions) (*localPeer, error) {
@@ -180,6 +194,14 @@ func startLocalPeer(options localPeerOptions) (*localPeer, error) {
 		registryDir: registry, stateDir: state, sessionFile: file, name: options.Name,
 		accept: options.AcceptInbound, lease: lease, registryLease: registryLease, snapshots: make(map[string]localSnapshot),
 		lastSenders: make(map[string]time.Time), stop: make(chan struct{}), stopped: make(chan struct{}),
+		watching: make(map[string]bool), noticeWake: make(chan struct{}, 1), noticeStopped: make(chan struct{}),
+	}
+	if options.NativeHostPID != 0 {
+		birth, birthErr := localProcessBirth(options.NativeHostPID)
+		if birthErr != nil {
+			return nil, errors.Join(birthErr, registryLease.Close(), lease.Close())
+		}
+		peer.nativeHost = &localProcessIdentity{PID: options.NativeHostPID, Birth: birth}
 	}
 	if err := peer.loadIdentity(options.Session, file, cwd); err != nil {
 		return nil, errors.Join(err, registryLease.Close(), lease.Close())
@@ -196,6 +218,9 @@ func startLocalPeer(options localPeerOptions) (*localPeer, error) {
 		return nil, errors.Join(err, peer.transport.close(), registryLease.Close(), lease.Close())
 	}
 	go peer.heartbeat()
+	go peer.driveLocalNotices()
+	peer.wakeLocalNotices()
+	peer.recoverLocalWatches()
 	return peer, nil
 }
 
@@ -321,7 +346,7 @@ func localPresenceBytes(presence localPresence) ([]byte, error) {
 }
 
 func (p *localPeer) writePresence() error {
-	presence := localPresence{Version: 1, Ref: p.ref, Name: p.name, Incarnation: p.incarnation, Socket: p.socketName(), PID: os.Getpid(), AcceptInbound: p.accept, Expires: time.Now().Add(localPresenceTTL).UTC()}
+	presence := localPresence{Version: 1, Ref: p.ref, Name: p.name, Incarnation: p.incarnation, Socket: p.socketName(), PID: os.Getpid(), NativeHost: p.nativeHost, AcceptInbound: p.accept, Expires: time.Now().Add(localPresenceTTL).UTC()}
 	data, err := localPresenceBytes(presence)
 	if err != nil {
 		return err
@@ -348,6 +373,9 @@ func readLocalPresence(path string, now time.Time) (localPresence, error) {
 	}
 	if _, err := hex.DecodeString(presence.Incarnation); err != nil || !presence.Expires.After(now) || presence.Expires.After(now.Add(2*localPresenceTTL)) {
 		return presence, errors.New("expired or invalid local presence")
+	}
+	if presence.NativeHost != nil && (presence.NativeHost.PID <= 0 || presence.NativeHost.Birth == "" || len(presence.NativeHost.Birth) > 128) {
+		return presence, errors.New("invalid native host identity")
 	}
 	public, _ := hex.DecodeString(presence.Ref.Key)
 	sig, err := hex.DecodeString(presence.Signature)
@@ -502,7 +530,9 @@ func (p *localPeer) close() error {
 	p.mu.Unlock()
 	<-p.stopped
 	transportErr := p.transport.close()
+	<-p.noticeStopped
 	p.outgoing.Wait()
+	p.watches.Wait()
 	presence, err := readLocalPresence(p.presencePath(), time.Now())
 	if err == nil && presence.Ref == p.ref && presence.Incarnation == p.incarnation {
 		err = os.Remove(p.presencePath())
