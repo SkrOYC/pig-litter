@@ -76,6 +76,34 @@ func planPaths(dir string, ref MemberRef) (string, string) {
 	return filepath.Join(dir, name+".lock"), filepath.Join(dir, name+".json")
 }
 
+func (s *teamStore) readMemberControlLocked(ref MemberRef, path string) (planLedger, error) {
+	var ledger planLedger
+	data, err := readPeerFile(path)
+	if err != nil {
+		return ledger, err
+	}
+	digest := sha256.Sum256(data)
+	if expected, exists := s.planDigests[ref]; exists && expected != digest {
+		return ledger, errors.New("plan metadata changed outside its owner")
+	}
+	if err := checkUniqueJSON(data); err != nil {
+		return ledger, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&ledger); err != nil {
+		return ledger, err
+	}
+	if err := validatePlanLedger(ledger, ref); err != nil {
+		return ledger, err
+	}
+	if s.planDigests == nil {
+		s.planDigests = map[MemberRef][32]byte{}
+	}
+	s.planDigests[ref] = digest
+	return ledger, nil
+}
+
 func (s *teamStore) reconcilePlanLocked(ref MemberRef, pending *uncertainPlanWrite) error {
 	if err := checkLockedFile(pending.lock); err != nil {
 		return err
@@ -149,29 +177,11 @@ func (s *teamStore) memberControlTransaction(ref MemberRef, requirePlan bool, ch
 		}
 		ledger := planLedger{Version: 1, Member: ref, Requests: []planRequest{}}
 		if !initial {
-			data, err := readPeerFile(path)
+			var err error
+			ledger, err = s.readMemberControlLocked(ref, path)
 			if err != nil {
 				return finish(err)
 			}
-			digest := sha256.Sum256(data)
-			if expected, exists := s.planDigests[ref]; exists && expected != digest {
-				return finish(errors.New("plan metadata changed outside its owner"))
-			}
-			if err := checkUniqueJSON(data); err != nil {
-				return finish(err)
-			}
-			decoder := json.NewDecoder(bytes.NewReader(data))
-			decoder.DisallowUnknownFields()
-			if err := decoder.Decode(&ledger); err != nil {
-				return finish(err)
-			}
-			if err := validatePlanLedger(ledger, ref); err != nil {
-				return finish(err)
-			}
-			if s.planDigests == nil {
-				s.planDigests = map[MemberRef][32]byte{}
-			}
-			s.planDigests[ref] = digest
 		}
 		changed, grant, actionErr := change(&ledger)
 		if initial || changed {

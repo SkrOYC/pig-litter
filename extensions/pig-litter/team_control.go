@@ -229,41 +229,9 @@ func (o *owner) applyShutdown(authority controlAuthority, command shutdownComman
 		if err != nil {
 			return nil, err
 		}
-		views := []shutdownView{}
-		for _, member := range members {
-			if command.Action == "get" && member.Ref != command.RequestID.Member {
-				continue
-			}
-			if lead {
-				o.observeControlNotices(member.Ref, "lead")
-			} else {
-				o.observeControlNotices(member.Ref, "member")
-			}
-			lifecycle, err := store.readLifecycle(member.Ref)
-			if err != nil {
-				return nil, err
-			}
-			if lifecycle.Phase == "terminated" {
-				o.tree.mu.Lock()
-				current := o.tree.records[member.Ref.ID]
-				confirmed := member.State == "terminated" && current != nil && current.team != nil && current.team.Ref == member.Ref && current.controlPhase == "terminated"
-				o.tree.mu.Unlock()
-				if !confirmed {
-					return nil, reject("unavailable", "teammate termination is not fully committed")
-				}
-			}
-			for _, request := range lifecycle.Requests {
-				if command.Action == "get" && request.ID != command.RequestID {
-					continue
-				}
-				notices := []controlNotice{}
-				for _, candidate := range lifecycle.Notices {
-					if candidate.Request == request.ID && (lead || candidate.Recipient == "member") {
-						notices = append(notices, candidate)
-					}
-				}
-				views = append(views, shutdownView{Request: request, Phase: lifecycle.Phase, Notices: notices})
-			}
+		views, err := o.shutdownViews(store, members, lead, command, false)
+		if err != nil {
+			return nil, err
 		}
 		if command.Action == "get" {
 			if len(views) != 1 {
@@ -276,13 +244,79 @@ func (o *owner) applyShutdown(authority controlAuthority, command shutdownComman
 	return nil, reject("rejected", "unknown shutdown action")
 }
 
+func (o *owner) shutdownViews(store *teamStore, members []teamMember, lead bool, command shutdownCommand, passive bool) ([]shutdownView, error) {
+	views := []shutdownView{}
+	for _, member := range members {
+		if command.Action == "get" && member.Ref != command.RequestID.Member {
+			continue
+		}
+		var lifecycle memberLifecycle
+		var err error
+		if passive {
+			lifecycle, err = store.snapshotLifecycle(member.Ref)
+		} else {
+			if lead {
+				o.observeControlNotices(member.Ref, "lead")
+			} else {
+				o.observeControlNotices(member.Ref, "member")
+			}
+			lifecycle, err = store.readLifecycle(member.Ref)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if lifecycle.Phase == "terminated" {
+			o.tree.mu.Lock()
+			current := o.tree.records[member.Ref.ID]
+			confirmed := member.State == "terminated" && current != nil && current.team != nil && current.team.Ref == member.Ref && current.controlPhase == "terminated"
+			o.tree.mu.Unlock()
+			if !confirmed {
+				return nil, reject("unavailable", "teammate termination is not fully committed")
+			}
+		}
+		for _, request := range lifecycle.Requests {
+			if command.Action == "get" && request.ID != command.RequestID {
+				continue
+			}
+			notices := []controlNotice{}
+			for _, candidate := range lifecycle.Notices {
+				if candidate.Request == request.ID && (lead || candidate.Recipient == "member") {
+					notices = append(notices, candidate)
+				}
+			}
+			views = append(views, shutdownView{Request: request, Phase: lifecycle.Phase, Notices: notices})
+		}
+	}
+	return views, nil
+}
+
 func (o *owner) shutdownSnapshot(authority controlAuthority) ([]shutdownView, error) {
 	if authority.caller != nil {
 		return nil, reject("permission_denied", "only the team lead can view all shutdowns")
 	}
-	result, err := o.applyShutdown(authority, shutdownCommand{Action: "list"})
+	o.tree.lifecycleMu.Lock()
+	defer o.tree.lifecycleMu.Unlock()
+	if err := o.current(); err != nil {
+		return nil, err
+	}
+	o.tree.mu.Lock()
+	var err error
+	if authority.human != nil {
+		err = authority.human()
+	} else {
+		_, err = o.tree.callerLocked(nil)
+	}
+	o.tree.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	return result["shutdowns"].([]shutdownView), nil
+	store, err := o.teamStoreForRoot()
+	if err != nil {
+		return nil, err
+	}
+	_, members, err := store.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	return o.shutdownViews(store, members, true, shutdownCommand{Action: "list"}, true)
 }

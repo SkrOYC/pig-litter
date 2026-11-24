@@ -1,14 +1,93 @@
 package piglitter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestShutdownSnapshotDoesNotObserveHistoryOrWrite(t *testing.T) {
+	store, _, root, workspace := storeTestOpen(t)
+	member, err := store.Reserve(storeTestUUID(2), string(storeTestUUID(3)), "worker", workspace, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err = store.Commit(member.AdmissionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := testTree(t, defaultConfig())
+	tree.root.id = root
+	var historyReads atomic.Int32
+	var exerciseErr error
+	withCompletionHost(t, tree, func(o *owner) {
+		o.teamStore = store
+		human := controlAuthority{human: func() error { return nil }}
+		views, err := o.shutdownSnapshot(human)
+		if err != nil || len(views) != 0 {
+			exerciseErr = fmt.Errorf("empty snapshot: %#v %v", views, err)
+			return
+		}
+		lockPath, path := planPaths(store.dir, member.Ref)
+		if _, err := os.Lstat(lockPath); !os.IsNotExist(err) {
+			exerciseErr = fmt.Errorf("empty snapshot created control state: %v", err)
+			return
+		}
+		request, _, _, err := store.requestShutdown(member.Ref, "passive", "Please stop", 60000)
+		if err != nil {
+			exerciseErr = err
+			return
+		}
+		_, notice, err := store.respondShutdown(request.ID, "execution", "reject", "Still working")
+		if err != nil {
+			exerciseErr = err
+			return
+		}
+		o.controlAuth = map[string]controlNotice{notice.ID: notice}
+		before, err := os.ReadFile(path)
+		if err != nil {
+			exerciseErr = err
+			return
+		}
+		started := time.Now()
+		for i := 0; i < 50; i++ {
+			views, err = o.shutdownSnapshot(human)
+			if err != nil || len(views) != 1 || views[0].Request.ID != request.ID {
+				exerciseErr = fmt.Errorf("snapshot %d: %#v %v", i, views, err)
+				return
+			}
+		}
+		t.Logf("50 passive shutdown snapshots took %s", time.Since(started))
+		after, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(before, after) || historyReads.Load() != 0 {
+			exerciseErr = fmt.Errorf("snapshot changed storage or read history: reads=%d err=%v", historyReads.Load(), err)
+			return
+		}
+		if _, err := o.applyShutdown(human, shutdownCommand{Action: "get", RequestID: request.ID}); err != nil || historyReads.Load() == 0 {
+			exerciseErr = fmt.Errorf("active shutdown read did not reconcile notice: reads=%d err=%v", historyReads.Load(), err)
+		}
+	}, func(method string, raw json.RawMessage) json.RawMessage {
+		if method == "sessionRead" {
+			var query struct{ Method string }
+			_ = json.Unmarshal(raw, &query)
+			if query.Method == "getEntries" {
+				historyReads.Add(1)
+				return json.RawMessage(`[]`)
+			}
+			return json.RawMessage(`"fixture"`)
+		}
+		return json.RawMessage(`null`)
+	})
+	if exerciseErr != nil {
+		t.Fatal(exerciseErr)
+	}
+}
 
 func TestShutdownLifecycleRefusalApprovalAndRecovery(t *testing.T) {
 	store, _, _, workspace := storeTestOpen(t)

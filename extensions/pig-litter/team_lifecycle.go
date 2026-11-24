@@ -3,6 +3,7 @@ package piglitter
 import (
 	"errors"
 	"math"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -294,6 +295,53 @@ func (s *teamStore) readLifecycle(ref MemberRef) (memberLifecycle, error) {
 		result.Notices = append([]controlNotice(nil), lifecycle.Notices...)
 		return changed, nil
 	})
+	return result, err
+}
+
+func (s *teamStore) snapshotLifecycle(ref MemberRef) (memberLifecycle, error) {
+	result := memberLifecycle{Phase: "open", Requests: []shutdownRequest{}, Notices: []controlNotice{}}
+	err := s.transact(func(roster *teamRoster) (bool, error) {
+		found := false
+		for _, member := range roster.Members {
+			if member.Ref == ref {
+				found = true
+				break
+			}
+		}
+		if !found || s.planUncertain[ref] != nil {
+			return false, reject("unavailable", "teammate control state is unavailable")
+		}
+		lockPath, path := planPaths(s.dir, ref)
+		if _, err := os.Lstat(lockPath); errors.Is(err, os.ErrNotExist) {
+			if _, exists := s.planDigests[ref]; exists {
+				return false, errors.New("plan metadata disappeared")
+			}
+			if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+				return false, errors.New("plan lock is missing for existing metadata")
+			}
+			return false, nil
+		} else if err != nil {
+			return false, err
+		}
+		lock, err := lockTeamFile(lockPath, false)
+		if err != nil {
+			return false, err
+		}
+		err = func() error {
+			ledger, err := s.readMemberControlLocked(ref, path)
+			if err != nil {
+				return err
+			}
+			if ledger.Lifecycle != nil {
+				result = *ledger.Lifecycle
+			}
+			return nil
+		}()
+		return false, errors.Join(err, lock.Close())
+	})
+	if err == nil {
+		expireShutdowns(&result, time.Now().UTC())
+	}
 	return result, err
 }
 
