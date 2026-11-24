@@ -75,13 +75,18 @@ printf 'path=%s\nidentity=%s\n' "$scratch" "$scratch_id" > "$evidence/scratch.tx
 finish() {
   result=$?
   trap - EXIT
-  printf '%s\n' "$result" > "$evidence/runner-exit.txt"
-  if [[ "$result" == 0 && -f "$evidence/cleanup-ok" && "$(stat -f '%d:%i' "$scratch")" == "$scratch_id" ]]; then
-    rm -rf "$scratch"
+  printf '%s\n' "$result" > "$evidence/product-exit.txt"
+  if [[ "$result" != 0 || ! -f "$evidence/cleanup-ok" ]]; then
+    printf '{"status":"retained","reason":"product or terminal cleanup failed"}\n' > "$evidence/scratch-cleanup.json"
+    printf 'retained for failure analysis\n' >> "$evidence/scratch.txt"
+    if [[ "$result" == 0 ]]; then result=1; fi
+  elif python3 "$driver/scripts/p03-cache-cleanup.py" "$scratch" "$scratch_id" "$evidence"; then
     printf 'removed verified private scratch\n' >> "$evidence/scratch.txt"
   else
     printf 'retained for failure analysis\n' >> "$evidence/scratch.txt"
+    result=1
   fi
+  printf '%s\n' "$result" > "$evidence/runner-exit.txt"
   exit "$result"
 }
 trap finish EXIT
@@ -90,6 +95,6 @@ mkdir -p "$scratch/bin"
 export GOTELEMETRY=off
 export P03_SCRATCH="$scratch"
 
-PIG_PLATFORM_ROOT_DIR="$repo" PIG_PLATFORM_SCRATCH_PARENT="$scratch" PIG_PLATFORM_CACHE_DIR='' \
+PIG_PLATFORM_ROOT_DIR="$repo" PIG_PLATFORM_SCRATCH_PARENT="$scratch" PIG_PLATFORM_CACHE_DIR='' PIG_PLATFORM_RECORD_CACHE_IDENTITY=1 \
   bash "$driver/scripts/verify-pig-platforms.sh" "$candidate" darwin "$expected_arch" "$evidence/native-platform" -- \
   bash "$driver/scripts/verify-p03-macos.sh" --run-prepared 2>&1 | tee "$evidence/build.log"

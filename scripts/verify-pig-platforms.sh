@@ -88,6 +88,12 @@ fi
 build_dir="$(cd "$build_dir" && pwd -P)"
 printf 'build_dir=%s\n' "$build_dir" >> "$evidence_dir/runner.txt"
 mkdir -p "$scratch_dir/tmp" "$build_dir/go-build" "$build_dir/go-mod" "$build_dir/go-tmp" "$scratch_dir/pig-home/agent"
+if [[ "${PIG_PLATFORM_RECORD_CACHE_IDENTITY:-}" == 1 ]]; then
+  [[ "$expected_os" == darwin && "$build_dir" == "$scratch_dir" ]] || fail_check "$LINENO"
+  platform_id=$(stat -f '%d:%i' "$scratch_dir") || fail_check "$LINENO"
+  cache_id=$(stat -f '%d:%i' "$build_dir/go-mod") || fail_check "$LINENO"
+  printf '%s\n%s\n%s\n' "$scratch_dir" "$platform_id" "$cache_id" > "$evidence_dir/cache-identity.txt"
+fi
 export TMPDIR="$scratch_dir/tmp" GOCACHE="$build_dir/go-build" GOMODCACHE="$build_dir/go-mod" GOTMPDIR="$build_dir/go-tmp"
 export GOPATH="$build_dir/go" GOTOOLCHAIN=local CGO_ENABLED=1 GOENV=off
 export PIG_HOME="$scratch_dir/pig-home" PIG_CODING_AGENT_DIR="$scratch_dir/pig-home/agent"
