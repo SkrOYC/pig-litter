@@ -340,7 +340,17 @@ func (o *owner) modelFor(ctx context.Context, name string, runtime *coding.Model
 		}
 	}
 	model := runtime.GetModel(provider, modelID)
-	if !parentAvailable || !permitted || model == nil || !runtime.HasConfiguredAuth(provider) {
+	if !parentAvailable || !permitted || model == nil {
+		return nil, reject("unavailable", "exact model is unavailable to the root and stock SDK")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	auth, err := runtime.CheckAuth(ctx, provider)
+	if err != nil {
+		return nil, err
+	}
+	if auth == nil {
 		return nil, reject("unavailable", "exact model is unavailable to the root and stock SDK")
 	}
 	independent, err := runtime.GetAvailable(ctx, provider)
