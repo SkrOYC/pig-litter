@@ -71,7 +71,7 @@ func TestIdleTeamPauseSurvivesLateSettlementAndRestart(t *testing.T) {
 	}
 	tree := newTree(defaultConfig())
 	tree.root.id = root
-	owner := &owner{tree: tree, teamStore: store}
+	owner := &owner{state: &extensionState{}, tree: tree, teamStore: store}
 	tree.teamPaused = owner.pauseTeamMember
 	settling := make(chan struct{})
 	release := make(chan struct{})
@@ -105,6 +105,10 @@ func TestIdleTeamPauseSurvivesLateSettlementAndRestart(t *testing.T) {
 	_, roster, err = store.Snapshot()
 	if err != nil || len(roster) != 1 || roster[0].State != "paused" {
 		t.Fatalf("late settlement overwrote the pause: %#v, %v", roster, err)
+	}
+	lifecycle, err := store.readLifecycle(member.Ref)
+	if err != nil || len(lifecycle.Turns) != 1 || lifecycle.Turns[0].Kind != "interrupted" {
+		t.Fatalf("late settlement reported the wrong notice: %#v, %v", lifecycle.Turns, err)
 	}
 	tree.close()
 	if err := store.Close(); err != nil {

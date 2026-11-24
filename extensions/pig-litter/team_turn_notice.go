@@ -19,8 +19,10 @@ type turnNotice struct {
 	NativeEntryID string    `json:"nativeEntryId,omitempty"`
 }
 
+const turnNoticeLimit = 16
+
 func validateTurnNotices(notices []turnNotice, ref MemberRef) error {
-	if len(notices) > 256 {
+	if len(notices) > turnNoticeLimit {
 		return errors.New("too many teammate turn notices")
 	}
 	seen := map[string]bool{}
@@ -69,7 +71,7 @@ func (s *teamStore) recordTurnNotice(ref MemberRef, execution string, outcome Ou
 			notice = current
 			return false, nil
 		}
-		if len(lifecycle.Turns) == 256 {
+		if len(lifecycle.Turns) == turnNoticeLimit {
 			removed := false
 			for index, current := range lifecycle.Turns {
 				if current.Delivery == "native_observed" {

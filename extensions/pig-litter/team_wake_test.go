@@ -51,7 +51,12 @@ func peerWakeTestOwner(t *testing.T, finished bool) (*owner, *teamStore, teamMem
 
 func TestPeerWakeRequiresLiveAndStoredUnpausedState(t *testing.T) {
 	owner, store, _, recipient, r, previous, started, release := peerWakeTestOwner(t, true)
-	defer close(release)
+	defer func() {
+		owner.state.mu.Lock()
+		owner.state.owner = nil
+		owner.state.mu.Unlock()
+		close(release)
+	}()
 	r.paused = true
 	if woke, err := owner.reservePeerWake(recipient.Ref, previous); err != nil || woke {
 		t.Fatalf("live paused member woke: %v, %v", woke, err)
@@ -85,7 +90,12 @@ func TestPeerWakeRequiresLiveAndStoredUnpausedState(t *testing.T) {
 
 func TestPeerWakeWaitsForFinishAndCoalescesRequests(t *testing.T) {
 	owner, store, _, recipient, r, previous, started, release := peerWakeTestOwner(t, false)
-	defer close(release)
+	defer func() {
+		owner.state.mu.Lock()
+		owner.state.owner = nil
+		owner.state.mu.Unlock()
+		close(release)
+	}()
 	if err := store.SetState(recipient.Ref, "running"); err != nil {
 		t.Fatal(err)
 	}

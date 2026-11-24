@@ -332,6 +332,9 @@ func (o *owner) finishTeamMember(r *record, selected *run, outcome Outcome) erro
 		return err
 	}
 	if !closing || paused {
+		if paused {
+			outcome.State = Paused
+		}
 		notice, created, err := store.recordTurnNotice(r.team.Ref, selected.noticeID, outcome)
 		if err != nil {
 			return err
