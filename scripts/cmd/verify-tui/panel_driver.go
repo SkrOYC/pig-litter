@@ -15,9 +15,10 @@ import (
 const panelBudget = 2 * time.Second
 
 type ownerReplacement struct {
-	Action string          `json:"action"`
-	Before observedProcess `json:"before"`
-	After  observedProcess `json:"after"`
+	Action          string          `json:"action"`
+	Before          observedProcess `json:"before"`
+	After           observedProcess `json:"after"`
+	ProcessRetained bool            `json:"processRetained"`
 }
 
 type panelEvent struct {
@@ -1294,19 +1295,24 @@ func (p *panelProof) selectedExtensionProcess(executable string) bool {
 
 func (p *panelProof) waitReplacement(action string, before observedProcess) error {
 	var after observedProcess
+	retained := false
 	if err := waitFor(p.ctx, action, stageTimeout, func() (bool, error) {
 		current, err := p.extensionProcess()
 		if err != nil {
 			return false, nil
 		}
 		if current.PID == before.PID && current.StartTicks == before.StartTicks {
-			return false, nil
+			if p.sourceCellDir == "" || current.Executable != before.Executable || !observedAlive(before) {
+				return false, nil
+			}
+			after, retained = current, true
+			return true, nil
 		}
 		after = current
 		return !observedAlive(before), nil
 	}); err != nil {
 		return err
 	}
-	p.replacements = append(p.replacements, ownerReplacement{Action: action, Before: before, After: after})
+	p.replacements = append(p.replacements, ownerReplacement{Action: action, Before: before, After: after, ProcessRetained: retained})
 	return nil
 }
