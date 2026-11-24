@@ -60,15 +60,14 @@ func validLocalRef(ref localSessionRef) bool {
 }
 
 type localPeerOptions struct {
-	RegistryDir   string
-	StateDir      string
-	Session       ChildID
-	SessionFile   string
-	CWD           string
-	Name          string
-	AcceptInbound bool
-	// NativeHostPID must identify the native session host, not the extension process.
-	NativeHostPID int
+	RegistryDir          string
+	StateDir             string
+	Session              ChildID
+	SessionFile          string
+	CWD                  string
+	Name                 string
+	AcceptInbound        bool
+	NativeSessionHostPID int
 }
 
 type localProcessIdentity struct {
@@ -196,12 +195,12 @@ func startLocalPeer(options localPeerOptions) (*localPeer, error) {
 		lastSenders: make(map[string]time.Time), stop: make(chan struct{}), stopped: make(chan struct{}),
 		watching: make(map[string]bool), noticeWake: make(chan struct{}, 1), noticeStopped: make(chan struct{}),
 	}
-	if options.NativeHostPID != 0 {
-		birth, birthErr := localProcessBirth(options.NativeHostPID)
+	if options.NativeSessionHostPID != 0 {
+		birth, birthErr := localProcessBirth(options.NativeSessionHostPID)
 		if birthErr != nil {
 			return nil, errors.Join(birthErr, registryLease.Close(), lease.Close())
 		}
-		peer.nativeHost = &localProcessIdentity{PID: options.NativeHostPID, Birth: birth}
+		peer.nativeHost = &localProcessIdentity{PID: options.NativeSessionHostPID, Birth: birth}
 	}
 	if err := peer.loadIdentity(options.Session, file, cwd); err != nil {
 		return nil, errors.Join(err, registryLease.Close(), lease.Close())

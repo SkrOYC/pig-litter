@@ -33,7 +33,7 @@ func TestLocalPeerFixtureProcess(t *testing.T) {
 		return
 	}
 	options := fixtureOptions(root, localFixtureTarget, "target", os.Getenv("LOCAL_PEER_FIXTURE_ACCEPT") == "1")
-	options.NativeHostPID = os.Getpid()
+	options.NativeSessionHostPID = os.Getpid()
 	peer, err := startLocalPeer(options)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
