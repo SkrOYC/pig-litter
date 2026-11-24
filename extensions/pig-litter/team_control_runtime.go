@@ -57,6 +57,9 @@ func (o *owner) pendingControlWake(store *teamStore, ref MemberRef) (*controlNot
 }
 
 func (o *owner) sendControlWake(session *coding.Session, r *record, selected *run, notice controlNotice) error {
+	if r.role == "observer" {
+		return reject("permission_denied", "observers do not accept control messages")
+	}
 	store, ok := o.peerRunStore(r, selected)
 	if !ok || notice.Request.Member != r.team.Ref {
 		return reject("unavailable", "control wake is no longer current")
@@ -118,6 +121,15 @@ func (o *owner) shutdownHook(r *record, selected *run) agent.BeforeToolCallHook 
 }
 
 func (o *owner) routeControlNotice(notice controlNotice) {
+	if notice.Recipient == "member" {
+		o.tree.mu.Lock()
+		recipient := o.tree.records[notice.Request.Member.ID]
+		observer := recipient != nil && recipient.team != nil && recipient.team.Ref == notice.Request.Member && recipient.role == "observer"
+		o.tree.mu.Unlock()
+		if observer {
+			return
+		}
+	}
 	o.controlMu.Lock()
 	if o.controlAuth == nil {
 		o.controlAuth = make(map[string]controlNotice)
@@ -149,7 +161,7 @@ func (o *owner) deliverControlNotice(notice controlNotice) {
 	if notice.Recipient == "member" {
 		o.tree.mu.Lock()
 		recipient = o.tree.records[notice.Request.Member.ID]
-		if recipient != nil && recipient.team != nil && recipient.team.Ref == notice.Request.Member && !recipient.paused && !recipient.run.state.terminal() && (recipient.run.peerWake == nil || recipient.run.peerWake.Control == nil || recipient.run.peerWake.Control.ID != notice.ID) {
+		if recipient != nil && recipient.team != nil && recipient.team.Ref == notice.Request.Member && recipient.role != "observer" && !recipient.paused && !recipient.run.state.terminal() && (recipient.run.peerWake == nil || recipient.run.peerWake.Control == nil || recipient.run.peerWake.Control.ID != notice.ID) {
 			selected = recipient.run
 		}
 		o.tree.mu.Unlock()

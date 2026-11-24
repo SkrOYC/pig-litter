@@ -24,6 +24,7 @@ type memberControlCommand struct {
 	ID         string                `json:"id"`
 	Kind       string                `json:"kind"`
 	Completion *memberCompletionWire `json:"completion,omitempty"`
+	Observer   *memberObserverWire   `json:"observer,omitempty"`
 	History    *memberHistoryWire    `json:"history,omitempty"`
 	Audit      *completionAudit      `json:"audit,omitempty"`
 	Input      *memberInputWire      `json:"input,omitempty"`
@@ -42,6 +43,12 @@ type memberCompletionWire struct {
 	Content string            `json:"content"`
 	Mode    string            `json:"mode,omitempty"`
 	Trigger bool              `json:"trigger"`
+}
+
+type memberObserverWire struct {
+	Content  string                  `json:"content"`
+	Activity *observerActivityMarker `json:"activity,omitempty"`
+	Report   *observerMarker         `json:"report,omitempty"`
 }
 
 type memberHistoryWire struct {
@@ -401,7 +408,7 @@ func (queue *memberControlQueue) result(w http.ResponseWriter, r *http.Request) 
 	valid := reply.Error != "" && reply.Disposition == 0 && reply.Snapshot == nil
 	if reply.Error == "" {
 		switch reply.Kind {
-		case "completion":
+		case "completion", "observer":
 			valid = reply.Snapshot == nil && (reply.Disposition == memberInputQueued || reply.Disposition == memberInputHandled || reply.Disposition == memberInputUncertain)
 		case "snapshot":
 			valid = reply.Snapshot != nil && reply.Disposition == 0
@@ -511,11 +518,15 @@ func (queue *memberControlQueue) Queue(ctx context.Context, input memberInput) (
 	if text, ok := input.(memberTextInput); ok {
 		return queue.queueText(ctx, text)
 	}
-	completion, ok := input.(memberCompletionInput)
-	if !ok {
+	var command memberControlCommand
+	switch value := input.(type) {
+	case memberCompletionInput:
+		command = memberControlCommand{Kind: "completion", Completion: &memberCompletionWire{Details: value.details, Content: value.content, Mode: value.mode, Trigger: value.trigger}}
+	case memberObserverInput:
+		command = memberControlCommand{Kind: "observer", Observer: &memberObserverWire{Content: value.content, Activity: value.activity, Report: value.report}}
+	default:
 		return memberInputUncertain, reject("unavailable", "native input is unavailable")
 	}
-	command := memberControlCommand{Kind: "completion", Completion: &memberCompletionWire{Details: completion.details, Content: completion.content, Mode: completion.mode, Trigger: completion.trigger}}
 	reply, err := queue.request(ctx, command)
 	if err != nil {
 		return memberInputUncertain, err

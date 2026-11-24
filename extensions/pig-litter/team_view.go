@@ -31,6 +31,7 @@ type teamExecutionView struct {
 	Progress  runProgress
 	Tools     []string
 	Latest    *Outcome
+	Observer  map[string]any
 }
 
 type teamMemberView struct {
@@ -250,6 +251,7 @@ func (v *teamView) refresh(lastSaved **MemberRef) {
 	frame.RosterHealth = viewHealth{Status: "fresh"}
 	frame.Reservations = pending
 	frame.Members = make([]teamMemberView, len(members))
+	observerPairs := make([]*observerPair, len(members))
 	v.owner.tree.mu.Lock()
 	for i, member := range members {
 		view := teamMemberView{Member: member}
@@ -269,10 +271,16 @@ func (v *teamView) refresh(lastSaved **MemberRef) {
 				execution.Latest = &outcome
 			}
 			view.Execution = execution
+			observerPairs[i] = r.observer
 		}
 		frame.Members[i] = view
 	}
 	v.owner.tree.mu.Unlock()
+	for i, pair := range observerPairs {
+		if pair != nil {
+			frame.Members[i].Execution.Observer = pair.presentation()
+		}
+	}
 	tasks, err := store.listTasks()
 	if err != nil {
 		frame.TaskHealth = viewFailure(frame.TaskHealth, err)
@@ -467,6 +475,11 @@ func (v *teamView) readTranscript(ref MemberRef, request uint64) (teamTranscript
 		return result, identity
 	}
 	identity = historyIdentity{record: r, run: r.run, log: r.activeLog, native: r.native}
+	if r.role == "observer" {
+		tree.mu.Unlock()
+		result.Health.Error = "observer transcript is unavailable"
+		return result, identity
+	}
 	tree.mu.Unlock()
 	var entries []transcriptEntry
 	var clipped bool

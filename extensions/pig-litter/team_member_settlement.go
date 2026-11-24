@@ -53,6 +53,26 @@ func (o *owner) decideMemberSettlement(ctx context.Context, binding *memberBindi
 	if err := o.current(); err != nil {
 		return decision, err
 	}
+	if binding.record.role == "observer" {
+		o.tree.lifecycleMu.Lock()
+		defer o.tree.lifecycleMu.Unlock()
+		o.tree.mu.Lock()
+		active := o.memberBindingCurrentLocked(binding)
+		turns := binding.run.progress.turns
+		o.tree.mu.Unlock()
+		if !active {
+			return decision, reject("unavailable", "native observer execution is no longer current")
+		}
+		phase := memberInputPhase(binding.control)
+		binding.settleMu.Lock()
+		defer binding.settleMu.Unlock()
+		if binding.boundary != boundary || binding.settlement != nil {
+			return decision, reject("unavailable", "native observer settlement changed")
+		}
+		binding.settlement = &memberSettlement{boundary: boundary, candidate: idlePolicyCandidate{Member: binding.member, Execution: binding.run.noticeID}, phase: phase, turns: turns}
+		decision.allow = true
+		return decision, nil
+	}
 	o.tree.lifecycleMu.Lock()
 	o.tree.mu.Lock()
 	active := o.memberBindingCurrentLocked(binding)
@@ -133,6 +153,19 @@ func (o *owner) finalizeMemberSettlement(binding *memberBinding, boundary uint64
 	o.tree.mu.Unlock()
 	if !active {
 		return decision, reject("unavailable", "native member execution is no longer current")
+	}
+	if binding.record.role == "observer" {
+		o.tree.mu.Lock()
+		turns := binding.run.progress.turns
+		o.tree.mu.Unlock()
+		if pending.candidate.Member != binding.member || pending.candidate.Execution != binding.run.noticeID || pending.phase != memberInputPhase(binding.control) || pending.turns != turns || commit == nil {
+			return decision, reject("unavailable", "native observer settlement changed")
+		}
+		if err := commit(); err != nil {
+			return decision, err
+		}
+		decision.allow = true
+		return decision, nil
 	}
 	current, wake, err := o.idleCandidateLocal(binding.record, binding.run, pending.candidate.Report)
 	if err != nil {

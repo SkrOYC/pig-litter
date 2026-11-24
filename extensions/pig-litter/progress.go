@@ -1,6 +1,10 @@
 package piglitter
 
-import "github.com/MichaelKinsy/PiG/agent"
+import (
+	"time"
+
+	"github.com/MichaelKinsy/PiG/agent"
+)
 
 const activeToolLimit = 64
 
@@ -14,9 +18,13 @@ func (t *Tree) observeProgress(selected *run, event agent.AgentEvent) {
 	progress := &selected.progress
 	switch event := event.(type) {
 	case agent.TurnStartEvent, agent.TurnEndEvent:
+		progress.version++
+		progress.sourceAt = time.Now().UTC()
 		progress.activeTools = nil
 		progress.toolsClipped = false
 	case agent.ToolExecutionStartEvent:
+		progress.version++
+		progress.sourceAt = time.Now().UTC()
 		progress.toolStarts++
 		if progress.activeTools == nil {
 			progress.activeTools = map[string]string{}
@@ -28,6 +36,8 @@ func (t *Tree) observeProgress(selected *run, event agent.AgentEvent) {
 		name, _ := bounded(event.ToolName, 256)
 		progress.activeTools[event.ToolCallID] = name
 	case agent.ToolExecutionEndEvent:
+		progress.version++
+		progress.sourceAt = time.Now().UTC()
 		delete(progress.activeTools, event.ToolCallID)
 	}
 }

@@ -33,8 +33,9 @@ type Config struct {
 }
 
 var roleDefaults = map[string]AgentDefinition{
-	"scout":  {Role: "scout", Instructions: "Inspect files for the task. Do not change files. Report relevant paths and uncertainty.", Tools: []string{"read", "ls"}},
-	"worker": {Role: "worker", Instructions: "Complete the task with permitted tools. Preserve unrelated changes. Report changes and checks.", Tools: []string{"read", "ls", "write", "edit", "bash", "skill:*", "mcp__*", "codemode", "tool_search"}, CanDelegate: true},
+	"scout":    {Role: "scout", Instructions: "Inspect files for the task. Do not change files. Report relevant paths and uncertainty.", Tools: []string{"read", "ls"}},
+	"worker":   {Role: "worker", Instructions: "Complete the task with permitted tools. Preserve unrelated changes. Report changes and checks.", Tools: []string{"read", "ls", "write", "edit", "bash", "skill:*", "mcp__*", "codemode", "tool_search"}, CanDelegate: true},
+	"observer": {Role: "observer", Instructions: "Observe structural activity. Report useful changes or remain silent.", Tools: []string{"read", "ls"}},
 }
 
 var agentName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
@@ -219,8 +220,8 @@ func parseConfig(base Config, source []byte) (Config, error) {
 					return Config{}, fmt.Errorf("agents.%s can_delegate must be a boolean", name)
 				}
 			}
-			if definition.Role == "scout" && definition.CanDelegate {
-				return Config{}, fmt.Errorf("agents.%s scout role cannot delegate", name)
+			if (definition.Role == "scout" || definition.Role == "observer") && definition.CanDelegate {
+				return Config{}, fmt.Errorf("agents.%s %s role cannot delegate", name, definition.Role)
 			}
 			if node := fields["tools"]; node != nil {
 				if node.Kind != yaml.SequenceNode {
@@ -228,8 +229,8 @@ func parseConfig(base Config, source []byte) (Config, error) {
 				}
 				definition.Tools = []string{}
 				for _, tool := range node.Content {
-					if tool.Tag != "!!str" || !validToolPattern(tool.Value) || definition.Role == "scout" && tool.Value != "read" && tool.Value != "ls" || slices.Contains(definition.Tools, tool.Value) {
-						return Config{}, fmt.Errorf("agents.%s tools must be distinct named tool patterns; scouts allow only read and ls", name)
+					if tool.Tag != "!!str" || !validToolPattern(tool.Value) || (definition.Role == "scout" || definition.Role == "observer") && tool.Value != "read" && tool.Value != "ls" || slices.Contains(definition.Tools, tool.Value) {
+						return Config{}, fmt.Errorf("agents.%s tools must be distinct named tool patterns; scouts and observers allow only read and ls", name)
 					}
 					definition.Tools = append(definition.Tools, tool.Value)
 				}

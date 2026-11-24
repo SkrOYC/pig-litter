@@ -34,6 +34,7 @@ type nativeMemberManifest struct {
 	Instructions     string            `json:"instructions"`
 	MailboxLimit     int               `json:"mailboxLimit"`
 	ProjectTrusted   bool              `json:"projectTrusted"`
+	Observer         bool              `json:"observer,omitempty"`
 }
 
 func readNativeMemberManifest(path string) (nativeMemberManifest, error) {
@@ -115,6 +116,11 @@ func (manifest nativeMemberManifest) validate(directory, name string) error {
 	}
 	if len(manifest.Tools) > 1024 || !slices.IsSorted(manifest.Tools) {
 		return errors.New("native member tool ceiling is invalid")
+	}
+	if manifest.Observer && (manifest.PeerWake || manifest.ResumeFile != "" || !slices.Contains(manifest.Tools, "observer_report") || slices.ContainsFunc(manifest.Tools, func(name string) bool {
+		return name != "observer_report" && name != "observer_read" && name != "observer_ls"
+	})) {
+		return errors.New("native observer tool ceiling is invalid")
 	}
 	for index, name := range manifest.Tools {
 		if name == "" || len(name) > 256 || index > 0 && manifest.Tools[index-1] == name || strings.ContainsRune(name, ',') || strings.IndexFunc(name, unicode.IsSpace) >= 0 || strings.IndexFunc(name, unicode.IsControl) >= 0 {

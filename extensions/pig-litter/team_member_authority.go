@@ -58,11 +58,12 @@ type memberResponseRequest struct {
 }
 
 type memberToolRequest struct {
-	Turn      uint64          `json:"turn"`
-	ID        string          `json:"id"`
-	Parent    string          `json:"parent,omitempty"`
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
+	Turn                  uint64          `json:"turn"`
+	ID                    string          `json:"id"`
+	Parent                string          `json:"parent,omitempty"`
+	Name                  string          `json:"name"`
+	Arguments             json.RawMessage `json:"arguments"`
+	InvalidObserverReport bool            `json:"invalidObserverReport,omitempty"`
 }
 
 type memberToolDecision struct {
@@ -265,24 +266,35 @@ func (queue *memberControlQueue) serveAuthority(w http.ResponseWriter, r *http.R
 			fail()
 			return
 		}
+		if authority.binding.record.role == "observer" {
+			pair := authority.binding.record.observer
+			if pair == nil {
+				http.Error(w, "native observer pairing is unavailable", http.StatusConflict)
+				return
+			}
+			authority.owner.pauseObserverDigest(pair)
+		}
 		snapshot, err := authority.owner.memberLogSnapshot(r.Context(), authority.binding)
 		if err != nil {
 			http.Error(w, "native settlement history is unavailable", http.StatusConflict)
 			return
 		}
 		_, terminal, err := memberAssistantMessages(snapshot, authority.binding.log.baselineCount)
-		if err != nil || request.Report != idleAssistantReport(terminal) {
+		observer := authority.binding.record.role == "observer"
+		if err != nil || observer && request.Report != "" || !observer && request.Report != idleAssistantReport(terminal) {
 			http.Error(w, "native settlement report does not match its history", http.StatusConflict)
 			return
 		}
-		peer, err := authority.offerPeer(r.Context())
-		if err != nil {
-			fail()
-			return
-		}
-		if peer != nil {
-			write(memberSettleReply{Boundary: request.Boundary, Continue: true, Peer: peer})
-			return
+		if !observer {
+			peer, err := authority.offerPeer(r.Context())
+			if err != nil {
+				fail()
+				return
+			}
+			if peer != nil {
+				write(memberSettleReply{Boundary: request.Boundary, Continue: true, Peer: peer})
+				return
+			}
 		}
 		decision, err := authority.owner.decideMemberSettlement(r.Context(), authority.binding, memberSettlementCandidate{boundary: request.Boundary, report: request.Report, completed: request.Completed, continuing: request.Continuing})
 		if err != nil {
@@ -378,7 +390,7 @@ func (authority *memberAuthority) finalizeSettlement(ctx context.Context, reques
 	}
 	binding.settleMu.Lock()
 	pending := binding.settlement
-	matches := pending != nil && pending.boundary == request.Boundary && pending.candidate.Report == evidence.report
+	matches := pending != nil && pending.boundary == request.Boundary && (binding.record.role == "observer" && pending.candidate.Report == "" || binding.record.role != "observer" && pending.candidate.Report == evidence.report)
 	binding.settleMu.Unlock()
 	if !matches {
 		return memberSettlementDecision{}, reject("unavailable", "native outcome does not match its approved settlement")
@@ -441,6 +453,12 @@ func (authority *memberAuthority) finalizeSettlement(ctx context.Context, reques
 
 func memberOperationRoute(path string) string {
 	switch path {
+	case "/member/observer/read":
+		return "observer_read"
+	case "/member/observer/ls":
+		return "observer_ls"
+	case "/member/observer/report":
+		return "observer_report"
 	case "/member/child/spawn":
 		return "litter_spawn"
 	case "/member/child/list":
@@ -521,6 +539,12 @@ func (authority *memberAuthority) startTurn(ctx context.Context, id uint64) erro
 	authority.mu.Unlock()
 	o.tree.lifecycleMu.Unlock()
 	o.retireScope(previous)
+	o.tree.observeProgress(binding.run, agent.TurnStartEvent{})
+	o.observerProgress(binding.run)
+	if binding.record.role == "observer" {
+		o.observerReady(binding.record.observer)
+	}
+	o.startObserverRecovery()
 	o.widget()
 	return nil
 }
@@ -542,6 +566,14 @@ func (authority *memberAuthority) turnHistoryStart(ctx context.Context) (int, er
 		}
 	}
 	entries, err := o.memberLogEntries(ctx, binding)
+	if err == nil && binding.record.role == "observer" {
+		for _, raw := range entries {
+			var message map[string]any
+			if json.Unmarshal(raw, &message) == nil && message["type"] == "custom_message" {
+				o.observeObserverDigest(binding.run, message)
+			}
+		}
+	}
 	return len(entries), err
 }
 
@@ -573,6 +605,9 @@ func (authority *memberAuthority) endTurn(id uint64) error {
 		return reject("unavailable", "native execution is unavailable")
 	}
 	o.retireScope(scope)
+	o.tree.observeProgress(binding.run, agent.TurnEndEvent{})
+	o.observerProgress(binding.run)
+	o.startObserverRecovery()
 	o.tree.mu.Lock()
 	if o.memberBindingCurrentLocked(binding) {
 		o.tree.teamWG.Add(1)
@@ -719,13 +754,19 @@ func (authority *memberAuthority) authorize(ctx context.Context, request memberT
 	authority.approved[request.ID] = memberAuthorizedCall{name: request.Name, digest: digest, response: response}
 	first := authority.first
 	authority.mu.Unlock()
+	authority.owner.tree.observeProgress(authority.binding.run, agent.ToolExecutionStartEvent{ToolCallID: request.ID, ToolName: request.Name})
+	authority.owner.observerProgress(authority.binding.run)
 	decision := memberToolDecision{}
 	planDenied := false
 	authority.gate.observe(first)
-	if !allowed {
+	if authority.binding.record.role == "observer" && request.Parent != "" {
+		decision = denied("observer tools cannot be nested")
+	} else if !allowed {
 		decision = denied("tool is outside the teammate ceiling")
 	} else if result := authority.gate.before(ctx, request.ID, request.Name, request.Arguments); result.Block {
 		decision = memberToolDecision{Block: true, Reason: result.Reason, Terminate: result.Terminate}
+	} else if request.InvalidObserverReport {
+		decision = denied("observer report arguments are invalid or unavailable")
 	} else if result := authority.owner.beforePlanTool(authority.binding.record, authority.binding.run, request.ID, request.Name, request.Arguments); result.Block {
 		decision = memberToolDecision{Block: true, Reason: result.Reason, Terminate: result.Terminate}
 		authority.binding.run.mu.Lock()
@@ -809,7 +850,16 @@ func (authority *memberAuthority) operation(ctx context.Context, operation strin
 		defer func() { stop(); cancel() }()
 		ctx = merged
 	}
-	value, operationErr := authority.owner.operation(ctx, args, ticket, nil)
+	var value map[string]any
+	var operationErr error
+	switch operation {
+	case "observer_report":
+		value, operationErr = authority.owner.acceptObserverReport(ticket, request.Args)
+	case "observer_read", "observer_ls":
+		value, operationErr = authority.owner.observerVirtual(authority.binding.run, operation, request.Args)
+	default:
+		value, operationErr = authority.owner.operation(ctx, args, ticket, nil)
+	}
 	reply.Content, reply.IsError = resultContent(operation, value, operationErr)
 	return reply, nil
 }
@@ -890,5 +940,7 @@ func (authority *memberAuthority) observeToolEnd(request memberToolResult) error
 		authority.owner.tree.mu.Unlock()
 	}
 	authority.mu.Unlock()
+	authority.owner.tree.observeProgress(authority.binding.run, agent.ToolExecutionEndEvent{ToolCallID: request.CallID, ToolName: request.Name})
+	authority.owner.observerProgress(authority.binding.run)
 	return nil
 }

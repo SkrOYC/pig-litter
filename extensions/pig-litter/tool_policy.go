@@ -61,6 +61,15 @@ func withinParent(parent, root *record, name string) bool {
 }
 
 func childAllowedTools(r, root *record, available []string) map[string]struct{} {
+	if r.role == "observer" {
+		allowed := map[string]struct{}{"observer_report": {}}
+		for _, item := range []struct{ parent, virtual string }{{"read", "observer_read"}, {"ls", "observer_ls"}} {
+			if slices.Contains(available, item.parent) && matchesTool(r.tools, item.parent) && withinParent(r.parent, root, item.parent) {
+				allowed[item.virtual] = struct{}{}
+			}
+		}
+		return allowed
+	}
 	allowed := map[string]struct{}{}
 	for _, name := range expandTools(r.tools, available) {
 		if !slices.Contains(teamToolNames, name) && (r.canDelegate || !slices.Contains(controlNames, name)) && withinParent(r.parent, root, name) {
@@ -146,7 +155,7 @@ func waitForChildToolStartup(ctx context.Context, session *coding.Session, allow
 
 func (o *owner) childExtensions(r *record, run *run, allowed map[string]struct{}) ([]extension.Extension, *extension.ExtensionRuntime, error) {
 	extensions := []extension.Extension{o.completionHooks(r)}
-	if r.team != nil {
+	if r.team != nil && r.role != "observer" {
 		extensions = append(extensions, o.peerHooks(r, run))
 	}
 	registrations := extension.CreateExtensionRuntime()
@@ -197,7 +206,7 @@ func (o *owner) childExtensions(r *record, run *run, allowed map[string]struct{}
 		return nil, nil, fmt.Errorf("load %s: %s", failures[0].Path, failures[0].Error)
 	}
 	extensions = append(extensions, loaded...)
-	if r.team != nil && len(o.policy.TeammateIdle) != 0 {
+	if r.team != nil && r.role != "observer" && len(o.policy.TeammateIdle) != 0 {
 		extensions = append(extensions, o.idlePolicyHooks(r, run))
 	}
 	return extensions, registrations, nil

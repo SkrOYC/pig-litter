@@ -30,6 +30,7 @@ const (
 type teamRoster struct {
 	Version      uint64            `json:"version"`
 	Team         TeamID            `json:"team"`
+	CreationID   string            `json:"creationId,omitempty"`
 	Revision     uint64            `json:"revision"`
 	OwnerEpoch   uint64            `json:"ownerEpoch"`
 	OwnerToken   string            `json:"ownerToken"`
@@ -65,6 +66,34 @@ type teamStore struct {
 type uncertainTeamWrite struct {
 	lock   *flock.Flock
 	roster teamRoster
+}
+
+func (s *teamStore) observerMembers(pins ...*observerMemberPin) (string, bool, error) {
+	creation := ""
+	valid := true
+	err := s.transact(func(roster *teamRoster) (bool, error) {
+		creation = roster.CreationID
+		if creation == "" {
+			return false, errors.New("team creation identity is unavailable")
+		}
+		for _, pin := range pins {
+			if pin == nil {
+				continue
+			}
+			found := false
+			for _, member := range roster.Members {
+				if member.Ref == pin.Ref && member.AdmissionID == pin.Admission && member.State != "terminated" && member.State != "closing" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				valid = false
+			}
+		}
+		return false, nil
+	})
+	return creation, valid, err
 }
 
 func openTeamStore(agentDir string, root ChildID) (*teamStore, error) {
@@ -155,6 +184,13 @@ func (s *teamStore) claimLocked(created bool, lock *flock.Flock) error {
 	}
 	if roster.OwnerEpoch == math.MaxUint64 || roster.Revision == math.MaxUint64 {
 		return errors.New("team owner epoch or revision exhausted")
+	}
+	if roster.CreationID == "" {
+		creation := make([]byte, 16)
+		if _, err := rand.Read(creation); err != nil {
+			return err
+		}
+		roster.CreationID = hex.EncodeToString(creation)
 	}
 	token := make([]byte, 16)
 	if _, err := rand.Read(token); err != nil {
@@ -785,6 +821,12 @@ func validateTeamRoster(roster teamRoster, root ChildID) error {
 	if roster.Version != teamStoreVersion || roster.Team != (TeamID{Root: root, Epoch: 1}) || roster.Revision == 0 || roster.OwnerEpoch == 0 || roster.OwnerPID <= 0 || len(roster.OwnerToken) != 32 || roster.Members == nil || roster.Reservations == nil || len(roster.Members)+len(roster.Reservations) > teamMemberLimit {
 		return errors.New("invalid team metadata header")
 	}
+	if roster.CreationID != "" {
+		creation, err := hex.DecodeString(roster.CreationID)
+		if err != nil || len(creation) != 16 || hex.EncodeToString(creation) != roster.CreationID {
+			return errors.New("invalid team creation identity")
+		}
+	}
 	if _, err := hex.DecodeString(roster.OwnerToken); err != nil || strings.ToLower(roster.OwnerToken) != roster.OwnerToken {
 		return errors.New("invalid team owner token")
 	}
@@ -924,7 +966,15 @@ func checkUniqueJSON(data []byte) error {
 }
 
 func checkRosterJSONSchema(data []byte) error {
-	root, err := exactJSONObject(data, "version", "team", "revision", "ownerEpoch", "ownerToken", "ownerPid", "generationHighWater", "members", "reservations")
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	keys := []string{"version", "team", "revision", "ownerEpoch", "ownerToken", "ownerPid", "generationHighWater", "members", "reservations"}
+	if _, exists := fields["creationId"]; exists {
+		keys = append(keys, "creationId")
+	}
+	root, err := exactJSONObject(data, keys...)
 	if err != nil {
 		return err
 	}

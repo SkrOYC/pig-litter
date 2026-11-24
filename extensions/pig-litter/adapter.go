@@ -53,6 +53,7 @@ type owner struct {
 	outcomeAcks              map[*callTicket]*outcomeAcknowledgement
 	afterOutcomeSnapshot     func()
 	afterOutcomeReservation  func()
+	afterObserverCapture     func()
 	rootMu                   sync.Mutex
 	root                     *rootGeneration
 	rootClosed               bool
@@ -66,6 +67,10 @@ type owner struct {
 	actionCancel             context.CancelFunc
 	actionsClosed            bool
 	persistMu                sync.Mutex
+	observerMu               sync.Mutex
+	observerRestoreMu        sync.Mutex
+	observersRestored        bool
+	observers                *observerStore
 	teamMu                   sync.Mutex
 	teamStore                *teamStore
 	localMu                  sync.Mutex
@@ -160,7 +165,11 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 			return nil, err
 		}
 		if recover {
+			if err := existing.restoreObservers(); err != nil {
+				return nil, err
+			}
 			existing.startRecovery(nil)
+			existing.startObserverRecovery()
 		}
 		return existing, nil
 	}
@@ -205,6 +214,7 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 	tree.teamFinished, tree.teamCanceled, tree.teamPaused = o.finishTeamMember, o.cancelTeamMember, o.pauseTeamMember
 	tree.teamResuming = o.resumeTeamMember
 	tree.teamSettled = o.settleShutdown
+	tree.observerArm, tree.observerRetire = o.armObserver, o.retireObservers
 	if err := o.restoreTeamStore(); err != nil {
 		tree.close()
 		services.Close()
@@ -241,12 +251,18 @@ func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) 
 	if err := o.current(); err != nil {
 		return nil, withRetirementError(err, s.retire())
 	}
+	if recover {
+		if err := o.restoreObservers(); err != nil {
+			return nil, withRetirementError(err, s.retire())
+		}
+	}
 	if err := o.startWidget(); err != nil {
 		return nil, withRetirementError(err, s.retire())
 	}
 	o.widget()
 	if recover {
 		o.startRecovery(nil)
+		o.startObserverRecovery()
 	}
 	return o, nil
 }
@@ -372,12 +388,13 @@ func (s *extensionState) retire() error {
 	previous.rootWG.Wait()
 	previous.ackWG.Wait()
 	held, err := previous.closeTeamStore()
+	observerErr := previous.closeObservers()
 	previous.services.Close()
 	if held {
 		s.retainClosingOwner(previous)
 	}
 	close(retirement)
-	return errors.Join(localErr, err)
+	return errors.Join(localErr, err, observerErr)
 }
 
 func (o *owner) modelFor(ctx context.Context, name string, runtime *coding.ModelRuntime) (*ai.Model, error) {
@@ -528,6 +545,13 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		return
 	}
 	if isPaneBackend(r.backend) {
+		if r.role == "observer" {
+			initial, err := o.initialObserverActivity(r.observer)
+			if err != nil {
+				return Outcome{State: Unavailable, Error: err.Error()}
+			}
+			run.prompt += "\n\nPaired worker structural activity:\n" + initial
+		}
 		source, _ := o.context.ExtensionSourceInfo()
 		env, err := o.currentPaneMemberEnvironment(run.ctx, source.Path, r.backend)
 		if err != nil {
@@ -540,7 +564,9 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		if err != nil {
 			return Outcome{State: Unavailable, Error: err.Error()}
 		}
-		return o.executeTmuxMember(r, run, env)
+		outcome := o.executeTmuxMember(r, run, env)
+		o.startObserverRecovery()
+		return outcome
 	}
 	if r.backend != "" {
 		return Outcome{State: Unavailable, Error: "the selected native teammate backend is unavailable"}
@@ -555,6 +581,14 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.State = Unavailable
 		outcome.Error = err.Error()
 		return
+	}
+	if r.role == "observer" {
+		initial, err := o.initialObserverActivity(r.observer)
+		if err != nil {
+			outcome.State, outcome.Error = Unavailable, err.Error()
+			return
+		}
+		run.prompt += "\n\nPaired worker structural activity:\n" + initial
 	}
 	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: r.cwd, AgentDir: o.agentDir, ProjectTrusted: &trusted})
 	if err != nil {
@@ -574,8 +608,15 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		return
 	}
 	tools := []agent.AgentTool{}
-	allowed := childAllowedTools(r, o.tree.root, available)
-	if r.canDelegate || r.team != nil {
+	allowed := map[string]struct{}{}
+	var observerTrace *observerCallTrace
+	if r.role == "observer" {
+		observerTrace = newObserverCallTrace()
+		tools, allowed = o.observerTools(r, run, observerTrace, available)
+	} else {
+		allowed = childAllowedTools(r, o.tree.root, available)
+	}
+	if r.role != "observer" && (r.canDelegate || r.team != nil) {
 		names := []string{}
 		if r.canDelegate {
 			names = append(names, controlNames...)
@@ -612,18 +653,33 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			outcome.State, outcome.Error = Failed, "child cleanup failed: "+err.Error()
 		}
 	}()
-	loader := coding.NewDefaultResourceLoader(coding.DefaultResourceLoaderOptions{CWD: r.cwd, AgentDir: o.agentDir, SettingsManager: services.SettingsManager(), NoExtensions: true, NoThemes: true, AppendSystemPromptOverride: func(found []string) []string {
-		return append(found, r.instructions)
-	}})
-	defer loader.Close()
-	if err := loader.Reload(); err != nil {
-		outcome.Error = err.Error()
-		return
+	var loader coding.ResourceLoader = coding.NoResources
+	if r.role != "observer" {
+		resources := coding.NewDefaultResourceLoader(coding.DefaultResourceLoaderOptions{CWD: r.cwd, AgentDir: o.agentDir, SettingsManager: services.SettingsManager(), NoExtensions: true, NoThemes: true, AppendSystemPromptOverride: func(found []string) []string {
+			return append(found, r.instructions)
+		}})
+		defer resources.Close()
+		if err := resources.Reload(); err != nil {
+			outcome.Error = err.Error()
+			return
+		}
+		loader = resources
 	}
 	r.deliveryMu.Lock()
 	allowedNames := slices.Sorted(maps.Keys(allowed))
 	scope := &extension.ToolScope{Builtin: &allowedNames, Extensions: map[string]*[]string{extension.McpAdapterEntry: &allowedNames}}
 	options := coding.SessionStartOptions{Model: model, ResourceLoader: loader, ExtraTools: tools, AllowedTools: allowed, ToolScope: scope}
+	if r.role == "observer" {
+		options.SystemPrompt = r.instructions
+		options.SkipBuiltinTools = true
+		options.SkipExtensionTools = true
+		options.BeforeToolCall = append(options.BeforeToolCall, func(_ context.Context, _, name string, _ json.RawMessage) agent.ToolCallHookResult {
+			if _, ok := allowed[name]; !ok {
+				return agent.ToolCallHookResult{Block: true, Reason: "observer operation is not permitted"}
+			}
+			return agent.ToolCallHookResult{}
+		})
+	}
 	if teamGate != nil {
 		options.BeforeToolCall = append(options.BeforeToolCall, teamGate.before)
 	}
@@ -719,8 +775,12 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	unsubscribe := session.Subscribe(func(event agent.AgentEvent) {
 		o.tree.observeProgress(run, event)
 		switch event := event.(type) {
+		case agent.MessageUpdateEvent:
+			if observerTrace != nil {
+				observerTrace.observe(event.AssistantMessageEvent)
+			}
 		case agent.TurnStartEvent:
-			if r.team != nil {
+			if r.team != nil && r.role != "observer" {
 				o.observeControlNotices(r.team.Ref, "member")
 			}
 			o.startRecovery(run)
@@ -750,7 +810,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 				session.QueueSteer("<system-notice>\nYou have reached your turn allowance. Return a final response with your partial progress, remaining work, and any request for more turns. Your parent can resume this session to grant a fresh allowance.\n</system-notice>", nil)
 			}
 		case agent.TurnEndEvent:
-			if r.team != nil {
+			if r.team != nil && r.role != "observer" {
 				o.observeControlNotices(r.team.Ref, "member")
 			}
 			o.retireScope(o.callScope(run))
@@ -787,7 +847,13 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 			}
 			if event.Message.Custom != nil {
 				o.observeCompletion(run, event.Message.Custom)
+				o.observeObserverDigest(run, event.Message.Custom)
+				o.startObserverRecovery()
 			}
+		}
+		switch event.(type) {
+		case agent.TurnStartEvent, agent.TurnEndEvent, agent.ToolExecutionStartEvent, agent.ToolExecutionEndEvent:
+			o.observerProgress(run)
 		}
 	})
 	run.mu.Lock()
@@ -795,7 +861,10 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	close(run.ready)
 	run.mu.Unlock()
 	r.deliveryMu.Unlock()
-	if r.team != nil {
+	if r.role == "observer" {
+		o.observerReady(r.observer)
+	}
+	if r.team != nil && r.role != "observer" {
 		var skip string
 		if run.peerWake != nil && run.peerWake.Control != nil {
 			skip = run.peerWake.Control.ID
@@ -855,6 +924,7 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 	r.activeLog = nil
 	o.tree.mu.Unlock()
 	r.deliveryMu.Unlock()
+	go o.startObserverRecovery()
 	unsubscribe()
 	o.retireScope(o.callScope(run))
 	o.retireReceipts(r)
@@ -1010,6 +1080,7 @@ func newExtension(state *extensionState) *sdk.Extension {
 			message, _ := data["message"].(map[string]any)
 			if message["role"] == "custom" {
 				o.observeCompletion(nil, message)
+				o.startObserverRecovery()
 			}
 			return nil, nil
 		})

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -156,6 +157,22 @@ func TestMemberControlBindsAndValidatesNativeRequests(t *testing.T) {
 		}
 		if _, err := queue.Queue(context.Background(), memberTextInput{mode: "follow_up", text: "continue"}); err == nil || !strings.Contains(err.Error(), "input window") {
 			t.Fatalf("native text admission = %v", err)
+		}
+		observerResult := make(chan error, 1)
+		go func() {
+			disposition, err := queue.Queue(context.Background(), memberObserverInput{content: "activity", activity: &observerActivityMarker{PairingID: "pair", Sequence: 1}})
+			if err == nil && disposition != memberInputUncertain {
+				err = errors.New("observer message did not retain its uncertain disposition")
+			}
+			observerResult <- err
+		}()
+		command = nextMemberControl(t, client, queue.token())
+		if command.Kind != "observer" || command.Observer == nil || command.Observer.Content != "activity" || command.Observer.Activity == nil || command.Observer.Activity.PairingID != "pair" {
+			t.Fatalf("native observer command = %#v", command)
+		}
+		replyMemberControl(t, client, queue.token(), memberControlReply{ID: command.ID, Kind: "observer", Disposition: memberInputUncertain})
+		if err := <-observerResult; err != nil {
+			t.Fatal(err)
 		}
 		queue.owner.tree.mu.Lock()
 		binding.record.team.Ref.Generation++

@@ -80,6 +80,7 @@ func (o *owner) drainRootAbort(generation *rootGeneration) {
 		pending, fresh = o.tree.pauseLocked(o.tree.root)
 	}
 	o.tree.mu.Unlock()
+	o.tree.retirePausedObservers(pending)
 	o.tree.lifecycleMu.Unlock()
 	o.rootMu.Unlock()
 	o.tree.joinPaused(pending, fresh)

@@ -49,7 +49,7 @@ func (o *owner) requestPeerWake(recipient MemberRef) {
 	t.lifecycleMu.Lock()
 	t.mu.Lock()
 	r := t.records[recipient.ID]
-	if t.closed || r == nil || r.team == nil || r.team.Ref != recipient {
+	if t.closed || r == nil || r.team == nil || r.team.Ref != recipient || r.role == "observer" {
 		t.mu.Unlock()
 		t.lifecycleMu.Unlock()
 		return
@@ -88,7 +88,10 @@ func (o *owner) drivePeerWake(recipient MemberRef) {
 	for {
 		t.mu.Lock()
 		r := t.records[recipient.ID]
-		if t.closed || r == nil || r.team == nil || r.team.Ref != recipient {
+		if t.closed || r == nil || r.team == nil || r.team.Ref != recipient || r.role == "observer" {
+			if r != nil && r.team != nil && r.team.Ref == recipient && r.role == "observer" {
+				r.peerWakePending = false
+			}
 			t.mu.Unlock()
 			return
 		}
@@ -210,7 +213,7 @@ func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error
 	}
 	t.mu.Lock()
 	r := t.records[recipient.ID]
-	if t.closed || t.root.paused || r == nil || r.team == nil || r.team.Ref != recipient || (isPaneBackend(r.backend)) != native || native && (r.nativeOwnership != nil || r.nativeReleasing) || !r.admitted || r.paused || r.run != previous || previous.state != Completed || previous.finishing {
+	if t.closed || t.root.paused || r == nil || r.team == nil || r.team.Ref != recipient || r.role == "observer" || isPaneBackend(r.backend) != native || native && (r.nativeOwnership != nil || r.nativeReleasing) || !r.admitted || r.paused || r.run != previous || previous.state != Completed || previous.finishing {
 		t.mu.Unlock()
 		t.lifecycleMu.Unlock()
 		return false, nil

@@ -30,6 +30,7 @@ type savedChild struct {
 	ParentID           ChildID          `json:"parentId"`
 	Name               string           `json:"name"`
 	Kind               string           `json:"kind"`
+	Role               string           `json:"role,omitempty"`
 	Model              string           `json:"model"`
 	Cwd                string           `json:"cwd"`
 	Instructions       string           `json:"instructions"`
@@ -75,7 +76,7 @@ func (o *owner) saveChildStateLocked(r *record, terminated *run) error {
 		o.tree.mu.Unlock()
 		return reject("unavailable", "teammate execution changed before termination")
 	}
-	saved := savedChild{RootID: o.tree.root.id, ID: r.id, ParentID: r.parentID(), Name: r.name, Kind: r.kind, Model: r.model, Cwd: r.cwd, Instructions: r.instructions, Tools: slices.Clone(r.tools), CanDelegate: r.canDelegate, ReadOnly: r.readOnly, PendingTask: r.pendingTask, Admitted: r.admitted, State: selected.state, Paused: paused, NoticeID: selected.noticeID, Backend: r.backend}
+	saved := savedChild{RootID: o.tree.root.id, ID: r.id, ParentID: r.parentID(), Name: r.name, Kind: r.kind, Role: r.role, Model: r.model, Cwd: r.cwd, Instructions: r.instructions, Tools: slices.Clone(r.tools), CanDelegate: r.canDelegate, ReadOnly: r.readOnly, PendingTask: r.pendingTask, Admitted: r.admitted, State: selected.state, Paused: paused, NoticeID: selected.noticeID, Backend: r.backend}
 	if terminated != nil {
 		saved.State = Terminated
 	}
@@ -482,7 +483,7 @@ func (o *owner) restoreChildren() error {
 			if _, exists := o.tree.names[key]; exists && saved.Team == nil {
 				return reject("unavailable", "stored child names conflict")
 			}
-			r := &record{id: id, team: saved.Team, backend: saved.Backend, nativeOwnership: cloneMemberOwnership(saved.Native), nativeCleanupError: saved.NativeCleanupError, nativeReservationConflict: reservationConflict[id], nativeSession: cloneMemberSession(saved.NativeSession), parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest, controlPhase: controlPhases[id]}
+			r := &record{id: id, team: saved.Team, backend: saved.Backend, nativeOwnership: cloneMemberOwnership(saved.Native), nativeCleanupError: saved.NativeCleanupError, nativeReservationConflict: reservationConflict[id], nativeSession: cloneMemberSession(saved.NativeSession), parent: parent, depth: parent.depth + 1, name: saved.Name, kind: saved.Kind, role: saved.Role, model: saved.Model, cwd: saved.Cwd, instructions: saved.Instructions, tools: saved.Tools, canDelegate: saved.CanDelegate, readOnly: saved.ReadOnly, pendingTask: saved.PendingTask, admitted: true, paused: saved.Paused, latest: saved.Latest, controlPhase: controlPhases[id]}
 			r.pendingInputs = saved.PendingInputs
 			r.run = o.tree.newRunLocked(Ref{id}, "")
 			r.run.owner, r.run.noticeID, r.run.state = r, saved.NoticeID, saved.State

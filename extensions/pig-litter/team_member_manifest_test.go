@@ -56,9 +56,13 @@ func TestNativeMemberManifestBindsPrivateLaunch(t *testing.T) {
 	iterm := manifest
 	iterm.Backend = backendITerm
 	iterm.Environment = map[string]string{"OPENAI_API_KEY": "fixture-only"}
+	iterm.Observer = true
+	iterm.ResumeFile = ""
+	iterm.Tools = []string{"observer_ls", "observer_read", "observer_report"}
 	write(t, iterm)
-	if _, err := readNativeMemberManifest(path); err != nil {
-		t.Fatalf("private iTerm manifest was rejected: %v", err)
+	loaded, err = readNativeMemberManifest(path)
+	if err != nil || !loaded.Observer || loaded.Backend != backendITerm || loaded.Environment["OPENAI_API_KEY"] != "fixture-only" {
+		t.Fatalf("private iTerm observer manifest = %#v, %v", loaded, err)
 	}
 	for _, environment := range []map[string]string{nil, {"PIG_EXT_SOCKET": "other"}, {"ITERM_SESSION_ID": "other"}} {
 		iterm.Environment = environment

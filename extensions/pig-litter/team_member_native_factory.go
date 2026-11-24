@@ -19,6 +19,12 @@ import (
 
 func nativeMemberRoute(name string) string {
 	switch name {
+	case "observer_read":
+		return "/member/observer/read"
+	case "observer_ls":
+		return "/member/observer/ls"
+	case "observer_report":
+		return "/member/observer/report"
 	case "litter_spawn":
 		return "/member/child/spawn"
 	case "litter_list":
@@ -56,6 +62,27 @@ func nativeMemberRoute(name string) string {
 
 func (member *nativeMember) factory(api extension.API) error {
 	member.fixtureHooks(api)
+	if member.manifest.Observer {
+		member.observerTrace = newObserverCallTrace()
+		api.OnInput(func(_ context.Context, event extension.InputEvent) (extension.InputEventResult, error) {
+			member.mu.Lock()
+			initial := !member.observerInput && event.Text == member.manifest.Prompt && len(event.Images) == 0
+			if initial {
+				member.observerInput = true
+			}
+			member.mu.Unlock()
+			if initial {
+				return extension.InputEventResultContinue{}, nil
+			}
+			return extension.InputEventResultHandled{}, nil
+		})
+		api.OnMessageUpdate(func(_ context.Context, event extension.MessageUpdateEvent) error {
+			if update, ok := event.AssistantMessageEvent.(ai.AssistantMessageEvent); ok {
+				member.observerTrace.observe(update)
+			}
+			return nil
+		})
+	}
 	if err := member.registerMCP(api); err != nil {
 		return err
 	}
@@ -125,6 +152,9 @@ func (member *nativeMember) factory(api extension.API) error {
 		}
 		member.mu.Lock()
 		member.turn++
+		if member.manifest.Observer {
+			member.observerInput = true
+		}
 		clear(member.calls)
 		if member.continuation != nil {
 			close(member.continuation)
@@ -133,9 +163,11 @@ func (member *nativeMember) factory(api extension.API) error {
 		turn := member.turn
 		member.mu.Unlock()
 		var reply map[string]bool
-		if err := member.call(ctx, "/member/peer/observe", struct{}{}, &reply); err != nil {
-			member.stop(ctx)
-			return err
+		if !member.manifest.Observer {
+			if err := member.call(ctx, "/member/peer/observe", struct{}{}, &reply); err != nil {
+				member.stop(ctx)
+				return err
+			}
 		}
 		if err := member.call(ctx, "/member/turn/start", memberTurnRequest{ID: turn}, &reply); err != nil {
 			member.stop(ctx)
@@ -145,9 +177,11 @@ func (member *nativeMember) factory(api extension.API) error {
 	})
 	api.OnTurnEnd(func(ctx context.Context, _ extension.TurnEndEvent) (extension.TurnEndEventResult, error) {
 		var reply map[string]bool
-		if err := member.call(ctx, "/member/peer/observe", struct{}{}, &reply); err != nil {
-			member.stop(ctx)
-			return extension.BoundaryResult{}, err
+		if !member.manifest.Observer {
+			if err := member.call(ctx, "/member/peer/observe", struct{}{}, &reply); err != nil {
+				member.stop(ctx)
+				return extension.BoundaryResult{}, err
+			}
 		}
 		if err := member.call(ctx, "/member/turn/end", memberTurnRequest{ID: member.currentTurn()}, &reply); err != nil {
 			member.stop(ctx)
@@ -288,11 +322,22 @@ func (member *nativeMember) beforeTool(ctx context.Context, event extension.Tool
 	if err != nil {
 		return extension.ToolCallEventResult{Block: true, Reason: "native tool input is invalid"}, nil
 	}
+	canonical := bytes.Clone(arguments)
 	if call.WireInput != nil {
 		arguments = bytes.Clone(*call.WireInput)
 	}
+	invalidObserverReport := false
+	if member.manifest.Observer && call.ToolName == "observer_report" {
+		original, ok := member.observerTrace.take(call.ToolCallID)
+		id, body, originalErr := parseObserverReport(original)
+		validatedID, validatedBody, validatedErr := parseObserverReport(arguments)
+		if !ok || originalErr != nil || validatedErr != nil || id != validatedID || body != validatedBody {
+			invalidObserverReport = true
+			arguments = canonical
+		}
+	}
 	var decision memberToolDecision
-	if err := member.call(ctx, "/member/tool", memberToolRequest{Turn: turn, ID: call.ToolCallID, Parent: call.ParentToolCallID, Name: call.ToolName, Arguments: arguments}, &decision); err != nil {
+	if err := member.call(ctx, "/member/tool", memberToolRequest{Turn: turn, ID: call.ToolCallID, Parent: call.ParentToolCallID, Name: call.ToolName, Arguments: arguments, InvalidObserverReport: invalidObserverReport}, &decision); err != nil {
 		member.stop(ctx)
 		return extension.ToolCallEventResult{Block: true, Reason: "native member authority is unavailable"}, nil
 	}
@@ -407,7 +452,11 @@ func (member *nativeMember) beforeSettle(ctx context.Context, event *extension.A
 	member.boundary++
 	boundary := member.boundary
 	member.mu.Unlock()
-	request := memberSettleRequest{Boundary: boundary, Report: idleReport(event), Completed: true}
+	report := ""
+	if !member.manifest.Observer {
+		report = idleReport(event)
+	}
+	request := memberSettleRequest{Boundary: boundary, Report: report, Completed: true}
 	var decision memberSettleReply
 	if err := member.call(ctx, "/member/settlement/decide", request, &decision); err != nil || decision.Boundary != boundary {
 		member.stop(ctx)
