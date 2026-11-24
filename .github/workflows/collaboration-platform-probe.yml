@@ -10,12 +10,23 @@ on:
         description: Optional candidate commit SHA to check out
         required: false
         type: string
+      scenario:
+        description: Platform capability probe or P03 product cases
+        type: choice
+        default: capability
+        options:
+          - capability
+          - p03-all
+          - p03-team
+          - p03-policy
+          - p03-unselected
 
 permissions:
   contents: read
 
 jobs:
   macos-iterm:
+    if: ${{ github.event_name == 'push' || inputs.scenario == 'capability' }}
     name: iTerm2 on ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
@@ -56,5 +67,117 @@ jobs:
         with:
           name: collaboration-platform-${{ matrix.runner }}-retry
           path: ${{ runner.temp }}/collaboration-platform-probe/
+          if-no-files-found: error
+          retention-days: 14
+
+  p03-macos:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario != 'capability' }}
+    name: P03 iTerm2 on ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_ref }}
+      P03_SCENARIO: ${{ inputs.scenario }}
+      PROBE_RUNNER_LABEL: ${{ matrix.runner }}
+    steps:
+      - name: Initialize evidence
+        shell: bash
+        run: |
+          EVIDENCE_DIR="$RUNNER_TEMP/p03-macos-evidence"
+          mkdir -p "$EVIDENCE_DIR"
+          printf 'EVIDENCE_DIR=%s\n' "$EVIDENCE_DIR" >> "$GITHUB_ENV"
+          printf 'candidate=%s\nscenario=%s\nworkflow_sha=%s\nrunner=%s\n' "$CANDIDATE_SHA" "$P03_SCENARIO" "$GITHUB_WORKFLOW_SHA" "$PROBE_RUNNER_LABEL" > "$EVIDENCE_DIR/inputs.txt"
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - name: Check out the verification driver
+        id: checkout_driver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: driver
+          persist-credentials: false
+      - name: Check out the exact product candidate
+        id: checkout_candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: candidate
+          persist-credentials: false
+      - name: Check terminal input and fixture policy
+        id: policy
+        shell: bash
+        run: python3 -B driver/scripts/test-p03-macos.py
+      - name: Verify iTerm2 and scoped consent
+        id: capability
+        shell: bash
+        working-directory: driver
+        timeout-minutes: 16
+        run: |
+          bash scripts/probe-macos-collaboration.sh --test-first-launch-matcher
+          bash scripts/probe-macos-collaboration.sh
+      - name: Install Bun
+        id: bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.4.4'
+      - name: Install Nix
+        id: nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086
+      - name: Configure read-only devenv cache
+        id: cache
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866
+        with:
+          name: devenv
+          skipPush: true
+          useDaemon: false
+      - name: Install pinned devenv CLI
+        id: devenv
+        shell: bash
+        run: |
+          nix profile add --profile "$RUNNER_TEMP/devenv-profile" --accept-flake-config github:cachix/devenv/b904dcb51fe48c30db250038241507f60752f222#devenv
+          printf '%s\n' "$RUNNER_TEMP/devenv-profile/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/devenv-profile/bin/devenv" version > "$EVIDENCE_DIR/devenv-version.txt"
+          nix --version > "$EVIDENCE_DIR/nix-version.txt"
+          bun --version > "$EVIDENCE_DIR/bun-version.txt"
+      - name: Verify P03 in iTerm2
+        id: product
+        shell: bash
+        timeout-minutes: 75
+        env:
+          CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+          DRIVER_ROOT: ${{ github.workspace }}/driver
+        run: bash "$DRIVER_ROOT/scripts/verify-p03-macos.sh"
+      - name: Release capability probe window
+        if: ${{ always() && steps.checkout_driver.outcome == 'success' }}
+        shell: bash
+        run: python3 driver/scripts/p03-macos.py --cleanup-probe --evidence "${EVIDENCE_DIR:-$RUNNER_TEMP/p03-macos-evidence}"
+      - name: Record workflow outcomes
+        if: always()
+        shell: bash
+        env:
+          DRIVER_OUTCOME: ${{ steps.checkout_driver.outcome }}
+          CANDIDATE_OUTCOME: ${{ steps.checkout_candidate.outcome }}
+          CAPABILITY_OUTCOME: ${{ steps.capability.outcome }}
+          POLICY_OUTCOME: ${{ steps.policy.outcome }}
+          BUN_OUTCOME: ${{ steps.bun.outcome }}
+          NIX_OUTCOME: ${{ steps.nix.outcome }}
+          CACHE_OUTCOME: ${{ steps.cache.outcome }}
+          DEVENV_OUTCOME: ${{ steps.devenv.outcome }}
+          PRODUCT_OUTCOME: ${{ steps.product.outcome }}
+        run: |
+          EVIDENCE_DIR="${EVIDENCE_DIR:-$RUNNER_TEMP/p03-macos-evidence}"
+          mkdir -p "$EVIDENCE_DIR"
+          printf 'driver=%s\ncandidate=%s\npolicy=%s\ncapability=%s\nbun=%s\nnix=%s\ncache=%s\ndevenv=%s\nproduct=%s\n' "$DRIVER_OUTCOME" "$CANDIDATE_OUTCOME" "$POLICY_OUTCOME" "$CAPABILITY_OUTCOME" "$BUN_OUTCOME" "$NIX_OUTCOME" "$CACHE_OUTCOME" "$DEVENV_OUTCOME" "$PRODUCT_OUTCOME" > "$EVIDENCE_DIR/workflow-outcomes.txt"
+      - name: Upload P03 and capability evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: p03-iterm-${{ matrix.runner }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/p03-macos-evidence/
+            ${{ runner.temp }}/collaboration-platform-probe/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
