@@ -139,6 +139,10 @@ func (state *fixtureState) panelTurnLocked(request openAIRequest, tools []string
 		return providerTurn{}, false, nil
 	}
 	marker := latestRootPrompt(request.Messages).marker
+	if marker == "P02_HOOK_ALLOW" || marker == "P02_HOOK_DENY" {
+		turn, err := state.hookTurnLocked(request, marker, tools)
+		return turn, true, err
+	}
 	if marker == "NEW_ROOT_HEADER" || marker == "COLD_ROOT_HEADER" {
 		if err := requireToolInventory(tools, append(append([]string(nil), fileTools...), controlTools...), []string{"ls"}, "context-only root"); err != nil {
 			return providerTurn{}, true, err

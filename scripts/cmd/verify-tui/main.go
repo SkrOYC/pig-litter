@@ -288,6 +288,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 1 && os.Getenv("P02_TUI_HOOK_EXTENSION") == "1" {
+		if err := runCollaborationTUIHookExtension(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	options, err := parseOptions(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -307,7 +314,7 @@ func parseOptions(args []string) (options, error) {
 	var result options
 	flags := flag.NewFlagSet("go-tui-proof", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	flags.StringVar(&result.scenario, "scenario", "all", "all, receipt-control, chain, host-idle-message, or host-busy-message")
+	flags.StringVar(&result.scenario, "scenario", "all", "all, receipt-control, chain, host-idle-message, host-busy-message, or host-tool-veto")
 	caseValue := flags.String("case", "", "direct, source, piglet, or unselected")
 	flags.StringVar(&result.pigPath, "pig", "", "absolute path to the released PiG executable")
 	flags.StringVar(&result.extension, "extension", "", "absolute path to the prebuilt pig-litter executable")
@@ -327,7 +334,7 @@ func parseOptions(args []string) (options, error) {
 	if flags.NArg() != 0 {
 		return options{}, errors.New("positional arguments are not supported")
 	}
-	if result.scenario != "all" && result.scenario != "receipt-control" && result.scenario != "chain" && result.scenario != "host-idle-message" && result.scenario != "host-busy-message" {
+	if result.scenario != "all" && result.scenario != "receipt-control" && result.scenario != "chain" && result.scenario != "host-idle-message" && result.scenario != "host-busy-message" && result.scenario != "host-tool-veto" {
 		return options{}, errors.New("unknown terminal scenario")
 	}
 	result.caseName = runCase(*caseValue)
@@ -336,6 +343,9 @@ func parseOptions(args []string) (options, error) {
 	}
 	if (result.scenario == "host-idle-message" || result.scenario == "host-busy-message") && (result.caseName != caseDirect || !result.media) {
 		return options{}, errors.New("host message scenarios require the direct case and live media")
+	}
+	if result.scenario == "host-tool-veto" && (result.caseName != caseDirect || !result.media) {
+		return options{}, errors.New("host hook scenario requires the direct case and live media")
 	}
 	if result.caseName == caseSource {
 		if !filepath.IsAbs(result.source) {
@@ -508,6 +518,15 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		}
 		messageProbe = &collaborationTUIMessageProbe{mode: options.scenario, token: rand.Text(), socket: filepath.Join(scratch, "message.sock"), directory: messageDirectory, sessions: rootSessions, phases: []collaborationTUIMessagePhase{}}
 		childEnv = append(childEnv, "P02_TUI_MESSAGE_EXTENSION=1", "P02_TUI_MESSAGE_TOKEN="+messageProbe.token, "P02_TUI_MESSAGE_SOCKET="+messageProbe.socket, "P02_TUI_MESSAGE_DIRECTORY="+messageDirectory)
+	}
+	var hookProbe *collaborationTUIHookProbe
+	if options.scenario == "host-tool-veto" {
+		hookDirectory := filepath.Join(evidencePath, "hook-probe")
+		if err := os.Mkdir(hookDirectory, 0o700); err != nil {
+			return evidencePath, err
+		}
+		hookProbe = &collaborationTUIHookProbe{directory: hookDirectory, workspace: workspace, executable: filepath.Join(scratch, collaborationTUIHookName)}
+		childEnv = append(childEnv, "P02_TUI_HOOK_EXTENSION=1", "P02_TUI_HOOK_DIRECTORY="+hookDirectory, "P02_TUI_HOOK_WORKSPACE="+workspace)
 	}
 	idleCommand, idleDirectory := "", ""
 	if options.caseName != caseUnselected {
@@ -795,6 +814,13 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			}
 			addFailure(messageProbe.save(process, runErr))
 		}
+		if hookProbe != nil {
+			var process observedProcess
+			if report.Startup != nil {
+				process = report.Startup.Process
+			}
+			addFailure(hookProbe.save(process, runErr))
+		}
 		addFailure(checkRawPTY(filepath.Join(evidencePath, "pty.raw")))
 		if runErr == nil && options.caseName != caseUnselected && options.scenario == "all" {
 			raw, err := os.ReadFile(filepath.Join(evidencePath, "pty.raw"))
@@ -887,6 +913,15 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			return evidencePath, err
 		}
 	}
+	if hookProbe != nil {
+		if err := copyExecutable(verifierPath, hookProbe.executable); err != nil {
+			return evidencePath, err
+		}
+		digest, err := fileSHA256(hookProbe.executable)
+		if err != nil || digest != report.VerifierSHA256 {
+			return evidencePath, errors.New("staged hook extension differs from the verifier")
+		}
+	}
 	if err := makeFixtureFiles(workspace, home, pigHome, agentDir, provider.port); err != nil {
 		return evidencePath, err
 	}
@@ -928,6 +963,9 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 	}
 	if messageProbe != nil {
 		args = append(args, "-e", messageProbe.executable)
+	}
+	if hookProbe != nil {
+		args = append(args, "-e", hookProbe.executable)
 	}
 	if panel != nil {
 		panel.restartHost = func(path string) error {
@@ -1066,6 +1104,19 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		if err := panel.coldRootProof(); err != nil {
 			return evidencePath, err
 		}
+	}
+	if hookProbe != nil {
+		if err := hookProbe.connect(ctx, panel, report.VerifierSHA256); err != nil {
+			return evidencePath, err
+		}
+		if err := hookProbe.run(ctx, panel, state, sendText, sendKey, readVisible, frame, media); err != nil {
+			return evidencePath, err
+		}
+		if err := exitHost(); err != nil {
+			return evidencePath, err
+		}
+		paneExited = true
+		return evidencePath, nil
 	}
 	if messageProbe != nil {
 		if err := runCollaborationTUIMessageScenario(ctx, messageProbe, panel, state, sendText, sendKey, readVisible, frame, media); err != nil {
@@ -2176,7 +2227,7 @@ func latestRootPrompt(messages []openAIMessage) (marker struct{ marker, text str
 		lines := strings.Split(strings.ReplaceAll(contentText(messages[index].Content), "\r\n", "\n"), "\n")
 		for lineIndex := len(lines) - 1; lineIndex >= 0; lineIndex-- {
 			line := strings.TrimSpace(lines[lineIndex])
-			if line == "START_WIDGET" || line == "UNSELECTED_WIDGET" || line == "QUICK_WIDGET" || line == "RECEIPT_WIDGET" || line == "P02_BUSY_HOLD" || line == "CHAIN_WIDGET" || line == "ROOT_NOTICE_FIRST" || line == "ROOT_NOTICE_SECOND" || line == "ROOT_RESTART_FIRST" || line == "ROOT_RESTART_SECOND" || line == "ROOT_RESTART_THIRD" || line == "NEW_ROOT_HEADER" || line == "COLD_ROOT_HEADER" {
+			if line == "START_WIDGET" || line == "UNSELECTED_WIDGET" || line == "QUICK_WIDGET" || line == "RECEIPT_WIDGET" || line == "P02_BUSY_HOLD" || line == "P02_HOOK_ALLOW" || line == "P02_HOOK_DENY" || line == "CHAIN_WIDGET" || line == "ROOT_NOTICE_FIRST" || line == "ROOT_NOTICE_SECOND" || line == "ROOT_RESTART_FIRST" || line == "ROOT_RESTART_SECOND" || line == "ROOT_RESTART_THIRD" || line == "NEW_ROOT_HEADER" || line == "COLD_ROOT_HEADER" {
 				return struct{ marker, text string }{marker: line, text: line}
 			}
 			if strings.HasPrefix(line, "STOP_WIDGET ") {
