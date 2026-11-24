@@ -40,8 +40,18 @@ class InputAndProviderTests(unittest.TestCase):
                     self.window = None
                     self.residues = []
                     self.unsafe = False
+                    self.interrupted = False
                 def launch(self):
                     self.window = {"id": "41", "session": lead[0], "tty": lead[1], "ownership": {"iterm": {"pid": 1}}}
+                def session_action(self, action):
+                    if action == "text":
+                        return "idle" if self.interrupted else "busy"
+                    actions.append(action)
+                    if action == "interrupt":
+                        self.interrupted = True
+                def wait(self, predicate, _label, _timeout):
+                    if not predicate():
+                        raise AssertionError("lead did not settle")
                 def frame(self, _name):
                     return ""
                 def cleanup(self):
@@ -73,9 +83,9 @@ class InputAndProviderTests(unittest.TestCase):
 
             fixture = Fixture()
             processes = {7: {"pid": 7, "tty": "ttys002", "command": "/bin/sleep 600", "start": "fixture"}}
-            with mock.patch.object(driver, "Fixture", return_value=fixture), mock.patch.object(driver, "Terminal", Terminal), mock.patch.object(driver, "start_provider", return_value=(Server(), Thread())), mock.patch.object(driver, "window_sessions", side_effect=[{lead}, {lead, added}]), mock.patch.object(driver, "applescript", side_effect=script), mock.patch.object(driver, "process_snapshot", return_value=processes), mock.patch.object(driver, "executable", return_value="/bin/sleep"), mock.patch.object(driver, "same_process", return_value=True), mock.patch.object(driver, "native_window"), mock.patch.object(driver, "save_native", return_value=["fixture"]), mock.patch.object(driver.subprocess, "run", side_effect=OSError("not macOS")):
+            with mock.patch.object(driver, "Fixture", return_value=fixture), mock.patch.object(driver, "Terminal", Terminal), mock.patch.object(driver, "start_provider", return_value=(Server(), Thread())), mock.patch.object(driver, "window_sessions", side_effect=[{lead}, {lead, added}]), mock.patch.object(driver, "applescript", side_effect=script), mock.patch.object(driver, "process_snapshot", return_value=processes), mock.patch.object(driver, "executable", return_value="/bin/sleep"), mock.patch.object(driver, "same_process", return_value=True), mock.patch.object(driver, "native_window"), mock.patch.object(driver, "idle_editor", side_effect=lambda frame: frame == "idle"), mock.patch.object(driver, "save_native", return_value=["fixture"]), mock.patch.object(driver.subprocess, "run", side_effect=OSError("not macOS")):
                 receipt = driver.run_case("iterm", root, root / "evidence", root / "pig", root / "extension")
-            self.assertEqual(actions, [(added[0], added[1]), "terminal-cleanup"])
+            self.assertEqual(actions, [(added[0], added[1]), "interrupt", "exit", "terminal-cleanup"])
             self.assertEqual(receipt["product_status"], "failed")
             self.assertEqual(receipt["teardown_status"], "pass")
 

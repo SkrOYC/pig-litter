@@ -412,6 +412,11 @@ on run argv
                 tell candidateSession to write text controlD newline NO
                 return "sent exit key"
               end if
+              if actionName is "interrupt" then
+                set controlC to ASCII character 3
+                tell candidateSession to write text controlC newline NO
+                return "sent interrupt key"
+              end if
               if actionName is "close" then
                 tell candidateWindow to close
                 return "closed"
@@ -728,6 +733,21 @@ class Terminal:
             self.window["source_extension"] = extensions[0]
             (self.evidence / "source-extension-build.txt").write_text(build)
         owner = iterm_owner()
+        if self.extension.is_dir():
+            snapshot = process_snapshot()
+            ancestors = []
+            current = extensions[0]["pid"]
+            while current in snapshot and current not in ancestors:
+                ancestors.append(current)
+                current = snapshot[current]["ppid"]
+            discovery = {"source_ancestors": ancestors, "ancestry_complete": current == 0, "iterm_is_ancestor": owner["pid"] in ancestors}
+            for name, command in (("previous_pgrep", ["/usr/bin/pgrep", "-u", str(os.getuid()), "-x", "iTerm2"]), ("application_ps", ["/bin/ps", "-p", str(owner["pid"]), "-o", "uid=,pid=,command="])):
+                try:
+                    result = subprocess.run(command, text=True, capture_output=True, timeout=10)
+                    discovery[name] = {"exit": result.returncode, "output": result.stdout.strip()}
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    discovery[name] = {"error": str(error)}
+            (self.evidence / "iterm-process-discovery.json").write_text(json.dumps(discovery, indent=2) + "\n")
         native = native_window(owner, self.window["id"])
         alternate = applescript(OWNED_ALTERNATE, self.window["id"], self.window["session"])
         require(alternate and alternate != "missing value" and "\n" not in alternate, "Alternate window identity is unavailable")
@@ -1084,8 +1104,10 @@ def run_case(name, scratch, evidence, pig, extension):
                 teardown_problems.append(f"Fixture sibling cleanup: {error}")
         if name == "iterm" and terminal.window and not terminal.unsafe:
             try:
-                if idle_editor(terminal.session_action("text")):
-                    terminal.session_action("exit")
+                if not idle_editor(terminal.session_action("text")):
+                    terminal.session_action("interrupt")
+                    terminal.wait(lambda: idle_editor(terminal.session_action("text")), "interrupted lead to settle", 10)
+                terminal.session_action("exit")
             except Exception as error:
                 product_problems.append(f"Graceful lead exit: {error}")
         with fixture.changed:

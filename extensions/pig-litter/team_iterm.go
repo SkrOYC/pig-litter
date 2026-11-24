@@ -144,6 +144,35 @@ func processTTY(ctx context.Context, pid int, birth string) (string, error) {
 	return tty, nil
 }
 
+func itermProcessCandidates(output string, uid int) []int {
+	var candidates []int
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != strconv.Itoa(uid) {
+			continue
+		}
+		command := strings.Join(fields[2:], " ")
+		const suffix = "/Contents/MacOS/iTerm2"
+		index := strings.Index(command, suffix)
+		if index < 0 || index+len(suffix) < len(command) && command[index+len(suffix)] != ' ' {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[1])
+		if err == nil && pid > 0 {
+			candidates = append(candidates, pid)
+		}
+	}
+	return candidates
+}
+
+func itermApplicationExecutable(path string) bool {
+	if !filepath.IsAbs(path) || !strings.HasSuffix(path, "/Contents/MacOS/iTerm2") {
+		return false
+	}
+	bundle := filepath.Dir(filepath.Dir(filepath.Dir(path)))
+	return filepath.Ext(bundle) == ".app"
+}
+
 func currentITermMemberEnvironment(ctx context.Context, sourcePath string, hostPID int, hostBirth, hostScope string) (tmuxMemberEnvironment, error) {
 	if runtime.GOOS != "darwin" {
 		return tmuxMemberEnvironment{}, errors.New("iTerm2 requires macOS")
@@ -160,26 +189,41 @@ func currentITermMemberEnvironment(ctx context.Context, sourcePath string, hostP
 	if err != nil {
 		return tmuxMemberEnvironment{}, fmt.Errorf("identify lead terminal: %w", err)
 	}
-	output, err := exec.CommandContext(ctx, "/usr/bin/pgrep", "-u", strconv.Itoa(os.Getuid()), "-x", "iTerm2").Output()
-	fields := strings.Fields(string(output))
-	if err != nil || len(fields) != 1 {
-		return tmuxMemberEnvironment{}, errors.New("iTerm2 application process is unavailable or ambiguous")
-	}
-	pid, err := strconv.Atoi(fields[0])
-	if err != nil || pid <= 0 {
-		return tmuxMemberEnvironment{}, errors.New("iTerm2 application process is invalid")
-	}
-	birth, err := processBirth(pid)
+	output, err := exec.CommandContext(ctx, "/bin/ps", "-axo", "uid=,pid=,command=").Output()
 	if err != nil {
-		return tmuxMemberEnvironment{}, err
+		return tmuxMemberEnvironment{}, errors.New("iTerm2 application processes cannot be inspected")
 	}
-	appScope, err := memberProcessScope(pid)
-	if err != nil || appScope != scope {
-		return tmuxMemberEnvironment{}, errors.New("iTerm2 process scope is unavailable or changed")
+	var pid int
+	var birth, executable string
+	for _, candidate := range itermProcessCandidates(string(output), os.Getuid()) {
+		candidateBirth, err := processBirth(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return tmuxMemberEnvironment{}, errors.New("iTerm2 process identity is uncertain")
+		}
+		path, err := memberProcessPath(candidate, candidateBirth, helper)
+		if err != nil {
+			if _, birthErr := processBirth(candidate); errors.Is(birthErr, os.ErrNotExist) {
+				continue
+			}
+			return tmuxMemberEnvironment{}, errors.New("iTerm2 process executable is uncertain")
+		}
+		if !itermApplicationExecutable(path) {
+			continue
+		}
+		candidateScope, err := memberProcessScope(candidate)
+		if err != nil || candidateScope != scope {
+			return tmuxMemberEnvironment{}, errors.New("iTerm2 process scope is unavailable or changed")
+		}
+		if pid != 0 {
+			return tmuxMemberEnvironment{}, errors.New("multiple iTerm2 application processes are present")
+		}
+		pid, birth, executable = candidate, candidateBirth, path
 	}
-	executable, err := memberProcessPath(pid, birth, helper)
-	if err != nil {
-		return tmuxMemberEnvironment{}, err
+	if pid == 0 {
+		return tmuxMemberEnvironment{}, errors.New("iTerm2 application process was not found")
 	}
 	value, err := itermCall(ctx, itermFind, tty, "tty")
 	if err != nil {
