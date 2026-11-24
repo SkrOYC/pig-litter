@@ -18,7 +18,7 @@ The source directory exports a conventional `Extension() *sdk.Extension` factory
 
 Build the standalone without running the full test suite with `scripts/build-pig-litter.sh`, then select it with `pig -e ./extensions/pig-litter/dist/pig-litter`. The source Resource and Piglet use the same executable as their native teammate helper. Rebuild it after changing the Resource. The standalone needs no Go compiler, Node, or Bun at runtime. Product builds and tests use Go.
 
-On Linux, run the lead inside tmux and set `backend` to `tmux` in `team_spawn` to start a teammate in a native pane. The default is `embedded`. The `auto` backend uses tmux when available and reports an embedded fallback otherwise. The iTerm2 backend is not available yet.
+Run the lead inside tmux on Linux and set `backend` to `tmux` in `team_spawn` to start a teammate in a native pane. On macOS, run the lead in iTerm2 and set `backend` to `iterm2`. The iTerm2 backend is experimental pending real-host validation and needs a CGO-enabled helper and macOS Automation permission for iTerm2. The default is `embedded`. The `auto` backend uses tmux when available and reports an embedded fallback otherwise.
 
 ## Configure children
 

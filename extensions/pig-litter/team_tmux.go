@@ -19,6 +19,7 @@ type tmuxServer struct {
 	pid     int
 	birth   string
 	target  string
+	iterm   *itermServer
 }
 
 type tmuxLaunch struct {
@@ -34,6 +35,7 @@ type tmuxPane struct {
 	pid     int
 	birth   string
 	command string
+	tty     string
 }
 
 type tmuxPaneState struct {
@@ -86,6 +88,9 @@ func (server tmuxServer) call(ctx context.Context, args ...string) (string, erro
 }
 
 func (server tmuxServer) verify(ctx context.Context) error {
+	if server.iterm != nil {
+		return server.iterm.verify(ctx)
+	}
 	birth, err := processBirth(server.pid)
 	if err != nil || birth != server.birth {
 		return errors.New("tmux server process identity changed")
@@ -100,6 +105,21 @@ func (server tmuxServer) verify(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (server tmuxServer) backend() backendRequest {
+	if server.iterm != nil {
+		return backendITerm
+	}
+	return backendTmux
+}
+
+func (server tmuxServer) identity() memberServerIdentity {
+	identity := memberServerIdentity{Socket: server.socket, PID: server.pid, Birth: server.birth, Target: server.target}
+	if server.iterm != nil {
+		identity.Window, identity.TTY = server.iterm.window, server.iterm.tty
+	}
+	return identity
 }
 
 func safeLaunchPath(path string) bool {
@@ -204,6 +224,9 @@ func (server tmuxServer) rollbackLaunch(command string) error {
 }
 
 func (server tmuxServer) launch(ctx context.Context, launch tmuxLaunch) (tmuxPane, error) {
+	if server.iterm != nil {
+		return server.iterm.launch(ctx, server, launch)
+	}
 	if err := launch.validate(); err != nil {
 		return tmuxPane{}, err
 	}
@@ -237,6 +260,9 @@ func (server tmuxServer) launch(ctx context.Context, launch tmuxLaunch) (tmuxPan
 }
 
 func (pane tmuxPane) close(ctx context.Context) error {
+	if pane.server.iterm != nil {
+		return pane.server.iterm.close(ctx, pane)
+	}
 	if err := pane.server.verify(ctx); err != nil {
 		return err
 	}

@@ -43,7 +43,7 @@ func memberExecutableDigest(ctx context.Context, path string) (string, error) {
 }
 
 func validMemberOwnership(ownership *memberOwnership, member *teamMember, cwd, model, execution string) bool {
-	if ownership == nil || member == nil || ownership.Backend != backendTmux || ownership.Member != member.Ref || ownership.Admission != member.AdmissionID || ownership.Admission == "" || ownership.Execution != execution || ownership.Execution == "" || len(ownership.Execution) > 128 || ownership.Cwd != cwd || ownership.Model != model || !exactModel.MatchString(model) || !tmuxLaunchNonce.MatchString(ownership.Launch) {
+	if ownership == nil || member == nil || !isPaneBackend(ownership.Backend) || ownership.Member != member.Ref || ownership.Admission != member.AdmissionID || ownership.Admission == "" || ownership.Execution != execution || ownership.Execution == "" || len(ownership.Execution) > 128 || ownership.Cwd != cwd || ownership.Model != model || !exactModel.MatchString(model) || !tmuxLaunchNonce.MatchString(ownership.Launch) {
 		return false
 	}
 	if ownership.Tools == nil || !slices.IsSorted(ownership.Tools) {
@@ -68,12 +68,12 @@ func validMemberOwnership(ownership *memberOwnership, member *teamMember, cwd, m
 		return false
 	}
 	server := ownership.Server
-	if !filepath.IsAbs(server.Socket) || strings.IndexFunc(server.Socket, unicode.IsControl) >= 0 || server.PID <= 0 || server.Birth == "" || len(server.Birth) > 128 || strings.IndexFunc(server.Birth, unicode.IsControl) >= 0 || !tmuxPaneID.MatchString(server.Target) {
+	if !filepath.IsAbs(server.Socket) || strings.IndexFunc(server.Socket, unicode.IsControl) >= 0 || server.PID <= 0 || server.Birth == "" || len(server.Birth) > 128 || strings.IndexFunc(server.Birth, unicode.IsControl) >= 0 || ownership.Backend == backendTmux && !tmuxPaneID.MatchString(server.Target) || ownership.Backend == backendITerm && (!itermSessionID.MatchString(server.Target) || !itermWindowID.MatchString(server.Window) || !itermTTY.MatchString(server.TTY)) {
 		return false
 	}
 	if pane := ownership.Pane; pane != nil {
 		command := ownership.Executable + " --pig-litter-member " + ownership.Manifest
-		if !tmuxPaneID.MatchString(pane.ID) || pane.ID == server.Target || pane.PID <= 0 || pane.Birth == "" || len(pane.Birth) > 128 || strings.IndexFunc(pane.Birth, unicode.IsControl) >= 0 || pane.Command != command {
+		if ownership.Backend == backendTmux && !tmuxPaneID.MatchString(pane.ID) || ownership.Backend == backendITerm && (!itermSessionID.MatchString(pane.ID) || !itermTTY.MatchString(pane.TTY) || pane.TTY == server.TTY) || pane.ID == server.Target || pane.PID <= 0 || pane.Birth == "" || len(pane.Birth) > 128 || strings.IndexFunc(pane.Birth, unicode.IsControl) >= 0 || pane.Command != command {
 			return false
 		}
 	}
@@ -81,6 +81,9 @@ func validMemberOwnership(ownership *memberOwnership, member *teamMember, cwd, m
 }
 
 func verifyMemberPane(ctx context.Context, server tmuxServer, pane memberPaneIdentity) error {
+	if server.iterm != nil {
+		return server.iterm.verifyPane(ctx, pane)
+	}
 	if err := server.verify(ctx); err != nil {
 		return err
 	}
@@ -193,9 +196,9 @@ func (o *owner) reserveMemberLaunch(ctx context.Context, r *record, selected *ru
 		tools = []string{}
 	}
 	ownership := &memberOwnership{
-		Backend: backendTmux, Member: r.team.Ref, Admission: r.team.AdmissionID, Execution: selected.noticeID, OwnerEpoch: o.epoch, ProcessScope: processScope,
+		Backend: server.backend(), Member: r.team.Ref, Admission: r.team.AdmissionID, Execution: selected.noticeID, OwnerEpoch: o.epoch, ProcessScope: processScope,
 		Launch: launch.nonce, Cwd: r.cwd, Model: r.model, Tools: tools, SessionDirectory: sessionDirectory, Executable: launch.executable, ExecutableSHA256: digest, Manifest: launch.manifest,
-		Server: memberServerIdentity{Socket: server.socket, PID: server.pid, Birth: server.birth, Target: server.target},
+		Server: server.identity(),
 	}
 	if selected.resume {
 		ownership.LaunchPhase = "reserved"
@@ -228,7 +231,7 @@ func (o *owner) armMemberLaunch(r *record, selected *run, ownership *memberOwner
 }
 
 func (o *owner) recordMemberPane(ctx context.Context, r *record, selected *run, ownership *memberOwnership, pane tmuxPane) error {
-	identity := memberPaneIdentity{ID: pane.id, PID: pane.pid, Birth: pane.birth, Command: pane.command}
+	identity := memberPaneIdentity{ID: pane.id, PID: pane.pid, Birth: pane.birth, Command: pane.command, TTY: pane.tty}
 	if err := verifyMemberPane(ctx, pane.server, identity); err != nil {
 		return err
 	}
@@ -244,7 +247,7 @@ func (o *owner) recordMemberPane(ctx context.Context, r *record, selected *run, 
 	o.state.mu.Unlock()
 	server := ownership.Server
 	command := ownership.Executable + " --pig-litter-member " + ownership.Manifest
-	if !active || err != nil || current != r || selected.ctx.Err() != nil || r.nativeOwnership != ownership || ownership.LaunchPhase == "reserved" || ownership.Pane != nil || pane.server.socket != server.Socket || pane.server.pid != server.PID || pane.server.birth != server.Birth || pane.server.target != server.Target || pane.command != command || pane.pid <= 0 || pane.birth == "" {
+	if !active || err != nil || current != r || selected.ctx.Err() != nil || r.nativeOwnership != ownership || ownership.LaunchPhase == "reserved" || ownership.Pane != nil || pane.server.identity() != server || pane.command != command || pane.pid <= 0 || pane.birth == "" {
 		o.tree.mu.Unlock()
 		o.tree.lifecycleMu.Unlock()
 		return reject("unavailable", "native pane does not match its launch intent")
@@ -262,7 +265,7 @@ func (o *owner) releaseMemberLaunch(ctx context.Context, r *record, selected *ru
 	o.tree.mu.Lock()
 	current, err := o.tree.currentLocked(selected)
 	snapshot := cloneMemberOwnership(ownership)
-	if err != nil || current != r || r.nativeOwnership != ownership || snapshot == nil || snapshot.Pane == nil || snapshot.Server.Socket != pane.server.socket || snapshot.Server.PID != pane.server.pid || snapshot.Server.Birth != pane.server.birth || snapshot.Server.Target != pane.server.target || snapshot.Pane.ID != pane.id || snapshot.Pane.PID != pane.pid || snapshot.Pane.Birth != pane.birth || snapshot.Pane.Command != pane.command {
+	if err != nil || current != r || r.nativeOwnership != ownership || snapshot == nil || snapshot.Pane == nil || snapshot.Server != pane.server.identity() || snapshot.Pane.ID != pane.id || snapshot.Pane.PID != pane.pid || snapshot.Pane.Birth != pane.birth || snapshot.Pane.Command != pane.command || snapshot.Pane.TTY != pane.tty {
 		o.tree.mu.Unlock()
 		return reject("unavailable", "native pane ownership changed before release")
 	}

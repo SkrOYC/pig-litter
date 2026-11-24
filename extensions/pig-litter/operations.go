@@ -366,7 +366,7 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			var err error
 			choice, err = chooseTeamBackend(args.Backend, func() error {
 				source, _ := o.context.ExtensionSourceInfo()
-				_, err := currentTmuxMemberEnvironment(ctx, source.Path)
+				_, err := o.currentPaneMemberEnvironment(ctx, source.Path, args.Backend)
 				return err
 			})
 			if err != nil {
@@ -600,7 +600,7 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 			var native *record
 			if err == nil {
 				model = target.model
-				if target.backend == backendTmux {
+				if isPaneBackend(target.backend) {
 					native = target
 				}
 			}

@@ -21,7 +21,7 @@ func (o *owner) prepareNativeResume(ctx context.Context, r *record, selected *ru
 		return nil, err
 	}
 	o.tree.mu.Lock()
-	if o.tree.records[r.id] != r || r.run != selected || r.backend != backendTmux || r.nativeReleasing || r.native != nil || !selected.state.terminal() || selected.finishing {
+	if o.tree.records[r.id] != r || r.run != selected || !isPaneBackend(r.backend) || r.nativeReleasing || r.native != nil || !selected.state.terminal() || selected.finishing {
 		o.tree.mu.Unlock()
 		return nil, reject("unavailable", "native teammate is not ready for reconciliation")
 	}
@@ -147,6 +147,9 @@ func confirmReservedMemberUnstarted(ctx context.Context, ownership *memberOwners
 	scope, err := memberProcessScope(os.Getpid())
 	if err != nil || ownership.ProcessScope == "" || scope != ownership.ProcessScope {
 		return reject("unavailable", "native process scope is unavailable or changed")
+	}
+	if ownership.Backend == backendITerm {
+		return confirmReservedITermUnstarted(ctx, ownership, scope)
 	}
 	command, err := exec.LookPath("tmux")
 	if err != nil {
@@ -277,6 +280,9 @@ func confirmOldMemberGone(ctx context.Context, ownership *memberOwnership) error
 		return reject("unavailable", "previous native process is live or its identity is uncertain")
 	}
 	server := ownership.Server
+	if ownership.Backend == backendITerm {
+		return confirmOldITermMemberGone(ctx, ownership)
+	}
 	birth, err := processBirth(server.PID)
 	if errors.Is(err, os.ErrNotExist) {
 		if _, socketErr := os.Lstat(server.Socket); errors.Is(socketErr, os.ErrNotExist) {

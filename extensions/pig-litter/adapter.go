@@ -523,9 +523,9 @@ func (o *owner) executeRun(r *record, run *run) (outcome Outcome) {
 		outcome.Error = err.Error()
 		return
 	}
-	if r.backend == backendTmux {
+	if isPaneBackend(r.backend) {
 		source, _ := o.context.ExtensionSourceInfo()
-		env, err := currentTmuxMemberEnvironment(run.ctx, source.Path)
+		env, err := o.currentPaneMemberEnvironment(run.ctx, source.Path, r.backend)
 		if err != nil {
 			return Outcome{State: Unavailable, Error: err.Error()}
 		}

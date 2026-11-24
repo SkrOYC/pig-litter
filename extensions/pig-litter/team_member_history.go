@@ -132,9 +132,16 @@ func (o *owner) memberLaunchForInstall(ctx context.Context, r *record, selected 
 	if snapshot == nil || snapshot.Pane == nil || !validMemberOwnership(snapshot, member, cwd, model, selected.noticeID) || snapshot.OwnerEpoch != o.epoch || snapshot.Launch != launch || snapshot.SessionDirectory != directory {
 		return install, reject("unavailable", "native member has no matching owned pane")
 	}
-	server, err := tmuxFromEnvironment(ctx, fmt.Sprintf("%s,%d,0", snapshot.Server.Socket, snapshot.Server.PID), snapshot.Server.Target)
+	var server tmuxServer
+	var err error
+	if snapshot.Backend == backendITerm {
+		server = itermServerFromIdentity(snapshot.Server)
+		err = server.verify(ctx)
+	} else {
+		server, err = tmuxFromEnvironment(ctx, fmt.Sprintf("%s,%d,0", snapshot.Server.Socket, snapshot.Server.PID), snapshot.Server.Target)
+	}
 	if err != nil || server.birth != snapshot.Server.Birth {
-		return install, reject("unavailable", "native member tmux server identity changed")
+		return install, reject("unavailable", "native member terminal identity changed")
 	}
 	if err := verifyMemberPane(ctx, server, *snapshot.Pane); err != nil {
 		return install, err

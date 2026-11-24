@@ -422,7 +422,7 @@ func (o *owner) rollbackTeamMember(member *teamMember) error {
 	if o.tree != nil {
 		o.tree.mu.Lock()
 		r := o.tree.records[member.Ref.ID]
-		unresolved := r != nil && r.team != nil && r.team.Ref == member.Ref && r.team.AdmissionID == member.AdmissionID && (r.nativeReservationConflict || r.nativeOwnership != nil || r.nativeReleasing || r.backend == backendTmux && r.nativeSession != nil && r.run != nil && r.run.resume)
+		unresolved := r != nil && r.team != nil && r.team.Ref == member.Ref && r.team.AdmissionID == member.AdmissionID && (r.nativeReservationConflict || r.nativeOwnership != nil || r.nativeReleasing || isPaneBackend(r.backend) && r.nativeSession != nil && r.run != nil && r.run.resume)
 		o.tree.mu.Unlock()
 		if unresolved {
 			return reject("unavailable", "native ownership requires reconciliation before teammate rollback")

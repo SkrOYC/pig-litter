@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -39,6 +40,20 @@ type tmuxMemberScope struct {
 	control   *memberControlServer
 	attempted bool
 	marked    bool
+}
+
+func (o *owner) currentPaneMemberEnvironment(ctx context.Context, sourcePath string, backend backendRequest) (tmuxMemberEnvironment, error) {
+	if backend != backendITerm {
+		return currentTmuxMemberEnvironment(ctx, sourcePath)
+	}
+	if runtime.GOOS != "darwin" {
+		return tmuxMemberEnvironment{}, errors.New("iTerm2 requires macOS")
+	}
+	host, err := o.context.HostProcessIdentity()
+	if err != nil {
+		return tmuxMemberEnvironment{}, fmt.Errorf("identify lead process: %w", err)
+	}
+	return currentITermMemberEnvironment(ctx, sourcePath, host.PID, host.Birth, host.Scope)
 }
 
 func currentTmuxMemberEnvironment(ctx context.Context, sourcePath string) (tmuxMemberEnvironment, error) {
@@ -177,7 +192,7 @@ func (o *owner) executeTmuxMember(r *record, selected *run, env tmuxMemberEnviro
 	launchID := hex.EncodeToString(nonce[:])
 	scope.manifest = filepath.Join(directory, "member-"+launchID+".json")
 	launch := tmuxLaunch{executable: env.executable, manifest: scope.manifest, cwd: r.cwd, nonce: launchID}
-	manifest := nativeMemberManifest{Version: 1, Launch: launchID, Session: r.id, Cwd: r.cwd, Model: r.model, Tools: []string{}, SessionDirectory: sessionDir, AgentDirectory: agentDir, PigHome: env.pigHome, UsePiDirs: env.usePiDirs, Socket: filepath.Join(directory, "member-control.sock"), Capability: hex.EncodeToString(capability[:]), Prompt: selected.prompt, Instructions: r.instructions, MailboxLimit: o.config.MaxMailbox, ProjectTrusted: trusted}
+	manifest := nativeMemberManifest{Backend: env.server.backend(), Version: 1, Launch: launchID, Session: r.id, Cwd: r.cwd, Model: r.model, Tools: []string{}, SessionDirectory: sessionDir, AgentDirectory: agentDir, PigHome: env.pigHome, UsePiDirs: env.usePiDirs, Socket: filepath.Join(directory, "member-control.sock"), Capability: hex.EncodeToString(capability[:]), Prompt: selected.prompt, Instructions: r.instructions, MailboxLimit: o.config.MaxMailbox, ProjectTrusted: trusted}
 	if resumeSession != nil {
 		manifest.ResumeFile = resumeSession.File
 	}

@@ -574,6 +574,14 @@ func (queue *memberControlQueue) Focus(ctx context.Context) error {
 	if !queue.bound() {
 		return reject("unavailable", "native control handle is not installed")
 	}
+	if queue.owned.Backend == backendITerm {
+		server := itermServerFromIdentity(queue.owned.Server).iterm
+		if err := server.verifyPane(ctx, *queue.owned.Pane); err != nil {
+			return err
+		}
+		_, err := itermCall(ctx, itermSelect, server.window, queue.owned.Pane.ID, queue.owned.Pane.TTY)
+		return err
+	}
 	server, err := tmuxFromEnvironment(ctx, fmt.Sprintf("%s,%d,0", queue.owned.Server.Socket, queue.owned.Server.PID), queue.owned.Server.Target)
 	if err != nil || server.birth != queue.owned.Server.Birth {
 		return reject("unavailable", "native pane server is unavailable")

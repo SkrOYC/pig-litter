@@ -100,7 +100,7 @@ func (o *owner) drivePeerWake(recipient MemberRef) {
 		}
 		done := selected.teamFinishDone
 		var executorDone <-chan struct{}
-		if r.backend == backendTmux {
+		if isPaneBackend(r.backend) {
 			executorDone = selected.executorDone
 		}
 		t.mu.Unlock()
@@ -169,7 +169,7 @@ func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error
 	t := o.tree
 	t.mu.Lock()
 	candidate := t.records[recipient.ID]
-	native := candidate != nil && candidate.backend == backendTmux
+	native := candidate != nil && isPaneBackend(candidate.backend)
 	if native && (t.closed || t.root.paused || candidate.team == nil || candidate.team.Ref != recipient || candidate.run != previous || !candidate.admitted || candidate.paused || candidate.nativeSession == nil || candidate.nativeReservationConflict || candidate.nativeOwnership != nil || candidate.nativeReleasing || previous.state != Completed || previous.finishing) {
 		t.mu.Unlock()
 		return false, nil
@@ -210,7 +210,7 @@ func (o *owner) reservePeerWake(recipient MemberRef, previous *run) (bool, error
 	}
 	t.mu.Lock()
 	r := t.records[recipient.ID]
-	if t.closed || t.root.paused || r == nil || r.team == nil || r.team.Ref != recipient || (r.backend == backendTmux) != native || native && (r.nativeOwnership != nil || r.nativeReleasing) || !r.admitted || r.paused || r.run != previous || previous.state != Completed || previous.finishing {
+	if t.closed || t.root.paused || r == nil || r.team == nil || r.team.Ref != recipient || (isPaneBackend(r.backend)) != native || native && (r.nativeOwnership != nil || r.nativeReleasing) || !r.admitted || r.paused || r.run != previous || previous.state != Completed || previous.finishing {
 		t.mu.Unlock()
 		t.lifecycleMu.Unlock()
 		return false, nil

@@ -333,7 +333,7 @@ func (o *owner) restoreChildren() error {
 		if len(saved.NativeCleanupError) > 1024 || saved.NativeCleanupError != "" && saved.Team == nil {
 			return reject("unavailable", "stored native cleanup status is invalid")
 		}
-		if saved.NativeSession != nil && (saved.Team == nil || saved.Backend != "" && saved.Backend != backendTmux || !validMemberSession(saved.NativeSession, saved.ID, saved.Cwd, saved.Model)) {
+		if saved.NativeSession != nil && (saved.Team == nil || saved.Backend != "" && !isPaneBackend(saved.Backend) || !validMemberSession(saved.NativeSession, saved.ID, saved.Cwd, saved.Model)) {
 			return reject("unavailable", "stored native session identity is invalid")
 		}
 		if saved.Team != nil {

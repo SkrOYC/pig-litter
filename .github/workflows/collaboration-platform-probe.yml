@@ -27,6 +27,7 @@ on:
           - p03-team
           - p03-policy
           - p03-unselected
+          - p08-iterm
       architecture:
         description: Architectures for P03 product verification
         type: choice
@@ -124,7 +125,7 @@ jobs:
           retention-days: 14
 
   p03-macos:
-    if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["p03-all","p03-team","p03-policy","p03-unselected"]'), inputs.scenario) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["p03-all","p03-team","p03-policy","p03-unselected","p08-iterm"]'), inputs.scenario) }}
     name: P03 iTerm2 on ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 105

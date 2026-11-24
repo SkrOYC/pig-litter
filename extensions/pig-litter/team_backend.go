@@ -3,7 +3,6 @@ package piglitter
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -116,6 +115,8 @@ type memberServerIdentity struct {
 	PID    int    `json:"pid"`
 	Birth  string `json:"birth"`
 	Target string `json:"target"`
+	Window string `json:"window,omitempty"`
+	TTY    string `json:"tty,omitempty"`
 }
 
 type memberPaneIdentity struct {
@@ -123,6 +124,7 @@ type memberPaneIdentity struct {
 	PID     int    `json:"pid"`
 	Birth   string `json:"birth"`
 	Command string `json:"command"`
+	TTY     string `json:"tty,omitempty"`
 }
 
 type memberOwnership struct {
@@ -184,20 +186,25 @@ const (
 	backendITerm    backendRequest = "iterm2"
 )
 
+func isPaneBackend(request backendRequest) bool {
+	return request == backendTmux || request == backendITerm
+}
+
 func chooseTeamBackend(request backendRequest, probe func() error) (backendChoice, error) {
 	switch request {
 	case "", backendEmbedded:
 		return backendChoice{kind: backendEmbedded}, nil
-	case backendAuto, backendTmux:
+	case backendAuto, backendTmux, backendITerm:
 		if err := probe(); err != nil {
 			if request == backendAuto {
 				return backendChoice{kind: backendEmbedded, fallback: "tmux unavailable: " + err.Error()}, nil
 			}
-			return backendChoice{}, reject("unavailable", "tmux teammate backend is unavailable: "+err.Error()+"; choose embedded or auto")
+			return backendChoice{}, reject("unavailable", string(request)+" teammate backend is unavailable: "+err.Error()+"; choose embedded or auto")
 		}
-		return backendChoice{kind: backendTmux}, nil
-	case backendITerm:
-		return backendChoice{}, reject("unavailable", fmt.Sprintf("the %s teammate backend is not available in this build; choose embedded or auto", request))
+		if request == backendAuto {
+			request = backendTmux
+		}
+		return backendChoice{kind: request}, nil
 	default:
 		return backendChoice{}, reject("rejected", "backend must be embedded, tmux, iterm2, or auto")
 	}

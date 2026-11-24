@@ -219,7 +219,7 @@ func TestReviewNativeSettlementReportsTeamStoreFailure(t *testing.T) {
 }
 
 func TestReviewNativeSettlementFencesTaskMutations(t *testing.T) {
-	for _, action := range []string{"create", "assign", "delete"} {
+	for _, action := range []string{"create", "edit", "assign", "delete"} {
 		t.Run(action, func(t *testing.T) {
 			withSettlementReviewFixture(t, func(o *owner, binding *memberBinding, _ *coding.SessionManager, store *teamStore) {
 				task, err := store.createTask("Pending work", "", nil, nil)
@@ -239,6 +239,8 @@ func TestReviewNativeSettlementFencesTaskMutations(t *testing.T) {
 					input = map[string]any{"subject": "New work"}
 				} else if action == "assign" {
 					input["assignee"] = binding.record.name
+				} else if action == "edit" {
+					input["subject"] = "Edited work"
 				}
 				args, _ := json.Marshal(input)
 				entered, started := make(chan struct{}), make(chan struct{})

@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package piglitter
 
@@ -31,5 +31,9 @@ func memberProcessMatchesExecutable(int, string, string) (bool, error) {
 }
 
 func memberProcessDigest(context.Context, int, string) (string, error) {
+	return "", errors.New("native process identity is unavailable on this platform")
+}
+
+func memberProcessPath(int, string) (string, error) {
 	return "", errors.New("native process identity is unavailable on this platform")
 }

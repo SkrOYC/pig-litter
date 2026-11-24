@@ -265,6 +265,45 @@ class Fixture:
             return "P03_POLICY_DONE"
         raise RuntimeError("Unexpected policy lead turn")
 
+    def iterm_turn(self, request, tool_results, prompt):
+        model = request["model"]
+        if model == "team_alpha":
+            if not tool_results:
+                matches = [process for process in process_snapshot().values() if f"{self.extension} --pig-litter-member " in process["command"]]
+                require(len(matches) == 1, "Native helper process is missing or ambiguous")
+                member = matches[0]
+                member["executable"] = executable(member["pid"])
+                require(member["executable"] == os.path.realpath(self.extension), "Native helper executable changed")
+                tty = "/dev/" + member["tty"]
+                window, session = applescript(PANE_BY_TTY, tty).split("\t")
+                require(window == self.lead["id"] and session != self.lead["session"] and tty != self.lead["tty"], "Native member is not in a distinct pane of the lead window")
+                member.update({"window": window, "session": session, "terminal": tty})
+                self.observations["native_member"] = member
+                probe = probe_identity(Path(os.environ["RUNNER_TEMP"]) / "collaboration-platform-probe" / "result.json")
+                require(probe and applescript(SESSION, *probe, "exists") == "present", "Unrelated probe window changed")
+                return call("write", path="p08-iterm.txt", content="P08_ITERM_SIDE_EFFECT")
+            require((self.workspace / "p08-iterm.txt").read_text() == "P08_ITERM_SIDE_EFFECT", "Native member side effect is missing")
+            return "P08_ITERM_MEMBER_DONE"
+        require(model == "parent", "Unexpected iTerm lead model")
+        if self.stage == 0:
+            require(prompt == "P08_ITERM", "Unexpected iTerm prompt")
+            self.stage = 1
+            return call("team_spawn", type="worker", name="alpha", task="Write the iTerm fixture file and report completion", model="fixture/team_alpha", workspace={"kind": "shared_checkout"}, backend="iterm2")
+        if self.stage == 1:
+            admission = tool_results[-1]
+            ref = admission.get("member", {})
+            require(admission.get("operation") == "team_spawn" and admission.get("state") == "starting" and ref.get("id"), f"iTerm admission failed: {admission}")
+            self.refs["alpha"] = ref
+            self.stage = 2
+            return call("litter_wait", id=ref["id"], timeoutMs=90000)
+        if self.stage == 2:
+            result = tool_results[-1]
+            require(result.get("operation") == "litter_wait" and result.get("state") == "completed" and (result.get("outcome") or {}).get("text") == "P08_ITERM_MEMBER_DONE", f"iTerm completion failed: {result}")
+            self.observations["native_outcome"] = result
+            self.stage = 3
+            return "P08_ITERM_DONE"
+        raise RuntimeError("Unexpected iTerm lead turn")
+
     def decide(self, request):
         with self.changed:
             self.requests += 1
@@ -281,6 +320,8 @@ class Fixture:
                 self.stage = 1
                 return "P03_UNSELECTED_DONE"
             tool_results = results(messages)
+            if self.scenario == "iterm":
+                return self.iterm_turn(request, tool_results, prompt)
             if self.scenario == "team":
                 return self.team_turn(request, tool_results, prompt)
             return self.policy_turn(request, tool_results)
@@ -357,34 +398,84 @@ on run argv
   tell application "iTerm"
     repeat with candidateWindow in windows
       if (id of candidateWindow as text) is wantedWindow then
-        set candidateSession to current session of candidateWindow
-        if candidateSession is missing value then
-          if actionName is "close" then return "session missing"
-          error "Owned window has no current session."
-        end if
-        if (unique id of candidateSession) is not wantedSession then error "Owned window session changed."
-        if actionName is "exists" then return "present"
-        if actionName is "text" then return text of candidateSession
-        if actionName is "send" then
-          tell candidateSession to write text (item 4 of argv)
-          return "sent"
-        end if
-        if actionName is "exit" then
-          set controlD to ASCII character 4
-          tell candidateSession to write text controlD newline NO
-          return "sent exit key"
-        end if
-        if actionName is "close" then
-          tell candidateWindow to close
-          return "closed"
-        end if
-        error "Unknown action."
+        repeat with candidateTab in tabs of candidateWindow
+          repeat with candidateSession in sessions of candidateTab
+            if (unique id of candidateSession) is wantedSession then
+              if actionName is "exists" then return "present"
+              if actionName is "text" then return text of candidateSession
+              if actionName is "send" then
+                tell candidateSession to write text (item 4 of argv)
+                return "sent"
+              end if
+              if actionName is "exit" then
+                set controlD to ASCII character 4
+                tell candidateSession to write text controlD newline NO
+                return "sent exit key"
+              end if
+              if actionName is "close" then
+                tell candidateWindow to close
+                return "closed"
+              end if
+              error "Unknown action."
+            end if
+          end repeat
+        end repeat
+        if actionName is "close" then return "session missing"
+        if actionName is "exists" then return "missing"
+        error "Owned window session changed."
       end if
     end repeat
   end tell
   if actionName is "close" then return "already closed"
   if actionName is "exists" then return "missing"
   error "Owned window is missing."
+end run
+'''
+
+
+SIBLING = r'''
+on run argv
+  set wantedWindow to item 1 of argv
+  set wantedSession to item 2 of argv
+  set actionName to item 3 of argv
+  tell application "iTerm"
+    repeat with candidateWindow in windows
+      if (id of candidateWindow as text) is wantedWindow then
+        repeat with candidateTab in tabs of candidateWindow
+          repeat with candidateSession in sessions of candidateTab
+            if (unique id of candidateSession as text) is wantedSession then
+              if actionName is "create" then
+                tell candidateSession to set other to (split vertically with same profile command "/bin/sleep 600")
+                return (unique id of other as text) & tab & (tty of other as text)
+              end if
+              if actionName is "close" and (tty of candidateSession as text) is (item 4 of argv) then
+                tell candidateSession to close
+                return "closed"
+              end if
+            end if
+          end repeat
+        end repeat
+      end if
+    end repeat
+  end tell
+  error "Fixture sibling session is unavailable or changed"
+end run
+'''
+
+
+PANE_BY_TTY = r'''
+on run argv
+  set wantedTTY to item 1 of argv
+  tell application "iTerm"
+    repeat with candidateWindow in windows
+      repeat with candidateTab in tabs of candidateWindow
+        repeat with candidateSession in sessions of candidateTab
+          if (tty of candidateSession as text) is wantedTTY then return (id of candidateWindow as text) & tab & (unique id of candidateSession as text)
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  return "missing"
 end run
 '''
 
@@ -834,7 +925,33 @@ def run_case(name, scratch, evidence, pig, extension):
     teardown_problems = []
     try:
         terminal.launch()
-        if name == "team":
+        if name == "iterm":
+            fixture.extension = str(extension)
+            fixture.lead = terminal.window.copy()
+            sibling_id, sibling_tty = applescript(SIBLING, fixture.lead["id"], fixture.lead["session"], "create").split("\t")
+            deadline = time.monotonic() + 10
+            sibling_matches = []
+            while time.monotonic() < deadline and not sibling_matches:
+                sibling_matches = [process for process in process_snapshot().values() if process["tty"] == sibling_tty.removeprefix("/dev/") and process["command"] == "/bin/sleep 600"]
+                if not sibling_matches:
+                    time.sleep(0.1)
+            require(len(sibling_matches) == 1, "Fixture sibling process is missing or ambiguous")
+            sibling = sibling_matches[0]
+            sibling["executable"] = executable(sibling["pid"])
+            sibling.update({"session": sibling_id, "terminal": sibling_tty})
+            fixture.observations["sibling"] = sibling
+            terminal.send("P08_ITERM")
+            terminal.await_marker("P08_ITERM_DONE", fixture)
+            require(fixture.stage == 3, "iTerm stage did not complete")
+            member = fixture.observations["native_member"]
+            terminal.wait(lambda: not same_process(member) and applescript(PANE_BY_TTY, member["terminal"]) == "missing", "native member process and pane cleanup", 30)
+            probe = probe_identity(Path(os.environ["RUNNER_TEMP"]) / "collaboration-platform-probe" / "result.json")
+            require(probe and applescript(SESSION, *probe, "exists") == "present", "Unrelated probe window was closed")
+            require(same_process(sibling) and applescript(PANE_BY_TTY, sibling_tty) == fixture.lead["id"] + "\t" + sibling_id, "Unrelated sibling pane changed")
+            require(applescript(SIBLING, fixture.lead["id"], sibling_id, "close", sibling_tty) == "closed", "Fixture sibling pane did not close")
+            terminal.wait(lambda: not same_process(sibling), "fixture sibling process cleanup", 30)
+            fixture.observations["cleanup"] = "native process and pane exited; unrelated sibling and probe remained until fixture cleanup"
+        elif name == "team":
             terminal.send("P03_TEAM_FIRST")
             terminal.await_marker("P03_TEAM_FIRST_DONE", fixture)
             require(fixture.stage == 6, "Team first stage did not complete")
@@ -912,7 +1029,7 @@ def run_case(name, scratch, evidence, pig, extension):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", choices=("p03-all", "p03-team", "p03-policy", "p03-unselected"))
+    parser.add_argument("--scenario", choices=("p03-all", "p03-team", "p03-policy", "p03-unselected", "p08-iterm"))
     parser.add_argument("--pig", type=Path)
     parser.add_argument("--extension", type=Path)
     parser.add_argument("--scratch", type=Path)
@@ -930,7 +1047,7 @@ def main():
     require(capability.get("status") == "pass" and capability.get("signature_status") == "verified" and capability.get("automation_status") == "approved", "Signed iTerm capability probe did not pass")
     identity = probe_identity(probe)
     require(identity is not None and applescript(SESSION, *identity, "exists") == "present", "The capability probe window is unavailable")
-    cases = ("team", "policy", "unselected") if args.scenario == "p03-all" else (args.scenario.removeprefix("p03-"),)
+    cases = ("team", "policy", "unselected") if args.scenario == "p03-all" else (args.scenario.removeprefix("p03-").removeprefix("p08-"),)
     product_failures = []
     teardown_failures = []
     attempted = []

@@ -118,6 +118,22 @@ func memberProcessMatchesExecutable(pid int, birth, executable string) (bool, er
 	return os.SameFile(wanted, actual), nil
 }
 
+func memberProcessPath(pid int, birth string) (string, error) {
+	before, err := processBirth(pid)
+	if err != nil || before != birth {
+		return "", errors.New("native member process identity changed")
+	}
+	path, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe")
+	if err != nil {
+		return "", err
+	}
+	after, err := processBirth(pid)
+	if err != nil || after != birth {
+		return "", errors.New("native member process identity changed")
+	}
+	return path, nil
+}
+
 func memberProcessDigest(ctx context.Context, pid int, birth string) (string, error) {
 	current, err := processBirth(pid)
 	if err != nil || current != birth {

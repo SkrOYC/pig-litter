@@ -768,7 +768,7 @@ func (t *Tree) resumeAs(authority controlAuthority, selected *run, text string) 
 		}
 	}
 	prompt := text
-	if r.pendingTask != "" && r.backend != backendTmux {
+	if r.pendingTask != "" && !isPaneBackend(r.backend) {
 		prompt = "Task:\n" + r.pendingTask + "\n\nResume instructions:\n" + text
 	}
 	defer t.mu.Unlock()
