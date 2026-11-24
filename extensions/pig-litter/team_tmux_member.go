@@ -46,6 +46,25 @@ func currentTmuxMemberEnvironment(ctx context.Context, sourcePath string) (tmuxM
 	if err != nil {
 		return tmuxMemberEnvironment{}, err
 	}
+	scope, err := memberProcessScope(os.Getpid())
+	if err != nil {
+		return tmuxMemberEnvironment{}, fmt.Errorf("native process identity is unavailable: %w", err)
+	}
+	serverScope, err := memberProcessScope(server.pid)
+	if err != nil || scope != serverScope {
+		return tmuxMemberEnvironment{}, errors.New("tmux server process scope is unavailable or changed")
+	}
+	birth, err := processBirth(os.Getpid())
+	if err != nil {
+		return tmuxMemberEnvironment{}, fmt.Errorf("native process identity is unavailable: %w", err)
+	}
+	handle, err := openMemberProcess(os.Getpid(), birth)
+	if err != nil {
+		return tmuxMemberEnvironment{}, fmt.Errorf("native process supervision is unavailable: %w", err)
+	}
+	if err := handle.close(); err != nil {
+		return tmuxMemberEnvironment{}, fmt.Errorf("native process supervision is unavailable: %w", err)
+	}
 	executable, err := nativeMemberExecutable(ctx, sourcePath)
 	if err != nil {
 		return tmuxMemberEnvironment{}, err

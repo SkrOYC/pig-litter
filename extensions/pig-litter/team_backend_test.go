@@ -3,6 +3,7 @@ package piglitter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -13,15 +14,22 @@ func TestTeamBackendSelection(t *testing.T) {
 		kind     backendRequest
 		fallback string
 		err      string
+		probeErr error
 	}{
 		{request: "", kind: "embedded"},
 		{request: "embedded", kind: "embedded"},
-		{request: "auto", kind: "embedded", fallback: "native pane members are not available in this build"},
-		{request: "tmux", err: "the tmux teammate backend is not available in this build; choose embedded or auto"},
+		{request: "auto", kind: "tmux"},
+		{request: "tmux", kind: "tmux"},
+		{request: "auto", kind: "embedded", fallback: "tmux unavailable: no tmux", probeErr: errors.New("no tmux")},
+		{request: "tmux", err: "tmux teammate backend is unavailable: no tmux; choose embedded or auto", probeErr: errors.New("no tmux")},
 		{request: "iterm2", err: "the iterm2 teammate backend is not available in this build; choose embedded or auto"},
 		{request: "other", err: "backend must be embedded, tmux, iterm2, or auto"},
 	} {
-		choice, err := chooseTeamBackend(example.request)
+		calls := 0
+		choice, err := chooseTeamBackend(example.request, func() error { calls++; return example.probeErr })
+		if (example.request == backendAuto || example.request == backendTmux) != (calls == 1) {
+			t.Fatalf("%q capability probes = %d", example.request, calls)
+		}
 		if example.err != "" {
 			if err == nil || err.Error() != example.err {
 				t.Fatalf("%q error = %v, want %q", example.request, err, example.err)
@@ -35,6 +43,8 @@ func TestTeamBackendSelection(t *testing.T) {
 }
 
 func TestUnavailableBackendFailsBeforeTeamAdmission(t *testing.T) {
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
 	tree := testTree(t, defaultConfig())
 	withCompletionHost(t, tree, func(owner *owner) {
 		ticket, err := owner.callScope(nil).begin(nil, "call", "team_spawn")
@@ -43,7 +53,7 @@ func TestUnavailableBackendFailsBeforeTeamAdmission(t *testing.T) {
 		}
 		args := json.RawMessage(`{"type":"worker","task":"work","name":"member","workspace":{"kind":"shared_checkout"},"backend":"tmux"}`)
 		_, err = owner.operation(context.Background(), args, ticket, nil)
-		if err == nil || !strings.Contains(err.Error(), "tmux teammate backend is not available") {
+		if err == nil || !strings.Contains(err.Error(), "tmux teammate backend is unavailable") {
 			t.Fatalf("team spawn error = %v", err)
 		}
 		tree.mu.Lock()

@@ -364,7 +364,11 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		choice := backendChoice{kind: backendEmbedded}
 		if isTeam {
 			var err error
-			choice, err = chooseTeamBackend(args.Backend)
+			choice, err = chooseTeamBackend(args.Backend, func() error {
+				source, _ := o.context.ExtensionSourceInfo()
+				_, err := currentTmuxMemberEnvironment(ctx, source.Path)
+				return err
+			})
 			if err != nil {
 				return nil, err
 			}
