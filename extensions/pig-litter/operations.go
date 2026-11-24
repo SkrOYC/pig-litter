@@ -21,7 +21,7 @@ var controlNames = []string{"litter_spawn", "litter_list", "litter_inspect", "li
 var teamToolNames = []string{"team_spawn", "team_list", "team_send"}
 var descriptions = map[string]string{
 	"team_spawn":     "Start a named teammate with an explicit workspace policy.",
-	"team_list":      "List the lead and committed teammates in this team.",
+	"team_list":      "List the team and classify the caller's inbox receipts.",
 	"team_send":      "Send an ordinary message to a named teammate.",
 	"litter_spawn":   "Start a background child. Use litter_list to discover named agent types.",
 	"litter_list":    "List available agent types and active immediate children.",
@@ -177,7 +177,15 @@ func (o *owner) operation(ctx context.Context, raw json.RawMessage, key *callTic
 		for _, member := range members {
 			roster = append(roster, map[string]any{"ref": member.Ref, "name": member.Name, "role": "teammate", "state": member.State, "cwd": member.Workspace.Cwd, "workspace": member.Workspace})
 		}
-		result := map[string]any{"state": "listed", "team": team, "members": roster}
+		recipient := teamLeadRef(team)
+		if caller != nil {
+			recipient = parent.team.Ref
+		}
+		inbox, err := store.peerInbox(recipient)
+		if err != nil {
+			return nil, err
+		}
+		result := map[string]any{"state": "listed", "team": team, "members": roster, "inbox": inbox}
 		if caller == nil {
 			result["pending"] = pending
 		}

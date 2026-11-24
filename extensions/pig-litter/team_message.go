@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/MichaelKinsy/PiG/coding/extension"
 )
@@ -110,6 +111,146 @@ func readPeerReceipt(path string) (peerReceipt, error) {
 	return receipt, nil
 }
 
+type classifiedPeer struct {
+	Receipt    peerReceipt
+	Body       peerBody
+	SenderName string
+	Provenance peerProvenance
+	Reason     string
+	Assigned   bool
+}
+
+func (s *teamStore) classifyPeer(roster *teamRoster, members map[MemberRef]string, recipient MemberRef, filename string, receipt peerReceipt) classifiedPeer {
+	item := classifiedPeer{Receipt: receipt, Provenance: peerRejected, Reason: "invalid receipt"}
+	envelope := receipt.Envelope
+	if envelope.Team != roster.Team {
+		return item
+	}
+	if _, ok := members[envelope.Recipient]; !ok && envelope.Recipient != teamLeadRef(roster.Team) {
+		return item
+	}
+	item.Assigned = true
+	if envelope.Recipient != recipient {
+		return item
+	}
+	key, err := peerKey(envelope)
+	if err != nil || filename != "peer-receipt-"+key+".json" {
+		item.Reason = "receipt identity does not match its filename"
+		return item
+	}
+	bodyPath, _ := peerPaths(s.dir, key)
+	data, err := readPeerFile(bodyPath)
+	if err != nil {
+		item.Reason = "message body is unavailable"
+		return item
+	}
+	digest := sha256.Sum256(data)
+	if hex.EncodeToString(digest[:]) != envelope.BodySHA256 {
+		item.Reason = "message body does not match its receipt"
+		return item
+	}
+	if envelope.Sender == teamLeadRef(roster.Team) {
+		item.Provenance, item.Reason = peerForged, "team lead cannot be a peer sender"
+		return item
+	}
+	item.SenderName = members[envelope.Sender]
+	if item.SenderName == "" {
+		item.Reason = "sender is not a committed teammate"
+		return item
+	}
+	if !utf8.Valid(data) || checkUniqueJSON(data) != nil {
+		item.Reason = "invalid message body"
+		return item
+	}
+	if _, err := exactJSONObject(data, "text", "summary"); err != nil || json.Unmarshal(data, &item.Body) != nil || validatePeerBody(item.Body) != nil {
+		item.Reason = "invalid message body"
+		return item
+	}
+	authenticated, ok := s.peerAuth[key]
+	if !ok {
+		item.Provenance, item.Reason = peerUnverifiable, "no current-owner sender authentication"
+		return item
+	}
+	if authenticated.Envelope != envelope || authenticated.SenderName != item.SenderName {
+		item.Provenance, item.Reason = peerForged, "receipt conflicts with authenticated sender"
+		return item
+	}
+	item.Provenance, item.Reason = peerVerified, "authenticated by current owner"
+	return item
+}
+
+func isPeerReceiptFile(name string) bool {
+	return strings.HasPrefix(name, "peer-receipt-") && strings.HasSuffix(name, ".json")
+}
+
+func (s *teamStore) peerInbox(recipient MemberRef) (peerInboxSummary, error) {
+	summary := peerInboxSummary{
+		VerificationScope: "current_owner_runtime",
+		Notice:            "Receipt metadata cannot prove provenance against arbitrary processes running as the same OS user.",
+		Items:             []peerInboxItem{},
+	}
+	var details [3][]peerInboxItem
+	err := s.transact(func(roster *teamRoster) (bool, error) {
+		members := make(map[MemberRef]string, len(roster.Members))
+		for _, member := range roster.Members {
+			members[member.Ref] = member.Name
+		}
+		if recipient.Team != roster.Team || members[recipient] == "" && recipient != teamLeadRef(roster.Team) {
+			return false, reject("permission_denied", "recipient is not in the current team")
+		}
+		entries, err := os.ReadDir(s.dir)
+		if err != nil {
+			return false, err
+		}
+		for _, entry := range entries {
+			if !isPeerReceiptFile(entry.Name()) {
+				continue
+			}
+			receipt, err := readPeerReceipt(filepath.Join(s.dir, entry.Name()))
+			if err != nil {
+				summary.UnassignedRejected++
+				continue
+			}
+			item := s.classifyPeer(roster, members, recipient, entry.Name(), receipt)
+			if !item.Assigned {
+				summary.UnassignedRejected++
+				continue
+			}
+			if item.Receipt.Envelope.Recipient != recipient {
+				continue
+			}
+			priority := 0
+			switch item.Provenance {
+			case peerVerified:
+				summary.Verified++
+				continue
+			case peerUnverifiable:
+				summary.Unverifiable++
+				priority = 2
+			case peerForged:
+				summary.Forged++
+			case peerRejected:
+				summary.Rejected++
+				priority = 1
+			}
+			if len(details[priority]) < peerInboxLimit {
+				details[priority] = append(details[priority], peerInboxItem{MessageID: item.Receipt.Envelope.MessageID, Provenance: item.Provenance, ReceiptState: item.Receipt.State, Reason: item.Reason})
+			}
+		}
+		return false, nil
+	})
+	for _, group := range details {
+		for _, item := range group {
+			if len(summary.Items) == peerInboxLimit {
+				break
+			}
+			summary.Items = append(summary.Items, item)
+		}
+	}
+	summary.More = summary.Unverifiable+summary.Forged+summary.Rejected > len(summary.Items)
+	return summary, err
+}
+
 func publishPeerFile(path string, data []byte, replace bool) error {
 	dir := filepath.Dir(path)
 	file, err := os.CreateTemp(dir, ".peer-*.tmp")
@@ -200,22 +341,25 @@ func (s *teamStore) acceptPeer(sender MemberRef, request peerRequest) (peerRecei
 		count := 0
 		receipts := make(map[string]bool)
 		for _, entry := range entries {
-			if !strings.HasPrefix(entry.Name(), "peer-receipt-") || !strings.HasSuffix(entry.Name(), ".json") {
+			if !isPeerReceiptFile(entry.Name()) {
 				continue
 			}
 			receiptKey := strings.TrimSuffix(strings.TrimPrefix(entry.Name(), "peer-receipt-"), ".json")
 			if decoded, err := hex.DecodeString(receiptKey); err != nil || len(decoded) != sha256.Size || hex.EncodeToString(decoded) != receiptKey {
-				return false, errors.New("invalid peer receipt filename")
+				count++
+				continue
 			}
+			receipts[receiptKey] = true
 			receipt, err := readPeerReceipt(filepath.Join(s.dir, entry.Name()))
 			if err != nil {
-				return false, err
+				count++
+				continue
 			}
 			actualKey, err := peerKey(receipt.Envelope)
 			if err != nil || actualKey != receiptKey {
-				return false, errors.New("peer receipt filename differs from its identity")
+				count++
+				continue
 			}
-			receipts[receiptKey] = true
 			if receipt.Envelope.Recipient == recipient && receipt.State != peerObserved {
 				count++
 			}
@@ -226,12 +370,10 @@ func (s *teamStore) acceptPeer(sender MemberRef, request peerRequest) (peerRecei
 			}
 			bodyKey := strings.TrimSuffix(strings.TrimPrefix(entry.Name(), "peer-body-"), ".json")
 			if decoded, err := hex.DecodeString(bodyKey); err != nil || len(decoded) != sha256.Size || hex.EncodeToString(decoded) != bodyKey {
-				return false, errors.New("invalid peer body filename")
+				count++
+				continue
 			}
 			if !receipts[bodyKey] && bodyKey != key {
-				if _, err := readPeerFile(filepath.Join(s.dir, entry.Name())); err != nil {
-					return false, err
-				}
 				count++
 			}
 		}
@@ -291,47 +433,22 @@ func (s *teamStore) offerPeerAttempt(recipient MemberRef, attempt *peerLeadAttem
 			return false, err
 		}
 		for _, entry := range entries {
-			if !strings.HasPrefix(entry.Name(), "peer-receipt-") || !strings.HasSuffix(entry.Name(), ".json") {
+			if !isPeerReceiptFile(entry.Name()) {
 				continue
 			}
 			path := filepath.Join(s.dir, entry.Name())
 			receipt, err := readPeerReceipt(path)
-			if err != nil {
-				return false, err
-			}
-			if receipt.Envelope.Recipient != recipient {
+			if err != nil || receipt.Envelope.Recipient != recipient {
 				continue
 			}
 			if receipt.State != peerAccepted && (attempt == nil || receipt.Attempt == nil || receipt.State != peerAttempted && receipt.State != peerAmbiguous) {
 				continue
 			}
-			senderName, ok := members[receipt.Envelope.Sender]
-			if !ok {
-				return false, errors.New("peer sender is no longer a committed teammate")
-			}
-			key, err := peerKey(receipt.Envelope)
-			if err != nil || entry.Name() != "peer-receipt-"+key+".json" {
-				return false, errors.New("peer receipt filename differs from its identity")
-			}
-			if authenticated, ok := s.peerAuth[key]; !ok || authenticated.Envelope != receipt.Envelope || authenticated.SenderName != senderName {
+			item := s.classifyPeer(roster, members, recipient, entry.Name(), receipt)
+			if !item.Assigned || item.Provenance != peerVerified {
 				continue
 			}
-			bodyPath, _ := peerPaths(s.dir, key)
-			data, err := readPeerFile(bodyPath)
-			if err != nil {
-				return false, err
-			}
-			digest := sha256.Sum256(data)
-			if hex.EncodeToString(digest[:]) != receipt.Envelope.BodySHA256 {
-				return false, errors.New("peer body digest differs from its receipt")
-			}
-			var body peerBody
-			decoder := json.NewDecoder(bytes.NewReader(data))
-			decoder.DisallowUnknownFields()
-			if err := decoder.Decode(&body); err != nil {
-				return false, err
-			}
-			content, err = peerMessageContent(receipt.Envelope, senderName, body)
+			content, err = peerMessageContent(receipt.Envelope, item.SenderName, item.Body)
 			if err != nil {
 				return false, err
 			}
@@ -354,7 +471,7 @@ func (s *teamStore) offerPeerAttempt(recipient MemberRef, attempt *peerLeadAttem
 				}
 				if id != "" {
 					receipt.State, receipt.SessionID, receipt.NativeEntryID = peerObserved, recipient.ID, id
-					data, err = json.Marshal(receipt)
+					data, err := json.Marshal(receipt)
 					if err != nil {
 						return false, err
 					}
@@ -369,7 +486,7 @@ func (s *teamStore) offerPeerAttempt(recipient MemberRef, attempt *peerLeadAttem
 			}
 			receipt.State = peerAttempted
 			receipt.Attempt = attempt
-			data, err = json.Marshal(receipt)
+			data, err := json.Marshal(receipt)
 			if err != nil {
 				return false, err
 			}
@@ -410,13 +527,11 @@ func (s *teamStore) peerWakeEligible(recipient MemberRef) (bool, error) {
 			}
 			_, path := peerPaths(s.dir, key)
 			receipt, err := readPeerReceipt(path)
-			if err != nil {
-				return false, err
+			if err != nil || receipt.State != peerAccepted {
+				continue
 			}
-			if receipt.Envelope != authenticated.Envelope {
-				return false, errors.New("peer receipt identity changed")
-			}
-			if receipt.State == peerAccepted {
+			item := s.classifyPeer(roster, members, recipient, filepath.Base(path), receipt)
+			if item.Provenance == peerVerified && item.Receipt.State == peerAccepted {
 				eligible = true
 				break
 			}
@@ -508,42 +623,19 @@ func (s *teamStore) observePeers(recipient MemberRef, sessionFile string) error 
 			return false, err
 		}
 		for _, entry := range entries {
-			if !strings.HasPrefix(entry.Name(), "peer-receipt-") || !strings.HasSuffix(entry.Name(), ".json") {
+			if !isPeerReceiptFile(entry.Name()) {
 				continue
 			}
 			path := filepath.Join(s.dir, entry.Name())
 			receipt, err := readPeerReceipt(path)
-			if err != nil {
-				return false, err
-			}
-			if receipt.Envelope.Recipient != recipient || receipt.State != peerAttempted && receipt.State != peerAmbiguous {
+			if err != nil || receipt.Envelope.Recipient != recipient || receipt.State != peerAttempted && receipt.State != peerAmbiguous {
 				continue
 			}
-			name, ok := members[receipt.Envelope.Sender]
-			if !ok {
-				return false, errors.New("peer sender is no longer a committed teammate")
-			}
-			key, err := peerKey(receipt.Envelope)
-			if err != nil || entry.Name() != "peer-receipt-"+key+".json" {
-				return false, errors.New("peer receipt filename differs from its identity")
-			}
-			if authenticated, ok := s.peerAuth[key]; !ok || authenticated.Envelope != receipt.Envelope || authenticated.SenderName != name {
+			item := s.classifyPeer(roster, members, recipient, entry.Name(), receipt)
+			if !item.Assigned || item.Provenance != peerVerified {
 				continue
 			}
-			bodyPath, _ := peerPaths(s.dir, key)
-			data, err := readPeerFile(bodyPath)
-			if err != nil {
-				return false, err
-			}
-			digest := sha256.Sum256(data)
-			if hex.EncodeToString(digest[:]) != receipt.Envelope.BodySHA256 {
-				return false, errors.New("peer body digest differs from its receipt")
-			}
-			var body peerBody
-			if err := json.Unmarshal(data, &body); err != nil {
-				return false, err
-			}
-			content, err := peerMessageContent(receipt.Envelope, name, body)
+			content, err := peerMessageContent(receipt.Envelope, item.SenderName, item.Body)
 			if err != nil {
 				return false, err
 			}
@@ -555,7 +647,7 @@ func (s *teamStore) observePeers(recipient MemberRef, sessionFile string) error 
 				continue
 			}
 			receipt.State, receipt.SessionID, receipt.NativeEntryID = peerObserved, recipient.ID, id
-			data, err = json.Marshal(receipt)
+			data, err := json.Marshal(receipt)
 			if err != nil {
 				return false, err
 			}

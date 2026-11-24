@@ -61,6 +61,34 @@ type peerAuthorization struct {
 	SenderName string
 }
 
+type peerProvenance string
+
+const (
+	peerVerified     peerProvenance = "verified"
+	peerUnverifiable peerProvenance = "unverifiable"
+	peerForged       peerProvenance = "forged"
+	peerRejected     peerProvenance = "rejected"
+)
+
+type peerInboxItem struct {
+	MessageID    string            `json:"messageId"`
+	Provenance   peerProvenance    `json:"provenance"`
+	ReceiptState peerDeliveryState `json:"receiptState"`
+	Reason       string            `json:"reason"`
+}
+
+type peerInboxSummary struct {
+	VerificationScope  string          `json:"verificationScope"`
+	Notice             string          `json:"notice"`
+	Verified           int             `json:"verified"`
+	Unverifiable       int             `json:"unverifiable"`
+	Forged             int             `json:"forged"`
+	Rejected           int             `json:"rejected"`
+	UnassignedRejected int             `json:"unassignedRejected"`
+	Items              []peerInboxItem `json:"items"`
+	More               bool            `json:"more"`
+}
+
 var peerMessageIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
 var peerProtocolKinds = map[string]bool{
@@ -86,22 +114,32 @@ func parsePeerRequest(raw json.RawMessage) (peerRequest, error) {
 			return request, err
 		}
 	}
-	if !peerMessageIDPattern.MatchString(request.MessageID) || !utf8.ValidString(request.Text) || !utf8.ValidString(request.Summary) || strings.TrimSpace(request.Text) == "" || strings.TrimSpace(request.Summary) == "" || len(request.Text) > 16384 || len(request.Summary) > 256 {
+	if !peerMessageIDPattern.MatchString(request.MessageID) {
 		return request, reject("rejected", "invalid team message content or ID")
 	}
+	if err := validatePeerBody(peerBody{Text: request.Text, Summary: request.Summary}); err != nil {
+		return request, err
+	}
+	return request, nil
+}
+
+func validatePeerBody(body peerBody) error {
+	if !utf8.ValidString(body.Text) || !utf8.ValidString(body.Summary) || strings.TrimSpace(body.Text) == "" || strings.TrimSpace(body.Summary) == "" || len(body.Text) > 16384 || len(body.Summary) > 256 {
+		return reject("rejected", "invalid team message content or ID")
+	}
 	var object map[string]json.RawMessage
-	if json.Unmarshal([]byte(request.Text), &object) == nil {
-		if err := checkUniqueJSON([]byte(request.Text)); err != nil {
-			return request, reject("rejected", "invalid structured message text")
+	if json.Unmarshal([]byte(body.Text), &object) == nil {
+		if err := checkUniqueJSON([]byte(body.Text)); err != nil {
+			return reject("rejected", "invalid structured message text")
 		}
 		for _, key := range []string{"type", "kind"} {
 			var kind string
 			if json.Unmarshal(object[key], &kind) == nil && peerProtocolKinds[kind] {
-				return request, reject("rejected", "protocol frames cannot be sent as ordinary text")
+				return reject("rejected", "protocol frames cannot be sent as ordinary text")
 			}
 		}
 	}
-	return request, nil
+	return nil
 }
 
 func peerMessageContent(envelope peerEnvelope, senderName string, body peerBody) (string, error) {
