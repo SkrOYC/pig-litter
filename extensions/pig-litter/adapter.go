@@ -108,6 +108,10 @@ func (s *extensionState) ensure(ctx sdk.Context) (*owner, error) {
 }
 
 func (s *extensionState) acquire(ctx sdk.Context, recover bool) (*owner, error) {
+	// Pass the SDK's ordered first host call before taking the shared lock.
+	if _, err := ctx.SessionManager().GetSessionID(); err != nil {
+		return nil, err
+	}
 	s.initialization.Lock()
 	defer s.initialization.Unlock()
 	id, err := ctx.SessionManager().GetSessionID()
