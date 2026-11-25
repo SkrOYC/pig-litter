@@ -1,0 +1,64 @@
+jobs:
+  - id: JOB-01
+    actor: Parent session
+    statement: Give a fresh PiG child a bounded assignment and continue the work using its response.
+    priority: P0
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: JOB-02
+    actor: Participating session
+    statement: Find another local session and exchange messages while each session carries on with its own work.
+    priority: P0
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: JOB-03
+    actor: Parent session
+    statement: Coordinate nested delegated work and continue when a needed child response comes back.
+    priority: P0
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: JOB-04
+    actor: Parent session
+    statement: Check and control the lifecycle of a direct child without inspecting its private work.
+    priority: P0
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: JOB-05
+    actor: PiG operator
+    statement: "Open a child's conversation in the interactive view, follow its progress, and steer it directly."
+    priority: P0
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: JOB-06
+    actor: PiG operator
+    statement: Run and constrain a local orchestration workflow on an unmodified PiG installation.
+    priority: P0
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: JOB-07
+    actor: PiG operator
+    statement: Recognize interrupted work and bring the session tree to a full stop when needed.
+    priority: P0
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25

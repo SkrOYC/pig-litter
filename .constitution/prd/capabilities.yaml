@@ -1,0 +1,441 @@
+capabilities:
+  - id: CAP-001
+    group: Delegation
+    priority: P0
+    statement: "When a session delegates, Pig Litter must start a direct PiG child asynchronously with a fresh conversation and an explicit brief."
+    rationale: "New work has independent context, and the parent can keep working."
+    jobs: [JOB-01, JOB-03]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-002
+    group: Delegation
+    priority: P0
+    statement: "The parent can choose the child's name at launch."
+    rationale: A caller can recognize the child when coordinating work.
+    jobs: [JOB-01, JOB-02]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-003
+    group: Delegation
+    priority: P0
+    statement: "The parent can choose the child's existing working directory freely, subject to the rules for concurrent writers."
+    rationale: A workflow can use a prepared worktree or another directory.
+    jobs: [JOB-01]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-004
+    group: Delegation
+    priority: P0
+    statement: "The parent can select the child's provider and model for a launch."
+    rationale: Each assignment can use the model its caller chose.
+    jobs: [JOB-01]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-005
+    group: Delegation
+    priority: P0
+    statement: "The parent can select the child's reasoning effort for a launch."
+    rationale: Different assignments can call for different amounts of reasoning.
+    jobs: [JOB-01]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-006
+    group: Delegation
+    priority: P0
+    statement: "The parent can launch a child with a custom agent profile. A profile can define instructions, tools, and a default model."
+    rationale: The operator can reuse definitions for roles such as scout and worker.
+    jobs: [JOB-01, JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-007
+    group: Delegation
+    priority: P0
+    statement: "The tools available to a child must stay within the permissions of its parent and its selected profile, where present."
+    rationale: Delegation preserves the permission boundary at every level.
+    jobs: [JOB-01, JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-008
+    group: Delegation
+    priority: P0
+    statement: A child with delegation access can start its own direct children up to the configured depth.
+    rationale: A lead can split an assignment and remain responsible for the resulting work.
+    jobs: [JOB-01, JOB-03, JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-009
+    group: Limits
+    priority: P0
+    statement: The operator can configure the active-session limit and delegation depth for a root tree.
+    rationale: The operator can bound the size of a workflow.
+    jobs: [JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-010
+    group: Limits
+    priority: P0
+    statement: "The concurrency limit counts active sessions in the root tree, including the root and any session blocked in a wait. Paused and finished sessions take no slots."
+    rationale: The limit reflects active work while allowing retained children.
+    jobs: [JOB-01, JOB-03, JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-011
+    group: Limits
+    priority: P0
+    statement: "When a launch or wakeup would exceed concurrency, Pig Litter must reject it immediately with the same capacity error."
+    rationale: Callers can decide how to proceed without queuing a launch or wakeup.
+    jobs: [JOB-01, JOB-02, JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-012
+    group: Limits
+    priority: P0
+    statement: "When a launch would exceed the configured delegation depth, Pig Litter must reject it and state the reason."
+    rationale: The caller gets a clear boundary on nested work.
+    jobs: [JOB-01, JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-013
+    group: Limits
+    priority: P0
+    statement: Concurrent write-capable descendants must have working directories that are neither equal nor nested. The root and read-only descendants are exempt.
+    rationale: "Writers can use sibling directories, and readers can share them."
+    jobs: [JOB-01, JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-014
+    group: Discovery
+    priority: P0
+    statement: "Participating sessions can list discoverable local peers with a name or address for messaging, plus coarse busy or idle status when available."
+    rationale: A sender can choose a peer without inspecting its private work.
+    jobs: [JOB-02, JOB-04]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-015
+    group: Discovery
+    priority: P0
+    statement: Discoverable PiG and Claude Code sessions under the same operating-system account are eligible for peer messaging by default.
+    rationale: Independently started sessions can coordinate without an opt-in step.
+    jobs: [JOB-02]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-016
+    group: Messaging
+    priority: P0
+    statement: Participating PiG sessions can send and receive messages with other PiG sessions and with local Claude Code peers.
+    rationale: A workflow can combine PiG and Claude Code roles.
+    jobs: [JOB-02]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-017
+    group: Messaging
+    priority: P0
+    statement: "When a participating PiG session receives a peer steer while active, Pig Litter must deliver it at the next applicable point in the current turn after running tool calls finish."
+    rationale: A peer can change the direction of ongoing work.
+    jobs: [JOB-02, JOB-03]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-018
+    group: Messaging
+    priority: P0
+    statement: "When an inactive session receives a peer steer and has capacity, Pig Litter must wake it immediately in the same conversation."
+    rationale: A peer can restart work in a reachable paused or finished session.
+    jobs: [JOB-02, JOB-03, JOB-04]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-019
+    group: Messaging
+    priority: P0
+    statement: "For an outbound Claude Code message, Pig Litter must request immediate steering and state a known limitation that prevents it."
+    rationale: "Interoperability preserves the sender's intent to steer the recipient."
+    jobs: [JOB-02]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-020
+    group: Messaging
+    priority: P0
+    statement: Pig Litter must label incoming messages and automatic responses with the peer or child that sent them.
+    rationale: The recipient can distinguish a session message from human input.
+    jobs: [JOB-02, JOB-03]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-021
+    group: Messaging
+    priority: P0
+    statement: "When a send fails, Pig Litter must report the failure and leave retries to the sender."
+    rationale: The sender can decide whether to attempt delivery again.
+    jobs: [JOB-02]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-022
+    group: Messaging
+    priority: P0
+    statement: "When only a successful write to a Claude Code peer is known, Pig Litter must report that delivery is unconfirmed."
+    rationale: A transport result carries only the certainty it establishes.
+    jobs: [JOB-02]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-023
+    group: Lifecycle
+    priority: P0
+    statement: Only the immediate parent can query the active state of a child as a managed session.
+    rationale: Peer discovery and lifecycle authority remain distinct.
+    jobs: [JOB-04]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-024
+    group: Lifecycle
+    priority: P0
+    statement: "Only the immediate parent can pause a child. A pause ends the child's current work and leaves its descendants running."
+    rationale: A parent can pause that session without stopping the rest of its branch.
+    jobs: [JOB-04]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-025
+    group: Lifecycle
+    priority: P0
+    statement: "Only the immediate parent can stop a child. If the stop would cascade, Pig Litter must warn that parent before it decides whether to stop the subtree."
+    rationale: The caller can understand and accept the effect on descendants.
+    jobs: [JOB-04, JOB-07]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-026
+    group: Lifecycle
+    priority: P0
+    statement: A fully stopped child must be unavailable to peers. A child that finishes a turn remains reachable.
+    rationale: A full stop has a distinct effect from finishing work for the turn.
+    jobs: [JOB-02, JOB-04, JOB-07]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-027
+    group: Lifecycle
+    priority: P0
+    statement: "When a parent returns after a crash, Pig Litter must report the children whose work was interrupted."
+    rationale: The operator can tell which work needs attention.
+    jobs: [JOB-04, JOB-07]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-028
+    group: Lifecycle
+    priority: P0
+    statement: Ending the root must provide the operator a full stop for its managed session tree.
+    rationale: The operator can end all work owned by the root.
+    jobs: [JOB-07]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-029
+    group: Handbacks
+    priority: P0
+    statement: "When a child ends a turn with a final response and has no active children, Pig Litter must return its response and outcome to its immediate parent automatically."
+    rationale: A parent learns what the child finished without needing to ask.
+    jobs: [JOB-01, JOB-03]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-030
+    group: Handbacks
+    priority: P0
+    statement: "Pig Litter must deliver the automatic response to the parent as a labeled steer, waking the parent if it is idle."
+    rationale: A parent that ends its turn while waiting can continue when material arrives.
+    jobs: [JOB-01, JOB-03]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-031
+    group: Wait
+    priority: P0
+    statement: A parent can wait for a direct child with a required timeout.
+    rationale: A parent can keep its turn open until the selected child responds or a bound is reached.
+    jobs: [JOB-03]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-032
+    group: Wait
+    priority: P0
+    statement: "When the selected child messages its parent or produces an eligible final response, the wait must return a short status while the content reaches the parent through the normal steer."
+    rationale: The same result reaches the parent whether or not it called wait.
+    jobs: [JOB-03]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-033
+    group: Wait
+    priority: P0
+    statement: "If the selected child crashes or fully stops during a wait, the wait must return the failure immediately."
+    rationale: The parent can handle interrupted work without waiting for the deadline.
+    jobs: [JOB-03, JOB-04, JOB-07]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-034
+    group: Wait
+    priority: P0
+    statement: A wait must return on timeout. Unrelated steers remain pending while it is open and can take effect after the call returns.
+    rationale: An unrelated message never interrupts the open call.
+    jobs: [JOB-02, JOB-03]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-035
+    group: Human interaction
+    priority: P0
+    statement: "In interactive PiG, the operator can open a full-view child overlay inside the parent's view to follow the child's live transcript."
+    rationale: "The operator can see the child's work in the same terminal interface."
+    jobs: [JOB-05]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-036
+    group: Human interaction
+    priority: P0
+    statement: The operator can steer the child from its overlay.
+    rationale: The operator can redirect the child while observing its work.
+    jobs: [JOB-05]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-037
+    group: Human interaction
+    priority: P0
+    statement: "The child overlay must feel like the parent view and state any interactions that the released host can't support."
+    rationale: The operator can see what is available in the child view.
+    jobs: [JOB-05, JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-038
+    group: Human interaction
+    priority: P0
+    statement: "Agent-facing tools must keep other sessions' transcripts and traces private. Child launch, pause, and stop are agent actions."
+    rationale: "The operator's view and the agent's authority serve distinct uses."
+    jobs: [JOB-01, JOB-04, JOB-05]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-039
+    group: Compatibility
+    priority: P0
+    statement: Pig Litter must support interactive and headless orchestration on macOS and Linux using unmodified PiG releases.
+    rationale: The same orchestration primitives are available with or without a terminal interface.
+    jobs: [JOB-01, JOB-02, JOB-03, JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-040
+    group: Compatibility
+    priority: P0
+    statement: Pig Litter must state hard limitations of released PiG and use capabilities the released host already provides.
+    rationale: The operator can rely on the supported host without maintaining a patch.
+    jobs: [JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25

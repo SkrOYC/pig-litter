@@ -1,0 +1,16 @@
+schema_version: 1
+acronym: PL
+archetype:
+  primary: CLI/Tooling
+  secondary: []
+  confidence: high
+  rationale: Pig Litter adds agent tools and a terminal view to PiG. The same orchestration tools also serve headless PiG sessions.
+surfaces:
+  - piglet.yaml
+  - litter.yaml
+  - README.md
+  - "extensions/pig-litter/**/*.go"
+  - ".constitution/tech-spec/contracts/**"
+  - ".constitution/tech-spec/data-models/**"
+diff_exclusions: ["**/*.lock", "**/package-lock.json", "**/*.snap"]
+default_branch: master

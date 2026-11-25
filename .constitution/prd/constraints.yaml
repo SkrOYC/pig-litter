@@ -1,0 +1,60 @@
+constraints:
+  - id: NFC-01
+    class: compatibility
+    statement: Run on unmodified PiG releases on macOS and Linux.
+    scale: Pass or fail per declared platform and parent mode.
+    meter: "Exercise install, launch, PiG-to-PiG messaging, and handback with the released host and no host source or SDK overrides. Exercise the child overlay with an interactive parent."
+    goal: Every declared platform and mode passes the applicable checks.
+    fail: Any declared configuration requires a host patch or cannot run an applicable required workflow.
+    certainty: assumed
+    assumption: The interview sets the requirement. The resulting product has yet to be measured against this meter.
+  - id: NFC-02
+    class: security
+    statement: Preserve the parent-to-child permission boundary.
+    scale: Count of successful unauthorized child tool calls and lifecycle actions.
+    meter: Attempt calls outside the tool permissions at each level and lifecycle actions by sessions other than the immediate parent.
+    goal: 0
+    fail: One or more unauthorized calls or lifecycle actions succeed.
+    certainty: assumed
+    assumption: The interview sets the requirement. The resulting product has yet to be measured against this meter.
+  - id: NFC-03
+    class: privacy
+    statement: Keep session traces private from agent-facing tools.
+    scale: Count of transcript entries or traces exposed by an agent-facing operation.
+    meter: "Exercise status, discovery, and lifecycle calls as a direct parent, other ancestor, and peer. Distinguish explicit messages and final responses from transcript inspection."
+    goal: 0
+    fail: An agent-facing operation exposes any private conversation history or trace.
+    certainty: assumed
+    assumption: The interview sets the requirement. The resulting product has yet to be measured against this meter.
+  - id: NFC-04
+    class: reliability
+    statement: Enforce configured capacity and directory overlap limits.
+    scale: "Count of admissions that violate the configured depth, concurrency, or directory rules."
+    meter: "Attempt concurrent launches and wakeups at each limit and with same, nested, and sibling directories. Include active roots, waits, and exempt directories."
+    goal: 0
+    fail: Any admission exceeds a configured limit or admits prohibited overlap between active writers.
+    certainty: assumed
+    assumption: The interview sets the requirement. The resulting product has yet to be measured against this meter.
+  - id: NFC-05
+    class: reliability
+    statement: Keep each wait finite and tied to the selected child.
+    scale: "Pass or fail for each eligible result, failure, unrelated steer, and timeout case."
+    meter: "Wait on a child while exercising explicit messages, eligible final responses, child crash or stop, unrelated steers, and expiry."
+    goal: Every wait returns on an eligible event or timeout and uses the normal steer for response content.
+    fail: "A wait exceeds its timeout, an unrelated steer ends it, or the selected child's crash or stop leaves it waiting."
+    certainty: assumed
+    assumption: The interview sets the requirement. The resulting product has yet to be measured against this meter.
+  - id: NFC-06
+    class: operability
+    statement: Explain failures and unsupported behavior without overstating delivery.
+    scale: Count of known failures or limitations hidden by a successful result.
+    meter: "Exercise unavailable targets, unsupported behavior, and sends for which only a transport write is known."
+    goal: 0
+    fail: "Any known limitation or failure is hidden, an unconfirmed write is reported as delivery, or a failed send is retried automatically."
+    certainty: assumed
+    assumption: The interview sets the requirement. The resulting product has yet to be measured against this meter.
+deferred:
+  - class: performance
+    risk: The interview supplies no numeric latency or resource targets. Startup or response delays can affect usability.
+  - class: cost
+    risk: The interview supplies no spending target. Concurrent and restarted turns can increase usage.

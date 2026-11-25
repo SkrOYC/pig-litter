@@ -1,0 +1,8 @@
+entries:
+  - version: v0.0.1
+    date: 2026-11-25
+    added:
+      - "Set the initial product scope for nested delegation, peer messaging, lifecycle controls, and interactive child views."
+      - "Defined launch choices, inherited permissions, active-session limits, result delivery, and waits."
+      - Declared unmodified PiG on macOS and Linux as the supported host and platform scope.
+    by: stage
