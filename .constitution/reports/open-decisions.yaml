@@ -1,1 +1,39 @@
-decisions: []
+decisions:
+  - id: OD-01
+    question: "How does Pig Litter keep an unattended stock PiG 0.7.0 session alive and reachable: a headless root whose descendants are still active, and a background detached session that outlives its launcher?"
+    blocks:
+      - CAP-039
+      - CAP-047
+      - CAP-062
+    options:
+      - name: Print mode held open by the extension
+        pros:
+          - "Uses only the stock extension hooks: the before-settle handler has no timeout and can request another run."
+          - No helper process to build or supervise.
+        cons:
+          - Stock print mode exits when its prompts are processed unless the hook holds it. The behavior is unmeasured.
+          - A background session started from an extension must still escape the host's process-group kill.
+      - name: RPC mode with an input channel held by a helper
+        pros:
+          - "RPC mode is long-lived by design and accepts prompt, steer, and abort commands."
+        cons:
+          - "RPC mode exits when its standard input closes, so a separate helper must own that channel and outlive the launcher."
+          - Custom views do nothing in RPC mode.
+      - name: Pane hosts only
+        pros:
+          - The terminal multiplexer owns the process. No dependency on unmeasured host behavior.
+        cons:
+          - A headless root or a root in a plain terminal can't launch detached sessions.
+          - Leaves the headless keep-alive ruling unsupported.
+    recommendation: Print mode held open by the extension
+    closure: spike
+    spike: SPK-PL-OD001
+    status: closed
+    asked:
+      date: 2026-11-25
+      in: reports/2026-11-25-interview-architecture.md
+    ruling:
+      ref: SPK-PL-OD001
+      date: 2026-11-25
+      summary: "On stock PiG 0.7.0 a headless run stays alive while the extension holds it at the end of a turn and runs further turns in the same conversation. A background session started outside the host's process group survived a normal exit and a kill of its launcher and took later input. A long-lived host mode with a helper holding its input also worked for the background session and is the fallback. Aborts during a hold and macOS were not measured."
+      chosen: Print mode held open by the extension
