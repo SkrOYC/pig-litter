@@ -16,10 +16,10 @@ import (
 )
 
 func TestCollaborationObserverHelper(t *testing.T) {
-	if os.Getenv("P02_OBSERVER_HELPER") != "1" {
+	if os.Getenv("COLLAB_OBSERVER_HELPER") != "1" {
 		return
 	}
-	if err := runCollaborationMediaObserver(os.Getenv("P02_OBSERVER_RECEIPT"), os.Getenv("P02_TMUX"), os.Getenv("P02_SOCKET"), "proof"); err != nil {
+	if err := runCollaborationMediaObserver(os.Getenv("COLLAB_OBSERVER_RECEIPT"), os.Getenv("COLLAB_TMUX"), os.Getenv("COLLAB_SOCKET"), "proof"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -29,7 +29,7 @@ func TestCollaborationObserverPreservesControllerAndBlocksInput(t *testing.T) {
 	if err != nil {
 		t.Skip("tmux is unavailable")
 	}
-	directory, err := os.MkdirTemp("/tmp", "p02-media-")
+	directory, err := os.MkdirTemp("/tmp", "collab-media-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestCollaborationObserverPreservesControllerAndBlocksInput(t *testing.T) {
 	defer master.Close()
 	receipt := filepath.Join(directory, "observer.json")
 	command := exec.Command(os.Args[0], "-test.run=^TestCollaborationObserverHelper$")
-	command.Env = append(env, "P02_OBSERVER_HELPER=1", "P02_OBSERVER_RECEIPT="+receipt, "P02_TMUX="+tmux, "P02_SOCKET="+socket)
+	command.Env = append(env, "COLLAB_OBSERVER_HELPER=1", "COLLAB_OBSERVER_RECEIPT="+receipt, "COLLAB_TMUX="+tmux, "COLLAB_SOCKET="+socket)
 	command.Stdin, command.Stdout, command.Stderr = slave, slave, slave
 	if err := command.Start(); err != nil {
 		t.Fatal(err)

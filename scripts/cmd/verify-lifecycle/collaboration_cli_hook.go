@@ -105,7 +105,7 @@ func (runner *collaborationCLIRunner) validateTUIHookEvidence(evidence string) e
 		return errors.New("hook receipt does not identify the captured PiG")
 	}
 	bridge := receipt.Bridge
-	if bridge.Name != "p02-hook-probe" || bridge.SHA256 != result.VerifierSHA256 || bridge.Process.PID <= 0 || bridge.Process.PID == receipt.PiG.PID || filepath.Base(bridge.Process.Executable) != bridge.Name || len(result.Fixture.RootSessions) != 1 || bridge.SessionID != result.Fixture.RootSessions[0].ID || bridge.SessionFile != result.Fixture.RootSessions[0].File.Path {
+	if bridge.Name != "collab-hook-probe" || bridge.SHA256 != result.VerifierSHA256 || bridge.Process.PID <= 0 || bridge.Process.PID == receipt.PiG.PID || filepath.Base(bridge.Process.Executable) != bridge.Name || len(result.Fixture.RootSessions) != 1 || bridge.SessionID != result.Fixture.RootSessions[0].ID || bridge.SessionFile != result.Fixture.RootSessions[0].File.Path {
 		return errors.New("hook extension does not identify the captured native session")
 	}
 	owned := false
@@ -123,7 +123,7 @@ func (runner *collaborationCLIRunner) validateTUIHookEvidence(evidence string) e
 	for index, name := range []string{"allow", "deny"} {
 		phase := receipt.Phases[index]
 		event := phase.Event
-		if phase.Name != name || event.Tool != "write" || event.CallID == "" || event.Path != filepath.Join(result.Fixture.Workspace.Path, "p02-hook-"+name+".txt") || event.Refused != (name == "deny") || event.SessionID != bridge.SessionID || event.Process != bridge.Process || phase.FileExists != (name == "allow") {
+		if phase.Name != name || event.Tool != "write" || event.CallID == "" || event.Path != filepath.Join(result.Fixture.Workspace.Path, "collab-hook-"+name+".txt") || event.Refused != (name == "deny") || event.SessionID != bridge.SessionID || event.Process != bridge.Process || phase.FileExists != (name == "allow") {
 			return fmt.Errorf("captured hook %s phase is incomplete", name)
 		}
 		if (name == "allow" && phase.Content != collaborationHookMarker) || (name == "deny" && phase.Content != "") {
@@ -143,7 +143,7 @@ func (runner *collaborationCLIRunner) validateTUIHookEvidence(evidence string) e
 		return errors.New("captured allowed file differs from its receipt")
 	}
 	data, err = read("hook-denied-ansi.txt", false)
-	if err != nil || !bytes.Contains(data, []byte("P02_HOOK_DENY_DONE")) {
+	if err != nil || !bytes.Contains(data, []byte("COLLAB_HOOK_DENY_DONE")) {
 		return errors.New("captured hook frame does not show the denied call's completed turn")
 	}
 	if err := runner.validateHookRequests(evidence, receipt.Phases); err != nil {

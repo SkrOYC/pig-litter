@@ -11,7 +11,7 @@ import (
 
 func installTeamPolicyFixture(agentDir, workspace string) error {
 	command := `if test -f "$1"; then printf '%s' '{"permit":true}'; else printf '%s' '{"permit":false,"feedback":"Run the checks first."}'; fi`
-	policy, err := json.Marshal(map[string]any{"taskCompletion": []string{"/bin/sh", "-c", command, "p07-policy", filepath.Join(workspace, "permit-task")}})
+	policy, err := json.Marshal(map[string]any{"taskCompletion": []string{"/bin/sh", "-c", command, "team-policy", filepath.Join(workspace, "permit-task")}})
 	if err != nil {
 		return err
 	}
@@ -19,7 +19,7 @@ func installTeamPolicyFixture(agentDir, workspace string) error {
 }
 
 func (p *panelProof) teamPolicyProof(media *collaborationMedia) error {
-	if err := p.sendText("P07_TASK_CONTROL"); err != nil {
+	if err := p.sendText("TEAM_TASK_CONTROL"); err != nil {
 		return err
 	}
 	if err := p.sendKey("Enter"); err != nil {
@@ -33,7 +33,7 @@ func (p *panelProof) teamPolicyProof(media *collaborationMedia) error {
 			return false, err
 		}
 		data, err := os.ReadFile(path)
-		if err != nil || !visibleContains(p.visible, "P07_TEAM_READY") {
+		if err != nil || !visibleContains(p.visible, "TEAM_READY") {
 			return false, nil
 		}
 		var graph struct {
@@ -62,7 +62,7 @@ func (p *panelProof) teamPolicyProof(media *collaborationMedia) error {
 	}); err != nil {
 		return err
 	}
-	if err := p.awaitRootIdle("P07_TASK_CONTROL"); err != nil {
+	if err := p.awaitRootIdle("TEAM_TASK_CONTROL"); err != nil {
 		return err
 	}
 	if err := p.captureTurnNotices(members); err != nil {
@@ -73,18 +73,18 @@ func (p *panelProof) teamPolicyProof(media *collaborationMedia) error {
 	if err != nil {
 		return err
 	}
-	if err := p.checkpoint("p07-policy-before"); err != nil {
+	if err := p.checkpoint("team-policy-before"); err != nil {
 		return err
 	}
-	if err := p.openTeam("p07-policy-open"); err != nil {
+	if err := p.openTeam("team-policy-open"); err != nil {
 		return err
 	}
-	if err := p.key("p07-policy-tasks", "k", func(text string) bool {
-		return hasPanelView("team | tasks")(text) && strings.Contains(selectedPanelRow(text), "P07_ASSIGNED_TASK")
+	if err := p.key("team-policy-tasks", "k", func(text string) bool {
+		return hasPanelView("team | tasks")(text) && strings.Contains(selectedPanelRow(text), "TEAM_ASSIGNED_TASK")
 	}); err != nil {
 		return err
 	}
-	if err := p.key("p07-policy-refuse", "c", func(text string) bool {
+	if err := p.key("team-policy-refuse", "c", func(text string) bool {
 		return hasPanelView("team | task feedback")(text) && strings.Contains(text, "Run the checks first.") && strings.Contains(text, "Task #1 was not completed")
 	}); err != nil {
 		return err
@@ -93,7 +93,7 @@ func (p *panelProof) teamPolicyProof(media *collaborationMedia) error {
 	if err != nil || !bytes.Equal(before, refused) {
 		return fmt.Errorf("policy refusal changed the task graph: %v", err)
 	}
-	if err := writePrivate(filepath.Join(p.evidence, "p07-policy-refused.json"), refused); err != nil {
+	if err := writePrivate(filepath.Join(p.evidence, "team-policy-refused.json"), refused); err != nil {
 		return err
 	}
 	if media != nil {
@@ -104,10 +104,10 @@ func (p *panelProof) teamPolicyProof(media *collaborationMedia) error {
 	if err := writePrivate(filepath.Join(p.workspace, "permit-task"), []byte("allow")); err != nil {
 		return err
 	}
-	if err := p.key("p07-policy-back", "Escape", hasPanelView("team | tasks")); err != nil {
+	if err := p.key("team-policy-back", "Escape", hasPanelView("team | tasks")); err != nil {
 		return err
 	}
-	if err := p.key("p07-policy-complete", "c", func(text string) bool { return strings.Contains(text, "Task #1 completed") }); err != nil {
+	if err := p.key("team-policy-complete", "c", func(text string) bool { return strings.Contains(text, "Task #1 completed") }); err != nil {
 		return err
 	}
 	var completed []byte
@@ -124,10 +124,10 @@ func (p *panelProof) teamPolicyProof(media *collaborationMedia) error {
 	}); err != nil {
 		return err
 	}
-	if err := writePrivate(filepath.Join(p.evidence, "p07-policy-completed.json"), completed); err != nil {
+	if err := writePrivate(filepath.Join(p.evidence, "team-policy-completed.json"), completed); err != nil {
 		return err
 	}
-	if err := p.close("p07-policy-close"); err != nil {
+	if err := p.close("team-policy-close"); err != nil {
 		return err
 	}
 	resumeAfter, err := os.ReadFile(p.resumeTrace)
@@ -135,7 +135,7 @@ func (p *panelProof) teamPolicyProof(media *collaborationMedia) error {
 	if err != nil || !bytes.Equal(resumeBefore, resumeAfter) || requests != requestsAfter || memberRequests != membersAfter {
 		return fmt.Errorf("policy controls changed provider or resume activity: requests %d to %d, teammate requests %d to %d, resume trace equal %t: %v", requests, requestsAfter, memberRequests, membersAfter, bytes.Equal(resumeBefore, resumeAfter), err)
 	}
-	if err := p.checkpoint("p07-policy-after"); err != nil {
+	if err := p.checkpoint("team-policy-after"); err != nil {
 		return err
 	}
 	receipt, err := json.MarshalIndent(map[string]any{"providerRequestsBefore": requests, "providerRequestsAfter": p.state.totalRequests(), "memberRequestsBefore": memberRequests, "memberRequestsAfter": p.state.modelRequests("quick"), "resumeTraceBefore": string(resumeBefore), "resumeTraceAfter": string(resumeAfter), "scope": "task policy refusal and retry"}, "", "  ")

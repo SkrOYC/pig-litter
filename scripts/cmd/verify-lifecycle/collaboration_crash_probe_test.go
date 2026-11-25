@@ -10,10 +10,10 @@ import (
 )
 
 func TestCollaborationHostCrashReplay(t *testing.T) {
-	if stage := os.Getenv("P02_CRASH_WORKER_STAGE"); stage != "" {
+	if stage := os.Getenv("COLLAB_CRASH_WORKER_STAGE"); stage != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
-		if err := collaborationRunCrashWorker(ctx, stage, os.Getenv("P02_CRASH_WORKER_ROOT")); err != nil {
+		if err := collaborationRunCrashWorker(ctx, stage, os.Getenv("COLLAB_CRASH_WORKER_ROOT")); err != nil {
 			t.Fatal(err)
 		}
 		return
@@ -25,7 +25,7 @@ func TestCollaborationHostCrashReplay(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			args := []string{os.Args[0], "-test.run=^TestCollaborationHostCrashReplay$"}
-			env := []string{"P02_CRASH_WORKER_STAGE=" + stage, "P02_CRASH_WORKER_ROOT=" + root}
+			env := []string{"COLLAB_CRASH_WORKER_STAGE=" + stage, "COLLAB_CRASH_WORKER_ROOT=" + root}
 			evidence, err := collaborationRunHostCrashProbeCommand(ctx, root, stage, args, env)
 			if err != nil {
 				t.Fatalf("crash and replay: %v", err)

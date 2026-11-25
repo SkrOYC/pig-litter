@@ -17,7 +17,7 @@ func collaborationNewTempDirectory() (collaborationTempDirectory, error) {
 	if err != nil {
 		return collaborationTempDirectory{}, err
 	}
-	path, err := os.MkdirTemp(parent, "p02-")
+	path, err := os.MkdirTemp(parent, "collab-")
 	if err != nil {
 		return collaborationTempDirectory{}, err
 	}

@@ -10,14 +10,14 @@ import (
 	"time"
 )
 
-func BenchmarkP05TaskOperations(b *testing.B) {
+func BenchmarkTeamTaskOperations(b *testing.B) {
 	if b.N != 1 {
 		b.Fatal("run with -benchtime=1x")
 	}
-	evidence := os.Getenv("P05_TASK_PERF_DIR")
-	source := os.Getenv("P05_TASK_PERF_SOURCE")
+	evidence := os.Getenv("TEAM_TASK_PERF_DIR")
+	source := os.Getenv("TEAM_TASK_PERF_SOURCE")
 	if evidence == "" || len(source) != 40 {
-		b.Fatal("P05_TASK_PERF_DIR and P05_TASK_PERF_SOURCE are required")
+		b.Fatal("TEAM_TASK_PERF_DIR and TEAM_TASK_PERF_SOURCE are required")
 	}
 	root := storeTestUUID(1)
 	store, err := openTeamStore(b.TempDir(), root)

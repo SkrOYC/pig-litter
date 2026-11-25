@@ -91,7 +91,7 @@ type collaborationTUIMessageProbe struct {
 
 var collaborationTUIMessageID = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 
-const collaborationTUIMessageExtensionName = "p02-message-probe"
+const collaborationTUIMessageExtensionName = "collab-message-probe"
 
 func collaborationStageTUIMessageExtension(scratch, source, expectedSHA string) (string, error) {
 	path := filepath.Join(scratch, collaborationTUIMessageExtensionName)
@@ -122,7 +122,7 @@ func collaborationTUIMessageSnapshot(ctx sdk.Context, id string) collaborationTU
 	errs = append(errs, err)
 	for _, entry := range entries {
 		details, _ := entry["details"].(map[string]any)
-		if entry["type"] == "custom_message" && entry["customType"] == "p02_tui_probe" && details["message_id"] == id {
+		if entry["type"] == "custom_message" && entry["customType"] == "collab_tui_probe" && details["message_id"] == id {
 			state.MemoryCopies++
 		}
 	}
@@ -151,7 +151,7 @@ func collaborationServeTUIMessage(listener net.Listener, token string, ctx sdk.C
 				trigger := false
 				response.StartedNS, err = collaborationMonotonicNow()
 				if err == nil {
-					err = ctx.SendCustomMessage(sdk.CustomMessage{CustomType: "p02_tui_probe", Content: "peer message " + request.ID, Display: false, Details: map[string]any{"message_id": request.ID}}, sdk.SendMessageOptions{TriggerTurn: &trigger})
+					err = ctx.SendCustomMessage(sdk.CustomMessage{CustomType: "collab_tui_probe", Content: "peer message " + request.ID, Display: false, Details: map[string]any{"message_id": request.ID}}, sdk.SendMessageOptions{TriggerTurn: &trigger})
 				}
 				response.ReturnedNS, _ = collaborationMonotonicNow()
 				if err != nil {
@@ -165,7 +165,7 @@ func collaborationServeTUIMessage(listener net.Listener, token string, ctx sdk.C
 }
 
 func runCollaborationTUIMessageExtension() error {
-	socket, token, directory := os.Getenv("P02_TUI_MESSAGE_SOCKET"), os.Getenv("P02_TUI_MESSAGE_TOKEN"), os.Getenv("P02_TUI_MESSAGE_DIRECTORY")
+	socket, token, directory := os.Getenv("COLLAB_TUI_MESSAGE_SOCKET"), os.Getenv("COLLAB_TUI_MESSAGE_TOKEN"), os.Getenv("COLLAB_TUI_MESSAGE_DIRECTORY")
 	if !filepath.IsAbs(socket) || !filepath.IsAbs(directory) || len(token) < 20 {
 		return errors.New("invalid private TUI message fixture configuration")
 	}
@@ -328,7 +328,7 @@ func (probe *collaborationTUIMessageProbe) disk(name, id string) (collaborationT
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			return snapshot, err
 		}
-		if entry.Type == "custom_message" && entry.CustomType == "p02_tui_probe" && entry.Details.MessageID == id {
+		if entry.Type == "custom_message" && entry.CustomType == "collab_tui_probe" && entry.Details.MessageID == id {
 			snapshot.Copies++
 		}
 	}
@@ -382,11 +382,11 @@ func runCollaborationTUIMessageScenario(ctx context.Context, probe *collaboratio
 		return errors.New("message probe does not match the terminal's native root session")
 	}
 	if probe.mode == "host-idle-message" {
-		flushed, err := probe.observe(ctx, "fresh-flushed", "inspect", "P02_FRESH", state.totalRequests)
+		flushed, err := probe.observe(ctx, "fresh-flushed", "inspect", "COLLAB_FRESH", state.totalRequests)
 		if err != nil || !flushed.Response.After.Idle || flushed.After.Copies != 1 || flushed.Response.After.MemoryCopies != 1 || flushed.ProviderBefore != 1 || flushed.ProviderAfter != 1 {
 			return fmt.Errorf("fresh message flush observation: %#v, %v", flushed, err)
 		}
-		idle, err := probe.observe(ctx, "established-idle", "send", "P02_IDLE", state.totalRequests)
+		idle, err := probe.observe(ctx, "established-idle", "send", "COLLAB_IDLE", state.totalRequests)
 		if err != nil || !idle.Response.Before.Idle || !idle.Response.After.Idle || idle.Response.Before.MemoryCopies != 0 || idle.Response.After.MemoryCopies != 1 || idle.Before.Copies != 0 || idle.After.Copies != 1 || idle.ProviderBefore != 1 || idle.ProviderAfter != 1 {
 			return fmt.Errorf("established idle observation: %#v, %v", idle, err)
 		}
@@ -401,13 +401,13 @@ func runCollaborationTUIMessageScenario(ctx context.Context, probe *collaboratio
 	if probe.mode != "host-busy-message" {
 		return errors.New("unknown TUI message scenario")
 	}
-	if err := sendText("P02_BUSY_HOLD"); err != nil {
+	if err := sendText("COLLAB_BUSY_HOLD"); err != nil {
 		return err
 	}
 	if err := sendKey("Enter"); err != nil {
 		return err
 	}
-	if err := waitFor(ctx, "busy message provider barrier", stageTimeout, func() (bool, error) { return state.holding("p02-busy"), state.providerFailure() }); err != nil {
+	if err := waitFor(ctx, "busy message provider barrier", stageTimeout, func() (bool, error) { return state.holding("collab-busy"), state.providerFailure() }); err != nil {
 		return err
 	}
 	var err error
@@ -416,8 +416,8 @@ func runCollaborationTUIMessageScenario(ctx context.Context, probe *collaboratio
 		return err
 	}
 	defer func() {
-		if state.holding("p02-busy") {
-			_ = state.releaseHold("p02-busy")
+		if state.holding("collab-busy") {
+			_ = state.releaseHold("collab-busy")
 		}
 	}()
 	if _, err := frame("message-busy"); err != nil {
@@ -426,8 +426,8 @@ func runCollaborationTUIMessageScenario(ctx context.Context, probe *collaboratio
 	if err := media.markObservation(); err != nil {
 		return err
 	}
-	busy, err := probe.observe(ctx, "busy-return", "send", "P02_BUSY", state.totalRequests)
-	if err != nil || busy.Response.Before.Idle || busy.Response.After.Idle || busy.Response.Before.MemoryCopies != 0 || busy.Before.Copies != 0 || busy.ProviderBefore != 2 || busy.ProviderAfter != 2 || !state.holding("p02-busy") {
+	busy, err := probe.observe(ctx, "busy-return", "send", "COLLAB_BUSY", state.totalRequests)
+	if err != nil || busy.Response.Before.Idle || busy.Response.After.Idle || busy.Response.Before.MemoryCopies != 0 || busy.Before.Copies != 0 || busy.ProviderBefore != 2 || busy.ProviderAfter != 2 || !state.holding("collab-busy") {
 		return fmt.Errorf("held busy message observation: %#v, %v", busy, err)
 	}
 	if err := collaborationTUIHoldFrame(ctx); err != nil {
@@ -437,7 +437,7 @@ func runCollaborationTUIMessageScenario(ctx context.Context, probe *collaboratio
 	if err != nil {
 		return err
 	}
-	if err := state.releaseHold("p02-busy"); err != nil {
+	if err := state.releaseHold("collab-busy"); err != nil {
 		return err
 	}
 	probe.holdReleasedNS, err = collaborationMonotonicNow()
@@ -448,15 +448,15 @@ func runCollaborationTUIMessageScenario(ctx context.Context, probe *collaboratio
 		if err := state.providerFailure(); err != nil {
 			return false, err
 		}
-		if state.holding("p02-busy") || !visibleContains(visible, "P02_BUSY_HOLD_DONE") {
+		if state.holding("collab-busy") || !visibleContains(visible, "COLLAB_BUSY_HOLD_DONE") {
 			return false, nil
 		}
-		response, err := probe.call(ctx, "inspect", "P02_BUSY")
+		response, err := probe.call(ctx, "inspect", "COLLAB_BUSY")
 		return err == nil && response.After.Idle && response.After.MemoryCopies == 1, err
 	}); err != nil {
 		return err
 	}
-	settled, err := probe.observe(ctx, "busy-settled", "inspect", "P02_BUSY", state.totalRequests)
+	settled, err := probe.observe(ctx, "busy-settled", "inspect", "COLLAB_BUSY", state.totalRequests)
 	if err != nil || !settled.Response.After.Idle || settled.Response.After.MemoryCopies != 1 || settled.After.Copies != 1 || settled.ProviderBefore != 2 || settled.ProviderAfter != 2 {
 		return fmt.Errorf("settled busy message observation: %#v, %v", settled, err)
 	}

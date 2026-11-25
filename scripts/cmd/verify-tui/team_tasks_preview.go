@@ -10,7 +10,7 @@ import (
 )
 
 func (p *panelProof) teamTaskActionsProof(media *collaborationMedia) error {
-	if err := p.sendText("P07_TASK_CONTROL"); err != nil {
+	if err := p.sendText("TEAM_TASK_CONTROL"); err != nil {
 		return err
 	}
 	if err := p.sendKey("Enter"); err != nil {
@@ -23,7 +23,7 @@ func (p *panelProof) teamTaskActionsProof(media *collaborationMedia) error {
 			return false, err
 		}
 		data, err := os.ReadFile(path)
-		if err != nil || !visibleContains(p.visible, "P07_TEAM_READY") {
+		if err != nil || !visibleContains(p.visible, "TEAM_READY") {
 			return false, nil
 		}
 		var graph struct {
@@ -37,7 +37,7 @@ func (p *panelProof) teamTaskActionsProof(media *collaborationMedia) error {
 	}); err != nil {
 		return err
 	}
-	if err := p.awaitRootIdle("P07_TASK_CONTROL"); err != nil {
+	if err := p.awaitRootIdle("TEAM_TASK_CONTROL"); err != nil {
 		return err
 	}
 	history, err := p.quiescentLogs()
@@ -49,37 +49,37 @@ func (p *panelProof) teamTaskActionsProof(media *collaborationMedia) error {
 	if err != nil {
 		return err
 	}
-	if err := writePrivate(filepath.Join(p.evidence, "p07-tasks-before.json"), before); err != nil {
+	if err := writePrivate(filepath.Join(p.evidence, "team-tasks-before.json"), before); err != nil {
 		return err
 	}
-	if err := p.checkpoint("p07-tasks-before"); err != nil {
+	if err := p.checkpoint("team-tasks-before"); err != nil {
 		return err
 	}
-	if err := p.openTeam("p07-tasks-open"); err != nil {
+	if err := p.openTeam("team-tasks-open"); err != nil {
 		return err
 	}
-	if err := p.key("p07-tasks-list", "k", func(text string) bool {
-		return hasPanelView("team | tasks")(text) && strings.Contains(selectedPanelRow(text), "P07_ASSIGNED_TASK") && strings.Contains(text, "blocked")
+	if err := p.key("team-tasks-list", "k", func(text string) bool {
+		return hasPanelView("team | tasks")(text) && strings.Contains(selectedPanelRow(text), "TEAM_ASSIGNED_TASK") && strings.Contains(text, "blocked")
 	}); err != nil {
 		return err
 	}
-	if err := p.key("p07-tasks-select-blocked", "Down", func(text string) bool { return strings.Contains(selectedPanelRow(text), "P07_UNASSIGNED_TASK") }); err != nil {
+	if err := p.key("team-tasks-select-blocked", "Down", func(text string) bool { return strings.Contains(selectedPanelRow(text), "TEAM_UNASSIGNED_TASK") }); err != nil {
 		return err
 	}
-	if err := p.key("p07-tasks-refuse-blocked", "c", func(text string) bool { return strings.Contains(text, "Task #2 is blocked by dependencies") }); err != nil {
+	if err := p.key("team-tasks-refuse-blocked", "c", func(text string) bool { return strings.Contains(text, "Task #2 is blocked by dependencies") }); err != nil {
 		return err
 	}
 	blocked, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(before, blocked) {
 		return fmt.Errorf("blocked completion changed the task graph: %v", err)
 	}
-	if err := writePrivate(filepath.Join(p.evidence, "p07-tasks-after-blocked.json"), blocked); err != nil {
+	if err := writePrivate(filepath.Join(p.evidence, "team-tasks-after-blocked.json"), blocked); err != nil {
 		return err
 	}
-	if err := p.key("p07-tasks-select-prerequisite", "Up", func(text string) bool { return strings.Contains(selectedPanelRow(text), "P07_ASSIGNED_TASK") }); err != nil {
+	if err := p.key("team-tasks-select-prerequisite", "Up", func(text string) bool { return strings.Contains(selectedPanelRow(text), "TEAM_ASSIGNED_TASK") }); err != nil {
 		return err
 	}
-	if err := p.key("p07-tasks-complete-prerequisite", "c", func(text string) bool { return strings.Contains(text, "Task #1 completed") }); err != nil {
+	if err := p.key("team-tasks-complete-prerequisite", "c", func(text string) bool { return strings.Contains(text, "Task #1 completed") }); err != nil {
 		return err
 	}
 	var after []byte
@@ -100,7 +100,7 @@ func (p *panelProof) teamTaskActionsProof(media *collaborationMedia) error {
 	}); err != nil {
 		return err
 	}
-	if _, err := p.frame("p07-tasks-available"); err != nil {
+	if _, err := p.frame("team-tasks-available"); err != nil {
 		return err
 	}
 	if media != nil {
@@ -108,10 +108,10 @@ func (p *panelProof) teamTaskActionsProof(media *collaborationMedia) error {
 			return err
 		}
 	}
-	if err := writePrivate(filepath.Join(p.evidence, "p07-tasks-after.json"), after); err != nil {
+	if err := writePrivate(filepath.Join(p.evidence, "team-tasks-after.json"), after); err != nil {
 		return err
 	}
-	if err := p.close("p07-tasks-close"); err != nil {
+	if err := p.close("team-tasks-close"); err != nil {
 		return err
 	}
 	if err := p.logsUnchanged(history); err != nil {
@@ -121,7 +121,7 @@ func (p *panelProof) teamTaskActionsProof(media *collaborationMedia) error {
 	if err != nil || !bytes.Equal(resumeBefore, resumeAfter) || requests != p.state.totalRequests() || memberRequests != p.state.modelRequests("quick") {
 		return fmt.Errorf("task controls changed provider or resume activity: %v", err)
 	}
-	if err := p.checkpoint("p07-tasks-after"); err != nil {
+	if err := p.checkpoint("team-tasks-after"); err != nil {
 		return err
 	}
 	receipt, err := json.MarshalIndent(map[string]any{"providerRequestsBefore": requests, "providerRequestsAfter": p.state.totalRequests(), "memberRequestsBefore": memberRequests, "memberRequestsAfter": p.state.modelRequests("quick"), "resumeTraceBefore": string(resumeBefore), "resumeTraceAfter": string(resumeAfter), "historyBefore": history, "scope": "blocked and completed task controls"}, "", "  ")

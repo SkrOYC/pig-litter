@@ -102,7 +102,7 @@ func (p *panelProof) captureTurnNotices(members []previewMember) error {
 				return false, nil
 			}
 			notice := ledger.Lifecycle.Turns[0]
-			if notice.Member != member.Ref || notice.Kind != "available" || notice.Report != "P07_REPORT_"+strings.ToUpper(member.Name) || notice.Delivery != "native_observed" || notice.NativeEntryID == "" {
+			if notice.Member != member.Ref || notice.Kind != "available" || notice.Report != "TEAM_REPORT_"+strings.ToUpper(member.Name) || notice.Delivery != "native_observed" || notice.NativeEntryID == "" {
 				return false, nil
 			}
 			matched := false
@@ -128,14 +128,14 @@ func (p *panelProof) captureTurnNotices(members []previewMember) error {
 	}); err != nil {
 		return err
 	}
-	if _, err := p.frame("p07-readable-turn-notices"); err != nil {
+	if _, err := p.frame("team-readable-turn-notices"); err != nil {
 		return err
 	}
 	var expected []string
 	for _, member := range members {
 		label := "Teammate " + member.Name + " | available"
-		expected = append(expected, label, "P07_REPORT_"+strings.ToUpper(member.Name))
-		if err := writePrivate(filepath.Join(p.evidence, "p07-turn-notice-"+strings.ToLower(member.Name)+".json"), ledgers[member.Name]); err != nil {
+		expected = append(expected, label, "TEAM_REPORT_"+strings.ToUpper(member.Name))
+		if err := writePrivate(filepath.Join(p.evidence, "team-turn-notice-"+strings.ToLower(member.Name)+".json"), ledgers[member.Name]); err != nil {
 			return err
 		}
 	}
@@ -188,11 +188,11 @@ func (p *panelProof) captureShutdownNotices(member previewMember) error {
 	}); err != nil {
 		return err
 	}
-	if _, err := p.frame("p07-readable-shutdown-notices"); err != nil {
+	if _, err := p.frame("team-readable-shutdown-notices"); err != nil {
 		return err
 	}
 	if err := p.waitRenderedNotices([]string{"Teammate " + member.Name + " | shutdown accepted", "Teammate " + member.Name + " | shutdown complete"}, []string{`"kind":"shutdown_approved"`, `"kind":"shutdown_terminated"`}); err != nil {
 		return err
 	}
-	return writePrivate(filepath.Join(p.evidence, "p07-shutdown-notices.json"), saved)
+	return writePrivate(filepath.Join(p.evidence, "team-shutdown-notices.json"), saved)
 }

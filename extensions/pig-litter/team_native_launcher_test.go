@@ -1,4 +1,4 @@
-//go:build p08native && linux
+//go:build teammate_native && linux
 
 package piglitter
 
@@ -56,14 +56,14 @@ func mustPeerContent(t *testing.T, envelope peerEnvelope, sender string, request
 func testTmuxRootOwnedMemberLifetime(t *testing.T, name string) {
 	unresolved := strings.HasPrefix(name, "unresolved_")
 	isolated := strings.HasSuffix(name, "_isolated")
-	fixtureBinary, memberBinary, prefix := os.Getenv("P08_NATIVE_PROBE"), os.Getenv("P08_PRODUCT_MEMBER"), os.Getenv("P08_LIVE_ROOT")
+	fixtureBinary, memberBinary, prefix := os.Getenv("TEAM_NATIVE_PROBE"), os.Getenv("TEAM_PRODUCT_MEMBER"), os.Getenv("TEAM_LIVE_ROOT")
 	if fixtureBinary == "" || memberBinary == "" || prefix == "" {
-		t.Fatal("P08_NATIVE_PROBE, P08_PRODUCT_MEMBER, and P08_LIVE_ROOT are required")
+		t.Fatal("TEAM_NATIVE_PROBE, TEAM_PRODUCT_MEMBER, and TEAM_LIVE_ROOT are required")
 	}
 	if name == "stubborn" {
-		memberBinary = os.Getenv("P08_STUBBORN_MEMBER")
+		memberBinary = os.Getenv("TEAM_STUBBORN_MEMBER")
 		if memberBinary == "" {
-			t.Fatal("P08_STUBBORN_MEMBER is required")
+			t.Fatal("TEAM_STUBBORN_MEMBER is required")
 		}
 	}
 	rootPath := prefix + "-lifetime-" + name

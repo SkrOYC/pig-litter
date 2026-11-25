@@ -1,4 +1,4 @@
-//go:build linux && p08native
+//go:build linux && teammate_native
 
 package piglitter
 
@@ -11,9 +11,9 @@ import (
 )
 
 func TestNativeProcessPathHelper(t *testing.T) {
-	helper := os.Getenv("P08_PRODUCT_MEMBER")
+	helper := os.Getenv("TEAM_PRODUCT_MEMBER")
 	if helper == "" {
-		t.Fatal("P08_PRODUCT_MEMBER is required")
+		t.Fatal("TEAM_PRODUCT_MEMBER is required")
 	}
 	pid := os.Getpid()
 	birth, err := processBirth(pid)

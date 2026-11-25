@@ -376,21 +376,21 @@ func TestCollaborationResearchConflictsUseExplicitScopedFindings(t *testing.T) {
 	}
 }
 
-func TestCollaborationP02ScenarioTableCoversCatalog(t *testing.T) {
+func TestCollaborationBaselineScenarioTableCoversCatalog(t *testing.T) {
 	catalog := collaborationTestCatalog(t)
 	seen := make(map[string]bool)
 	for _, scenario := range catalog.Scenarios {
-		if scenario.Owner != "P02" {
+		if scenario.Owner != "baseline" {
 			continue
 		}
-		rule, ok := collaborationP02Scenarios[scenario.ID]
+		rule, ok := collaborationBaselineScenarios[scenario.ID]
 		if !ok || rule.Revision != 1 || !collaborationOneOf(rule.Purpose, "research", "verification") || !collaborationOneOf(rule.Channel, "research", "live", "performance") || (rule.Purpose == "research") != (rule.Channel == "research") || (rule.Purpose == "research") != (len(rule.Capabilities) > 0) {
-			t.Fatalf("P02 scenario has no trusted rule: %#v", scenario)
+			t.Fatalf("baseline scenario has no trusted rule: %#v", scenario)
 		}
 		seen[scenario.ID] = true
 	}
-	if len(seen) != len(collaborationP02Scenarios) {
-		t.Fatalf("trusted P02 rules do not match catalog: %d vs %d", len(seen), len(collaborationP02Scenarios))
+	if len(seen) != len(collaborationBaselineScenarios) {
+		t.Fatalf("trusted baseline rules do not match catalog: %d vs %d", len(seen), len(collaborationBaselineScenarios))
 	}
 }
 

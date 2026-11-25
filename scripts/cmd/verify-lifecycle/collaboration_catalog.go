@@ -63,7 +63,7 @@ type collaborationScenario struct {
 var (
 	collaborationRequirementID = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]{3}$`)
 	collaborationScenarioID    = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
-	collaborationOwner         = regexp.MustCompile(`^P(?:0[2-9]|10)$`)
+	collaborationOwner         = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
 )
 
 func collaborationReadCatalog(data []byte) (collaborationCatalog, error) {

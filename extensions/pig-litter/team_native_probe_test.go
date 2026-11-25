@@ -1,4 +1,4 @@
-//go:build p08native && linux
+//go:build teammate_native && linux
 
 package piglitter
 
@@ -281,11 +281,11 @@ func probeWait(t *testing.T, ctx context.Context, label string, predicate func()
 }
 
 func TestTmuxNativeProbe(t *testing.T) {
-	probe := os.Getenv("P08_NATIVE_PROBE")
-	rootPath := os.Getenv("P08_LIVE_ROOT")
-	source := os.Getenv("P08_SOURCE_ROOT")
+	probe := os.Getenv("TEAM_NATIVE_PROBE")
+	rootPath := os.Getenv("TEAM_LIVE_ROOT")
+	source := os.Getenv("TEAM_SOURCE_ROOT")
 	if probe == "" || rootPath == "" || source == "" {
-		t.Fatal("P08_NATIVE_PROBE, P08_LIVE_ROOT, and P08_SOURCE_ROOT are required")
+		t.Fatal("TEAM_NATIVE_PROBE, TEAM_LIVE_ROOT, and TEAM_SOURCE_ROOT are required")
 	}
 	if err := os.Mkdir(rootPath, 0o700); err != nil {
 		t.Fatal(err)
@@ -639,10 +639,10 @@ func TestTmuxNativeProbe(t *testing.T) {
 }
 
 func TestTmuxNativeStartupRootLoss(t *testing.T) {
-	probe := os.Getenv("P08_NATIVE_PROBE")
-	rootPath := os.Getenv("P08_LIVE_ROOT") + "-startup"
+	probe := os.Getenv("TEAM_NATIVE_PROBE")
+	rootPath := os.Getenv("TEAM_LIVE_ROOT") + "-startup"
 	if probe == "" || rootPath == "-startup" {
-		t.Fatal("P08_NATIVE_PROBE and P08_LIVE_ROOT are required")
+		t.Fatal("TEAM_NATIVE_PROBE and TEAM_LIVE_ROOT are required")
 	}
 	if err := os.Mkdir(rootPath, 0o700); err != nil {
 		t.Fatal(err)

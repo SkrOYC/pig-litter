@@ -172,9 +172,9 @@ func TestLeadAttemptObservesEntryWithoutDeathProof(t *testing.T) {
 }
 
 func TestLeadFilteredProcessAbsenceIsNotDeath(t *testing.T) {
-	if os.Getenv("P04_LEAD_FILTER_CHILD") == "" {
+	if os.Getenv("TEAM_LEAD_FILTER_CHILD") == "" {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestLeadFilteredProcessAbsenceIsNotDeath$", "-test.v")
-		cmd.Env = append(os.Environ(), "P04_LEAD_FILTER_CHILD=1")
+		cmd.Env = append(os.Environ(), "TEAM_LEAD_FILTER_CHILD=1")
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("filtered process fixture failed: %v\n%s", err, output)

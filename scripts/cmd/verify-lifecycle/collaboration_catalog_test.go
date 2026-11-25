@@ -44,7 +44,7 @@ func TestCollaborationCatalogRejectsIncompleteOrForgedClaims(t *testing.T) {
 		{"missing source", func(c *collaborationCatalog) { c.Requirements[0].Reference.Section = "" }, "incomplete reference"},
 		{"unknown source kind", func(c *collaborationCatalog) { c.Requirements[0].Reference.Kind = "captured_guess" }, "incomplete reference"},
 		{"dangling scenario", func(c *collaborationCatalog) { c.Requirements[0].AcceptanceScenario = "missing" }, "acceptance scenario"},
-		{"wrong owner", func(c *collaborationCatalog) { c.Requirements[0].Owner = "P04" }, "different owner"},
+		{"wrong owner", func(c *collaborationCatalog) { c.Requirements[0].Owner = "unknown-owner" }, "different owner"},
 		{"missing difference reason", func(c *collaborationCatalog) {
 			c.Requirements[0].ReferenceRelationship = collaborationRelationship{State: "deliberately_different"}
 		}, "reference relationship"},

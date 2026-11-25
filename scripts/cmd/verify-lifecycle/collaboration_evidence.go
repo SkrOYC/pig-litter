@@ -228,7 +228,7 @@ func (attempt collaborationAttempt) validate(catalog collaborationCatalog, expec
 		return fmt.Errorf("unsupported research requires a capability prerequisite")
 	}
 	if finding := attempt.Finding; finding != nil {
-		rule, registered := collaborationP02Scenarios[attempt.Scenario]
+		rule, registered := collaborationBaselineScenarios[attempt.Scenario]
 		if attempt.Purpose != "research" || !registered || !collaborationContains(rule.Capabilities, finding.Capability) || !collaborationOneOf(finding.Verdict, "supported", "unsupported") || strings.TrimSpace(finding.Detail) == "" || (finding.Verdict == "unsupported" && strings.TrimSpace(attempt.Prerequisite) == "") || (attempt.Outcome == "unsupported" && finding.Verdict != "unsupported") {
 			return fmt.Errorf("invalid scoped capability finding")
 		}
@@ -256,7 +256,7 @@ func (attempt collaborationAttempt) validate(catalog collaborationCatalog, expec
 			break
 		}
 	}
-	if scenario == nil || (attempt.Purpose != "product" && scenario.Owner != "P02") {
+	if scenario == nil || (attempt.Purpose != "product" && scenario.Owner != "baseline") {
 		return fmt.Errorf("unknown or incompatible scenario %q", attempt.Scenario)
 	}
 	seen := make(map[string]bool)

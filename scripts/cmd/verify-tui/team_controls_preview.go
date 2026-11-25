@@ -10,7 +10,7 @@ import (
 )
 
 func (p *panelProof) teamControlsProof(media *collaborationMedia) error {
-	if err := p.sendText("P07_TEAM_PREVIEW"); err != nil {
+	if err := p.sendText("TEAM_PREVIEW"); err != nil {
 		return err
 	}
 	if err := p.sendKey("Enter"); err != nil {
@@ -21,7 +21,7 @@ func (p *panelProof) teamControlsProof(media *collaborationMedia) error {
 			return false, err
 		}
 		data, err := os.ReadFile(filepath.Join(p.agentDir, "pig-litter", "roots", p.rootID, "tasks.json"))
-		if err != nil || !visibleContains(p.visible, "P07_TEAM_READY") {
+		if err != nil || !visibleContains(p.visible, "TEAM_READY") {
 			return false, nil
 		}
 		var graph struct {
@@ -31,7 +31,7 @@ func (p *panelProof) teamControlsProof(media *collaborationMedia) error {
 	}); err != nil {
 		return err
 	}
-	if err := p.awaitRootIdle("P07_TEAM_PREVIEW"); err != nil {
+	if err := p.awaitRootIdle("TEAM_PREVIEW"); err != nil {
 		return err
 	}
 	bindings := []byte(`{"tui.select.up":"ctrl+p","tui.select.down":"ctrl+n","tui.select.confirm":"ctrl+g","tui.select.cancel":"ctrl+q"}`)
@@ -41,7 +41,7 @@ func (p *panelProof) teamControlsProof(media *collaborationMedia) error {
 	if err := p.sendText("/reload"); err != nil {
 		return err
 	}
-	if err := p.key("p07-controls-reload", "Enter", func(text string) bool {
+	if err := p.key("team-controls-reload", "Enter", func(text string) bool {
 		return strings.Contains(text, "Reloaded keybindings, extensions")
 	}); err != nil {
 		return err
@@ -55,7 +55,7 @@ func (p *panelProof) teamControlsProof(media *collaborationMedia) error {
 	if err != nil {
 		return err
 	}
-	if err := p.checkpoint("p07-controls-before-native"); err != nil {
+	if err := p.checkpoint("team-controls-before-native"); err != nil {
 		return err
 	}
 	for _, width := range []int{80, 120, 150} {
@@ -68,7 +68,7 @@ func (p *panelProof) teamControlsProof(media *collaborationMedia) error {
 		}); err != nil {
 			return err
 		}
-		prefix := fmt.Sprintf("p07-controls-%d", width)
+		prefix := fmt.Sprintf("team-controls-%d", width)
 		if err := p.openTeam(prefix + "-open"); err != nil {
 			return err
 		}
@@ -89,15 +89,15 @@ func (p *panelProof) teamControlsProof(media *collaborationMedia) error {
 			return err
 		}
 		if err := p.key(prefix+"-tasks", "k", func(text string) bool {
-			return hasPanelView("team | tasks")(text) && strings.Contains(selectedPanelRow(text), "P07_ASSIGNED_TASK") && strings.Contains(text, "P07_UNASSIGNED_TASK")
+			return hasPanelView("team | tasks")(text) && strings.Contains(selectedPanelRow(text), "TEAM_ASSIGNED_TASK") && strings.Contains(text, "TEAM_UNASSIGNED_TASK")
 		}); err != nil {
 			return err
 		}
-		if err := p.key(prefix+"-next-task", "C-n", func(text string) bool { return strings.Contains(selectedPanelRow(text), "P07_UNASSIGNED_TASK") }); err != nil {
+		if err := p.key(prefix+"-next-task", "C-n", func(text string) bool { return strings.Contains(selectedPanelRow(text), "TEAM_UNASSIGNED_TASK") }); err != nil {
 			return err
 		}
 		if err := p.key(prefix+"-task-detail", "C-g", func(text string) bool {
-			return hasPanelView("team | task detail")(text) && strings.Contains(text, "P07_UNASSIGNED_TASK")
+			return hasPanelView("team | task detail")(text) && strings.Contains(text, "TEAM_UNASSIGNED_TASK")
 		}); err != nil {
 			return err
 		}
@@ -116,7 +116,7 @@ func (p *panelProof) teamControlsProof(media *collaborationMedia) error {
 		if err := p.key(prefix+"-task-back", "C-q", hasPanelView("team | tasks")); err != nil {
 			return err
 		}
-		if err := p.key(prefix+"-previous-task", "C-p", func(text string) bool { return strings.Contains(selectedPanelRow(text), "P07_ASSIGNED_TASK") }); err != nil {
+		if err := p.key(prefix+"-previous-task", "C-p", func(text string) bool { return strings.Contains(selectedPanelRow(text), "TEAM_ASSIGNED_TASK") }); err != nil {
 			return err
 		}
 		if err := p.key(prefix+"-tasks-back", "C-q", hasPanelView("team")); err != nil {
@@ -136,7 +136,7 @@ func (p *panelProof) teamControlsProof(media *collaborationMedia) error {
 	if err != nil || !reflect.DeepEqual(resumeBefore, resumeAfter) || requests != p.state.totalRequests() || memberRequests != p.state.modelRequests("quick") {
 		return fmt.Errorf("task navigation changed provider or resume activity: %v", err)
 	}
-	if err := p.checkpoint("p07-controls-after-native"); err != nil {
+	if err := p.checkpoint("team-controls-after-native"); err != nil {
 		return err
 	}
 	receipt, err := json.MarshalIndent(map[string]any{"widths": []int{80, 120, 150}, "keybindings": json.RawMessage(bindings), "providerRequestsBefore": requests, "providerRequestsAfter": p.state.totalRequests(), "memberRequestsBefore": memberRequests, "memberRequestsAfter": p.state.modelRequests("quick"), "resumeTraceBefore": string(resumeBefore), "resumeTraceAfter": string(resumeAfter), "historyBefore": before, "scope": "task selection and configured navigation"}, "", "  ")

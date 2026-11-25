@@ -1,4 +1,4 @@
-//go:build p08discovery
+//go:build teammate_discovery
 
 package piglitter
 
@@ -11,18 +11,18 @@ import (
 )
 
 func TestNativeMemberDiscoveryFromLoadedSourceAndPiglet(t *testing.T) {
-	expected := os.Getenv("P08_EXPECT_HELPER")
+	expected := os.Getenv("TEAM_EXPECT_HELPER")
 	if expected == "" {
-		t.Fatal("P08_EXPECT_HELPER is required")
+		t.Fatal("TEAM_EXPECT_HELPER is required")
 	}
 	for _, item := range []struct {
 		name, path string
 		selected   bool
 	}{
-		{name: "source", path: os.Getenv("P08_SOURCE_RPC"), selected: true},
-		{name: "piglet", path: os.Getenv("P08_PIGLET_RPC"), selected: true},
-		{name: "standalone", path: os.Getenv("P08_STANDALONE_RPC"), selected: true},
-		{name: "unselected", path: os.Getenv("P08_UNSELECTED_RPC")},
+		{name: "source", path: os.Getenv("TEAM_SOURCE_RPC"), selected: true},
+		{name: "piglet", path: os.Getenv("TEAM_PIGLET_RPC"), selected: true},
+		{name: "standalone", path: os.Getenv("TEAM_STANDALONE_RPC"), selected: true},
+		{name: "unselected", path: os.Getenv("TEAM_UNSELECTED_RPC")},
 	} {
 		t.Run(item.name, func(t *testing.T) {
 			file, err := os.Open(item.path)

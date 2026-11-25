@@ -8,22 +8,22 @@ import (
 	"strings"
 )
 
-const previewHumanMessage = "P07 human message: exact text 123"
-const previewCancelledMessage = "P07 cancelled draft"
+const previewHumanMessage = "Team human message: exact text 123"
+const previewCancelledMessage = "Team cancelled draft"
 
 func teamMessageTurn(request openAIRequest) (providerTurn, bool, error) {
 	text := allMessageText(request.Messages)
-	if request.Model == "held" && strings.Contains(text, "P07_MESSAGE_TASK_") {
+	if request.Model == "held" && strings.Contains(text, "TEAM_MESSAGE_TASK_") {
 		if len(roleMessages(request.Messages, "tool")) == 0 {
 			return providerTurn{kind: "tools", calls: []toolCall{{name: "read", args: map[string]string{"path": "fixture-read.txt"}}}}, true, nil
 		}
-		if strings.Contains(text, "P07_MESSAGE_TASK_ALICE") {
+		if strings.Contains(text, "TEAM_MESSAGE_TASK_ALICE") {
 			if strings.Contains(text, previewHumanMessage) || strings.Contains(text, previewCancelledMessage) {
 				return providerTurn{}, true, fmt.Errorf("the unselected teammate received human input")
 			}
-			return providerTurn{kind: "hold", name: "p07-alice", text: "P07_ALICE_INITIAL"}, true, nil
+			return providerTurn{kind: "hold", name: "team-alice", text: "TEAM_ALICE_INITIAL"}, true, nil
 		}
-		if strings.Contains(text, "P07_MESSAGE_TASK_BOB") {
+		if strings.Contains(text, "TEAM_MESSAGE_TASK_BOB") {
 			count := 0
 			for _, message := range request.Messages {
 				if strings.Contains(contentText(message.Content), previewHumanMessage) {
@@ -37,16 +37,16 @@ func teamMessageTurn(request openAIRequest) (providerTurn, bool, error) {
 				}
 			}
 			if count == 1 {
-				return providerTurn{kind: "text", text: "P07_BOB_MESSAGE_ACK"}, true, nil
+				return providerTurn{kind: "text", text: "TEAM_BOB_MESSAGE_ACK"}, true, nil
 			}
 			if count != 0 {
 				return providerTurn{}, true, fmt.Errorf("human input reached the provider more than once")
 			}
-			return providerTurn{kind: "hold", name: "p07-bob", text: "P07_BOB_INITIAL"}, true, nil
+			return providerTurn{kind: "hold", name: "team-bob", text: "TEAM_BOB_INITIAL"}, true, nil
 		}
 		return providerTurn{}, true, fmt.Errorf("unknown teammate task")
 	}
-	if request.Model != "parent" || latestRootPrompt(request.Messages).marker != "P07_TEAM_MESSAGE_SETUP" {
+	if request.Model != "parent" || latestRootPrompt(request.Messages).marker != "TEAM_MESSAGE_SETUP" {
 		return providerTurn{}, false, nil
 	}
 	members := map[string]bool{}
@@ -65,15 +65,15 @@ func teamMessageTurn(request openAIRequest) (providerTurn, bool, error) {
 	}
 	for _, name := range []string{"Alice", "Bob"} {
 		if !members[name] {
-			args := map[string]any{"type": "scout", "name": name, "model": "fixture/held", "task": "P07_MESSAGE_TASK_" + strings.ToUpper(name), "workspace": map[string]any{"kind": "shared_checkout"}}
+			args := map[string]any{"type": "scout", "name": name, "model": "fixture/held", "task": "TEAM_MESSAGE_TASK_" + strings.ToUpper(name), "workspace": map[string]any{"kind": "shared_checkout"}}
 			return providerTurn{kind: "tools", calls: []toolCall{{name: "team_spawn", args: args}}}, true, nil
 		}
 	}
-	return providerTurn{kind: "text", text: "P07_TEAM_MESSAGE_READY"}, true, nil
+	return providerTurn{kind: "text", text: "TEAM_MESSAGE_READY"}, true, nil
 }
 
 func (p *panelProof) teamMessageProof() error {
-	if err := p.sendText("P07_TEAM_MESSAGE_SETUP"); err != nil {
+	if err := p.sendText("TEAM_MESSAGE_SETUP"); err != nil {
 		return err
 	}
 	if err := p.sendKey("Enter"); err != nil {
@@ -84,7 +84,7 @@ func (p *panelProof) teamMessageProof() error {
 		if err := p.state.providerFailure(); err != nil {
 			return false, err
 		}
-		if !p.state.holding("p07-alice", "p07-bob") || !visibleContains(p.visible, "P07_TEAM_MESSAGE_READY") {
+		if !p.state.holding("team-alice", "team-bob") || !visibleContains(p.visible, "TEAM_MESSAGE_READY") {
 			return false, nil
 		}
 		root, err := p.root()
@@ -122,7 +122,7 @@ func (p *panelProof) teamMessageProof() error {
 	if !aliceOK || !bobOK || alice.Ref == bob.Ref {
 		return fmt.Errorf("active teammate identities are ambiguous: %+v", members)
 	}
-	if err := p.awaitRootIdle("P07_TEAM_MESSAGE_SETUP"); err != nil {
+	if err := p.awaitRootIdle("TEAM_MESSAGE_SETUP"); err != nil {
 		return err
 	}
 	before, err := p.quiescentLogs()
@@ -147,26 +147,26 @@ func (p *panelProof) teamMessageProof() error {
 	if memberRequestsBefore != 4 {
 		return fmt.Errorf("expected four setup teammate requests, got %d", memberRequestsBefore)
 	}
-	if err := p.checkpoint("p07-message-before-view"); err != nil {
+	if err := p.checkpoint("team-message-before-view"); err != nil {
 		return err
 	}
-	if err := p.openTeam("p07-message-passive-open"); err != nil {
+	if err := p.openTeam("team-message-passive-open"); err != nil {
 		return err
 	}
-	if err := p.key("p07-message-select-bob", "End", func(text string) bool { return strings.Contains(selectedPanelRow(text), "Bob") }); err != nil {
+	if err := p.key("team-message-select-bob", "End", func(text string) bool { return strings.Contains(selectedPanelRow(text), "Bob") }); err != nil {
 		return err
 	}
-	if err := p.key("p07-message-passive-detail", "Enter", func(text string) bool {
+	if err := p.key("team-message-passive-detail", "Enter", func(text string) bool {
 		return hasPanelView("team | detail")(text) && strings.Contains(text, bob.Ref.ID)
 	}); err != nil {
 		return err
 	}
-	if err := p.key("p07-message-passive-transcript", "t", func(text string) bool {
-		return hasPanelView("team | transcript")(text) && strings.Contains(text, "P07_MESSAGE_TASK_BOB")
+	if err := p.key("team-message-passive-transcript", "t", func(text string) bool {
+		return hasPanelView("team | transcript")(text) && strings.Contains(text, "TEAM_MESSAGE_TASK_BOB")
 	}); err != nil {
 		return err
 	}
-	if err := p.close("p07-message-passive-close"); err != nil {
+	if err := p.close("team-message-passive-close"); err != nil {
 		return err
 	}
 	if err := p.logsUnchanged(before); err != nil {
@@ -176,47 +176,47 @@ func (p *panelProof) teamMessageProof() error {
 	if err != nil || string(passiveResumes) != string(resumesBefore) || p.state.totalRequests() != requestsBefore {
 		return fmt.Errorf("passive viewing changed provider or resume activity: %v", err)
 	}
-	if err := p.openTeam("p07-message-open"); err != nil {
+	if err := p.openTeam("team-message-open"); err != nil {
 		return err
 	}
 	if text, err := p.visible(); err != nil || !strings.Contains(selectedPanelRow(text), "Bob") {
 		return fmt.Errorf("selected teammate changed before messaging: %s %v", text, err)
 	}
-	if err := p.key("p07-message-cancel-editor", "m", func(text string) bool {
+	if err := p.key("team-message-cancel-editor", "m", func(text string) bool {
 		return hasPanelView("team | message")(text) && strings.Contains(text, bob.Ref.ID)
 	}); err != nil {
 		return err
 	}
-	if err := p.action("p07-message-cancel-draft", func() error { return p.sendText(previewCancelledMessage) }, func(text string) bool { return strings.Contains(text, previewCancelledMessage) }); err != nil {
+	if err := p.action("team-message-cancel-draft", func() error { return p.sendText(previewCancelledMessage) }, func(text string) bool { return strings.Contains(text, previewCancelledMessage) }); err != nil {
 		return err
 	}
-	if err := p.key("p07-message-cancel", "Escape", hasPanelView("team")); err != nil {
+	if err := p.key("team-message-cancel", "Escape", hasPanelView("team")); err != nil {
 		return err
 	}
-	if err := p.key("p07-message-editor", "m", hasPanelView("team | message")); err != nil {
+	if err := p.key("team-message-editor", "m", hasPanelView("team | message")); err != nil {
 		return err
 	}
-	if err := p.key("p07-message-follow-up", "Tab", func(text string) bool { return strings.Contains(text, "Message mode follow_up") }); err != nil {
+	if err := p.key("team-message-follow-up", "Tab", func(text string) bool { return strings.Contains(text, "Message mode follow_up") }); err != nil {
 		return err
 	}
-	if err := p.action("p07-message-draft", func() error { return p.sendText(previewHumanMessage) }, func(text string) bool { return strings.Contains(text, previewHumanMessage) }); err != nil {
+	if err := p.action("team-message-draft", func() error { return p.sendText(previewHumanMessage) }, func(text string) bool { return strings.Contains(text, previewHumanMessage) }); err != nil {
 		return err
 	}
-	if err := p.key("p07-message-submit", "Enter", func(text string) bool { return hasPanelView("team")(text) && strings.Contains(text, "Message queued") }); err != nil {
+	if err := p.key("team-message-submit", "Enter", func(text string) bool { return hasPanelView("team")(text) && strings.Contains(text, "Message queued") }); err != nil {
 		return err
 	}
-	if err := p.close("p07-message-close"); err != nil {
+	if err := p.close("team-message-close"); err != nil {
 		return err
 	}
-	if p.state.totalRequests() != requestsBefore || !p.state.holding("p07-alice", "p07-bob") {
+	if p.state.totalRequests() != requestsBefore || !p.state.holding("team-alice", "team-bob") {
 		return fmt.Errorf("a provider request occurred before the held continuation was released")
 	}
-	if err := p.state.releaseHold("p07-bob"); err != nil {
+	if err := p.state.releaseHold("team-bob"); err != nil {
 		return err
 	}
 	if err := p.waitNative("selected teammate message continuation", func(root nativeSession) bool {
 		child := root.Children[bob.Ref.ID]
-		return child.State == "completed" && child.Latest != nil && child.Latest.Text == "P07_BOB_MESSAGE_ACK" && p.state.holding("p07-alice")
+		return child.State == "completed" && child.Latest != nil && child.Latest.Text == "TEAM_BOB_MESSAGE_ACK" && p.state.holding("team-alice")
 	}); err != nil {
 		return err
 	}
@@ -242,7 +242,7 @@ func (p *panelProof) teamMessageProof() error {
 	if err != nil || string(resumesAfter) != string(resumesBefore) {
 		return fmt.Errorf("message or viewing invoked Runtime.Resume: %v", err)
 	}
-	if err := p.checkpoint("p07-message-after-continuation"); err != nil {
+	if err := p.checkpoint("team-message-after-continuation"); err != nil {
 		return err
 	}
 	receipt, err := json.MarshalIndent(map[string]any{"scope": "active teammate human message preview", "members": members, "selected": bob.Ref, "message": previewHumanMessage, "mode": "follow_up", "nativeUserMatches": exactNativeUserCount(bobAfter, previewHumanMessage), "unselectedHistoryUnchanged": string(aliceBefore.Raw) == string(aliceAfter.Raw), "passiveHistoryBefore": before, "providerRequestsBefore": requestsBefore, "providerRequestsAfter": p.state.totalRequests(), "memberRequestsBefore": memberRequestsBefore, "memberRequestsAfter": p.state.modelRequests("held"), "rootRequestsBefore": rootRequestsBefore, "rootRequestsAfter": p.state.modelRequests("parent"), "resumeTraceBefore": string(resumesBefore), "resumeTraceAfter": string(resumesAfter), "continuation": "one selected teammate provider request after explicit message and barrier release"}, "", "  ")

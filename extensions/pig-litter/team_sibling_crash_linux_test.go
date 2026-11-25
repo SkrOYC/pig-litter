@@ -23,7 +23,7 @@ import (
 )
 
 func TestSiblingCrashRecovery(t *testing.T) {
-	if os.Getenv("P04_SIBLING_CRASH_CHILD") == "1" {
+	if os.Getenv("TEAM_SIBLING_CRASH_CHILD") == "1" {
 		runSiblingCrashChild(t)
 		return
 	}
@@ -64,7 +64,7 @@ func TestSiblingCrashRecovery(t *testing.T) {
 					t.Fatal(err)
 				}
 				cmd := exec.Command(os.Args[0], "-test.run=^TestSiblingCrashRecovery$", "-test.v")
-				cmd.Env = append(os.Environ(), "P04_SIBLING_CRASH_CHILD=1", "P04_SIBLING_AGENT_DIR="+agentDir, "P04_SIBLING_ROOT="+string(root), "P04_SIBLING_SESSION_DIR="+directory, "P04_SIBLING_MODE="+mode, "P04_SIBLING_CUT="+cut)
+				cmd.Env = append(os.Environ(), "TEAM_SIBLING_CRASH_CHILD=1", "TEAM_SIBLING_AGENT_DIR="+agentDir, "TEAM_SIBLING_ROOT="+string(root), "TEAM_SIBLING_SESSION_DIR="+directory, "TEAM_SIBLING_MODE="+mode, "TEAM_SIBLING_CUT="+cut)
 				output, err := cmd.StdoutPipe()
 				if err != nil {
 					t.Fatal(err)
@@ -134,8 +134,8 @@ func TestSiblingCrashRecovery(t *testing.T) {
 }
 
 func runSiblingCrashChild(t *testing.T) {
-	root := ChildID(os.Getenv("P04_SIBLING_ROOT"))
-	store, err := openTeamStore(os.Getenv("P04_SIBLING_AGENT_DIR"), root)
+	root := ChildID(os.Getenv("TEAM_SIBLING_ROOT"))
+	store, err := openTeamStore(os.Getenv("TEAM_SIBLING_AGENT_DIR"), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func runSiblingCrashChild(t *testing.T) {
 	if _, _, err := store.acceptPeer(sender.Ref, request); err != nil {
 		t.Fatal(err)
 	}
-	directory := os.Getenv("P04_SIBLING_SESSION_DIR")
+	directory := os.Getenv("TEAM_SIBLING_SESSION_DIR")
 	trusted := true
 	services, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: directory, AgentDir: directory, ProjectTrusted: &trusted})
 	if err != nil {
@@ -161,7 +161,7 @@ func runSiblingCrashChild(t *testing.T) {
 	tree.records[r.id] = r
 	o := &owner{tree: tree, teamStore: store}
 	hooks := o.peerHooks(r, selected)
-	mode, cut := os.Getenv("P04_SIBLING_MODE"), os.Getenv("P04_SIBLING_CUT")
+	mode, cut := os.Getenv("TEAM_SIBLING_MODE"), os.Getenv("TEAM_SIBLING_CUT")
 	block := func() { fmt.Println("SIBLING_BARRIER"); select {} }
 	if cut == "before-append" && mode == "busy-boundary" {
 		original := hooks.Handlers["agent_before_settle"][0]

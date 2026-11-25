@@ -1,4 +1,4 @@
-//go:build p08native && linux
+//go:build teammate_native && linux
 
 package piglitter
 
@@ -19,9 +19,9 @@ import (
 )
 
 func TestTmuxNativeInputStartup(t *testing.T) {
-	probe, base, source := os.Getenv("P08_NATIVE_PROBE"), os.Getenv("P08_LIVE_ROOT"), os.Getenv("P08_SOURCE_ROOT")
+	probe, base, source := os.Getenv("TEAM_NATIVE_PROBE"), os.Getenv("TEAM_LIVE_ROOT"), os.Getenv("TEAM_SOURCE_ROOT")
 	if probe == "" || base == "" || source == "" {
-		t.Fatal("P08_NATIVE_PROBE, P08_LIVE_ROOT, and P08_SOURCE_ROOT are required")
+		t.Fatal("TEAM_NATIVE_PROBE, TEAM_LIVE_ROOT, and TEAM_SOURCE_ROOT are required")
 	}
 	for _, mode := range []string{"success", "fail"} {
 		t.Run(mode, func(t *testing.T) {
@@ -97,7 +97,7 @@ func TestTmuxNativeInputStartup(t *testing.T) {
 			}
 			launchID := hex.EncodeToString(nonce[:])
 			manifest := filepath.Join(rootPath, "member-"+launchID+".json")
-			environment := map[string]string{"PATH": os.Getenv("PATH"), "TERM": "xterm-256color", "LANG": "C.UTF-8", "HOME": filepath.Join(rootPath, "home"), "PIG_HOME": filepath.Join(rootPath, "home", ".pig"), "PIG_CODING_AGENT_DIR": filepath.Join(rootPath, "agent"), "PIG_SDK_GO_ROOT": source, "PROBE_ROOT": rootPath, "PROBE_TOKEN": root.token, "TMPDIR": rootPath, "PI_SKIP_VERSION_CHECK": "1", "P08_INPUT_TEST": mode}
+			environment := map[string]string{"PATH": os.Getenv("PATH"), "TERM": "xterm-256color", "LANG": "C.UTF-8", "HOME": filepath.Join(rootPath, "home"), "PIG_HOME": filepath.Join(rootPath, "home", ".pig"), "PIG_CODING_AGENT_DIR": filepath.Join(rootPath, "agent"), "PIG_SDK_GO_ROOT": source, "PROBE_ROOT": rootPath, "PROBE_TOKEN": root.token, "TMPDIR": rootPath, "PI_SKIP_VERSION_CHECK": "1", "TEAM_INPUT_TEST": mode}
 			args := []string{"--session-id", "018f0000-0000-7000-8000-000000000002", "--session-dir", filepath.Join(rootPath, "sessions"), "--model", "fixture/fixed", "--tools", "read", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--approve", "QUEUE_GATE"}
 			data, err := json.Marshal(map[string]any{"cwd": cwd, "env": environment, "args": args})
 			if err != nil || os.WriteFile(manifest, data, 0o600) != nil {

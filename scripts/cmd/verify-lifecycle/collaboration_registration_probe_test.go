@@ -25,7 +25,7 @@ func TestCollaborationHostEmbeddedRegistration(t *testing.T) {
 		t.Fatalf("registration evidence = %#v", evidence)
 	}
 	checkRegistrationHostSource(t, evidence.HostModuleVersion)
-	want := [][]string{{"p02_extra_alpha", "p02_extra_beta", "p02_factory"}, {"p02_extra_alpha", "p02_factory"}, {}}
+	want := [][]string{{"collab_extra_alpha", "collab_extra_beta", "collab_factory"}, {"collab_extra_alpha", "collab_factory"}, {}}
 	for i, observation := range evidence.Cases {
 		if observation.SessionID == "" || !reflect.DeepEqual(observation.SessionTools, want[i]) || !reflect.DeepEqual(observation.ProviderTools, want[i]) {
 			t.Fatalf("registration case = %#v, want tools %v", observation, want[i])

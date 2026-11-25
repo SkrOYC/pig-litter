@@ -261,7 +261,7 @@ type runSummary struct {
 }
 
 func main() {
-	if len(os.Args) == 3 && os.Args[1] == "--p07-resume-probe" {
+	if len(os.Args) == 3 && os.Args[1] == "--resume-probe" {
 		if err := previewResumeProbe(os.Args[2]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -291,14 +291,14 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) == 1 && os.Getenv("P02_TUI_MESSAGE_EXTENSION") == "1" {
+	if len(os.Args) == 1 && os.Getenv("COLLAB_TUI_MESSAGE_EXTENSION") == "1" {
 		if err := runCollaborationTUIMessageExtension(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
 	}
-	if len(os.Args) == 1 && os.Getenv("P02_TUI_HOOK_EXTENSION") == "1" {
+	if len(os.Args) == 1 && os.Getenv("COLLAB_TUI_HOOK_EXTENSION") == "1" {
 		if err := runCollaborationTUIHookExtension(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -530,7 +530,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 		if err := os.WriteFile(resumeTrace, nil, 0o600); err != nil {
 			return evidencePath, err
 		}
-		childEnv = append(childEnv, "P07_RESUME_TRACE="+resumeTrace)
+		childEnv = append(childEnv, "TEAM_RESUME_TRACE="+resumeTrace)
 	}
 	var messageProbe *collaborationTUIMessageProbe
 	if options.scenario == "host-idle-message" || options.scenario == "host-busy-message" {
@@ -539,7 +539,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			return evidencePath, err
 		}
 		messageProbe = &collaborationTUIMessageProbe{mode: options.scenario, token: rand.Text(), socket: filepath.Join(scratch, "message.sock"), directory: messageDirectory, sessions: rootSessions, phases: []collaborationTUIMessagePhase{}}
-		childEnv = append(childEnv, "P02_TUI_MESSAGE_EXTENSION=1", "P02_TUI_MESSAGE_TOKEN="+messageProbe.token, "P02_TUI_MESSAGE_SOCKET="+messageProbe.socket, "P02_TUI_MESSAGE_DIRECTORY="+messageDirectory)
+		childEnv = append(childEnv, "COLLAB_TUI_MESSAGE_EXTENSION=1", "COLLAB_TUI_MESSAGE_TOKEN="+messageProbe.token, "COLLAB_TUI_MESSAGE_SOCKET="+messageProbe.socket, "COLLAB_TUI_MESSAGE_DIRECTORY="+messageDirectory)
 	}
 	var hookProbe *collaborationTUIHookProbe
 	if options.scenario == "host-tool-veto" {
@@ -548,7 +548,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			return evidencePath, err
 		}
 		hookProbe = &collaborationTUIHookProbe{directory: hookDirectory, workspace: workspace, executable: filepath.Join(scratch, collaborationTUIHookName)}
-		childEnv = append(childEnv, "P02_TUI_HOOK_EXTENSION=1", "P02_TUI_HOOK_DIRECTORY="+hookDirectory, "P02_TUI_HOOK_WORKSPACE="+workspace)
+		childEnv = append(childEnv, "COLLAB_TUI_HOOK_EXTENSION=1", "COLLAB_TUI_HOOK_DIRECTORY="+hookDirectory, "COLLAB_TUI_HOOK_WORKSPACE="+workspace)
 	}
 	idleCommand, idleDirectory := "", ""
 	if options.caseName != caseUnselected {
@@ -1022,7 +1022,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 					return false, nil
 				}
 				if options.scenario == "team-preview" {
-					return strings.Contains(text, "P07_TEAM_READY") && strings.Contains(text, workspace), nil
+					return strings.Contains(text, "TEAM_READY") && strings.Contains(text, workspace), nil
 				}
 				return true, nil
 			})
@@ -1130,7 +1130,7 @@ func run(parent context.Context, options options) (evidencePath string, runErr e
 			return evidencePath, err
 		}
 		if options.scenario == "host-idle-message" {
-			phase, err := messageProbe.observe(ctx, "fresh-idle", "send", "P02_FRESH", state.totalRequests)
+			phase, err := messageProbe.observe(ctx, "fresh-idle", "send", "COLLAB_FRESH", state.totalRequests)
 			if err != nil || !phase.Response.Before.Idle || !phase.Response.After.Idle || phase.Response.Before.MemoryCopies != 0 || phase.Response.After.MemoryCopies != 1 || phase.ProviderBefore != 0 || phase.ProviderAfter != 0 {
 				return evidencePath, fmt.Errorf("fresh idle message observation: %#v, %v", phase, err)
 			}
@@ -2346,7 +2346,7 @@ func latestRootPrompt(messages []openAIMessage) (marker struct{ marker, text str
 		lines := strings.Split(strings.ReplaceAll(contentText(messages[index].Content), "\r\n", "\n"), "\n")
 		for lineIndex := len(lines) - 1; lineIndex >= 0; lineIndex-- {
 			line := strings.TrimSpace(lines[lineIndex])
-			if line == "START_WIDGET" || line == "UNSELECTED_WIDGET" || line == "QUICK_WIDGET" || line == "RECEIPT_WIDGET" || line == "P02_BUSY_HOLD" || line == "P02_HOOK_ALLOW" || line == "P02_HOOK_DENY" || line == "P07_TEAM_PREVIEW" || line == "P07_TASK_CONTROL" || line == "P07_PLAN_CONTROL" || line == "P07_SHUTDOWN_CONTROL" || line == "P07_TEAM_MESSAGE_SETUP" || line == "CHAIN_WIDGET" || line == "ROOT_NOTICE_FIRST" || line == "ROOT_NOTICE_SECOND" || line == "ROOT_RESTART_FIRST" || line == "ROOT_RESTART_SECOND" || line == "ROOT_RESTART_THIRD" || line == "NEW_ROOT_HEADER" || line == "COLD_ROOT_HEADER" {
+			if line == "START_WIDGET" || line == "UNSELECTED_WIDGET" || line == "QUICK_WIDGET" || line == "RECEIPT_WIDGET" || line == "COLLAB_BUSY_HOLD" || line == "COLLAB_HOOK_ALLOW" || line == "COLLAB_HOOK_DENY" || line == "TEAM_PREVIEW" || line == "TEAM_TASK_CONTROL" || line == "TEAM_PLAN_CONTROL" || line == "TEAM_SHUTDOWN_CONTROL" || line == "TEAM_MESSAGE_SETUP" || line == "CHAIN_WIDGET" || line == "ROOT_NOTICE_FIRST" || line == "ROOT_NOTICE_SECOND" || line == "ROOT_RESTART_FIRST" || line == "ROOT_RESTART_SECOND" || line == "ROOT_RESTART_THIRD" || line == "NEW_ROOT_HEADER" || line == "COLD_ROOT_HEADER" {
 				return struct{ marker, text string }{marker: line, text: line}
 			}
 			if strings.HasPrefix(line, "STOP_WIDGET ") {

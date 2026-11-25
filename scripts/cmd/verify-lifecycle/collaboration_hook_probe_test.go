@@ -20,7 +20,7 @@ func TestCollaborationHookPhaseVerdicts(t *testing.T) {
 	nested := collaborationHookPhase{
 		Tool: "write", Nested: true, Deny: true, Target: "/fixture/nested", OuterCallID: "outer",
 		Events:     []collaborationHookEvent{{Tool: "write", CallID: "outer/1", ParentID: "outer", Path: "/fixture/nested", Refused: true}},
-		ToolResult: json.RawMessage(`{"toolName":"codemode","toolCallId":"outer","nestedCalls":{"complete":true,"calls":[{"id":"outer/1","name":"write","status":"error","error":"P02_HOOK_REFUSED"}]}}`), CallerText: collaborationHookRefusal,
+		ToolResult: json.RawMessage(`{"toolName":"codemode","toolCallId":"outer","nestedCalls":{"complete":true,"calls":[{"id":"outer/1","name":"write","status":"error","error":"COLLAB_HOOK_REFUSED"}]}}`), CallerText: collaborationHookRefusal,
 	}
 	tests := []struct {
 		name  string
@@ -59,7 +59,7 @@ func TestCollaborationHookProbePreservesExistingResult(t *testing.T) {
 }
 
 func TestCollaborationHostHookProbe(t *testing.T) {
-	if root := os.Getenv("P02_HOOK_PROBE_CHILD"); root != "" {
+	if root := os.Getenv("COLLAB_HOOK_PROBE_CHILD"); root != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		evidence, err := collaborationRunHostHookProbe(ctx, root)
@@ -68,12 +68,12 @@ func TestCollaborationHostHookProbe(t *testing.T) {
 		}
 		return
 	}
-	parent := os.Getenv("P02_HOOK_PROBE_ROOT")
+	parent := os.Getenv("COLLAB_HOOK_PROBE_ROOT")
 	if parent == "" {
 		parent = t.TempDir()
 	}
 	if !filepath.IsAbs(parent) {
-		t.Fatal("P02_HOOK_PROBE_ROOT must be absolute")
+		t.Fatal("COLLAB_HOOK_PROBE_ROOT must be absolute")
 	}
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestCollaborationHostHookProbe(t *testing.T) {
 		"XDG_CACHE_HOME=" + filepath.Join(root, "cache"),
 		"TMPDIR=" + filepath.Join(root, "tmp"),
 		"PIG_OFFLINE=1", "PI_OFFLINE=1", "PIG_USE_PI_DIRS=0", "PI_TELEMETRY=0",
-		"PATH=/usr/bin:/bin", "LANG=C", "P02_HOOK_PROBE_CHILD=" + root,
+		"PATH=/usr/bin:/bin", "LANG=C", "COLLAB_HOOK_PROBE_CHILD=" + root,
 	}
 	output, runErr := cmd.CombinedOutput()
 	logErr := os.WriteFile(filepath.Join(root, "runner.log"), output, 0o600)

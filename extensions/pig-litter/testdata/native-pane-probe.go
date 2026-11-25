@@ -363,7 +363,7 @@ func identity(ctx context.Context) map[string]any {
 func factory(api extension.API) error {
 	api.OnSessionStart(func(ctx context.Context, event extension.SessionStartEvent) error {
 		record("events", map[string]any{"event": "session_start", "reason": event.Reason, "identity": identity(ctx)})
-		if os.Getenv("P08_INPUT_TEST") != "" {
+		if os.Getenv("TEAM_INPUT_TEST") != "" {
 			manager, err := extension.FromContext(ctx).SessionManager()
 			if err != nil {
 				_ = inputAdmission.Close()
@@ -386,7 +386,7 @@ func factory(api extension.API) error {
 				}
 			}
 		}
-		if os.Getenv("P08_INPUT_TEST") == "fail" {
+		if os.Getenv("TEAM_INPUT_TEST") == "fail" {
 			_ = inputAdmission.Close()
 			record("events", map[string]any{"event": "readiness_refused", "closed": true})
 			go func() { _ = extension.FromContext(ctx).Shutdown() }()
@@ -402,7 +402,7 @@ func factory(api extension.API) error {
 				return errors.New("native readiness context is incomplete")
 			}
 			request := map[string]any{"window": startupWindow, "session": manager.GetSessionId(), "cwd": cwd, "model": model.ProviderID() + "/" + model.ID, "tools": ext.GetActiveTools(), "sessionFile": *manager.GetSessionFile(), "leaf": manager.GetLeafID(), "entries": manager.GetEntries()}
-			if os.Getenv("P08_INPUT_TEST") == "bad-ready" {
+			if os.Getenv("TEAM_INPUT_TEST") == "bad-ready" {
 				request["model"] = "fixture/wrong"
 			}
 			for range 2 {
@@ -415,7 +415,7 @@ func factory(api extension.API) error {
 				}
 			}
 		}
-		if startupDomain != nil && os.Getenv("P08_COMMIT_ROOT") == "1" {
+		if startupDomain != nil && os.Getenv("TEAM_COMMIT_ROOT") == "1" {
 			domainMu.Lock()
 			domain = startupDomain
 			domainMu.Unlock()
@@ -639,7 +639,7 @@ func factory(api extension.API) error {
 		boundaryMu.Unlock()
 		decision := rootDecisionResult{Kind: "observed"}
 		if boundary != 0 {
-			if startupDomain != nil && os.Getenv("P08_COMMIT_ROOT") == "1" {
+			if startupDomain != nil && os.Getenv("TEAM_COMMIT_ROOT") == "1" {
 				var reply struct {
 					Allow    bool   `json:"allow"`
 					Continue bool   `json:"continue"`
@@ -978,15 +978,15 @@ func main() {
 		fixture()
 		return
 	}
-	if os.Getenv("P08_INPUT_TEST") != "" {
+	if os.Getenv("TEAM_INPUT_TEST") != "" {
 		inputBridge = memberinput.New()
-		if socket := os.Getenv("P08_CONTROL_SOCKET"); socket != "" {
+		if socket := os.Getenv("TEAM_CONTROL_SOCKET"); socket != "" {
 			transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 			}}
 			defer transport.CloseIdleConnections()
 			startupTransport = transport
-			startupDomain = &nativeDomain{client: &http.Client{Transport: transport}, token: os.Getenv("P08_CONTROL_TOKEN")}
+			startupDomain = &nativeDomain{client: &http.Client{Transport: transport}, token: os.Getenv("TEAM_CONTROL_TOKEN")}
 		}
 		var err error
 		inputAdmission, err = coding.NewInputAdmission(context.Background(), coding.InputAdmissionOptions{SessionID: "018f0000-0000-7000-8000-000000000002", PendingLimit: 2, OnWindow: publishInputWindow})

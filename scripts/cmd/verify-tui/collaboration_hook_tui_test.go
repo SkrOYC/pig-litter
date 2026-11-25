@@ -12,8 +12,8 @@ func TestHookFixtureRequestsWriteAndChecksTheCallerResult(t *testing.T) {
 		result string
 		done   string
 	}{
-		{"P02_HOOK_ALLOW", "p02-hook-allow.txt", "Successfully wrote the fixture", "P02_HOOK_ALLOW_DONE"},
-		{"P02_HOOK_DENY", "p02-hook-deny.txt", "P02_HOOK_REFUSED", "P02_HOOK_DENY_DONE"},
+		{"COLLAB_HOOK_ALLOW", "collab-hook-allow.txt", "Successfully wrote the fixture", "COLLAB_HOOK_ALLOW_DONE"},
+		{"COLLAB_HOOK_DENY", "collab-hook-deny.txt", "COLLAB_HOOK_REFUSED", "COLLAB_HOOK_DENY_DONE"},
 	} {
 		t.Run(tc.prompt, func(t *testing.T) {
 			state := newFixtureState(caseDirect)
@@ -31,7 +31,7 @@ func TestHookFixtureRequestsWriteAndChecksTheCallerResult(t *testing.T) {
 				t.Fatalf("first turn = %#v", turn)
 			}
 			args, ok := turn.calls[0].args.(map[string]string)
-			if !ok || args["path"] != filepath.Join(state.fixtureWorkspace, tc.file) || args["content"] != "P02_HOOK_FIXTURE" {
+			if !ok || args["path"] != filepath.Join(state.fixtureWorkspace, tc.file) || args["content"] != "COLLAB_HOOK_FIXTURE" {
 				t.Fatalf("write arguments = %#v", turn.calls[0].args)
 			}
 			request.Messages = append(request.Messages,

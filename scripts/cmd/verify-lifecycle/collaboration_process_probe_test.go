@@ -14,7 +14,7 @@ func TestCollaborationHostIndependentSelectedProcess(t *testing.T) {
 	collaborationProbeTestEnvironment(t, root)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	pig := os.Getenv("P02_PROCESS_PIG")
+	pig := os.Getenv("COLLAB_PROCESS_PIG")
 	if pig == "" {
 		var err error
 		pig, err = exec.LookPath("pig")
@@ -26,7 +26,7 @@ func TestCollaborationHostIndependentSelectedProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	binary := os.Getenv("P02_PROCESS_EXTENSION")
+	binary := os.Getenv("COLLAB_PROCESS_EXTENSION")
 	if binary == "" {
 		binary = filepath.Join(root, "pig-litter")
 		build := exec.CommandContext(ctx, "go", "build", "-mod=readonly", "-o", binary, "./cmd/pig-litter")

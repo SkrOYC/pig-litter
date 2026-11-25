@@ -136,7 +136,7 @@ func collaborationMessageFixtureNew(root string, holdAt int) (fixture *collabora
 			}
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprint(w, "data: {\"id\":\"p02-message\",\"object\":\"chat.completion.chunk\",\"model\":\"probe\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"fixture answer\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"p02-message\",\"object\":\"chat.completion.chunk\",\"model\":\"probe\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"collab-message\",\"object\":\"chat.completion.chunk\",\"model\":\"probe\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"fixture answer\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"collab-message\",\"object\":\"chat.completion.chunk\",\"model\":\"probe\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 	}))
 	agentDir := filepath.Join(root, "agent")
 	models := fmt.Sprintf(`{"providers":{"fixture":{"api":"openai-completions","baseUrl":%q,"apiKey":"local-fixture-only","models":[{"id":"probe","name":"probe","contextWindow":32000,"maxTokens":1024}]}}}`, fixture.server.URL+"/v1")
@@ -159,7 +159,7 @@ func collaborationMessageFixtureNew(root string, holdAt int) (fixture *collabora
 	}
 	fixture.session.Subscribe(func(event agent.AgentEvent) {
 		if end, ok := event.(agent.MessageEndEvent); ok && end.Message.Custom != nil {
-			if value, _ := end.Message.Custom["customType"].(string); value == "p02_peer" {
+			if value, _ := end.Message.Custom["customType"].(string); value == "collab_peer" {
 				fixture.messageEnds.Add(1)
 			}
 		}
@@ -221,7 +221,7 @@ func collaborationCountMessage(data []byte, marker string, lines bool) (int, err
 		if err := json.Unmarshal(raw, &entry); err != nil {
 			return 0, err
 		}
-		if entry.Type == "custom_message" && entry.CustomType == "p02_peer" && entry.Details.MessageID == marker {
+		if entry.Type == "custom_message" && entry.CustomType == "collab_peer" && entry.Details.MessageID == marker {
 			count++
 		}
 	}
@@ -265,7 +265,7 @@ func (fixture *collaborationMessageFixture) observe(stage, id string, sendErr er
 }
 
 func collaborationPeerMessage(id string) extension.CustomMessageRef {
-	return extension.CustomMessageRef{CustomType: "p02_peer", Content: "peer message " + id, Display: false, Details: map[string]any{"message_id": id}}
+	return extension.CustomMessageRef{CustomType: "collab_peer", Content: "peer message " + id, Display: false, Details: map[string]any{"message_id": id}}
 }
 
 func collaborationRunHostMessageProbe(ctx context.Context, root, mode string) (evidence collaborationMessageEvidence, resultErr error) {

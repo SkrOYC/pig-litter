@@ -26,10 +26,10 @@ type previewPlanResult struct {
 
 func teamPlanTurn(request openAIRequest) (providerTurn, bool, error) {
 	text := allMessageText(request.Messages)
-	if request.Model == "held" && strings.Contains(text, "P07_PLAN_TASK_") {
+	if request.Model == "held" && strings.Contains(text, "TEAM_PLAN_TASK_") {
 		name := ""
 		for _, candidate := range []string{"ALICE", "BOB"} {
-			if strings.Contains(text, "P07_PLAN_TASK_"+candidate) {
+			if strings.Contains(text, "TEAM_PLAN_TASK_"+candidate) {
 				name = candidate
 			}
 		}
@@ -57,14 +57,14 @@ func teamPlanTurn(request openAIRequest) (providerTurn, bool, error) {
 			}
 		}
 		if submitted == nil {
-			args := map[string]any{"action": "submit", "submissionId": "p07-plan-" + strings.ToLower(name), "text": "P07_PLAN_" + name, "timeoutMs": 60000}
+			args := map[string]any{"action": "submit", "submissionId": "team-plan-" + strings.ToLower(name), "text": "TEAM_PLAN_" + name, "timeoutMs": 60000}
 			return providerTurn{kind: "tools", calls: []toolCall{{name: "team_plan", args: args}}}, true, nil
 		}
 		if found == nil {
 			if len(submitted.Request.ID) == 0 {
 				return providerTurn{}, true, fmt.Errorf("plan submission omitted its identity")
 			}
-			return providerTurn{kind: "hold", name: "p07-plan-" + strings.ToLower(name), calls: []toolCall{{name: "team_plan", args: map[string]any{"action": "get", "requestId": submitted.Request.ID}}}}, true, nil
+			return providerTurn{kind: "hold", name: "team-plan-" + strings.ToLower(name), calls: []toolCall{{name: "team_plan", args: map[string]any{"action": "get", "requestId": submitted.Request.ID}}}}, true, nil
 		}
 		expected := "approved"
 		if name == "BOB" {
@@ -73,9 +73,9 @@ func teamPlanTurn(request openAIRequest) (providerTurn, bool, error) {
 		if !bytes.Equal(found.Request.ID, submitted.Request.ID) || found.Request.State != expected || name == "BOB" && found.Request.Reason != previewPlanRejection {
 			return providerTurn{}, true, fmt.Errorf("teammate observed the wrong plan decision: %+v", found.Request)
 		}
-		return providerTurn{kind: "text", text: "P07_PLAN_OBSERVED_" + name}, true, nil
+		return providerTurn{kind: "text", text: "TEAM_PLAN_OBSERVED_" + name}, true, nil
 	}
-	if request.Model != "parent" || latestRootPrompt(request.Messages).marker != "P07_PLAN_CONTROL" {
+	if request.Model != "parent" || latestRootPrompt(request.Messages).marker != "TEAM_PLAN_CONTROL" {
 		return providerTurn{}, false, nil
 	}
 	members := map[string]bool{}
@@ -90,11 +90,11 @@ func teamPlanTurn(request openAIRequest) (providerTurn, bool, error) {
 	}
 	for _, name := range []string{"Alice", "Bob"} {
 		if !members[name] {
-			args := map[string]any{"type": "scout", "name": name, "model": "fixture/held", "task": "P07_PLAN_TASK_" + strings.ToUpper(name), "planRequired": true, "workspace": map[string]any{"kind": "shared_checkout"}}
+			args := map[string]any{"type": "scout", "name": name, "model": "fixture/held", "task": "TEAM_PLAN_TASK_" + strings.ToUpper(name), "planRequired": true, "workspace": map[string]any{"kind": "shared_checkout"}}
 			return providerTurn{kind: "tools", calls: []toolCall{{name: "team_spawn", args: args}}}, true, nil
 		}
 	}
-	return providerTurn{kind: "text", text: "P07_PLANS_READY"}, true, nil
+	return providerTurn{kind: "text", text: "TEAM_PLANS_READY"}, true, nil
 }
 
 func (p *panelProof) readPreviewPlan(member previewMember) (previewPlanRequest, []byte, error) {
@@ -113,7 +113,7 @@ func (p *panelProof) readPreviewPlan(member previewMember) (previewPlanRequest, 
 }
 
 func (p *panelProof) teamPlansProof(media *collaborationMedia) error {
-	if err := p.sendText("P07_PLAN_CONTROL"); err != nil {
+	if err := p.sendText("TEAM_PLAN_CONTROL"); err != nil {
 		return err
 	}
 	if err := p.sendKey("Enter"); err != nil {
@@ -125,7 +125,7 @@ func (p *panelProof) teamPlansProof(media *collaborationMedia) error {
 		if err := p.state.providerFailure(); err != nil {
 			return false, err
 		}
-		if !p.state.holding("p07-plan-alice", "p07-plan-bob") || !visibleContains(p.visible, "P07_PLANS_READY") {
+		if !p.state.holding("team-plan-alice", "team-plan-bob") || !visibleContains(p.visible, "TEAM_PLANS_READY") {
 			return false, nil
 		}
 		data, err := os.ReadFile(filepath.Join(p.agentDir, "pig-litter", "roots", p.rootID, "team.json"))
@@ -154,7 +154,7 @@ func (p *panelProof) teamPlansProof(media *collaborationMedia) error {
 	}); err != nil {
 		return err
 	}
-	if err := p.awaitRootIdle("P07_PLAN_CONTROL"); err != nil {
+	if err := p.awaitRootIdle("TEAM_PLAN_CONTROL"); err != nil {
 		return err
 	}
 	requests, memberRequests := p.state.totalRequests(), p.state.modelRequests("held")
@@ -162,23 +162,23 @@ func (p *panelProof) teamPlansProof(media *collaborationMedia) error {
 	if err != nil {
 		return err
 	}
-	if err := p.checkpoint("p07-plans-before"); err != nil {
+	if err := p.checkpoint("team-plans-before"); err != nil {
 		return err
 	}
-	if err := p.openTeam("p07-plans-open"); err != nil {
+	if err := p.openTeam("team-plans-open"); err != nil {
 		return err
 	}
-	if err := p.key("p07-plans-list", "g", func(text string) bool {
-		return hasPanelView("team | plans")(text) && strings.Contains(selectedPanelRow(text), "Alice") && strings.Contains(text, "P07_PLAN_BOB")
+	if err := p.key("team-plans-list", "g", func(text string) bool {
+		return hasPanelView("team | plans")(text) && strings.Contains(selectedPanelRow(text), "Alice") && strings.Contains(text, "TEAM_PLAN_BOB")
 	}); err != nil {
 		return err
 	}
-	if err := p.key("p07-plans-detail", "Enter", func(text string) bool {
-		return hasPanelView("team | plan detail")(text) && strings.Contains(text, "P07_PLAN_ALICE")
+	if err := p.key("team-plans-detail", "Enter", func(text string) bool {
+		return hasPanelView("team | plan detail")(text) && strings.Contains(text, "TEAM_PLAN_ALICE")
 	}); err != nil {
 		return err
 	}
-	if err := p.key("p07-plans-approve", "a", func(text string) bool { return strings.Contains(text, "Plan #1 approved") }); err != nil {
+	if err := p.key("team-plans-approve", "a", func(text string) bool { return strings.Contains(text, "Plan #1 approved") }); err != nil {
 		return err
 	}
 	approved, approvedData, err := p.readPreviewPlan(alice)
@@ -189,19 +189,19 @@ func (p *panelProof) teamPlansProof(media *collaborationMedia) error {
 	if err != nil || stillPending.State != "pending" || !bytes.Equal(stillPending.ID, second.ID) {
 		return fmt.Errorf("approval changed the other request: %+v, %v", stillPending, err)
 	}
-	if err := p.key("p07-plans-list-again", "Escape", hasPanelView("team | plans")); err != nil {
+	if err := p.key("team-plans-list-again", "Escape", hasPanelView("team | plans")); err != nil {
 		return err
 	}
-	if err := p.key("p07-plans-select-bob", "Down", func(text string) bool { return strings.Contains(selectedPanelRow(text), "Bob") }); err != nil {
+	if err := p.key("team-plans-select-bob", "Down", func(text string) bool { return strings.Contains(selectedPanelRow(text), "Bob") }); err != nil {
 		return err
 	}
-	if err := p.key("p07-plans-reject", "r", hasPanelView("team | reject plan")); err != nil {
+	if err := p.key("team-plans-reject", "r", hasPanelView("team | reject plan")); err != nil {
 		return err
 	}
-	if err := p.action("p07-plans-rejection-reason", func() error { return p.sendText(previewPlanRejection) }, func(text string) bool { return strings.Contains(text, previewPlanRejection) }); err != nil {
+	if err := p.action("team-plans-rejection-reason", func() error { return p.sendText(previewPlanRejection) }, func(text string) bool { return strings.Contains(text, previewPlanRejection) }); err != nil {
 		return err
 	}
-	if err := p.key("p07-plans-reject-submit", "Enter", func(text string) bool {
+	if err := p.key("team-plans-reject-submit", "Enter", func(text string) bool {
 		return hasPanelView("team | plans")(text) && strings.Contains(text, "Plan #1 rejected")
 	}); err != nil {
 		return err
@@ -210,10 +210,10 @@ func (p *panelProof) teamPlansProof(media *collaborationMedia) error {
 	if err != nil || rejected.State != "rejected" || rejected.Reason != previewPlanRejection || !bytes.Equal(rejected.ID, second.ID) {
 		return fmt.Errorf("selected rejection was not stored: %+v, %v", rejected, err)
 	}
-	if err := writePrivate(filepath.Join(p.evidence, "p07-plan-alice.json"), approvedData); err != nil {
+	if err := writePrivate(filepath.Join(p.evidence, "team-plan-alice.json"), approvedData); err != nil {
 		return err
 	}
-	if err := writePrivate(filepath.Join(p.evidence, "p07-plan-bob.json"), rejectedData); err != nil {
+	if err := writePrivate(filepath.Join(p.evidence, "team-plan-bob.json"), rejectedData); err != nil {
 		return err
 	}
 	if media != nil {
@@ -221,7 +221,7 @@ func (p *panelProof) teamPlansProof(media *collaborationMedia) error {
 			return err
 		}
 	}
-	if err := p.close("p07-plans-close"); err != nil {
+	if err := p.close("team-plans-close"); err != nil {
 		return err
 	}
 	resumeAfter, err := os.ReadFile(p.resumeTrace)
@@ -229,10 +229,10 @@ func (p *panelProof) teamPlansProof(media *collaborationMedia) error {
 	if err != nil || !bytes.Equal(resumeBefore, resumeAfter) || requests != requestsBeforeRelease || memberRequests != membersBeforeRelease {
 		return fmt.Errorf("plan decisions added provider or resume activity before release: %v", err)
 	}
-	if err := p.state.releaseHold("p07-plan-alice"); err != nil {
+	if err := p.state.releaseHold("team-plan-alice"); err != nil {
 		return err
 	}
-	if err := p.state.releaseHold("p07-plan-bob"); err != nil {
+	if err := p.state.releaseHold("team-plan-bob"); err != nil {
 		return err
 	}
 	if err := waitFor(p.ctx, "teammates observed plan decisions", stageTimeout, func() (bool, error) {
@@ -241,11 +241,11 @@ func (p *panelProof) teamPlansProof(media *collaborationMedia) error {
 		}
 		aliceNative, aliceErr := p.childNative(alice.Ref.ID)
 		bobNative, bobErr := p.childNative(bob.Ref.ID)
-		return aliceErr == nil && bobErr == nil && bytes.Contains(aliceNative.Raw, []byte("P07_PLAN_OBSERVED_ALICE")) && bytes.Contains(bobNative.Raw, []byte("P07_PLAN_OBSERVED_BOB")) && bytes.Contains(bobNative.Raw, []byte(previewPlanRejection)), nil
+		return aliceErr == nil && bobErr == nil && bytes.Contains(aliceNative.Raw, []byte("TEAM_PLAN_OBSERVED_ALICE")) && bytes.Contains(bobNative.Raw, []byte("TEAM_PLAN_OBSERVED_BOB")) && bytes.Contains(bobNative.Raw, []byte(previewPlanRejection)), nil
 	}); err != nil {
 		return err
 	}
-	if err := p.checkpoint("p07-plans-after"); err != nil {
+	if err := p.checkpoint("team-plans-after"); err != nil {
 		return err
 	}
 	receipt, err := json.MarshalIndent(map[string]any{"approved": approved, "rejected": rejected, "providerRequestsBefore": requests, "providerRequestsBeforeRelease": requestsBeforeRelease, "memberRequestsBefore": memberRequests, "memberRequestsBeforeRelease": membersBeforeRelease, "providerRequestsAfterRelease": p.state.totalRequests(), "memberRequestsAfterRelease": p.state.modelRequests("held"), "resumeTraceBefore": string(resumeBefore), "resumeTraceBeforeRelease": string(resumeAfter), "scope": "selected plan decisions and teammate readback"}, "", "  ")

@@ -98,14 +98,14 @@ func collaborationRunCrashWorker(ctx context.Context, stage, root string) error 
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(os.Stdout, "P02_CUT %s\n", encoded)
+		_, err = fmt.Fprintf(os.Stdout, "COLLAB_CUT %s\n", encoded)
 		return err
 	}
 	if stage == "after-append-before-return" {
 		session.Subscribe(func(event agent.AgentEvent) {
-			if end, ok := event.(agent.MessageEndEvent); ok && end.Message.Custom != nil && end.Message.Custom["customType"] == "p02_peer" {
+			if end, ok := event.(agent.MessageEndEvent); ok && end.Message.Custom != nil && end.Message.Custom["customType"] == "collab_peer" {
 				if err := cut(false); err != nil {
-					fmt.Fprintf(os.Stdout, "P02_ERROR %v\n", err)
+					fmt.Fprintf(os.Stdout, "COLLAB_ERROR %v\n", err)
 				}
 				<-ctx.Done()
 			}
@@ -205,7 +205,7 @@ func collaborationRunHostCrashProbeCommand(ctx context.Context, root, stage stri
 		notified := false
 		for scanner.Scan() {
 			line := scanner.Text()
-			if notified || (!strings.HasPrefix(line, "P02_CUT ") && !strings.HasPrefix(line, "P02_ERROR ")) {
+			if notified || (!strings.HasPrefix(line, "COLLAB_CUT ") && !strings.HasPrefix(line, "COLLAB_ERROR ")) {
 				continue
 			}
 			select {
@@ -256,11 +256,11 @@ func collaborationRunHostCrashProbeCommand(ctx context.Context, root, stage stri
 			if !ok {
 				return evidence, errors.New("worker exited before the crash cut")
 			}
-			if strings.HasPrefix(line, "P02_ERROR ") {
+			if strings.HasPrefix(line, "COLLAB_ERROR ") {
 				return evidence, errors.New(line)
 			}
-			if strings.HasPrefix(line, "P02_CUT ") {
-				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "P02_CUT ")), &evidence.Cut); err != nil {
+			if strings.HasPrefix(line, "COLLAB_CUT ") {
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "COLLAB_CUT ")), &evidence.Cut); err != nil {
 					return evidence, err
 				}
 				evidence.CutOffsetNS = time.Since(started).Nanoseconds()

@@ -12,9 +12,9 @@ import (
 	"github.com/MichaelKinsy/PiG/extensions/sdk"
 )
 
-const collaborationTUIHookName = "p02-hook-probe"
-const collaborationTUIHookRefusal = "P02_HOOK_REFUSED"
-const collaborationTUIHookContent = "P02_HOOK_FIXTURE"
+const collaborationTUIHookName = "collab-hook-probe"
+const collaborationTUIHookRefusal = "COLLAB_HOOK_REFUSED"
+const collaborationTUIHookContent = "COLLAB_HOOK_FIXTURE"
 
 type collaborationTUIHookBridge struct {
 	Name        string          `json:"name"`
@@ -58,7 +58,7 @@ type collaborationTUIHookProbe struct {
 }
 
 func runCollaborationTUIHookExtension() error {
-	directory, workspace := os.Getenv("P02_TUI_HOOK_DIRECTORY"), os.Getenv("P02_TUI_HOOK_WORKSPACE")
+	directory, workspace := os.Getenv("COLLAB_TUI_HOOK_DIRECTORY"), os.Getenv("COLLAB_TUI_HOOK_WORKSPACE")
 	if !filepath.IsAbs(directory) || !filepath.IsAbs(workspace) {
 		return errors.New("invalid private TUI hook fixture configuration")
 	}
@@ -95,9 +95,9 @@ func runCollaborationTUIHookExtension() error {
 		path, _ := input["path"].(string)
 		name := ""
 		switch path {
-		case filepath.Join(workspace, "p02-hook-allow.txt"):
+		case filepath.Join(workspace, "collab-hook-allow.txt"):
 			name = "allow"
-		case filepath.Join(workspace, "p02-hook-deny.txt"):
+		case filepath.Join(workspace, "collab-hook-deny.txt"):
 			name = "deny"
 		default:
 			return nil, nil
@@ -132,7 +132,7 @@ func (state *fixtureState) hookTurnLocked(request openAIRequest, marker string, 
 		return providerTurn{}, err
 	}
 	name, expected := "allow", "Successfully wrote"
-	if marker == "P02_HOOK_DENY" {
+	if marker == "COLLAB_HOOK_DENY" {
 		name, expected = "deny", collaborationTUIHookRefusal
 	}
 	lastUser := -1
@@ -152,7 +152,7 @@ func (state *fixtureState) hookTurnLocked(request openAIRequest, marker string, 
 		}
 	}
 	if len(results) == 0 {
-		path := filepath.Join(state.fixtureWorkspace, "p02-hook-"+name+".txt")
+		path := filepath.Join(state.fixtureWorkspace, "collab-hook-"+name+".txt")
 		return providerTurn{kind: "tools", calls: []toolCall{{name: "write", args: map[string]string{"path": path, "content": collaborationTUIHookContent}}}}, nil
 	}
 	if len(results) != 1 || results[0].ToolCallID == "" || !strings.Contains(contentText(results[0].Content), expected) {
@@ -204,13 +204,13 @@ func (probe *collaborationTUIHookProbe) run(ctx context.Context, panel *panelPro
 		return errors.New("hook fixture requires live terminal media")
 	}
 	for _, name := range []string{"allow", "deny"} {
-		path := filepath.Join(probe.workspace, "p02-hook-"+name+".txt")
+		path := filepath.Join(probe.workspace, "collab-hook-"+name+".txt")
 		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("hook fixture target was not absent: %s", name)
 		}
 	}
 	for _, name := range []string{"allow", "deny"} {
-		prompt := "P02_HOOK_" + strings.ToUpper(name)
+		prompt := "COLLAB_HOOK_" + strings.ToUpper(name)
 		if err := panel.awaitRootIdle(prompt); err != nil {
 			return err
 		}
@@ -230,7 +230,7 @@ func (probe *collaborationTUIHookProbe) run(ctx context.Context, panel *panelPro
 		}
 		data, err := os.ReadFile(filepath.Join(probe.directory, name+".json"))
 		var event collaborationTUIHookEvent
-		if err != nil || json.Unmarshal(data, &event) != nil || event.Tool != "write" || event.CallID == "" || event.Path != filepath.Join(probe.workspace, "p02-hook-"+name+".txt") || event.Refused != (name == "deny") || event.SessionID != probe.bridge.SessionID || event.Process != probe.bridge.Process {
+		if err != nil || json.Unmarshal(data, &event) != nil || event.Tool != "write" || event.CallID == "" || event.Path != filepath.Join(probe.workspace, "collab-hook-"+name+".txt") || event.Refused != (name == "deny") || event.SessionID != probe.bridge.SessionID || event.Process != probe.bridge.Process {
 			return fmt.Errorf("hook %s event does not match the captured session", name)
 		}
 		phase := collaborationTUIHookPhase{Name: name, Event: event}

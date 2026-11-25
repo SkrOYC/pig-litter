@@ -19,9 +19,9 @@ func (failingPlanEntropy) Read([]byte) (int, error) {
 }
 
 func TestPlanRequestEntropyFailureKeepsGateClosed(t *testing.T) {
-	if os.Getenv("P06_PLAN_ENTROPY_CHILD") != "1" {
+	if os.Getenv("TEAM_PLAN_ENTROPY_CHILD") != "1" {
 		command := exec.Command(os.Args[0], "-test.run=^TestPlanRequestEntropyFailureKeepsGateClosed$")
-		command.Env = append(os.Environ(), "P06_PLAN_ENTROPY_CHILD=1")
+		command.Env = append(os.Environ(), "TEAM_PLAN_ENTROPY_CHILD=1")
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("entropy failure child: %s: %v", output, err)
 		}
