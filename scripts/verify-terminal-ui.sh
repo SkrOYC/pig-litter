@@ -42,9 +42,11 @@ snapshot_source() {
     cd "$root" || exit 1
     git ls-files --cached --others --exclude-standard -z -- extensions/pig-litter scripts |
       while IFS= read -r -d '' path; do
-        if [[ -f "$path" ]]; then
-          printf '%s\0' "$path"
+        if [[ ! -f "$path" ]]; then
+          printf 'source snapshot path is missing or not a regular file: %s\n' "$path" >&2
+          exit 1
         fi
+        printf '%s\0' "$path"
       done |
       LC_ALL=C sort -z |
       xargs -0 -r sha256sum
