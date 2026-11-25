@@ -38,7 +38,17 @@ evidence_root="$(cd "$evidence_root" && pwd -P)"
 build_evidence="$(mktemp -d "$evidence_root/build-XXXXXXXX")"
 chmod 700 "$build_evidence"
 snapshot_source() {
-  (cd "$root" && git ls-files --cached --others --exclude-standard -z -- extensions/pig-litter scripts | LC_ALL=C sort -z | xargs -0 -r sha256sum) > "$1"
+  (
+    cd "$root" || exit 1
+    git ls-files --cached --others --exclude-standard -z -- extensions/pig-litter scripts |
+      while IFS= read -r -d '' path; do
+        if [[ -f "$path" ]]; then
+          printf '%s\0' "$path"
+        fi
+      done |
+      LC_ALL=C sort -z |
+      xargs -0 -r sha256sum
+  ) > "$1"
 }
 snapshot_source "$build_evidence/source-before.sha256"
 git -C "$root" rev-parse HEAD > "$build_evidence/source-head.txt"
@@ -66,8 +76,8 @@ export CCACHE_DIR="$run_root/cache/ccache" SCCACHE_DIR="$run_root/cache/sccache"
 cd "$root"
 overlay_args=()
 if [[ "$scenario" == team-preview || "$scenario" == team-message || "$scenario" == team-controls || "$scenario" == team-tasks || "$scenario" == team-pause || "$scenario" == team-plans || "$scenario" == team-policy || "$scenario" == team-shutdown ]]; then
-  devenv shell -- bash -c 'bun "$1" "$PIG_LITTER_SOURCE_DIR/coding/runtime.go" "$2"' -- "$root/scripts/p07-resume-overlay.mjs" "$run_root" > "$build_evidence/resume-overlay.json"
-  overlay_args=(-overlay "$run_root/p07-overlay.json")
+  devenv shell -- bash -c 'bun "$1" "$PIG_LITTER_SOURCE_DIR/coding/runtime.go" "$2"' -- "$root/scripts/resume-overlay.mjs" "$run_root" > "$build_evidence/resume-overlay.json"
+  overlay_args=(-overlay "$run_root/resume-overlay.json")
 fi
 for command_name in pig-litter verify-tui tui-idle-observer; do
   build=(devenv shell -- env "GOPATH=$run_root/gopath" "GOCACHE=$run_root/cache" "GOMODCACHE=$run_root/modules" "GOTMPDIR=$run_root/gotmp" go -C "$root/scripts" build "${overlay_args[@]}" -mod=readonly -modcacherw -o "$run_root/bin/$command_name" "./cmd/$command_name")
@@ -77,8 +87,8 @@ for command_name in pig-litter verify-tui tui-idle-observer; do
 done
 if [[ "$scenario" == team-preview || "$scenario" == team-message || "$scenario" == team-controls || "$scenario" == team-tasks || "$scenario" == team-pause || "$scenario" == team-plans || "$scenario" == team-policy || "$scenario" == team-shutdown ]]; then
   : > "$run_root/resume-probe.log"
-  P07_RESUME_TRACE="$run_root/resume-probe.log" "$run_root/bin/verify-tui" --p07-resume-probe "$run_root"
-  [[ "$(cat "$run_root/resume-probe.log")" == p07-missing-session ]] || { printf 'resume instrumentation positive control failed\n' >&2; exit 1; }
+  TEAM_RESUME_TRACE="$run_root/resume-probe.log" "$run_root/bin/verify-tui" --resume-probe "$run_root"
+  [[ "$(cat "$run_root/resume-probe.log")" == resume-missing-session ]] || { printf 'resume instrumentation positive control failed\n' >&2; exit 1; }
   cp "$run_root/resume-probe.log" "$build_evidence/resume-probe.log"
 fi
 observer_args=()

@@ -60,7 +60,7 @@ func collaborationRunHostRegistrationProbe(ctx context.Context, root string) (ev
 	evidence = collaborationRegistrationEvidence{
 		Schema: 1, Purpose: "provisional embedded host registration research; product team tools remain unverified",
 		Status: "inconclusive", HostModuleVersion: "unknown", ProcessID: os.Getpid(), StartedUTC: started.UTC().Format(time.RFC3339Nano),
-		FactoryRegistered: []string{"p02_factory"}, ExtraRequested: []string{"p02_extra_alpha", "p02_extra_beta"}, Cases: []collaborationRegistrationCase{},
+		FactoryRegistered: []string{"collab_factory"}, ExtraRequested: []string{"collab_extra_alpha", "collab_extra_beta"}, Cases: []collaborationRegistrationCase{},
 	}
 	if info, ok := debug.ReadBuildInfo(); ok {
 		for _, dependency := range info.Deps {
@@ -84,9 +84,9 @@ func collaborationRunHostRegistrationProbe(ctx context.Context, root string) (ev
 		name    string
 		allowed []string
 	}{
-		{"all", []string{"p02_extra_alpha", "p02_extra_beta", "p02_factory"}},
-		{"filtered", []string{"p02_extra_alpha", "p02_factory"}},
-		{"none", []string{"p02_not_registered"}},
+		{"all", []string{"collab_extra_alpha", "collab_extra_beta", "collab_factory"}},
+		{"filtered", []string{"collab_extra_alpha", "collab_factory"}},
+		{"none", []string{"collab_not_registered"}},
 	} {
 		observation, err := collaborationRunRegistrationCase(ctx, filepath.Join(root, test.name), test.name, test.allowed)
 		evidence.Cases = append(evidence.Cases, observation)
@@ -112,14 +112,14 @@ func collaborationRunRegistrationCase(ctx context.Context, root, name string, na
 	defer func() { resultErr = errors.Join(resultErr, fixture.close()) }()
 	registrations := extension.CreateExtensionRuntime()
 	factory := func(api extension.API) error {
-		api.RegisterTool(extension.ToolDefinition{Name: "p02_factory", Label: "p02_factory", Description: "Private factory registration probe", Parameters: json.RawMessage(`{"type":"object","properties":{}}`)})
+		api.RegisterTool(extension.ToolDefinition{Name: "collab_factory", Label: "collab_factory", Description: "Private factory registration probe", Parameters: json.RawMessage(`{"type":"object","properties":{}}`)})
 		return nil
 	}
-	loaded, err := factoryload.LoadExtensionFromFactory(factory, root, extension.CreateEventBus(), registrations, "p02-registration")
+	loaded, err := factoryload.LoadExtensionFromFactory(factory, root, extension.CreateEventBus(), registrations, "collab-registration")
 	if err != nil {
 		return observation, err
 	}
-	loaded.Name = "p02-registration"
+	loaded.Name = "collab-registration"
 	runtime, err := coding.NewRuntime(coding.RuntimeOptions{Services: fixture.services, NewExtensions: []extension.Extension{loaded}, ExtensionRuntime: registrations})
 	if err != nil {
 		return observation, err
@@ -131,7 +131,7 @@ func collaborationRunRegistrationCase(ctx context.Context, root, name string, na
 	}
 	session, err := runtime.New(coding.SessionStartOptions{
 		Model: fixture.services.ModelRuntime().GetModel("fixture", "probe"), SessionDir: filepath.Join(root, "registered-sessions"), ResourceLoader: coding.NoResources,
-		SkipBuiltinTools: true, AllowedTools: allowed, ExtraTools: []agent.AgentTool{collaborationRegistrationTool("p02_extra_alpha"), collaborationRegistrationTool("p02_extra_beta")},
+		SkipBuiltinTools: true, AllowedTools: allowed, ExtraTools: []agent.AgentTool{collaborationRegistrationTool("collab_extra_alpha"), collaborationRegistrationTool("collab_extra_beta")},
 	})
 	if err != nil {
 		return observation, err

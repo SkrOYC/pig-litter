@@ -10,14 +10,14 @@ import (
 func TestCollaborationTUIMessageSnapshotsCountOnlySelectedID(t *testing.T) {
 	root := t.TempDir()
 	probe := collaborationTUIMessageProbe{directory: root, bridge: collaborationTUIMessageBridge{SessionFile: filepath.Join(root, "session.jsonl")}}
-	if snapshot, err := probe.disk("missing", "P02_IDLE"); err != nil || snapshot.Exists || snapshot.Copies != 0 || snapshot.Path != "" {
+	if snapshot, err := probe.disk("missing", "COLLAB_IDLE"); err != nil || snapshot.Exists || snapshot.Copies != 0 || snapshot.Path != "" {
 		t.Fatalf("missing native session = %#v, %v", snapshot, err)
 	}
-	data := "{\"type\":\"session\",\"id\":\"root\"}\n{\"type\":\"custom_message\",\"customType\":\"p02_tui_probe\",\"details\":{\"message_id\":\"P02_IDLE\"}}\n{\"type\":\"custom_message\",\"customType\":\"p02_tui_probe\",\"details\":{\"message_id\":\"OTHER\"}}\n"
+	data := "{\"type\":\"session\",\"id\":\"root\"}\n{\"type\":\"custom_message\",\"customType\":\"collab_tui_probe\",\"details\":{\"message_id\":\"COLLAB_IDLE\"}}\n{\"type\":\"custom_message\",\"customType\":\"collab_tui_probe\",\"details\":{\"message_id\":\"OTHER\"}}\n"
 	if err := os.WriteFile(probe.bridge.SessionFile, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := probe.disk("after", "P02_IDLE")
+	snapshot, err := probe.disk("after", "COLLAB_IDLE")
 	if err != nil || !snapshot.Exists || snapshot.Copies != 1 || snapshot.Path != "after.jsonl" {
 		t.Fatalf("native session snapshot = %#v, %v", snapshot, err)
 	}
@@ -44,7 +44,7 @@ func TestCollaborationTUIMessageIncompleteReceiptFailsClosed(t *testing.T) {
 }
 
 func TestCollaborationTUIMessageExtensionIdentityDoesNotDependOnAttemptName(t *testing.T) {
-	if collaborationTUIMessageExtensionName != "p02-message-probe" {
+	if collaborationTUIMessageExtensionName != "collab-message-probe" {
 		t.Fatalf("unexpected private extension identity %q", collaborationTUIMessageExtensionName)
 	}
 	source := filepath.Join(t.TempDir(), "arbitrary-driver-name")

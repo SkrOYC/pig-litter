@@ -351,7 +351,10 @@ func nativeSessionDirectory(cwd, agentDir string, id ChildID, trusted bool) (str
 }
 
 func newNativeMemberDirectory(agentDir string) (string, error) {
-	base := filepath.Join(agentDir, "p08")
+	// Keep the historical on-disk directory name so existing native member
+	// installations continue to resolve their state after an upgrade.
+	const nativeMemberDirectoryName = "p08"
+	base := filepath.Join(agentDir, nativeMemberDirectoryName)
 	if err := os.Mkdir(base, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return "", err
 	}

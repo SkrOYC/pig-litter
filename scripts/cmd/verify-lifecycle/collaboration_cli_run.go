@@ -55,14 +55,14 @@ func collaborationCLIRun(ctx context.Context, options collaborationCLIOptions, a
 	}
 	known, catalogImplemented := false, false
 	for _, scenario := range catalog.Scenarios {
-		if scenario.ID == options.scenario && scenario.Owner == "P02" {
+		if scenario.ID == options.scenario && scenario.Owner == "baseline" {
 			known = true
 			catalogImplemented = scenario.Status == "implemented"
 			break
 		}
 	}
 	if !known {
-		return fmt.Errorf("unknown or unimplemented P02 scenario %q", options.scenario)
+		return fmt.Errorf("unknown or unimplemented baseline scenario %q", options.scenario)
 	}
 	target, err := collaborationReadTarget(options.target)
 	if err != nil {
@@ -94,9 +94,9 @@ func collaborationCLIRun(ctx context.Context, options collaborationCLIOptions, a
 		return errors.New("cannot identify the host")
 	}
 	definition, implemented := collaborationCLIScenarios[options.scenario]
-	trusted, registered := collaborationP02Scenarios[options.scenario]
+	trusted, registered := collaborationBaselineScenarios[options.scenario]
 	if implemented && (!registered || trusted.Purpose != definition.purpose || trusted.Channel != definition.channel || trusted.Revision != 1) {
-		return errors.New("scenario dispatch differs from the trusted P02 registry")
+		return errors.New("scenario dispatch differs from the trusted baseline registry")
 	}
 	if !implemented {
 		definition = collaborationCLIScenario{purpose: "verification", channel: "live"}
@@ -114,7 +114,7 @@ func collaborationCLIRun(ctx context.Context, options collaborationCLIOptions, a
 			Version: 1, ID: filepath.Base(directory), Scenario: options.scenario, ScenarioRevision: 1,
 			Target: target, Purpose: definition.purpose, Channel: definition.channel, Platform: platform,
 			Architecture: runtime.GOARCH, Host: host, Command: append([]string{self, "collaboration"}, args...),
-			Observation: "P02 verification; product evidence remains unverified", Outcome: "inconclusive",
+			Observation: "baseline verification; product evidence remains unverified", Outcome: "inconclusive",
 			Reason: "attempt did not complete", Events: []collaborationEvent{}, Claims: []string{}, Artifacts: []collaborationArtifact{},
 		},
 	}

@@ -60,7 +60,7 @@ func previewResumeProbe(dir string) error {
 		return err
 	}
 	defer runtime.Close()
-	if _, err := runtime.Resume("p07-missing-session", coding.SessionStartOptions{}); err == nil {
+	if _, err := runtime.Resume("resume-missing-session", coding.SessionStartOptions{}); err == nil {
 		return fmt.Errorf("resume probe unexpectedly found its missing session")
 	}
 	return nil
@@ -69,15 +69,15 @@ func previewResumeProbe(dir string) error {
 func teamPreviewTurn(request openAIRequest) (providerTurn, bool, error) {
 	text := allMessageText(request.Messages)
 	if request.Model == "quick" {
-		if strings.Contains(text, "P07_TRANSCRIPT_ALICE") {
-			return providerTurn{kind: "text", text: "P07_REPORT_ALICE"}, true, nil
+		if strings.Contains(text, "TEAM_TRANSCRIPT_ALICE") {
+			return providerTurn{kind: "text", text: "TEAM_REPORT_ALICE"}, true, nil
 		}
-		if strings.Contains(text, "P07_TRANSCRIPT_BOB") {
-			return providerTurn{kind: "text", text: "P07_REPORT_BOB"}, true, nil
+		if strings.Contains(text, "TEAM_TRANSCRIPT_BOB") {
+			return providerTurn{kind: "text", text: "TEAM_REPORT_BOB"}, true, nil
 		}
 	}
 	marker := latestRootPrompt(request.Messages).marker
-	if request.Model != "parent" || marker != "P07_TEAM_PREVIEW" && marker != "P07_TASK_CONTROL" {
+	if request.Model != "parent" || marker != "TEAM_PREVIEW" && marker != "TEAM_TASK_CONTROL" {
 		return providerTurn{}, false, nil
 	}
 	var results []previewToolResult
@@ -115,17 +115,17 @@ func teamPreviewTurn(request openAIRequest) (providerTurn, bool, error) {
 		return providerTurn{kind: "tools", calls: []toolCall{{name: "team_spawn", args: map[string]any{"type": "scout", "name": name, "model": "fixture/quick", "task": marker, "workspace": map[string]any{"kind": "shared_checkout"}}}}}
 	}
 	if alice == nil {
-		return spawn("Alice", "P07_TRANSCRIPT_ALICE"), true, nil
+		return spawn("Alice", "TEAM_TRANSCRIPT_ALICE"), true, nil
 	}
 	if bob == nil {
-		return spawn("Bob", "P07_TRANSCRIPT_BOB"), true, nil
+		return spawn("Bob", "TEAM_TRANSCRIPT_BOB"), true, nil
 	}
 	if len(tasks) == 0 {
-		return providerTurn{kind: "tools", calls: []toolCall{{name: "team_task_create", args: map[string]any{"subject": "P07_ASSIGNED_TASK", "description": "Alice owns this task"}}}}, true, nil
+		return providerTurn{kind: "tools", calls: []toolCall{{name: "team_task_create", args: map[string]any{"subject": "TEAM_ASSIGNED_TASK", "description": "Alice owns this task"}}}}, true, nil
 	}
 	if len(tasks) == 1 {
-		args := map[string]any{"subject": "P07_UNASSIGNED_TASK"}
-		if marker == "P07_TASK_CONTROL" {
+		args := map[string]any{"subject": "TEAM_UNASSIGNED_TASK"}
+		if marker == "TEAM_TASK_CONTROL" {
 			args["blockedBy"] = []json.RawMessage{tasks[0].ID}
 		}
 		return providerTurn{kind: "tools", calls: []toolCall{{name: "team_task_create", args: args}}}, true, nil
@@ -133,11 +133,11 @@ func teamPreviewTurn(request openAIRequest) (providerTurn, bool, error) {
 	if !assigned {
 		return providerTurn{kind: "tools", calls: []toolCall{{name: "team_task_update", args: map[string]any{"taskId": tasks[0].ID, "action": "assign", "assignee": "Alice"}}}}, true, nil
 	}
-	return providerTurn{kind: "text", text: "P07_TEAM_READY"}, true, nil
+	return providerTurn{kind: "text", text: "TEAM_READY"}, true, nil
 }
 
 func (p *panelProof) teamPreviewProof() error {
-	if err := p.sendText("P07_TEAM_PREVIEW"); err != nil {
+	if err := p.sendText("TEAM_PREVIEW"); err != nil {
 		return err
 	}
 	if err := p.sendKey("Enter"); err != nil {
@@ -145,12 +145,12 @@ func (p *panelProof) teamPreviewProof() error {
 	}
 	var members []previewMember
 	var tasks []previewTask
-	if err := waitFor(p.ctx, "settled P07 members and tasks", stageTimeout, func() (bool, error) {
+	if err := waitFor(p.ctx, "settled team members and tasks", stageTimeout, func() (bool, error) {
 		if err := p.state.providerFailure(); err != nil {
 			return false, err
 		}
 		root, err := p.root()
-		if err != nil || !visibleContains(p.visible, "P07_TEAM_READY") {
+		if err != nil || !visibleContains(p.visible, "TEAM_READY") {
 			return false, nil
 		}
 		var roster struct {
@@ -167,7 +167,7 @@ func (p *panelProof) teamPreviewProof() error {
 		}
 		for _, member := range roster.Members {
 			child, ok := root.Children[member.Ref.ID]
-			if !ok || child.Name != member.Name || child.State != "completed" || child.Latest == nil || child.Latest.Text != "P07_REPORT_"+strings.ToUpper(member.Name) || member.State != "idle" {
+			if !ok || child.Name != member.Name || child.State != "completed" || child.Latest == nil || child.Latest.Text != "TEAM_REPORT_"+strings.ToUpper(member.Name) || member.State != "idle" {
 				return false, nil
 			}
 		}
@@ -185,10 +185,10 @@ func (p *panelProof) teamPreviewProof() error {
 	}
 	alice, aliceOK := byName["Alice"]
 	bob, bobOK := byName["Bob"]
-	if !aliceOK || !bobOK || alice.Ref == bob.Ref || tasks[0].Subject != "P07_ASSIGNED_TASK" || tasks[0].Owner == nil || *tasks[0].Owner != alice.Ref || tasks[1].Subject != "P07_UNASSIGNED_TASK" || tasks[1].Owner != nil {
+	if !aliceOK || !bobOK || alice.Ref == bob.Ref || tasks[0].Subject != "TEAM_ASSIGNED_TASK" || tasks[0].Owner == nil || *tasks[0].Owner != alice.Ref || tasks[1].Subject != "TEAM_UNASSIGNED_TASK" || tasks[1].Owner != nil {
 		return fmt.Errorf("unexpected teammate identities or task ownership: %+v %+v", members, tasks)
 	}
-	if err := p.awaitRootIdle("P07_TEAM_PREVIEW"); err != nil {
+	if err := p.awaitRootIdle("TEAM_PREVIEW"); err != nil {
 		return err
 	}
 	before, err := p.quiescentLogs()
@@ -204,20 +204,20 @@ func (p *panelProof) teamPreviewProof() error {
 	if childRequests != 2 {
 		return fmt.Errorf("expected exactly two settled teammate requests, got %d", childRequests)
 	}
-	if err := p.checkpoint("p07-settled-before-view"); err != nil {
+	if err := p.checkpoint("team-settled-before-view"); err != nil {
 		return err
 	}
 	for _, width := range []int{80, 120, 150} {
 		if err := p.resize(width, 32); err != nil {
 			return err
 		}
-		if err := waitFor(p.ctx, "P07 terminal resize", panelBudget, func() (bool, error) {
+		if err := waitFor(p.ctx, "team terminal resize", panelBudget, func() (bool, error) {
 			geometry, err := p.geometry()
 			return err == nil && geometry.width == width && geometry.height == 32, nil
 		}); err != nil {
 			return err
 		}
-		prefix := fmt.Sprintf("p07-%d", width)
+		prefix := fmt.Sprintf("team-%d", width)
 		if err := p.openTeam(prefix + "-open"); err != nil {
 			return err
 		}
@@ -242,13 +242,13 @@ func (p *panelProof) teamPreviewProof() error {
 				return err
 			}
 			body := previewPanelBody(text)
-			if member.Name == "Alice" && !strings.Contains(body, "P07_ASSIGNED_TASK") || member.Name == "Bob" && strings.Contains(body, "P07_ASSIGNED_TASK") {
+			if member.Name == "Alice" && !strings.Contains(body, "TEAM_ASSIGNED_TASK") || member.Name == "Bob" && strings.Contains(body, "TEAM_ASSIGNED_TASK") {
 				return fmt.Errorf("task ownership displayed for wrong member: %s", text)
 			}
 			if err := checkPreviewWidth(text, width); err != nil {
 				return err
 			}
-			report := "P07_REPORT_" + strings.ToUpper(member.Name)
+			report := "TEAM_REPORT_" + strings.ToUpper(member.Name)
 			if err := p.key(prefix+"-"+name+"-report", "v", func(text string) bool {
 				return hasPanelView("team | report")(text) && strings.Contains(previewPanelBody(text), report)
 			}); err != nil {
@@ -282,7 +282,7 @@ func (p *panelProof) teamPreviewProof() error {
 			}
 		}
 		if err := p.key(prefix+"-all-tasks", "k", func(text string) bool {
-			return hasPanelView("team | tasks")(text) && strings.Contains(text, "P07_ASSIGNED_TASK") && strings.Contains(text, "P07_UNASSIGNED_TASK")
+			return hasPanelView("team | tasks")(text) && strings.Contains(text, "TEAM_ASSIGNED_TASK") && strings.Contains(text, "TEAM_UNASSIGNED_TASK")
 		}); err != nil {
 			return err
 		}
@@ -302,21 +302,21 @@ func (p *panelProof) teamPreviewProof() error {
 			return err
 		}
 	}
-	if err := p.open("p07-direct-open"); err != nil {
+	if err := p.open("team-direct-open"); err != nil {
 		return err
 	}
-	if err := p.key("p07-direct-editor", "m", hasPanelView("message")); err != nil {
+	if err := p.key("team-direct-editor", "m", hasPanelView("message")); err != nil {
 		return err
 	}
-	if err := p.action("p07-direct-editor-text", func() error { return p.sendText("t") }, func(text string) bool {
+	if err := p.action("team-direct-editor-text", func() error { return p.sendText("t") }, func(text string) bool {
 		return hasPanelView("message")(text) && strings.Contains(text, "Draft t|")
 	}); err != nil {
 		return err
 	}
-	if err := p.key("p07-direct-editor-cancel", "Escape", hasPanelView("list")); err != nil {
+	if err := p.key("team-direct-editor-cancel", "Escape", hasPanelView("list")); err != nil {
 		return err
 	}
-	if err := p.close("p07-direct-close"); err != nil {
+	if err := p.close("team-direct-close"); err != nil {
 		return err
 	}
 	if err := p.logsUnchanged(before); err != nil {
@@ -328,22 +328,22 @@ func (p *panelProof) teamPreviewProof() error {
 	if err := p.restartHost(p.rootPath); err != nil {
 		return err
 	}
-	if err := p.awaitRootIdle("P07_RELOADED"); err != nil {
+	if err := p.awaitRootIdle("TEAM_RELOADED"); err != nil {
 		return err
 	}
-	if err := p.openTeam("p07-reload-open"); err != nil {
+	if err := p.openTeam("team-reload-open"); err != nil {
 		return err
 	}
 	if text, err := p.visible(); err != nil || !strings.Contains(selectedPanelRow(text), "Bob") {
 		return fmt.Errorf("selection was not retained after root reload: %s %v", text, err)
 	}
-	if err := p.key("p07-reload-bob-transcript", "t", func(text string) bool {
+	if err := p.key("team-reload-bob-transcript", "t", func(text string) bool {
 		ready, crossed := previewTranscriptState(text, "Bob")
 		return ready && !crossed
 	}); err != nil {
 		return err
 	}
-	if err := p.close("p07-reload-close"); err != nil {
+	if err := p.close("team-reload-close"); err != nil {
 		return err
 	}
 	if p.state.totalRequests() != requests || p.state.modelRequests("quick") != childRequests {
@@ -360,10 +360,10 @@ func (p *panelProof) teamPreviewProof() error {
 	if !reflect.DeepEqual(before, after) {
 		return fmt.Errorf("viewing or reload changed native history bytes")
 	}
-	if err := p.checkpoint("p07-reloaded-after-view"); err != nil {
+	if err := p.checkpoint("team-reloaded-after-view"); err != nil {
 		return err
 	}
-	receipt, err := json.MarshalIndent(map[string]any{"members": members, "tasks": tasks, "historyBefore": before, "historyAfter": after, "providerRequestsBefore": requests, "providerRequestsAfter": p.state.totalRequests(), "memberRequestsBefore": childRequests, "memberRequestsAfter": p.state.modelRequests("quick"), "resumeTraceBefore": string(resumeBefore), "resumeTraceAfter": string(resumeAfter), "widths": []int{80, 120, 150}, "scope": "first passive P07 preview"}, "", "  ")
+	receipt, err := json.MarshalIndent(map[string]any{"members": members, "tasks": tasks, "historyBefore": before, "historyAfter": after, "providerRequestsBefore": requests, "providerRequestsAfter": p.state.totalRequests(), "memberRequestsBefore": childRequests, "memberRequestsAfter": p.state.modelRequests("quick"), "resumeTraceBefore": string(resumeBefore), "resumeTraceAfter": string(resumeAfter), "widths": []int{80, 120, 150}, "scope": "first passive team preview"}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -400,8 +400,8 @@ func previewTranscriptState(text, member string) (ready, crossed bool) {
 		return false, false
 	}
 	body := previewPanelBody(text)
-	ready = strings.Contains(body, "P07_TRANSCRIPT_"+selected) && strings.Contains(body, "P07_REPORT_"+selected)
-	crossed = strings.Contains(body, "P07_TRANSCRIPT_"+other) || strings.Contains(body, "P07_REPORT_"+other)
+	ready = strings.Contains(body, "TEAM_TRANSCRIPT_"+selected) && strings.Contains(body, "TEAM_REPORT_"+selected)
+	crossed = strings.Contains(body, "TEAM_TRANSCRIPT_"+other) || strings.Contains(body, "TEAM_REPORT_"+other)
 	return ready, crossed
 }
 

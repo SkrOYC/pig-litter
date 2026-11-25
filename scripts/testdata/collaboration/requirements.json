@@ -30,7 +30,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P03",
+      "owner": "team-membership",
       "acceptance_scenario": "team-roster",
       "acceptance_assertion": "All members see the same team and member identities.",
       "product_evidence": {
@@ -52,7 +52,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P03",
+      "owner": "team-membership",
       "acceptance_scenario": "team-roster",
       "acceptance_assertion": "A teammate cannot create a teammate and can still use authorized ordinary delegation.",
       "product_evidence": {
@@ -75,7 +75,7 @@
         "state": "deliberately_different",
         "reason": "Use explicit team creation and keep named litter children as ordinary children."
       },
-      "owner": "P03",
+      "owner": "team-membership",
       "acceptance_scenario": "team-roster",
       "acceptance_assertion": "A named ordinary child remains a child and team_spawn creates a teammate.",
       "product_evidence": {
@@ -97,7 +97,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P03",
+      "owner": "team-membership",
       "acceptance_scenario": "team-roster",
       "acceptance_assertion": "Reserved and invalid names fail; duplicate requests follow the documented collision rule without impersonation.",
       "product_evidence": {
@@ -119,7 +119,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P03",
+      "owner": "team-membership",
       "acceptance_scenario": "team-roster",
       "acceptance_assertion": "A response for an earlier member generation cannot affect its replacement.",
       "product_evidence": {
@@ -141,7 +141,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P03",
+      "owner": "team-membership",
       "acceptance_scenario": "team-roster",
       "acceptance_assertion": "Restart recovers the intended roster without reviving a stale leader.",
       "product_evidence": {
@@ -163,7 +163,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P03",
+      "owner": "team-membership",
       "acceptance_scenario": "team-roster",
       "acceptance_assertion": "A failed launch leaves no member or owned process behind.",
       "product_evidence": {
@@ -185,7 +185,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P03",
+      "owner": "team-membership",
       "acceptance_scenario": "team-roster",
       "acceptance_assertion": "Two teammates can write in one checkout while ordinary child writer guards still apply.",
       "product_evidence": {
@@ -207,7 +207,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P03",
+      "owner": "team-membership",
       "acceptance_scenario": "team-roster",
       "acceptance_assertion": "Teammate edits stay in their worktrees and cleanup preserves uncommitted work.",
       "product_evidence": {
@@ -229,7 +229,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P03",
+      "owner": "team-membership",
       "acceptance_scenario": "team-roster",
       "acceptance_assertion": "A message wakes an idle member but does not resume an explicitly paused member.",
       "product_evidence": {
@@ -251,7 +251,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P03",
+      "owner": "team-membership",
       "acceptance_scenario": "team-roster",
       "acceptance_assertion": "A teammate has the team tools and an ordinary unselected session does not.",
       "product_evidence": {
@@ -273,7 +273,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P03",
+      "owner": "team-membership",
       "acceptance_scenario": "team-roster",
       "acceptance_assertion": "A sibling cannot inspect, pause, wait for, or resume another member through child controls.",
       "product_evidence": {
@@ -295,7 +295,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P03",
+      "owner": "team-membership",
       "acceptance_scenario": "team-roster",
       "acceptance_assertion": "A denied spawn returns feedback and leaves no published member.",
       "product_evidence": {
@@ -317,7 +317,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P04",
+      "owner": "team-messages",
       "acceptance_scenario": "team-messages",
       "acceptance_assertion": "The recipient sees the sender and body once without a lead provider request.",
       "product_evidence": {
@@ -339,7 +339,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P04",
+      "owner": "team-messages",
       "acceptance_scenario": "team-messages",
       "acceptance_assertion": "A broadcast address is refused and individual sends reach only their intended recipients.",
       "product_evidence": {
@@ -361,7 +361,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P04",
+      "owner": "team-messages",
       "acceptance_scenario": "team-messages",
       "acceptance_assertion": "Empty content, invalid targets, and protocol-shaped ordinary text fail with no delivery.",
       "product_evidence": {
@@ -383,7 +383,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P04",
+      "owner": "team-messages",
       "acceptance_scenario": "team-messages",
       "acceptance_assertion": "The first over-capacity send fails while prior accepted messages remain recoverable.",
       "product_evidence": {
@@ -405,7 +405,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P04",
+      "owner": "team-messages",
       "acceptance_scenario": "team-messages",
       "acceptance_assertion": "A crash after acceptance and before transcript acknowledgement recovers one delivery.",
       "product_evidence": {
@@ -427,7 +427,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P04",
+      "owner": "team-messages",
       "acceptance_scenario": "team-messages",
       "acceptance_assertion": "Replaying the same ID after restart cannot append a duplicate recipient message.",
       "product_evidence": {
@@ -449,7 +449,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P04",
+      "owner": "team-messages",
       "acceptance_scenario": "team-forgery",
       "acceptance_assertion": "A forged sender is marked and cannot authorize a privileged action.",
       "product_evidence": {
@@ -471,7 +471,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P04",
+      "owner": "team-messages",
       "acceptance_scenario": "team-forgery",
       "acceptance_assertion": "A peer message requesting permission or imitating a lead decision does not grant it.",
       "product_evidence": {
@@ -493,7 +493,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P04",
+      "owner": "team-messages",
       "acceptance_scenario": "team-forgery",
       "acceptance_assertion": "Wrapper-closing text remains visible as peer content and cannot escape its attribution.",
       "product_evidence": {
@@ -515,7 +515,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P04",
+      "owner": "team-messages",
       "acceptance_scenario": "team-messages",
       "acceptance_assertion": "Persistence and delivery faults produce distinct non-success results without dropping accepted messages.",
       "product_evidence": {
@@ -537,7 +537,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P04",
+      "owner": "team-messages",
       "acceptance_scenario": "team-messages",
       "acceptance_assertion": "A sibling message arrives while the lead provider request count remains unchanged.",
       "product_evidence": {
@@ -559,7 +559,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P04",
+      "owner": "team-messages",
       "acceptance_scenario": "team-messages",
       "acceptance_assertion": "An ordinary child completes and its report arrives once after team support is enabled.",
       "product_evidence": {
@@ -581,7 +581,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P05",
+      "owner": "team-tasks",
       "acceptance_scenario": "team-tasks",
       "acceptance_assertion": "Different teammates create, read, update, and list the same task.",
       "product_evidence": {
@@ -603,7 +603,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P05",
+      "owner": "team-tasks",
       "acceptance_scenario": "team-tasks",
       "acceptance_assertion": "Valid state and metadata updates persist and appear in task reads.",
       "product_evidence": {
@@ -625,7 +625,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P05",
+      "owner": "team-tasks",
       "acceptance_scenario": "team-tasks",
       "acceptance_assertion": "A blocked self-claim fails, a lead assignment remains visible, and completion unblocks the dependent task.",
       "product_evidence": {
@@ -647,7 +647,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P05",
+      "owner": "team-tasks",
       "acceptance_scenario": "team-tasks",
       "acceptance_assertion": "Four concurrent claimants produce exactly one owner.",
       "product_evidence": {
@@ -669,7 +669,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P05",
+      "owner": "team-tasks",
       "acceptance_scenario": "team-tasks",
       "acceptance_assertion": "Deleting the largest task and restarting still yields a greater new ID.",
       "product_evidence": {
@@ -691,7 +691,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P05",
+      "owner": "team-tasks",
       "acceptance_scenario": "team-tasks",
       "acceptance_assertion": "A cyclic or foreign dependency fails and leaves the graph unchanged.",
       "product_evidence": {
@@ -713,7 +713,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P05",
+      "owner": "team-tasks",
       "acceptance_scenario": "team-tasks",
       "acceptance_assertion": "After termination, unfinished work is pending and available for a new owner.",
       "product_evidence": {
@@ -735,7 +735,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P05",
+      "owner": "team-tasks",
       "acceptance_scenario": "team-tasks",
       "acceptance_assertion": "Replayed task notices do not repeat a transition or duplicate a visible result.",
       "product_evidence": {
@@ -757,7 +757,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-hooks",
       "acceptance_assertion": "A rejecting completion hook leaves the task pending and returns feedback.",
       "product_evidence": {
@@ -780,7 +780,7 @@
         "state": "deliberately_different",
         "reason": "Keep force-pause of owned work distinct from the teammate graceful shutdown handshake."
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-shutdown",
       "acceptance_assertion": "Pause retains resumable child state while approved teammate shutdown reaches its separate terminal state.",
       "product_evidence": {
@@ -802,7 +802,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-hooks",
       "acceptance_assertion": "The report shows whether task creation has an enforceable hook and cites the applicable host evidence.",
       "product_evidence": {
@@ -824,7 +824,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-plan",
       "acceptance_assertion": "Wrong-sender, stale, replayed, and self-approved responses do not authorize implementation.",
       "product_evidence": {
@@ -846,7 +846,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-plan",
       "acceptance_assertion": "A rejected plan reaches its author and the revision receives a fresh request ID.",
       "product_evidence": {
@@ -868,7 +868,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-plan",
       "acceptance_assertion": "Write, shell, codemode, MCP, and delegated mutation have no side effects and report refusal.",
       "product_evidence": {
@@ -890,7 +890,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-plan",
       "acceptance_assertion": "Permission and sandbox decisions cannot substitute for plan approval or each other.",
       "product_evidence": {
@@ -912,7 +912,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-shutdown",
       "acceptance_assertion": "Approval ends the correct member once; rejection retains it and reports a reason.",
       "product_evidence": {
@@ -934,7 +934,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-plan",
       "acceptance_assertion": "Timeout and restart leave no request implicitly approved.",
       "product_evidence": {
@@ -956,7 +956,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-idle",
       "acceptance_assertion": "Separate successful, interrupted, and failed turns produce the correct notice once.",
       "product_evidence": {
@@ -978,7 +978,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-hooks",
       "acceptance_assertion": "A rejecting idle hook preserves pending work and returns feedback.",
       "product_evidence": {
@@ -1000,7 +1000,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-plan",
       "acceptance_assertion": "A plan request carries the requester and a correlated request ID.",
       "product_evidence": {
@@ -1026,7 +1026,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-plan",
       "acceptance_assertion": "A lead response resolves only its matching pending plan.",
       "product_evidence": {
@@ -1052,7 +1052,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-shutdown",
       "acceptance_assertion": "A shutdown request reaches the intended member with its request ID.",
       "product_evidence": {
@@ -1078,7 +1078,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-shutdown",
       "acceptance_assertion": "A teammate response is correlated and produces an approval or rejection outcome.",
       "product_evidence": {
@@ -1104,7 +1104,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-shutdown",
       "acceptance_assertion": "Approval ends the matching teammate and acknowledges the request once.",
       "product_evidence": {
@@ -1130,7 +1130,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-shutdown",
       "acceptance_assertion": "Rejection keeps the teammate addressable and returns its reason.",
       "product_evidence": {
@@ -1156,7 +1156,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P05",
+      "owner": "team-tasks",
       "acceptance_scenario": "team-tasks",
       "acceptance_assertion": "A task assignment identifies the task and its assigner.",
       "product_evidence": {
@@ -1182,7 +1182,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P05",
+      "owner": "team-tasks",
       "acceptance_scenario": "team-tasks",
       "acceptance_assertion": "A task completion identifies the completed task and cannot be applied twice.",
       "product_evidence": {
@@ -1208,7 +1208,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-shutdown",
       "acceptance_assertion": "A termination notice identifies the member lifecycle outcome.",
       "product_evidence": {
@@ -1234,7 +1234,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-idle",
       "acceptance_assertion": "An idle notice carries the member and its available, interrupted, or failed result.",
       "product_evidence": {
@@ -1260,7 +1260,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-plan",
       "acceptance_assertion": "A tool permission request is correlated to the originating tool call.",
       "product_evidence": {
@@ -1286,7 +1286,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-plan",
       "acceptance_assertion": "A permission response is accepted only from the authorized responder for its request.",
       "product_evidence": {
@@ -1312,7 +1312,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-plan",
       "acceptance_assertion": "A sandbox request remains distinct from the tool permission request.",
       "product_evidence": {
@@ -1338,7 +1338,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-plan",
       "acceptance_assertion": "A sandbox response resolves only its matching sandbox request.",
       "product_evidence": {
@@ -1364,7 +1364,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-plan",
       "acceptance_assertion": "A permission update cannot widen authority without an enforceable host contract.",
       "product_evidence": {
@@ -1390,7 +1390,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P06",
+      "owner": "team-policy",
       "acceptance_scenario": "team-plan",
       "acceptance_assertion": "An inbox mode-change request is rejected rather than silently granting a mode.",
       "product_evidence": {
@@ -1416,7 +1416,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P09",
+      "owner": "local-peers",
       "acceptance_scenario": "team-local-peers",
       "acceptance_assertion": "Two independent sessions discover each other without joining the same team.",
       "product_evidence": {
@@ -1438,7 +1438,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P09",
+      "owner": "local-peers",
       "acceptance_scenario": "team-local-peers",
       "acceptance_assertion": "A child, teammate, and independent session with the same name remain individually addressable.",
       "product_evidence": {
@@ -1460,7 +1460,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P09",
+      "owner": "local-peers",
       "acceptance_scenario": "team-local-peers",
       "acceptance_assertion": "A stale or replaced endpoint cannot silently receive a pinned peer message.",
       "product_evidence": {
@@ -1482,7 +1482,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P09",
+      "owner": "local-peers",
       "acceptance_scenario": "team-local-peers",
       "acceptance_assertion": "Stale, busy, oversized, paced, and uncertain sends do not report confirmed delivery.",
       "product_evidence": {
@@ -1504,7 +1504,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P09",
+      "owner": "local-peers",
       "acceptance_scenario": "team-local-peers",
       "acceptance_assertion": "A denied inbound message never reaches the recipient model.",
       "product_evidence": {
@@ -1526,7 +1526,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P09",
+      "owner": "local-peers",
       "acceptance_scenario": "team-local-peers",
       "acceptance_assertion": "The subscription fires once and teammate or subagent subscription attempts are refused.",
       "product_evidence": {
@@ -1548,7 +1548,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P09",
+      "owner": "local-peers",
       "acceptance_scenario": "team-local-peers",
       "acceptance_assertion": "A local peer cannot be inspected, stopped, or resumed as a child.",
       "product_evidence": {
@@ -1571,7 +1571,7 @@
         "state": "deliberately_different",
         "reason": "Report those proprietary routes as unsupported rather than claiming global parity."
       },
-      "owner": "P09",
+      "owner": "local-peers",
       "acceptance_scenario": "team-local-peers",
       "acceptance_assertion": "The report shows each unavailable proprietary route as unsupported with a reason.",
       "product_evidence": {
@@ -1593,7 +1593,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P09",
+      "owner": "local-peers",
       "acceptance_scenario": "team-local-peers",
       "acceptance_assertion": "A discovery failure or limit is visible and does not hide already verified rows.",
       "product_evidence": {
@@ -1615,7 +1615,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P09",
+      "owner": "local-peers",
       "acceptance_scenario": "team-local-peers",
       "acceptance_assertion": "The report identifies file-transfer evidence separately and does not infer support from peer text delivery.",
       "product_evidence": {
@@ -1637,7 +1637,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P10",
+      "owner": "team-reporting",
       "acceptance_scenario": "team-parity-report",
       "acceptance_assertion": "The report records the status and evidence of user-directed file delivery independently of peer text messaging.",
       "product_evidence": {
@@ -1659,7 +1659,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P10",
+      "owner": "team-reporting",
       "acceptance_scenario": "team-observers",
       "acceptance_assertion": "Reports reach the configured observed member or coordinator and no other destination.",
       "product_evidence": {
@@ -1681,7 +1681,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P10",
+      "owner": "team-reporting",
       "acceptance_scenario": "team-observers",
       "acceptance_assertion": "An observer can submit its report while unrelated writes remain refused.",
       "product_evidence": {
@@ -1703,7 +1703,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P10",
+      "owner": "team-reporting",
       "acceptance_scenario": "team-observers",
       "acceptance_assertion": "Observer mutation, delegation, and ordinary peer sends fail while inspection remains available.",
       "product_evidence": {
@@ -1725,7 +1725,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P10",
+      "owner": "team-reporting",
       "acceptance_scenario": "team-observers",
       "acceptance_assertion": "A paired observer receives a bounded digest and can finish without sending a report.",
       "product_evidence": {
@@ -1747,7 +1747,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P10",
+      "owner": "team-reporting",
       "acceptance_scenario": "team-observers",
       "acceptance_assertion": "An armed pairing delivers to its target and a retired pairing refuses later reports.",
       "product_evidence": {
@@ -1769,7 +1769,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P10",
+      "owner": "team-reporting",
       "acceptance_scenario": "team-observers",
       "acceptance_assertion": "The observed creation trigger matches the documented policy and any difference from automatic creation remains visible.",
       "product_evidence": {
@@ -1791,7 +1791,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P07",
+      "owner": "team-view",
       "acceptance_scenario": "team-view",
       "acceptance_assertion": "The view distinguishes busy, idle, paused, failed, and terminated members at supported widths.",
       "product_evidence": {
@@ -1813,7 +1813,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P07",
+      "owner": "team-view",
       "acceptance_scenario": "team-view",
       "acceptance_assertion": "Selecting a member shows its own transcript and does not trigger a provider request.",
       "product_evidence": {
@@ -1835,7 +1835,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P07",
+      "owner": "team-view",
       "acceptance_scenario": "team-view",
       "acceptance_assertion": "A user resolves the selected request and sees the corresponding task or gate state.",
       "product_evidence": {
@@ -1857,7 +1857,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P07",
+      "owner": "team-view",
       "acceptance_scenario": "team-view",
       "acceptance_assertion": "A user message reaches only the selected teammate with user attribution.",
       "product_evidence": {
@@ -1879,7 +1879,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P07",
+      "owner": "team-view",
       "acceptance_scenario": "team-view",
       "acceptance_assertion": "States are understandable without color and rendered rows fit each tested width.",
       "product_evidence": {
@@ -1901,7 +1901,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P07",
+      "owner": "team-view",
       "acceptance_scenario": "team-view",
       "acceptance_assertion": "An empty team or child view remains navigable and contains no phantom members.",
       "product_evidence": {
@@ -1923,7 +1923,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P09",
+      "owner": "local-peers",
       "acceptance_scenario": "team-local-peers",
       "acceptance_assertion": "A local session list labels session identity and relationship correctly.",
       "product_evidence": {
@@ -1945,7 +1945,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P07",
+      "owner": "team-view",
       "acceptance_scenario": "team-view",
       "acceptance_assertion": "A failed send and a terminated member produce visible, distinguishable results.",
       "product_evidence": {
@@ -1967,7 +1967,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P07",
+      "owner": "team-view",
       "acceptance_scenario": "team-view",
       "acceptance_assertion": "Arrows, Enter, Escape, scrolling, resize, and reload preserve the selected identity.",
       "product_evidence": {
@@ -1989,7 +1989,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P08",
+      "owner": "team-backends",
       "acceptance_scenario": "team-backends",
       "acceptance_assertion": "An embedded teammate reaches ready state and participates in the shared team.",
       "product_evidence": {
@@ -2011,7 +2011,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P08",
+      "owner": "team-backends",
       "acceptance_scenario": "team-backends",
       "acceptance_assertion": "Two tmux members use their intended directories and leave no owned panes after shutdown.",
       "product_evidence": {
@@ -2033,7 +2033,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P08",
+      "owner": "team-backends",
       "acceptance_scenario": "team-backends",
       "acceptance_assertion": "A real iTerm2 pane starts, exchanges a message, and closes under the same member identity.",
       "product_evidence": {
@@ -2055,7 +2055,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P08",
+      "owner": "team-backends",
       "acceptance_scenario": "team-backends",
       "acceptance_assertion": "Unavailable auto mode falls back visibly; explicit unavailable mode fails with no orphan member.",
       "product_evidence": {
@@ -2077,7 +2077,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P08",
+      "owner": "team-backends",
       "acceptance_scenario": "team-backends",
       "acceptance_assertion": "Killing or restarting a pane reports its state and cleanup affects only owned resources.",
       "product_evidence": {
@@ -2099,7 +2099,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P08",
+      "owner": "team-backends",
       "acceptance_scenario": "team-backends",
       "acceptance_assertion": "The process identity and registered extension tools appear in retained runtime evidence.",
       "product_evidence": {
@@ -2121,7 +2121,7 @@
       "reference_relationship": {
         "state": "unreviewed"
       },
-      "owner": "P08",
+      "owner": "team-backends",
       "acceptance_scenario": "team-backends",
       "acceptance_assertion": "Quoted directories are preserved and separate worktrees retain uncommitted edits.",
       "product_evidence": {
@@ -2133,175 +2133,175 @@
   "scenarios": [
     {
       "id": "team-roster",
-      "owner": "P03",
+      "owner": "team-membership",
       "status": "planned",
       "expected": "Members share a flat roster while ordinary child ownership remains intact."
     },
     {
       "id": "team-messages",
-      "owner": "P04",
+      "owner": "team-messages",
       "status": "planned",
       "expected": "Attributed peer messages reach their intended recipients with durable, observable outcomes."
     },
     {
       "id": "team-forgery",
-      "owner": "P04",
+      "owner": "team-messages",
       "status": "planned",
       "expected": "Forged identities and protocol-shaped text cannot grant authority."
     },
     {
       "id": "team-tasks",
-      "owner": "P05",
+      "owner": "team-tasks",
       "status": "planned",
       "expected": "Members coordinate through a consistent task graph with atomic claims."
     },
     {
       "id": "team-plan",
-      "owner": "P06",
+      "owner": "team-policy",
       "status": "planned",
       "expected": "Plan and permission decisions remain correlated and enforceable."
     },
     {
       "id": "team-shutdown",
-      "owner": "P06",
+      "owner": "team-policy",
       "status": "planned",
       "expected": "Graceful shutdown requests produce the correct correlated lifecycle outcome."
     },
     {
       "id": "team-idle",
-      "owner": "P06",
+      "owner": "team-policy",
       "status": "planned",
       "expected": "Idle notices identify the member and settled outcome."
     },
     {
       "id": "team-hooks",
-      "owner": "P06",
+      "owner": "team-policy",
       "status": "planned",
       "expected": "Rejecting policy hooks preserve work and return their refusal."
     },
     {
       "id": "team-view",
-      "owner": "P07",
+      "owner": "team-view",
       "status": "planned",
       "expected": "Terminal controls show the selected team state and preserve existing navigation."
     },
     {
       "id": "team-backends",
-      "owner": "P08",
+      "owner": "team-backends",
       "status": "planned",
       "expected": "Embedded and selected pane backends preserve member identity and lifecycle."
     },
     {
       "id": "team-local-peers",
-      "owner": "P09",
+      "owner": "local-peers",
       "status": "planned",
       "expected": "Independent opted-in sessions use explicit discovery and route outcomes."
     },
     {
       "id": "team-observers",
-      "owner": "P10",
+      "owner": "team-reporting",
       "status": "planned",
       "expected": "An observer receives bounded activity and reports only to its paired destination."
     },
     {
       "id": "team-parity-report",
-      "owner": "P10",
+      "owner": "team-reporting",
       "status": "planned",
       "expected": "The report distinguishes reference capabilities, product evidence, and unsupported routes."
     },
     {
       "id": "baseline",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "implemented",
       "expected": "Direct child spawn and wait produce the same result with and without evidence capture."
     },
     {
       "id": "startup-source",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "implemented",
       "expected": "A real source-selected process records its binary, extension selection, registration, and terminal capture."
     },
     {
       "id": "startup-standalone",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "implemented",
       "expected": "A real standalone-selected process records its executable identity and extension registration."
     },
     {
       "id": "startup-piglet",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "implemented",
       "expected": "A real Piglet-selected process registers the extension and completes a worker task."
     },
     {
       "id": "startup-unselected",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "implemented",
       "expected": "An unselected process starts without collaboration registrations."
     },
     {
       "id": "host-busy-message",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "implemented",
       "expected": "Record busy custom-message delivery, provider requests, and native transcript storage in the captured session. Separate scenarios cover acknowledgement, crash recovery, and same-ID replay."
     },
     {
       "id": "host-idle-message",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "implemented",
       "expected": "Record idle custom-message delivery and distinguish transcript storage from inference and acknowledgement."
     },
     {
       "id": "host-crash-after-acceptance",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "planned",
       "expected": "Interrupt after acceptance and before native transcript append, then retain the restarted session observation."
     },
     {
       "id": "host-crash-after-append",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "planned",
       "expected": "Interrupt after native transcript append and before acknowledgement, then inspect the restarted transcript."
     },
     {
       "id": "host-crash-after-acknowledgement",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "planned",
       "expected": "Interrupt after acknowledgement and inspect the retained session after restart."
     },
     {
       "id": "host-same-id-replay",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "planned",
       "expected": "Retry the same message ID after restart and count the actual native transcript entries."
     },
     {
       "id": "host-tool-veto",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "implemented",
       "expected": "A real rejecting tool hook refuses direct and nested fixture writes before their side effects, or records a reproducible unsupported result."
     },
     {
       "id": "host-independent-process",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "implemented",
       "expected": "An independently started PiG process exposes explicitly selected extension tools and its session identity, or records a reproducible unsupported result."
     },
     {
       "id": "fixture-isolation",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "implemented",
       "expected": "Concurrent fixtures with the same task names retain separate ports, files, session IDs, and captures."
     },
     {
       "id": "fixture-interrupt",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "implemented",
       "expected": "An interrupted child attempt remains inconclusive and retains its diagnostic artifacts."
     },
     {
       "id": "capture-performance",
-      "owner": "P02",
+      "owner": "baseline",
       "status": "implemented",
       "expected": "Compare interleaved startup samples and separately record capture overhead and evidence serialization time."
     }

@@ -1,4 +1,4 @@
-//go:build p08native && linux
+//go:build teammate_native && linux
 
 package piglitter
 
@@ -111,10 +111,10 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 	preapprove, nestedGate, dropReplies, causal := test.preapprove, test.nestedGate, test.dropReplies, test.causal
 	policyRefuse, staleWake, rootLoss, startupFailure := test.policyRefuse, test.staleWake, test.rootLoss, test.startupFailure
 	terminalControls := test.terminalControls
-	fixtureBinary, memberBinary := os.Getenv("P08_NATIVE_PROBE"), os.Getenv("P08_PRODUCT_MEMBER")
-	rootPath := os.Getenv("P08_LIVE_ROOT") + "-product-" + name
-	if fixtureBinary == "" || memberBinary == "" || os.Getenv("P08_LIVE_ROOT") == "" {
-		t.Fatal("P08_NATIVE_PROBE, P08_PRODUCT_MEMBER, and P08_LIVE_ROOT are required")
+	fixtureBinary, memberBinary := os.Getenv("TEAM_NATIVE_PROBE"), os.Getenv("TEAM_PRODUCT_MEMBER")
+	rootPath := os.Getenv("TEAM_LIVE_ROOT") + "-product-" + name
+	if fixtureBinary == "" || memberBinary == "" || os.Getenv("TEAM_LIVE_ROOT") == "" {
+		t.Fatal("TEAM_NATIVE_PROBE, TEAM_PRODUCT_MEMBER, and TEAM_LIVE_ROOT are required")
 	}
 	if err := os.Mkdir(rootPath, 0o700); err != nil {
 		t.Fatal(err)
@@ -267,7 +267,7 @@ func testTmuxCompiledProductMember(t *testing.T, test productMemberCase) {
 						return
 					}
 				}
-				w.Header().Set("Mcp-Session-Id", "p08-fixture")
+				w.Header().Set("Mcp-Session-Id", "team-fixture")
 				result = map[string]any{"protocolVersion": request.Params.ProtocolVersion, "capabilities": map[string]any{"tools": map[string]any{}, "resources": map[string]any{}}, "serverInfo": map[string]any{"name": "probe", "version": "1"}}
 			case "tools/list":
 				result = map[string]any{"tools": []any{map[string]any{"name": "write", "description": "Write a fixture file", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}}, "required": []string{"path", "content"}}}, map[string]any{"name": "blocked", "description": "Excluded fixture tool", "inputSchema": map[string]any{"type": "object"}}}}

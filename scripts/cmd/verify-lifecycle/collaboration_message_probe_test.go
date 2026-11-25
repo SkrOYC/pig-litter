@@ -11,12 +11,12 @@ import (
 
 func collaborationProbeDirectory(t *testing.T, prefix string) string {
 	t.Helper()
-	base := os.Getenv("P02_PROBE_EVIDENCE_ROOT")
+	base := os.Getenv("COLLAB_PROBE_EVIDENCE_ROOT")
 	if base == "" {
 		return t.TempDir()
 	}
 	if !filepath.IsAbs(base) {
-		t.Fatal("P02_PROBE_EVIDENCE_ROOT must be absolute")
+		t.Fatal("COLLAB_PROBE_EVIDENCE_ROOT must be absolute")
 	}
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		t.Fatal(err)

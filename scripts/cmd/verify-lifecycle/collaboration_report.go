@@ -180,7 +180,7 @@ func collaborationReduceReport(evidence collaborationEvidenceSet, registry colla
 		switch attempt.Attempt.Purpose {
 		case "research":
 			row := collaborationResearchRow{ID: attempt.Attempt.ID, Scenario: attempt.Attempt.Scenario, Revision: attempt.Attempt.ScenarioRevision, Scope: scope, Observation: attempt.Attempt.Observation, Outcome: attempt.Attempt.Outcome, Finding: attempt.Attempt.Finding, Reason: attempt.Attempt.Reason, Prerequisite: attempt.Attempt.Prerequisite}
-			row.Complete = collaborationResearchComplete(attempt) && collaborationP02ScenarioRegistered(catalog, attempt.Attempt)
+			row.Complete = collaborationResearchComplete(attempt) && collaborationBaselineScenarioRegistered(catalog, attempt.Attempt)
 			if !row.Complete {
 				if row.Reason == "" {
 					row.Reason = "research scenario, scope, or evidence is incomplete"
@@ -190,7 +190,7 @@ func collaborationReduceReport(evidence collaborationEvidenceSet, registry colla
 			report.Research = append(report.Research, row)
 		case "verification":
 			row := collaborationVerificationRow{ID: attempt.Attempt.ID, Scenario: attempt.Attempt.Scenario, Channel: attempt.Attempt.Channel, Scope: scope, Outcome: attempt.Attempt.Outcome, Reason: attempt.Attempt.Reason}
-			row.Complete = collaborationP02ScenarioRegistered(catalog, attempt.Attempt) && attempt.Attempt.Outcome == "passed" && attempt.ResultsPassed && collaborationArtifactsComplete(attempt.Attempt.Channel, attempt.ArtifactKinds)
+			row.Complete = collaborationBaselineScenarioRegistered(catalog, attempt.Attempt) && attempt.Attempt.Outcome == "passed" && attempt.ResultsPassed && collaborationArtifactsComplete(attempt.Attempt.Channel, attempt.ArtifactKinds)
 			if !row.Complete {
 				if row.Reason == "" {
 					row.Reason = "fixture result or required artifacts are incomplete"
@@ -325,7 +325,7 @@ func collaborationApplyResearch(row *collaborationRequirementRow, requirementID 
 			var dependencySupported, dependencyUnsupported []collaborationAttempt
 			for _, selected := range attempts {
 				attempt := selected.Attempt
-				if !collaborationP02ScenarioRegistered(catalog, attempt) || !collaborationResearchComplete(selected) || attempt.Finding == nil || attempt.Finding.Capability != dependency.Capability || !collaborationContains(attempt.Claims, requirementID) || !collaborationScopeMatches(target.Scope, attempt.Platform, attempt.Architecture, attempt.Terminal) || dependency.Scenario != attempt.Scenario || dependency.Revision != attempt.ScenarioRevision || !collaborationScopeMatches(dependency.Scope, attempt.Platform, attempt.Architecture, attempt.Terminal) {
+				if !collaborationBaselineScenarioRegistered(catalog, attempt) || !collaborationResearchComplete(selected) || attempt.Finding == nil || attempt.Finding.Capability != dependency.Capability || !collaborationContains(attempt.Claims, requirementID) || !collaborationScopeMatches(target.Scope, attempt.Platform, attempt.Architecture, attempt.Terminal) || dependency.Scenario != attempt.Scenario || dependency.Revision != attempt.ScenarioRevision || !collaborationScopeMatches(dependency.Scope, attempt.Platform, attempt.Architecture, attempt.Terminal) {
 					continue
 				}
 				if attempt.Finding.Verdict == "supported" {
@@ -452,8 +452,8 @@ func collaborationValidateRegistry(catalog collaborationCatalog, registry collab
 		seenResearch := make(map[collaborationResearchDependency]bool)
 		for _, dependency := range rule.Research {
 			scenario, found := scenarios[dependency.Scenario]
-			trusted, registered := collaborationP02Scenarios[dependency.Scenario]
-			if !found || scenario.Owner != "P02" || !registered || trusted.Purpose != "research" || dependency.Revision != trusted.Revision || !collaborationContains(trusted.Capabilities, dependency.Capability) || !collaborationOneOf(dependency.Scope.Platform, "linux", "macos") || (dependency.Scope.Terminal == "iterm2" && dependency.Scope.Platform != "macos") || seenResearch[dependency] {
+			trusted, registered := collaborationBaselineScenarios[dependency.Scenario]
+			if !found || scenario.Owner != "baseline" || !registered || trusted.Purpose != "research" || dependency.Revision != trusted.Revision || !collaborationContains(trusted.Capabilities, dependency.Capability) || !collaborationOneOf(dependency.Scope.Platform, "linux", "macos") || (dependency.Scope.Terminal == "iterm2" && dependency.Scope.Platform != "macos") || seenResearch[dependency] {
 				return fmt.Errorf("invalid research scenario for %q", id)
 			}
 			seenResearch[dependency] = true

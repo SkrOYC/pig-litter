@@ -1,4 +1,4 @@
-//go:build p08native && !p08fixture
+//go:build teammate_native && !teammate_fixture
 
 package piglitter
 

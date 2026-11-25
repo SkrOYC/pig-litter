@@ -62,7 +62,7 @@ func collaborationCLIPlannedSetup(t *testing.T) (collaborationCLIOptions, collab
 	if err := json.Unmarshal(catalogData, &catalog); err != nil {
 		t.Fatal(err)
 	}
-	catalog.Scenarios = append(catalog.Scenarios, collaborationScenario{ID: "new-research", Owner: "P02", Status: "planned", Expected: "A future host observation."})
+	catalog.Scenarios = append(catalog.Scenarios, collaborationScenario{ID: "new-research", Owner: "baseline", Status: "planned", Expected: "A future host observation."})
 	catalogData, err := json.Marshal(catalog)
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +196,7 @@ func TestCollaborationWrapperStopsUnresponsiveBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := ""
-	if parent := os.Getenv("P02_BOOTSTRAP_TEST_ROOT"); parent != "" {
+	if parent := os.Getenv("COLLAB_BOOTSTRAP_TEST_ROOT"); parent != "" {
 		root, err = os.MkdirTemp(parent, "bootstrap-interrupt-")
 	} else {
 		root = t.TempDir()

@@ -113,7 +113,7 @@ func collaborationReadArtifact(file *os.File, maxBytes int64, expected string) (
 }
 
 func collaborationSnapshotVideo(source *os.File, expected string) (snapshot *os.File, resultErr error) {
-	directory, err := os.MkdirTemp("", "p02-video-")
+	directory, err := os.MkdirTemp("", "collab-video-")
 	if err != nil {
 		return nil, err
 	}
@@ -399,7 +399,7 @@ func collaborationMediaCommand(ctx context.Context, file *os.File, binary string
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}
-	shellArgs := append([]string{"-c", `ulimit -v 2097152 && ulimit -t 90 && exec "$@"`, "p02-media", binary}, args...)
+	shellArgs := append([]string{"-c", `ulimit -v 2097152 && ulimit -t 90 && exec "$@"`, "collab-media", binary}, args...)
 	command := exec.CommandContext(ctx, "/bin/sh", shellArgs...)
 	command.Stdin = file
 	output := collaborationBoundedOutput{limit: outputLimit}

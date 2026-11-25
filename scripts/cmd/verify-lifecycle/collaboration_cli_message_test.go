@@ -10,10 +10,10 @@ func TestCollaborationTUIMessagePhasesRequireNativeDeliveryAndNoExtraInference(t
 	var receipt collaborationMessageReceipt
 	receipt.Mode = "host-busy-message"
 	busy := collaborationCLIMessagePhase{Name: "busy-return", ProviderBefore: 2, ProviderAfter: 2}
-	busy.Response.Operation, busy.Response.ID = "send", "P02_BUSY"
+	busy.Response.Operation, busy.Response.ID = "send", "COLLAB_BUSY"
 	busy.Response.StartedNS, busy.Response.ReturnedNS = 2, 3
 	settled := collaborationCLIMessagePhase{Name: "busy-settled", ProviderBefore: 2, ProviderAfter: 2}
-	settled.Response.Operation, settled.Response.ID = "inspect", "P02_BUSY"
+	settled.Response.Operation, settled.Response.ID = "inspect", "COLLAB_BUSY"
 	settled.Response.After.Idle = true
 	settled.Response.After.MemoryCopies = 1
 	settled.After.Copies = 1

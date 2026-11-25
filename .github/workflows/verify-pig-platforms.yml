@@ -3,7 +3,8 @@ name: Verify PiG native platforms
 on:
   push:
     branches:
-      - chore/upgrade-pig-development-environment
+      - master
+  pull_request:
   workflow_dispatch:
     inputs:
       candidate_sha:

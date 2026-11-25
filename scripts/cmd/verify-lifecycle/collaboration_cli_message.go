@@ -217,10 +217,10 @@ func (runner *collaborationCLIRunner) messageProviderRequests(evidence, mode str
 		if !json.Valid(data) {
 			return errors.New("provider request trace is not JSON")
 		}
-		if mode == "host-idle-message" && (!bytes.Contains(data, []byte("peer message P02_FRESH")) || bytes.Contains(data, []byte("peer message P02_IDLE"))) {
+		if mode == "host-idle-message" && (!bytes.Contains(data, []byte("peer message COLLAB_FRESH")) || bytes.Contains(data, []byte("peer message COLLAB_IDLE"))) {
 			return errors.New("idle provider request does not match the observed message boundary")
 		}
-		if mode == "host-busy-message" && (bytes.Contains(data, []byte("peer message P02_BUSY")) || (index == 1 && !bytes.Contains(data, []byte("P02_BUSY_HOLD")))) {
+		if mode == "host-busy-message" && (bytes.Contains(data, []byte("peer message COLLAB_BUSY")) || (index == 1 && !bytes.Contains(data, []byte("COLLAB_BUSY_HOLD")))) {
 			return errors.New("provider request trace does not match the observed message boundary")
 		}
 	}
@@ -256,7 +256,7 @@ func (runner *collaborationCLIRunner) messageSnapshot(evidence, id string, snaps
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			return err
 		}
-		if entry.Type == "custom_message" && entry.CustomType == "p02_tui_probe" && entry.Details.ID == id {
+		if entry.Type == "custom_message" && entry.CustomType == "collab_tui_probe" && entry.Details.ID == id {
 			count++
 		}
 	}
@@ -269,13 +269,13 @@ func (runner *collaborationCLIRunner) messageSnapshot(evidence, id string, snaps
 func collaborationValidateTUIMessagePhases(receipt collaborationMessageReceipt) error {
 	if receipt.Mode == "host-idle-message" && len(receipt.Phases) == 3 {
 		fresh, flushed, idle := receipt.Phases[0], receipt.Phases[1], receipt.Phases[2]
-		if !collaborationMessagePhaseIs(fresh, "fresh-idle", "send", "P02_FRESH", 0) || !fresh.Response.Before.Idle || !fresh.Response.After.Idle || fresh.Response.Before.MemoryCopies != 0 || fresh.Response.After.MemoryCopies != 1 || fresh.Before.Copies != 0 {
+		if !collaborationMessagePhaseIs(fresh, "fresh-idle", "send", "COLLAB_FRESH", 0) || !fresh.Response.Before.Idle || !fresh.Response.After.Idle || fresh.Response.Before.MemoryCopies != 0 || fresh.Response.After.MemoryCopies != 1 || fresh.Before.Copies != 0 {
 			return errors.New("fresh idle message observation is incomplete")
 		}
-		if !collaborationMessagePhaseIs(flushed, "fresh-flushed", "inspect", "P02_FRESH", 1) || !flushed.Response.After.Idle || flushed.Response.After.MemoryCopies != 1 || flushed.After.Copies != 1 {
+		if !collaborationMessagePhaseIs(flushed, "fresh-flushed", "inspect", "COLLAB_FRESH", 1) || !flushed.Response.After.Idle || flushed.Response.After.MemoryCopies != 1 || flushed.After.Copies != 1 {
 			return errors.New("fresh message flush observation is incomplete")
 		}
-		if !collaborationMessagePhaseIs(idle, "established-idle", "send", "P02_IDLE", 1) || !idle.Response.Before.Idle || !idle.Response.After.Idle || idle.Response.Before.MemoryCopies != 0 || idle.Response.After.MemoryCopies != 1 || idle.Before.Copies != 0 || idle.After.Copies != 1 {
+		if !collaborationMessagePhaseIs(idle, "established-idle", "send", "COLLAB_IDLE", 1) || !idle.Response.Before.Idle || !idle.Response.After.Idle || idle.Response.Before.MemoryCopies != 0 || idle.Response.After.MemoryCopies != 1 || idle.Before.Copies != 0 || idle.After.Copies != 1 {
 			return errors.New("established idle message observation is incomplete")
 		}
 		return nil
@@ -285,10 +285,10 @@ func collaborationValidateTUIMessagePhases(receipt collaborationMessageReceipt) 
 		if receipt.HoldObservedNS <= 0 || receipt.HoldObservedNS > busy.Response.StartedNS || busy.Response.ReturnedNS > receipt.ReleaseStartNS || receipt.ReleaseStartNS > receipt.HoldReleasedNS || receipt.HoldReleasedNS > receipt.SettledNS {
 			return errors.New("busy message timing boundaries are inconsistent")
 		}
-		if !collaborationMessagePhaseIs(busy, "busy-return", "send", "P02_BUSY", 2) || busy.Response.Before.Idle || busy.Response.After.Idle || busy.Response.Before.MemoryCopies != 0 || busy.Before.Copies != 0 || busy.Response.After.MemoryCopies < 0 || busy.Response.After.MemoryCopies > 1 || busy.After.Copies < 0 || busy.After.Copies > 1 {
+		if !collaborationMessagePhaseIs(busy, "busy-return", "send", "COLLAB_BUSY", 2) || busy.Response.Before.Idle || busy.Response.After.Idle || busy.Response.Before.MemoryCopies != 0 || busy.Before.Copies != 0 || busy.Response.After.MemoryCopies < 0 || busy.Response.After.MemoryCopies > 1 || busy.After.Copies < 0 || busy.After.Copies > 1 {
 			return errors.New("held busy message observation is incomplete")
 		}
-		if !collaborationMessagePhaseIs(settled, "busy-settled", "inspect", "P02_BUSY", 2) || !settled.Response.After.Idle || settled.Response.After.MemoryCopies != 1 || settled.After.Copies != 1 {
+		if !collaborationMessagePhaseIs(settled, "busy-settled", "inspect", "COLLAB_BUSY", 2) || !settled.Response.After.Idle || settled.Response.After.MemoryCopies != 1 || settled.After.Copies != 1 {
 			return errors.New("settled busy message observation is incomplete")
 		}
 		return nil

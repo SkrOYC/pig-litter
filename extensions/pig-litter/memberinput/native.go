@@ -1,4 +1,4 @@
-//go:build p08native
+//go:build teammate_native
 
 package memberinput
 

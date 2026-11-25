@@ -23,8 +23,8 @@ import (
 	"github.com/MichaelKinsy/PiG/coding/mcpext"
 )
 
-const collaborationHookRefusal = "P02_HOOK_REFUSED"
-const collaborationHookMarker = "P02_HOOK_FIXTURE"
+const collaborationHookRefusal = "COLLAB_HOOK_REFUSED"
+const collaborationHookMarker = "COLLAB_HOOK_FIXTURE"
 
 type collaborationHookEvent struct {
 	OffsetNanos int64  `json:"offset_nanos"`
@@ -161,7 +161,7 @@ func collaborationHookModelServer(recorder *collaborationHookRecorder, phases []
 			fixture.answer(w, "hook-fixture", "", []call{collaborationHookCall(phases[n/2])})
 			return
 		}
-		fixture.answer(w, "hook-fixture", "P02_FIXTURE_DONE", nil)
+		fixture.answer(w, "hook-fixture", "COLLAB_FIXTURE_DONE", nil)
 	}))
 }
 
@@ -210,8 +210,8 @@ func collaborationHookMCPServer(recorder *collaborationHookRecorder, phases []co
 		var result any
 		switch rpc.Method {
 		case "initialize":
-			w.Header().Set("Mcp-Session-Id", "p02-hook-fixture")
-			result = map[string]any{"protocolVersion": rpc.Params.ProtocolVersion, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "p02-hook-fixture", "version": "1"}}
+			w.Header().Set("Mcp-Session-Id", "collab-hook-fixture")
+			result = map[string]any{"protocolVersion": rpc.Params.ProtocolVersion, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "collab-hook-fixture", "version": "1"}}
 		case "tools/list":
 			result = map[string]any{"tools": []any{map[string]any{"name": "write", "description": "Write the controlled fixture file", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}}, "required": []string{"path", "content"}}}}}
 		case "tools/call":
@@ -239,10 +239,10 @@ func collaborationHookExtensions(root, mcpURL string, recorder *collaborationHoo
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := registrations.RegisterMcpServer("p02-hook-fixture", "probe", config); err != nil {
+	if err := registrations.RegisterMcpServer("collab-hook-fixture", "probe", config); err != nil {
 		return nil, nil, err
 	}
-	guard := extension.Extension{Path: "p02-hook-guard", Handlers: map[string][]extension.HandlerFn{"tool_call": {func(args ...any) (any, error) {
+	guard := extension.Extension{Path: "collab-hook-guard", Handlers: map[string][]extension.HandlerFn{"tool_call": {func(args ...any) (any, error) {
 		if len(args) == 0 {
 			return nil, errors.New("missing tool call event")
 		}
@@ -456,7 +456,7 @@ func collaborationAssessHookPhase(phase *collaborationHookPhase) {
 	phase.Reason = ""
 	if phase.Deny && phase.FileExists {
 		phase.Verdict = "provisional_bypass"
-		phase.Reason = "the denied fixture file was created; inspect the hook trace and repeat on the final P01 host"
+		phase.Reason = "the denied fixture file was created; inspect the hook trace and repeat on the final host"
 		return
 	}
 	if phase.SendError != "" || phase.FileError != "" || len(phase.ToolResult) == 0 {

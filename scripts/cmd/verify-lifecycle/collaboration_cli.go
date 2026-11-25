@@ -127,7 +127,7 @@ func collaborationParseOptions(args []string) (collaborationCLIOptions, error) {
 	flags := flag.NewFlagSet("collaboration", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	flags.Usage = func() {
-		fmt.Fprintln(flags.Output(), "Select a P02 scenario or report over an explicit evidence selection.")
+		fmt.Fprintln(flags.Output(), "Select a baseline scenario or report over an explicit evidence selection.")
 		flags.PrintDefaults()
 	}
 	flags.StringVar(&options.repo, "repo-root", "", "repository root")
