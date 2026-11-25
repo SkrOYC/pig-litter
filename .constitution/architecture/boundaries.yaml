@@ -1,0 +1,233 @@
+boundaries:
+  - id: BND-01
+    name: Agent operations
+    kind: module
+    type: agent-facing operation surface
+    responsibility: "Accept every operation an agent can call and decide whether the caller holds the authority for it."
+    inputs:
+      - "Calls from a session's agent: launch, send, wait, state query, pause, stop, peer listing, detached launch, detached stop"
+    outputs:
+      - "A status or a rejection with its reason. Never another session's conversation content."
+    depends_on: [BND-02, BND-03, BND-06, BND-07]
+    trust_boundary: true
+    certainty: assumed
+    assumption: "The target design has one surface for all agent calls. The existing tool surface also serves team and observer features and applies different authority rules."
+  - id: BND-02
+    name: Tree coordinator
+    kind: module
+    type: tree state authority
+    responsibility: "Own the membership, the state of every session, and every admission decision of one root tree."
+    inputs:
+      - Launch, pause, stop, and wake requests
+      - Session events from the session host
+      - The settings and resolved permissions for the tree
+    outputs:
+      - Admission decisions and rejections with reasons
+      - "State changes: active, paused, finished, interrupted, stopped"
+      - Handback and recovery notices handed to steer delivery
+    depends_on: [BND-03, BND-04, BND-05, BND-09]
+    trust_boundary: false
+    certainty: assumed
+    assumption: "One coordinator per root serializes all admissions. The existing tree module counts children only, compares directories by equality, and has no stopped or interrupted state."
+  - id: BND-03
+    name: Steer delivery
+    kind: module
+    type: in-tree message router
+    responsibility: "Carry every input to its recipient session as a labeled steer and resolve the waits that depend on it."
+    inputs:
+      - "Messages between a parent and its direct children"
+      - Handbacks and notices from the tree coordinator
+      - Inbound peer messages for the root
+      - Operator steers from the child overlay
+    outputs:
+      - A labeled input delivered after running tool calls or as the start of a turn
+      - An immediate send outcome
+      - A short status for an open wait
+    depends_on: [BND-02, BND-04]
+    trust_boundary: false
+    certainty: assumed
+    assumption: "One delivery path serves parent messages, child messages, handbacks, peer messages, operator steers, and notices. The existing code has five separate paths."
+  - id: BND-04
+    name: Session host
+    kind: module
+    type: host seam
+    responsibility: "Run sessions on the released PiG host and hide every host interface from the rest of Pig Litter."
+    inputs:
+      - Requests to create a dependent child, start or abort a turn, and deliver an input
+      - A request to keep a headless root running
+    outputs:
+      - "Session events: turn started, turn ended with a final response or a failure, live activity"
+      - A statement of each interaction the released host cannot support
+    depends_on: [PiG host]
+    trust_boundary: false
+    certainty: assumed
+    assumption: "The released host can create dependent children, deliver a steer after a tool batch, start a turn in an idle root, and stream a child's activity. Source reading supports this, and SPK-PL-OD001 measured holding a headless run open. The existing code also calls two interfaces that only a patched host provides."
+  - id: BND-05
+    name: Tree record
+    kind: module
+    type: durable state
+    responsibility: "Keep the durable record of a root tree with the root's conversation and restore it when the root returns."
+    inputs:
+      - Membership, state, and detached-launch changes
+    outputs:
+      - "The restored tree, with every session that was active at the last write marked interrupted"
+    depends_on: [Root conversation record]
+    trust_boundary: false
+    certainty: assumed
+    assumption: "The released host lets Pig Litter store its own entries in the root's persisted conversation. A root without persistence has no durable tree."
+  - id: BND-06
+    name: Peer gateway
+    kind: module
+    type: local peer endpoint
+    responsibility: "Make the root discoverable to local peers and exchange messages with them over Claude Code's local peer protocol."
+    inputs:
+      - Peer listing and send requests from the root
+      - Inbound messages from local PiG roots and Claude Code sessions
+    outputs:
+      - "Peer names, addresses, and coarse status"
+      - "A send outcome: accepted, sent with delivery unconfirmed, or failed with the reason"
+      - Inbound messages handed to steer delivery
+    depends_on: [BND-03, Local peer]
+    trust_boundary: true
+    certainty: assumed
+    assumption: "A PiG root can be listed and messaged through Claude Code's local peer protocol in both directions. The owner holds the protocol details. The existing code speaks a protocol of its own and has no Claude Code support."
+  - id: BND-07
+    name: Detached launcher
+    kind: module
+    type: independent session starter
+    responsibility: "Start a detached session as an independent PiG process and end it when its launcher stops it."
+    inputs:
+      - Detached launch and stop requests from a root
+    outputs:
+      - "The detached session's peer address and the form it runs in: pane or background"
+      - A record of launched sessions for the tree record
+    depends_on: [BND-05, BND-06, BND-09, Terminal pane host, Detached PiG process]
+    trust_boundary: false
+    certainty: assumed
+    assumption: "A PiG process started by Pig Litter can outlive its launcher and stay reachable while idle, in a pane or in the background. SPK-PL-OD001 measured both forms on Linux with a scratch extension. No Pig Litter code does this yet."
+  - id: BND-08
+    name: Operator view
+    kind: module
+    type: interactive view
+    responsibility: "Show the operator the sessions of the root tree and one dependent child's live conversation, and accept the operator's steer."
+    inputs:
+      - Tree state from the tree coordinator
+      - Live activity from the session host
+      - Operator input
+    outputs:
+      - The session list and the child overlay
+      - Operator steers handed to steer delivery
+    depends_on: [BND-02, BND-03, BND-04]
+    trust_boundary: false
+    certainty: assumed
+    assumption: "The released host lets an extension draw a focused view that re-renders from live data and embeds a text input. The existing panel shows metadata only and offers pause and resume, which the target excludes."
+  - id: BND-09
+    name: Settings and profiles
+    kind: module
+    type: configuration
+    responsibility: "Load the tree's settings and agent profiles once and resolve the permissions of each launch."
+    inputs:
+      - User-level and root-project settings and profile definitions
+      - A launch's parent permissions and requested profile
+    outputs:
+      - "The tree's limits, peer switch, and maximum wait"
+      - "The effective tools for a launch and whether the role writes"
+    depends_on: [Configuration files]
+    trust_boundary: false
+    certainty: assumed
+    assumption: "Settings and profiles come from the user level and the root's project and stay fixed for the life of the root. The existing loader also reads a child's directory and a separate delegation grant."
+edges:
+  - from: BND-01
+    to: BND-02
+    protocol: in-process
+    note: Launch, state query, pause, and stop
+  - from: BND-01
+    to: BND-03
+    protocol: in-process
+    note: Send and wait
+  - from: BND-01
+    to: BND-06
+    protocol: in-process
+    note: Peer listing and peer send
+  - from: BND-01
+    to: BND-07
+    protocol: in-process
+    note: Detached launch and stop
+  - from: BND-02
+    to: BND-04
+    protocol: in-process
+    note: Create a child and start or abort a turn
+  - from: BND-04
+    to: BND-02
+    protocol: event
+    note: Turn started and turn ended
+  - from: BND-02
+    to: BND-03
+    protocol: in-process
+    note: Handbacks and recovery notices
+  - from: BND-03
+    to: BND-02
+    protocol: in-process
+    note: Admission of a wake
+  - from: BND-03
+    to: BND-04
+    protocol: in-process
+    note: Deliver a labeled input
+  - from: BND-02
+    to: BND-05
+    protocol: in-process
+    note: Record and restore the tree
+  - from: BND-02
+    to: BND-09
+    protocol: in-process
+    note: Limits and resolved permissions
+  - from: BND-06
+    to: BND-03
+    protocol: in-process
+    note: Inbound peer message for the root
+  - from: BND-07
+    to: BND-05
+    protocol: in-process
+    note: Remember launched detached sessions
+  - from: BND-07
+    to: BND-06
+    protocol: in-process
+    note: Confirm that a launched session is listed and read its address
+  - from: BND-07
+    to: BND-09
+    protocol: in-process
+    note: Profile for a detached launch
+  - from: BND-08
+    to: BND-02
+    protocol: in-process
+    note: Session list
+  - from: BND-08
+    to: BND-03
+    protocol: in-process
+    note: Operator steer
+  - from: BND-04
+    to: BND-08
+    protocol: event
+    note: Live activity of the opened child
+  - from: BND-04
+    to: PiG host
+    protocol: ipc
+    note: The released host runs Pig Litter as a separate process
+  - from: BND-05
+    to: Root conversation record
+    protocol: shared-storage
+  - from: BND-06
+    to: Local peer
+    protocol: ipc
+    note: Outbound and inbound peer messages
+  - from: BND-07
+    to: Terminal pane host
+    protocol: ipc
+    note: Open a pane for a detached session
+  - from: BND-07
+    to: Detached PiG process
+    protocol: other
+    note: Process start and process end
+  - from: BND-09
+    to: Configuration files
+    protocol: file-handoff

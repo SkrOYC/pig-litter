@@ -1,0 +1,11 @@
+entries:
+  - version: v0.0.1
+    date: 2026-11-25
+    added:
+      - "Set the pattern: a modular extension with one coordinator per root tree, running on the released host."
+      - "Defined nine boundaries, with agent operations and the peer gateway as trust boundaries."
+      - "Wrote one flow for each of the eight jobs, each with its failure path."
+      - "Wrote the resilience design, the structural risks, and threat notes for both trust boundaries."
+    by: stage
+    upstream:
+      prd: v0.1.0
