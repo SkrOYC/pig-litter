@@ -1,4 +1,18 @@
 entries:
+  - version: v0.1.0
+    date: 2026-11-25
+    added:
+      - "Added detached sessions: independent roots that a root launches, messages as peers, and can stop."
+      - "Added the rules for sends, pending steers, launch rejection, tree-wide names, and the root's session list."
+      - "Added the interrupted state, failure handbacks, the maximum wait, and the headless keep-alive."
+      - "Recorded teams, an operator event record, a turn allowance, and supervision of detached sessions as out of scope."
+    changed:
+      - Ending the root now halts its tree and reopening the root restores it.
+      - A session with an active child now counts as active.
+      - Peer discovery and peer messaging now belong to roots. Dependent children exchange messages only with their parent and their own children.
+      - Delegation is now available to every session below the depth limit whose profile isn't read-only.
+      - Corrected the settings file named in the operator preferences.
+    by: stage
   - version: v0.0.1
     date: 2026-11-25
     added:

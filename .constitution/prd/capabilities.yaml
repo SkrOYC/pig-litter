@@ -2,13 +2,13 @@ capabilities:
   - id: CAP-001
     group: Delegation
     priority: P0
-    statement: "When a session delegates, Pig Litter must start a direct PiG child asynchronously with a fresh conversation and an explicit brief."
+    statement: "When a session delegates, Pig Litter must start a dependent child asynchronously with a fresh conversation and an explicit brief."
     rationale: "New work has independent context, and the parent can keep working."
     jobs: [JOB-01, JOB-03]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-002
     group: Delegation
@@ -79,13 +79,13 @@ capabilities:
   - id: CAP-008
     group: Delegation
     priority: P0
-    statement: A child with delegation access can start its own direct children up to the configured depth.
-    rationale: A lead can split an assignment and remain responsible for the resulting work.
+    statement: "A session can start its own dependent children unless it is at the configured delegation depth or its profile is read-only."
+    rationale: "A lead can split an assignment without a separate grant."
     jobs: [JOB-01, JOB-03, JOB-06]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-009
     group: Limits
@@ -101,13 +101,13 @@ capabilities:
   - id: CAP-010
     group: Limits
     priority: P0
-    statement: "The concurrency limit counts active sessions in the root tree, including the root and any session blocked in a wait. Paused and finished sessions take no slots."
-    rationale: The limit reflects active work while allowing retained children.
+    statement: "A session counts as active while its own turn is open, including a turn blocked in a wait, or while any of its children is active. The root counts under the same rule. Other paused and finished sessions take no slots."
+    rationale: "A parent keeps its slot while its children work, so a handback never needs a new slot."
     jobs: [JOB-01, JOB-03, JOB-06]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-011
     group: Limits
@@ -134,68 +134,68 @@ capabilities:
   - id: CAP-013
     group: Limits
     priority: P0
-    statement: Concurrent write-capable descendants must have working directories that are neither equal nor nested. The root and read-only descendants are exempt.
+    statement: "Concurrent write-capable dependent children in one root tree must have working directories that are neither equal nor nested. The root and read-only children are exempt."
     rationale: "Writers can use sibling directories, and readers can share them."
     jobs: [JOB-01, JOB-06]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-014
     group: Discovery
     priority: P0
-    statement: "Participating sessions can list discoverable local peers with a name or address for messaging, plus coarse busy or idle status when available."
+    statement: "A root can list discoverable local peers with a name and an address for messaging, plus coarse busy or idle status when available."
     rationale: A sender can choose a peer without inspecting its private work.
-    jobs: [JOB-02, JOB-04]
+    jobs: [JOB-02, JOB-08]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-015
     group: Discovery
     priority: P0
-    statement: Discoverable PiG and Claude Code sessions under the same operating-system account are eligible for peer messaging by default.
+    statement: "Discoverable PiG roots and Claude Code sessions under the same operating-system account are eligible for peer messaging by default."
     rationale: Independently started sessions can coordinate without an opt-in step.
     jobs: [JOB-02]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-016
     group: Messaging
     priority: P0
-    statement: Participating PiG sessions can send and receive messages with other PiG sessions and with local Claude Code peers.
+    statement: "A PiG root can send and receive messages with other PiG roots and with local Claude Code peers."
     rationale: A workflow can combine PiG and Claude Code roles.
-    jobs: [JOB-02]
+    jobs: [JOB-02, JOB-08]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-017
     group: Messaging
     priority: P0
-    statement: "When a participating PiG session receives a peer steer while active, Pig Litter must deliver it at the next applicable point in the current turn after running tool calls finish."
-    rationale: A peer can change the direction of ongoing work.
+    statement: "When a session receives a steer while active, Pig Litter must deliver it at the next applicable point in the current turn after running tool calls finish."
+    rationale: "A sender can change the direction of ongoing work."
     jobs: [JOB-02, JOB-03]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-018
     group: Messaging
     priority: P0
-    statement: "When an inactive session receives a peer steer and has capacity, Pig Litter must wake it immediately in the same conversation."
-    rationale: A peer can restart work in a reachable paused or finished session.
+    statement: "When an inactive session receives a steer and its tree has capacity, Pig Litter must wake it immediately in the same conversation."
+    rationale: "A sender can restart work in a reachable paused, finished, or interrupted session."
     jobs: [JOB-02, JOB-03, JOB-04]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-019
     group: Messaging
@@ -211,13 +211,13 @@ capabilities:
   - id: CAP-020
     group: Messaging
     priority: P0
-    statement: Pig Litter must label incoming messages and automatic responses with the peer or child that sent them.
-    rationale: The recipient can distinguish a session message from human input.
+    statement: "Pig Litter must label each incoming message, automatic response, and notice with its origin: a peer, the parent, a child, the operator, or Pig Litter."
+    rationale: "The recipient can tell who is speaking to it."
     jobs: [JOB-02, JOB-03]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-021
     group: Messaging
@@ -277,46 +277,46 @@ capabilities:
   - id: CAP-026
     group: Lifecycle
     priority: P0
-    statement: A fully stopped child must be unavailable to peers. A child that finishes a turn remains reachable.
+    statement: "A fully stopped child must be unavailable for messaging. A child that finishes a turn remains reachable by its parent."
     rationale: A full stop has a distinct effect from finishing work for the turn.
     jobs: [JOB-02, JOB-04, JOB-07]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-027
     group: Lifecycle
     priority: P0
-    statement: "When a parent returns after a crash, Pig Litter must report the children whose work was interrupted."
-    rationale: The operator can tell which work needs attention.
+    statement: "When a root returns after a crash, Pig Litter must report the interrupted children to their parent session as a labeled notice. Each interrupted child stays reachable in the same conversation."
+    rationale: "The parent can tell which work needs attention and can continue it."
     jobs: [JOB-04, JOB-07]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-028
     group: Lifecycle
     priority: P0
-    statement: Ending the root must provide the operator a full stop for its managed session tree.
-    rationale: The operator can end all work owned by the root.
+    statement: "Ending the root must halt all live work in its tree. Reopening the root must make its dependent children reachable again."
+    rationale: "The operator can halt everything a root owns without losing it."
     jobs: [JOB-07]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-029
     group: Handbacks
     priority: P0
-    statement: "When a child ends a turn with a final response and has no active children, Pig Litter must return its response and outcome to its immediate parent automatically."
-    rationale: A parent learns what the child finished without needing to ask.
+    statement: "When a child ends a turn with a final response or a failure and has no active children, Pig Litter must return its response and outcome to its immediate parent automatically."
+    rationale: "A parent learns what the child finished, or that it failed, without needing to ask."
     jobs: [JOB-01, JOB-03]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-030
     group: Handbacks
@@ -332,13 +332,13 @@ capabilities:
   - id: CAP-031
     group: Wait
     priority: P0
-    statement: A parent can wait for a direct child with a required timeout.
+    statement: "A parent can wait for a direct child with a required timeout up to a configured maximum. The default maximum is 30 minutes."
     rationale: A parent can keep its turn open until the selected child responds or a bound is reached.
     jobs: [JOB-03]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-032
     group: Wait
@@ -376,24 +376,24 @@ capabilities:
   - id: CAP-035
     group: Human interaction
     priority: P0
-    statement: "In interactive PiG, the operator can open a full-view child overlay inside the parent's view to follow the child's live transcript."
+    statement: "In interactive PiG, the operator can open a full-view child overlay inside the root's view to follow the live transcript of any dependent child in the tree."
     rationale: "The operator can see the child's work in the same terminal interface."
     jobs: [JOB-05]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-036
     group: Human interaction
     priority: P0
-    statement: The operator can steer the child from its overlay.
+    statement: "The operator can steer the child from its overlay. The steer arrives as operator input."
     rationale: The operator can redirect the child while observing its work.
     jobs: [JOB-05]
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: CAP-037
     group: Human interaction
@@ -438,4 +438,246 @@ capabilities:
     evidence:
       kind: ruling
       ref: reports/2026-11-25-interview-prd.md
+      date: 2026-11-25
+  - id: CAP-041
+    group: Detached sessions
+    priority: P0
+    statement: "A root can launch a detached session with a brief, a name, a working directory, a provider and model, a reasoning effort, and an agent profile. The launch returns the detached session's peer address."
+    rationale: "A lead can start independent work that other local sessions can reach."
+    jobs: [JOB-08]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-042
+    group: Detached sessions
+    priority: P0
+    statement: "Only a root can launch a detached session. A dependent child can launch only dependent children."
+    rationale: "Independent sessions are created only by sessions that head a tree."
+    jobs: [JOB-06, JOB-08]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-043
+    group: Detached sessions
+    priority: P0
+    statement: "A detached session must head its own root tree and take its limits and permissions from its own configuration."
+    rationale: "Independent work is bounded by its own settings instead of its launcher's."
+    jobs: [JOB-06, JOB-08]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-044
+    group: Detached sessions
+    priority: P0
+    statement: "A detached session must keep running independently of its launcher and stay reachable while idle until its launcher stops it or the operator ends it."
+    rationale: "A lead can send follow-up work to the same independent session."
+    jobs: [JOB-08]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-045
+    group: Detached sessions
+    priority: P0
+    statement: "Only the launcher can stop a detached session through Pig Litter. The stop ends the detached session's whole tree after the cascade warning, and the launcher keeps this authority after it restarts."
+    rationale: "Independent work that an agent started can be ended by that agent."
+    jobs: [JOB-07, JOB-08]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-046
+    group: Detached sessions
+    priority: P0
+    statement: "Pig Litter must give a detached session its launcher's peer address at launch."
+    rationale: "The detached session can report back without searching for its launcher."
+    jobs: [JOB-08]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-047
+    group: Detached sessions
+    priority: P0
+    statement: "Where a supported terminal pane host is available, Pig Litter must open a detached session in a pane as an interactive session. Otherwise it must run the session in the background. The launch result must state which form was used."
+    rationale: "The operator can watch independent work where the terminal allows it."
+    jobs: [JOB-06, JOB-08]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-048
+    group: Messaging
+    priority: P0
+    statement: "Within a root tree, a session can message only its direct children and its own parent."
+    rationale: "Coordination follows the delegation relationship."
+    jobs: [JOB-03]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-049
+    group: Discovery
+    priority: P0
+    statement: "Only roots take part in peer discovery and peer messaging. Dependent children must be hidden from sessions outside their tree."
+    rationale: "Each tree has one address to the outside."
+    jobs: [JOB-02, JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-050
+    group: Discovery
+    priority: P0
+    statement: "The operator can turn peer messaging off for a root."
+    rationale: "The operator can isolate a sensitive run."
+    jobs: [JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-051
+    group: Messaging
+    priority: P0
+    statement: "A send must return at once with its outcome and must never wait for the recipient to read or act on the message."
+    rationale: "The sender keeps working and still learns whether the hand-off succeeded."
+    jobs: [JOB-02, JOB-03]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-052
+    group: Messaging
+    priority: P0
+    statement: "When a session's pending steers reach the configured bound, Pig Litter must fail further sends to it as recipient busy. Handbacks are exempt."
+    rationale: "One sender cannot bury a session's next turn."
+    jobs: [JOB-02, JOB-03]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-053
+    group: Messaging
+    priority: P0
+    statement: "When a send exceeds the message size limit, Pig Litter must reject it and state the limit. Handbacks are delivered whole."
+    rationale: "Nothing is truncated without the sender knowing."
+    jobs: [JOB-02, JOB-03]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-054
+    group: Delegation
+    priority: P0
+    statement: "A child's name must be unique across its root tree."
+    rationale: "A name identifies one session in the tree."
+    jobs: [JOB-01, JOB-03]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-055
+    group: Delegation
+    priority: P0
+    statement: "An agent profile must declare whether its role writes."
+    rationale: "The directory rule and the delegation rule can tell writers from readers."
+    jobs: [JOB-01, JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-056
+    group: Delegation
+    priority: P0
+    statement: "When a launch request has a problem that can be checked before the child exists, Pig Litter must reject the launch and state the reason."
+    rationale: "A parent learns of a mistaken launch at once."
+    jobs: [JOB-01, JOB-08]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-057
+    group: Limits
+    priority: P0
+    statement: "When waking a session also requires slots for its inactive ancestors, Pig Litter must admit all of them or reject the wake."
+    rationale: "The active-session limit holds for every session that becomes active."
+    jobs: [JOB-03, JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-058
+    group: Limits
+    priority: P0
+    statement: "A root must read its configuration when it starts or is reopened and apply those values to its tree until it ends. Agent profiles and settings come from the user level and from the root's project."
+    rationale: "Admission decisions stay consistent for the life of a tree, and a child's directory cannot grant itself more."
+    jobs: [JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-059
+    group: Wait
+    priority: P0
+    statement: "When the selected child is inactive and has no active children, a wait must return at once and state that the child is inactive."
+    rationale: "A parent doesn't hold its turn open for an event that cannot occur."
+    jobs: [JOB-03]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-060
+    group: Lifecycle
+    priority: P0
+    statement: "A child interrupted by a crash must report a distinct interrupted state until its next turn starts. A fully stopped child must report as stopped to its former parent."
+    rationale: "A parent can tell a crash, its own pause, finished work, and a stop apart."
+    jobs: [JOB-04, JOB-07]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-061
+    group: Human interaction
+    priority: P0
+    statement: "In interactive PiG, the root's view must list every dependent session in the tree with its name, state, agent profile, and working directory, and list the detached sessions that the root launched separately."
+    rationale: "The operator can find the session to open and see what a root has started."
+    jobs: [JOB-05, JOB-08]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: CAP-062
+    group: Compatibility
+    priority: P0
+    statement: "A headless root must keep running while any of its descendants is active."
+    rationale: "A handback can wake the root and the run can finish without the root holding a wait."
+    jobs: [JOB-03, JOB-06]
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25

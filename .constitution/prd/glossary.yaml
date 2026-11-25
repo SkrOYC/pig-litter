@@ -3,50 +3,59 @@ terms:
     definition: An agent conversation with its own turns and lifecycle. Pig Litter manages PiG sessions and can exchange messages with compatible Claude Code sessions.
     do_not_use: []
   - term: Root session
-    definition: The PiG session at the top of a managed tree. It has no parent in that tree.
+    definition: The PiG session at the top of a root tree. The operator starts it, or another root launches it as a detached session.
     do_not_use: []
   - term: Root tree
-    definition: A root session and its managed descendants. The active sessions in the tree share one concurrency limit.
+    definition: A root session and its dependent children at every depth. The active sessions in the tree share one concurrency limit.
     do_not_use: []
   - term: Parent session
-    definition: "The session that launches a direct child. It holds authority to check that child's active state, pause it, and stop it."
+    definition: "The session that launches a dependent child. It holds authority to check that child's state, pause it, and stop it."
     do_not_use: []
   - term: Child session
-    definition: A fresh PiG session started by a parent for a delegated assignment. It has its own conversation and can continue in that conversation while reachable.
+    definition: "A dependent child: a fresh PiG session that a parent starts inside its own root tree for a delegated assignment. It is hidden from sessions outside the tree and exchanges messages only with its parent and its own children."
+    do_not_use: []
+  - term: Detached session
+    definition: "An independent PiG session that a root launches. It heads its own root tree, applies its own configuration, and is reachable as a peer."
+    do_not_use: []
+  - term: Launcher
+    definition: The root that launched a detached session. It can stop that session and otherwise treats it as a peer.
     do_not_use: []
   - term: Peer
-    definition: A discoverable local PiG or Claude Code session that can exchange messages. Peer status is coarse and confers no lifecycle authority.
+    definition: A discoverable local PiG root or Claude Code session that can exchange messages with a root. Peer status is coarse and confers no lifecycle authority.
     do_not_use: []
   - term: Agent profile
-    definition: "A reusable role definition. It can supply instructions, tools, and a default model for a child."
+    definition: "A reusable role definition. It can supply instructions, tools, and a default model for a session, and it declares whether the role writes."
     do_not_use: []
   - term: Turn
     definition: A unit of model work initiated by an input and ending with a response or an interruption.
     do_not_use: []
   - term: Active session
-    definition: "A session that has an open turn, including one blocked in a wait. It counts toward its root tree's active-session limit."
+    definition: "A session that has an open turn, including one blocked in a wait, or that has an active child. It counts toward its root tree's active-session limit."
     do_not_use: []
   - term: Paused session
-    definition: "A reachable session whose work its parent paused. A peer steer can wake it, subject to admission limits."
+    definition: "A reachable session whose work was halted by its parent or by the root ending. A steer can wake it, subject to admission limits."
     do_not_use: []
   - term: Finished session
-    definition: A reachable session whose own turn ended with a final response. It can receive more work in the same conversation.
+    definition: A reachable session whose own turn ended with a final response or a failure. It can receive more work in the same conversation.
+    do_not_use: []
+  - term: Interrupted session
+    definition: A reachable session whose turn was cut off by a crash. It reports as interrupted until its next turn starts.
     do_not_use: []
   - term: Fully stopped session
-    definition: A session whose lifecycle ended and that is unavailable for peer messaging.
+    definition: A session whose lifecycle ended and that is unavailable for messaging.
     do_not_use: []
   - term: Steer
     definition: "Delivery of an input during the current turn after running tool calls finish. For an inactive reachable session, it starts a turn if admission allows it."
     do_not_use: []
   - term: Handback
-    definition: An automatic response and outcome from a direct child whose turn ended with no active children. The parent receives it as a labeled steer.
+    definition: "An automatic response and outcome from a dependent child whose turn ended, with a final response or a failure, while it had no active children. The parent receives it as a labeled steer."
     do_not_use: []
   - term: Wait
-    definition: "A bounded tool call that stays open until the selected child sends its parent a message, provides an eligible handback, crashes, stops, or the timeout expires."
+    definition: "A bounded tool call that stays open until the selected child sends its parent a message, provides a handback, crashes, stops, or the timeout expires."
     do_not_use: []
   - term: Child overlay
-    definition: "A full-view element inside the parent's interactive view. The operator uses it to see the child's live conversation and send a steer."
+    definition: "A full-view element inside the root's interactive view. The operator uses it to see a dependent child's live conversation and send a steer."
     do_not_use: []
   - term: Working directory
-    definition: "The directory selected by the parent for a child's work. It determines whether concurrent writers overlap under the directory rule."
+    definition: "The directory selected at launch for a session's work. It determines whether concurrent writers in one root tree overlap under the directory rule."
     do_not_use: []

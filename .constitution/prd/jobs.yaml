@@ -9,13 +9,13 @@ jobs:
       ref: reports/2026-11-25-interview-prd.md
       date: 2026-11-25
   - id: JOB-02
-    actor: Participating session
-    statement: Find another local session and exchange messages while each session carries on with its own work.
+    actor: Root session
+    statement: Find another local root or Claude Code session and exchange messages while each session carries on with its own work.
     priority: P0
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25
   - id: JOB-03
     actor: Parent session
@@ -55,10 +55,19 @@ jobs:
       date: 2026-11-25
   - id: JOB-07
     actor: PiG operator
-    statement: Recognize interrupted work and bring the session tree to a full stop when needed.
+    statement: Recognize interrupted work and halt the whole session tree when needed without losing it.
     priority: P0
     certainty: settled
     evidence:
       kind: ruling
-      ref: reports/2026-11-25-interview-prd.md
+      ref: reports/2026-11-25-interview-architecture.md
+      date: 2026-11-25
+  - id: JOB-08
+    actor: Root session
+    statement: "Start an independent session for a larger piece of work, coordinate with it by message, and end it when it is no longer needed."
+    priority: P0
+    certainty: settled
+    evidence:
+      kind: ruling
+      ref: reports/2026-11-25-interview-architecture.md
       date: 2026-11-25

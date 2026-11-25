@@ -3,16 +3,16 @@ constraints:
     class: compatibility
     statement: Run on unmodified PiG releases on macOS and Linux.
     scale: Pass or fail per declared platform and parent mode.
-    meter: "Exercise install, launch, PiG-to-PiG messaging, and handback with the released host and no host source or SDK overrides. Exercise the child overlay with an interactive parent."
+    meter: "Exercise install, dependent and detached launch, PiG-to-PiG messaging, and handback with the released host and no host source or SDK overrides. Exercise the child overlay with an interactive root."
     goal: Every declared platform and mode passes the applicable checks.
     fail: Any declared configuration requires a host patch or cannot run an applicable required workflow.
     certainty: assumed
     assumption: The interview sets the requirement. The resulting product has yet to be measured against this meter.
   - id: NFC-02
     class: security
-    statement: Preserve the parent-to-child permission boundary.
+    statement: Preserve the permission boundary between a parent and its dependent children.
     scale: Count of successful unauthorized child tool calls and lifecycle actions.
-    meter: Attempt calls outside the tool permissions at each level and lifecycle actions by sessions other than the immediate parent.
+    meter: "Attempt calls outside the tool permissions at each level of a root tree, lifecycle actions by sessions other than the immediate parent, detached launches by dependent children, and stops of a detached session by sessions other than its launcher."
     goal: 0
     fail: One or more unauthorized calls or lifecycle actions succeed.
     certainty: assumed
@@ -21,7 +21,7 @@ constraints:
     class: privacy
     statement: Keep session traces private from agent-facing tools.
     scale: Count of transcript entries or traces exposed by an agent-facing operation.
-    meter: "Exercise status, discovery, and lifecycle calls as a direct parent, other ancestor, and peer. Distinguish explicit messages and final responses from transcript inspection."
+    meter: "Exercise status, discovery, and lifecycle calls as a direct parent, other ancestor, launcher, and peer. Distinguish explicit messages and final responses from transcript inspection."
     goal: 0
     fail: An agent-facing operation exposes any private conversation history or trace.
     certainty: assumed
@@ -30,7 +30,7 @@ constraints:
     class: reliability
     statement: Enforce configured capacity and directory overlap limits.
     scale: "Count of admissions that violate the configured depth, concurrency, or directory rules."
-    meter: "Attempt concurrent launches and wakeups at each limit and with same, nested, and sibling directories. Include active roots, waits, and exempt directories."
+    meter: "Attempt concurrent launches and wakeups at each limit and with same, nested, and sibling directories. Include active roots, waits, idle parents of active children, wakeups that need slots for inactive ancestors, and exempt directories."
     goal: 0
     fail: Any admission exceeds a configured limit or admits prohibited overlap between active writers.
     certainty: assumed
@@ -39,7 +39,7 @@ constraints:
     class: reliability
     statement: Keep each wait finite and tied to the selected child.
     scale: "Pass or fail for each eligible result, failure, unrelated steer, and timeout case."
-    meter: "Wait on a child while exercising explicit messages, eligible final responses, child crash or stop, unrelated steers, and expiry."
+    meter: "Wait on a child while exercising explicit messages, handbacks, child crash or stop, an inactive child, unrelated steers, a timeout above the configured maximum, and expiry."
     goal: Every wait returns on an eligible event or timeout and uses the normal steer for response content.
     fail: "A wait exceeds its timeout, an unrelated steer ends it, or the selected child's crash or stop leaves it waiting."
     certainty: assumed
